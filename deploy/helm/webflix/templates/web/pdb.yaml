@@ -1,0 +1,17 @@
+{{- $c := .Values.web -}}
+{{- $min := ternary $c.autoscaling.minReplicas $c.replicas $c.autoscaling.enabled -}}
+{{- if and $c.podDisruptionBudget.enabled (gt (int $min) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "webflix.component" (list . "web") }}
+  labels:
+    {{- include "webflix.labels" (list . "web") | nindent 4 }}
+spec:
+  maxUnavailable: {{ $c.podDisruptionBudget.maxUnavailable }}
+  # Pods that are not ready yet may be evicted regardless (no stuck node drains).
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "web") | nindent 6 }}
+{{- end }}

@@ -1,0 +1,27 @@
+suite: Values schema
+templates:
+  - configmap.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: rejects a malformed rate limit
+    set:
+      config.rateLimits.auth: lots
+    asserts:
+      - failedTemplate: {}
+  - it: rejects unknown keys (typos)
+    set:
+      api.replica: 3
+    asserts:
+      - failedTemplate: {}
+  - it: rejects a non-https/http public origin
+    set:
+      config.publicOrigin: ftp://webflix
+    asserts:
+      - failedTemplate: {}
+  - it: rejects an external Valkey URL with the wrong scheme
+    set:
+      externalValkey.url: http://cache:6379
+    asserts:
+      - failedTemplate: {}

@@ -1,0 +1,59 @@
+{{- $c := .Values.seed -}}
+{{- if $c.enabled }}
+# Catalog, search index, stats and demo account, once per revision. Waits for the schema
+# (the migrate Job of this revision) and the bucket; reads the media manifest from the bucket.
+# Idempotent: an unchanged catalog + manifest is skipped in milliseconds.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "webflix.component" (list . (printf "seed-%d" .Release.Revision)) }}
+  labels:
+    {{- include "webflix.labels" (list . "seed") | nindent 4 }}
+  {{- with $c.mediaChecksum }}
+  annotations:
+    webflix.dev/media-checksum: {{ . | quote }}
+  {{- end }}
+spec:
+  backoffLimit: {{ $c.backoffLimit }}
+  activeDeadlineSeconds: {{ $c.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ $c.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "seed") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "webflix.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "webflix.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "webflix.waitContainer" (list . (list "wait" "--blobs" "--timeout" "900")) | nindent 8 }}
+      containers:
+        - name: seed
+          image: {{ include "webflix.image" (list . .Values.api.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - seed
+            {{- if $c.manifest }}
+            - --manifest
+            - {{ $c.manifest | quote }}
+            {{- else }}
+            - --no-manifest
+            {{- end }}
+            {{- if not $c.demo }}
+            - --no-demo
+            {{- end }}
+          {{- include "webflix.appEnv" . | nindent 10 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 10001
+            runAsGroup: 10001
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "webflix.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "webflix.appVolumes" . | nindent 8 }}
+{{- end }}

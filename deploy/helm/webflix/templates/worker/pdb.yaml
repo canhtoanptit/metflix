@@ -1,0 +1,15 @@
+{{- $c := .Values.worker -}}
+{{- if and $c.enabled $c.podDisruptionBudget.enabled (gt (int $c.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "webflix.component" (list . "worker") }}
+  labels:
+    {{- include "webflix.labels" (list . "worker") | nindent 4 }}
+spec:
+  maxUnavailable: {{ $c.podDisruptionBudget.maxUnavailable }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "worker") | nindent 6 }}
+{{- end }}

@@ -1,0 +1,236 @@
+{{- define "webflix.np.clients" -}}
+- podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ index . 0 }}
+      app.kubernetes.io/instance: {{ index . 1 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, worker, migrate, seed]
+{{- end }}
+{{- define "webflix.np.selector" -}}
+podSelector:
+  matchLabels:
+    app.kubernetes.io/name: {{ index . 0 }}
+    app.kubernetes.io/instance: {{ index . 1 }}
+    app.kubernetes.io/component: {{ index . 2 }}
+{{- end }}
+{{- define "webflix.np.appEgress" -}}
+{{- $ctx := index . 0 -}}
+{{- $name := index . 1 -}}
+{{- $instance := index . 2 -}}
+{{- /* DNS: any destination on port 53 by default, which works with kube-dns/CoreDNS pods and
+with NodeLocal DNSCache (a link-local address on the node); narrow it with networkPolicy.dns.to. */}}
+- ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  {{- with $ctx.Values.networkPolicy.dns.to }}
+  to:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- if $ctx.Values.postgresql.enabled }}
+- to:
+    - {{- include "webflix.np.selector" (list $name $instance "postgresql") | nindent 6 }}
+  ports:
+    - port: 5432
+      protocol: TCP
+{{- end }}
+{{- if $ctx.Values.valkey.enabled }}
+- to:
+    - {{- include "webflix.np.selector" (list $name $instance "valkey") | nindent 6 }}
+  ports:
+    - port: 6379
+      protocol: TCP
+{{- end }}
+{{- if $ctx.Values.objectStore.enabled }}
+- to:
+    - {{- include "webflix.np.selector" (list $name $instance "objectstore") | nindent 6 }}
+  ports:
+    - port: 3900
+      protocol: TCP
+{{- end }}
+{{- with $ctx.Values.networkPolicy.egress.extraRules }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Least privilege between the pieces:
+  gateway ─► api :4000, web :8080           (nothing else is reachable from outside)
+  api, worker, migrate, seed ─► postgresql :5432, valkey :6379, objectstore :3900, DNS
+  monitoring ─► api/worker :4000, objectstore :3903 (metrics)
+  web, data stores: no egress at all
+Kubelet probes and port-forwards are not subject to NetworkPolicy.
+*/ -}}
+{{- $np := .Values.networkPolicy -}}
+{{- $name := include "webflix.name" . -}}
+{{- $instance := .Release.Name -}}
+{{- $gatewayPeer := dict "namespaceSelector" $np.gateway.namespaceSelector "podSelector" $np.gateway.podSelector -}}
+{{- $metricsPeer := dict "namespaceSelector" $np.metrics.namespaceSelector "podSelector" $np.metrics.podSelector -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "api") }}
+  labels:
+    {{- include "webflix.labels" (list . "api") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "api") | nindent 2 }}
+  policyTypes: [Ingress{{ if $np.egress.restrict }}, Egress{{ end }}]
+  ingress:
+    # The gateway reaches the public listener only; ops (probes, metrics) are for monitoring.
+    - from:
+        - {{- toYaml $gatewayPeer | nindent 10 }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+              app.kubernetes.io/instance: {{ $instance }}
+              app.kubernetes.io/component: test
+      ports:
+        - port: 4000
+          protocol: TCP
+    - from:
+        - {{- toYaml $metricsPeer | nindent 10 }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+              app.kubernetes.io/instance: {{ $instance }}
+              app.kubernetes.io/component: test
+      ports:
+        - port: 4001
+          protocol: TCP
+  {{- if $np.egress.restrict }}
+  egress:
+    {{- include "webflix.np.appEgress" (list . $name $instance) | nindent 4 }}
+  {{- end }}
+{{- if .Values.worker.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "worker") }}
+  labels:
+    {{- include "webflix.labels" (list . "worker") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "worker") | nindent 2 }}
+  policyTypes: [Ingress{{ if $np.egress.restrict }}, Egress{{ end }}]
+  ingress:
+    - from:
+        - {{- toYaml $metricsPeer | nindent 10 }}
+      ports:
+        - port: 4001
+          protocol: TCP
+  {{- if $np.egress.restrict }}
+  egress:
+    {{- include "webflix.np.appEgress" (list . $name $instance) | nindent 4 }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "jobs") }}
+  labels:
+    {{- include "webflix.labels" (list . "migrate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $instance }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [migrate, seed]
+  policyTypes: [Ingress{{ if $np.egress.restrict }}, Egress{{ end }}]
+  ingress: []
+  {{- if $np.egress.restrict }}
+  egress:
+    {{- include "webflix.np.appEgress" (list . $name $instance) | nindent 4 }}
+  {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "web") }}
+  labels:
+    {{- include "webflix.labels" (list . "web") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "web") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - {{- toYaml $gatewayPeer | nindent 10 }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+              app.kubernetes.io/instance: {{ $instance }}
+              app.kubernetes.io/component: test
+      ports:
+        - port: 8080
+          protocol: TCP
+  # Static files only: no egress at all.
+  egress: []
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "postgresql") }}
+  labels:
+    {{- include "webflix.labels" (list . "postgresql") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "postgresql") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "webflix.np.clients" (list $name $instance) | nindent 8 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+  egress: []
+{{- end }}
+{{- if .Values.valkey.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "valkey") }}
+  labels:
+    {{- include "webflix.labels" (list . "valkey") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "valkey") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "webflix.np.clients" (list $name $instance) | nindent 8 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+  egress: []
+{{- end }}
+{{- if .Values.objectStore.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "objectstore") }}
+  labels:
+    {{- include "webflix.labels" (list . "objectstore") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "objectstore") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "webflix.np.clients" (list $name $instance) | nindent 8 }}
+      ports:
+        - port: 3900
+          protocol: TCP
+    - from:
+        - {{- toYaml $metricsPeer | nindent 10 }}
+      ports:
+        - port: 3903
+          protocol: TCP
+  egress: []
+{{- end }}
+{{- end }}

@@ -1,0 +1,30 @@
+{
+  "name": "@webflix/adapters-node",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node implementations of core ports: filesystem BlobStore, scrypt PasswordHasher, Valkey and S3 adapters.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./s3": "./src/s3-blob-store.ts",
+    "./valkey": "./src/valkey/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run",
+    "test:services": "node scripts/with-services.ts vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1175.0",
+    "@webflix/contracts": "workspace:*",
+    "@webflix/core": "workspace:*",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,125 @@
+suite: Application ConfigMap
+templates:
+  - configmap.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: configures the k8s mode against the in-chart data stores
+    asserts:
+      - equal:
+          path: data.WEBFLIX_MODE
+          value: k8s
+      - equal:
+          path: data.WEBFLIX_ENV
+          value: production
+      - equal:
+          path: data.WEBFLIX_DATABASE_URL
+          value: postgres://webflix@webflix-postgresql:5432/webflix
+      - equal:
+          path: data.WEBFLIX_VALKEY_URL
+          value: redis://webflix-valkey:6379/0
+      - equal:
+          path: data.WEBFLIX_S3_ENDPOINT
+          value: http://webflix-objectstore:3900
+      - equal:
+          path: data.WEBFLIX_MEDIA_MANIFEST
+          value: blob:manifests/media.json
+      - equal:
+          path: data.WEBFLIX_MIGRATE_ON_START
+          value: "false"
+      - equal:
+          path: data.WEBFLIX_TRUSTED_PROXY_HOPS
+          value: "1"
+      - equal:
+          path: data.WEBFLIX_OPS_PORT
+          value: "4001"
+
+  - it: keeps passwords out of URLs
+    asserts:
+      - notMatchRegex:
+          path: data.WEBFLIX_DATABASE_URL
+          pattern: ":[^/@]+@"
+      - notMatchRegex:
+          path: data.WEBFLIX_VALKEY_URL
+          pattern: "@"
+
+  - it: leaves the strict rate-limit defaults alone unless overridden
+    asserts:
+      - notExists:
+          path: data.WEBFLIX_RATE_LIMIT_AUTH
+  - it: passes any rate-limit override through, including policies added later
+    set:
+      config.rateLimits:
+        auth: 30/60
+        profilePin: 10/60
+        email-lookup: 100/60
+        playback-start: 20/60
+        signup: ""
+    asserts:
+      - equal:
+          path: data.WEBFLIX_RATE_LIMIT_AUTH
+          value: 30/60
+      - equal:
+          path: data.WEBFLIX_RATE_LIMIT_PROFILE_PIN
+          value: 10/60
+      - equal:
+          path: data.WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP
+          value: 100/60
+      - equal:
+          path: data.WEBFLIX_RATE_LIMIT_PLAYBACK_START
+          value: 20/60
+      - notExists:
+          path: data.WEBFLIX_RATE_LIMIT_SIGNUP
+
+  - it: derives the public origin from the first hostname and TLS
+    set:
+      httpRoute.hostnames: [watch.example.com]
+      gateway.tls.enabled: true
+    asserts:
+      - equal:
+          path: data.WEBFLIX_PUBLIC_ORIGIN
+          value: https://watch.example.com
+  - it: defaults the public origin to localhost:8080
+    asserts:
+      - equal:
+          path: data.WEBFLIX_PUBLIC_ORIGIN
+          value: http://localhost:8080
+
+  - it: points at external services
+    set:
+      postgresql.enabled: false
+      externalDatabase.url: postgres://webflix@db.internal:5432/webflix?sslmode=require
+      valkey.enabled: false
+      externalValkey.url: rediss://cache.internal:6380/0
+      objectStore.enabled: false
+      externalS3.region: eu-west-1
+      externalS3.bucket: acme-webflix-media
+    asserts:
+      - equal:
+          path: data.WEBFLIX_DATABASE_URL
+          value: postgres://webflix@db.internal:5432/webflix?sslmode=require
+      - equal:
+          path: data.WEBFLIX_VALKEY_URL
+          value: rediss://cache.internal:6380/0
+      - notExists:
+          path: data.WEBFLIX_S3_ENDPOINT
+      - equal:
+          path: data.WEBFLIX_S3_BUCKET
+          value: acme-webflix-media
+      - equal:
+          path: data.WEBFLIX_S3_FORCE_PATH_STYLE
+          value: "false"
+
+  - it: refuses an external database without a URL
+    set:
+      postgresql.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.url is required when postgresql.enabled is false
+  - it: refuses an external Valkey without a URL
+    set:
+      valkey.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: externalValkey.url is required when valkey.enabled is false

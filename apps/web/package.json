@@ -1,0 +1,47 @@
+{
+  "name": "@webflix/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Webflix React SPA.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "vite build",
+    "build:mock": "vite build --mode mock",
+    "preview": "vite preview",
+    "preview:mock": "vite preview --mode mock",
+    "typecheck": "tsc -p . && tsc -p tsconfig.node.json",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "catalog:",
+    "@tanstack/react-router": "catalog:",
+    "@webflix/contracts": "workspace:*",
+    "@webflix/player": "workspace:*",
+    "@webflix/ui": "workspace:*",
+    "motion": "catalog:",
+    "radix-ui": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "thumbhash": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "catalog:",
+    "@tanstack/router-plugin": "catalog:",
+    "@testing-library/jest-dom": "catalog:",
+    "@testing-library/react": "catalog:",
+    "@testing-library/user-event": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "axe-core": "^4.14.1",
+    "jsdom": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

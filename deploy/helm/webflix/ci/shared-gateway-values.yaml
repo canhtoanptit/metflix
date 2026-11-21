@@ -1,0 +1,9 @@
+# Routes attached to a Gateway the platform team owns; no in-chart Gateway.
+gateway:
+  enabled: false
+httpRoute:
+  parentRefs:
+    - name: shared-gateway
+      namespace: infra
+      sectionName: https
+  hostnames: [webflix.apps.example.com]

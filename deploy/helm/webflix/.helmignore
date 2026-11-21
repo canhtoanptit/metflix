@@ -1,0 +1,13 @@
+# Patterns to ignore when packaging the chart.
+.DS_Store
+.git/
+*.swp
+*.bak
+*.tmp
+*.orig
+.idea/
+.vscode/
+# Unit tests (helm-unittest) are not part of the packaged chart.
+/tests/
+# Values used by chart checks (deploy/kind/chart-check.sh, chart-testing).
+/ci/

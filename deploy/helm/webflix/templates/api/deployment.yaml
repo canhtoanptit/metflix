@@ -1,0 +1,112 @@
+{{- $c := .Values.api -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webflix.component" (list . "api") }}
+  labels:
+    {{- include "webflix.labels" (list . "api") | nindent 4 }}
+spec:
+  {{- if not $c.autoscaling.enabled }}
+  replicas: {{ $c.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "api") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never below the current capacity: new pods must be ready before old ones drain.
+      maxUnavailable: 0
+      maxSurge: 25%
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "api") | nindent 8 }}
+        {{- with $c.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Rotating a media token key or a password (then `helm upgrade`) rolls the pods.
+        checksum/secrets: {{ include "webflix.secretsChecksum" . }}
+        {{- include "webflix.metricsAnnotations" . | nindent 8 }}
+        {{- with $c.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "webflix.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "webflix.imagePullSecrets" . | nindent 6 }}
+      {{- with $c.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Shutdown: readiness fails at once, serving continues for shutdownDelaySec while the
+      # gateway drops the endpoint, then in-flight requests drain (docs/BACKEND.md §5).
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      initContainers:
+        {{- include "webflix.waitContainer" (list . (list "wait" "--timeout" "900")) | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "webflix.image" (list . $c.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve]
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+            # /healthz, /readyz, /dependencies, /metrics: never reachable through the gateway.
+            - name: ops
+              containerPort: 4001
+              protocol: TCP
+          {{- include "webflix.appEnv" . | nindent 10 }}
+            {{- include "webflix.extraEnv" $c.extraEnv | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Process-local readiness: started (database reached with the schema current, Valkey
+          # reached), not draining, event loop responsive. A shared dependency going down later
+          # does not empty the endpoint set; requests needing it answer 503 (docs/KUBERNETES.md).
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 10001
+            runAsGroup: 10001
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "webflix.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "webflix.appVolumes" . | nindent 8 }}
+      topologySpreadConstraints:
+        {{- include "webflix.topologySpread" (list . "api" $c.topologySpreadConstraints) | nindent 8 }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

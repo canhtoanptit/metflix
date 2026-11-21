@@ -1,0 +1,344 @@
+/*
+ * Webflix design tokens. The single source of every colour, size, radius, shadow, duration and
+ * easing in the product. Tailwind's default theme is reset (`--*: initial`), so utilities exist
+ * only for these tokens: `bg-canvas`, `text-fg-muted`, `rounded-card`, `shadow-lg`, `ease-glide`…
+ * Rationale and usage live in docs/DESIGN_SYSTEM.md.
+ *
+ * Contrast (WCAG 2.2 AA) is verified for every text/background pair listed in the docs, including
+ * translucent tokens composited over pure white imagery (worst case for controls over artwork).
+ */
+
+/* `static`: emit every token as a CSS variable even when no utility uses it, so `var(--…)`
+   works everywhere (inline styles, SVG, component CSS). */
+@theme static {
+  --*: initial;
+
+  /* ---- Colour: surfaces (cool near-black; the amber accent reads warmer against it) ---- */
+  --color-canvas: #0b0c0f;
+  --color-surface-1: #14161b;
+  --color-surface-2: #1b1e25;
+  --color-surface-3: #252932;
+  --color-surface-4: #30353f;
+  --color-scrim: rgb(5 6 8 / 0.74);
+  --color-glass: rgb(26 28 34 / 0.62);
+  --color-glass-hover: rgb(62 66 78 / 0.78);
+
+  /* ---- Colour: content ---- */
+  --color-fg: #f4f2ee;
+  --color-fg-muted: #b6b8bf;
+  --color-fg-subtle: #8f929b;
+  --color-fg-disabled: #5d616b;
+  --color-fg-inverse: #0b0c0f;
+  --color-fg-on-accent: #1a1003;
+
+  /* ---- Colour: lines ---- */
+  --color-line-subtle: rgb(255 255 255 / 0.08);
+  --color-line: rgb(255 255 255 / 0.16);
+  --color-line-strong: rgb(255 255 255 / 0.36);
+  --color-track: rgb(255 255 255 / 0.3);
+
+  /* ---- Colour: the one accent ("marquee amber") ---- */
+  --color-accent: #ffa31a;
+  --color-accent-hover: #ffb443;
+  --color-accent-active: #f08f00;
+  --color-accent-subtle: rgb(255 163 26 / 0.14);
+  --color-brand-light: #ffc04d;
+  --color-brand-deep: #ff8a1a;
+
+  /* ---- Colour: status ---- */
+  --color-positive: #46d483;
+  --color-positive-subtle: rgb(70 212 131 / 0.14);
+  --color-danger: #ff6b66;
+  --color-danger-solid: #d1343a;
+  --color-danger-subtle: rgb(255 107 102 / 0.14);
+  --color-warning: #f5c451;
+  --color-info: #7ab8ff;
+  --color-focus: #ffffff;
+
+  /* Fixed colours for imagery overlays only (scrims over artwork are colour-independent). */
+  --color-black: #000000;
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  /* ---- Typography ---- */
+  --font-sans:
+    "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Mona Sans Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --default-font-family: var(--font-sans);
+  --default-mono-font-family: var(--font-mono);
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-weight-extrabold: 800;
+  --font-weight-black: 900;
+
+  /* Fixed UI sizes; display sizes are fluid. Root size scales on very large CSS viewports. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.3;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.35;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.45;
+  --text-md: 1rem;
+  --text-md--line-height: 1.5;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.45;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.35;
+  --text-2xl: clamp(1.375rem, 1.2rem + 0.6vw, 1.75rem);
+  --text-2xl--line-height: 1.2;
+  --text-3xl: clamp(1.75rem, 1.35rem + 1.3vw, 2.5rem);
+  --text-3xl--line-height: 1.12;
+  --text-4xl: clamp(2.125rem, 1.5rem + 2.4vw, 3.5rem);
+  --text-4xl--line-height: 1.05;
+  --text-5xl: clamp(2.5rem, 1.6rem + 3.8vw, 4.75rem);
+  --text-5xl--line-height: 1;
+  --text-6xl: clamp(3rem, 1.8rem + 5.4vw, 6.5rem);
+  --text-6xl--line-height: 0.95;
+  /* Row titles follow the viewport like the rows themselves (1.4vw at desktop). */
+  --text-control-hero: clamp(1rem, 0.8rem + 0.55vw, 1.5rem);
+  --text-control-hero--line-height: 1.2;
+  --text-row: clamp(1.0625rem, 0.82rem + 0.62vw, 1.625rem);
+  --text-row--line-height: 1.25;
+
+  --tracking-tighter: -0.03em;
+  --tracking-tight: -0.015em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-wider: 0.08em;
+  --tracking-widest: 0.28em;
+
+  --leading-none: 1;
+  --leading-tight: 1.15;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  /* ---- Space: a 4px grid (p-1 = 4px … p-16 = 64px) plus layout rhythm ---- */
+  --spacing: 0.25rem;
+  /* Horizontal page gutter shared by the nav, billboard, rows and slider peeks (4% of width). */
+  --spacing-gutter: max(1rem, 4vw);
+  --spacing-nav: 4.25rem;
+  --spacing-row-gap: clamp(1.75rem, 1rem + 2.4vw, 3.25rem);
+  /* Billboard / hero controls scale with the viewport like the artwork around them. */
+  /* Profile gate avatars: 10vw, clamped. */
+  --spacing-avatar-gate: clamp(5.25rem, 10vw, 11rem);
+  --spacing-control-hero: clamp(2.5rem, 1.7rem + 1.5vw, 3.75rem);
+
+  /* ---- Layout widths (also container-query sizes) ---- */
+  --container-form: 28rem;
+  --container-prose: 42rem;
+  --container-dialog-sm: 26rem;
+  --container-dialog-md: 34rem;
+  --container-dialog-lg: 46rem;
+  --container-detail: 53rem;
+  --container-page: 80rem;
+
+  /* ---- Breakpoints: aligned with 2/3/4/5/6 cards per row (blueprint §9) ---- */
+  --breakpoint-sm: 31.25rem;
+  --breakpoint-md: 50rem;
+  --breakpoint-lg: 68.75rem;
+  --breakpoint-xl: 87.5rem;
+  --breakpoint-2xl: 120rem;
+
+  /* ---- Aspect ratios (artwork frames) ---- */
+  --aspect-video: 16 / 9;
+  --aspect-poster: 2 / 3;
+  --aspect-ranked: 4 / 3;
+  --aspect-square: 1 / 1;
+
+  /* ---- Radii ---- */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+  --radius-card: var(--radius-md);
+  --radius-control: var(--radius-md);
+  --radius-menu: var(--radius-lg);
+  --radius-dialog: var(--radius-xl);
+  --radius-avatar: var(--radius-lg);
+
+  /* ---- Elevation: dark UIs need deep, soft shadows plus a lighter surface ---- */
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.42);
+  --shadow-md: 0 8px 20px rgb(0 0 0 / 0.48);
+  --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.56);
+  --shadow-xl: 0 28px 72px rgb(0 0 0 / 0.66);
+  --shadow-glow: 0 0 0 1px rgb(255 163 26 / 0.4), 0 8px 28px rgb(255 163 26 / 0.24);
+
+  --blur-sm: 4px;
+  --blur-md: 12px;
+  --blur-lg: 24px;
+
+  /* ---- Motion: easings (durations are plain variables below so reduced motion can zero them) ---- */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  /* Long, settled glide for the row slider and the billboard (smooth start, soft landing). */
+  --ease-glide: cubic-bezier(0.45, 0.05, 0.15, 1);
+  /* Momentum: starts at finger speed and decelerates (swipe release). */
+  --ease-momentum: cubic-bezier(0.1, 0.6, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-standard);
+
+  --animate-spin: spin var(--duration-spin) linear infinite;
+  --animate-shimmer: shimmer 1.6s var(--ease-standard) infinite;
+  --animate-fade-in: fade-in var(--duration-base) var(--ease-enter) both;
+  --animate-fade-out: fade-out var(--duration-fast) var(--ease-exit) both;
+  --animate-scale-in: scale-in var(--duration-base) var(--ease-enter) both;
+  --animate-scale-out: scale-out var(--duration-fast) var(--ease-exit) both;
+  --animate-slide-up: slide-up var(--duration-base) var(--ease-enter) both;
+  --animate-pulse-soft: pulse-soft 1.6s var(--ease-standard) infinite;
+  --animate-shake: shake var(--duration-slow) var(--ease-standard) both;
+  --animate-sheet-in-start: sheet-in-start var(--duration-slow) var(--ease-enter) both;
+  --animate-sheet-in-end: sheet-in-end var(--duration-slow) var(--ease-enter) both;
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(var(--scale-from, 0.96));
+    }
+  }
+  @keyframes scale-out {
+    to {
+      opacity: 0;
+      transform: scale(var(--scale-from, 0.96));
+    }
+  }
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(var(--slide-from, 0.75rem));
+    }
+  }
+  @keyframes pulse-soft {
+    50% {
+      opacity: 0.55;
+      transform: scale(0.94);
+    }
+  }
+  @keyframes sheet-in-start {
+    from {
+      transform: translateX(-100%);
+    }
+  }
+  @keyframes sheet-in-end {
+    from {
+      transform: translateX(100%);
+    }
+  }
+  @keyframes shake {
+    20%,
+    60% {
+      transform: translateX(-6px);
+    }
+    40%,
+    80% {
+      transform: translateX(6px);
+    }
+  }
+}
+
+:root {
+  /* Durations. Movement durations collapse to zero under reduced motion; `--duration-fade`
+     stays short so state changes still read (dissolve instead of motion). */
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-base: 240ms;
+  --duration-slow: 400ms;
+  --duration-slower: 700ms;
+  --duration-cinematic: 1200ms;
+  --duration-fade: 200ms;
+  --duration-spin: 900ms;
+  /* Hover intent before a card preview expands (pointer devices). */
+  --delay-hover-intent: 450ms;
+
+  /* Layering. Use as `z-(--z-overlay)`. Menus, selects and popovers sit above overlays:
+     they are opened from inside dialogs too (the season picker in the title detail modal). */
+  --z-raised: 1;
+  --z-sticky: 100;
+  --z-preview: 200;
+  --z-overlay: 400;
+  --z-dropdown: 450;
+  --z-toast: 500;
+  --z-tooltip: 600;
+  --z-skip: 700;
+
+  /* Gap between cards in a row slider (each side gets half). */
+  --slider-gap: clamp(0.25rem, 0.4vw, 0.5rem);
+
+  /* Scrims over artwork. */
+  --gradient-scrim-bottom: linear-gradient(
+    to top,
+    var(--color-canvas) 0%,
+    rgb(11 12 15 / 0.6) 18%,
+    rgb(11 12 15 / 0) 42%
+  );
+  --gradient-scrim-start: linear-gradient(
+    77deg,
+    rgb(0 0 0 / 0.78) 0%,
+    rgb(0 0 0 / 0.45) 38%,
+    rgb(0 0 0 / 0) 72%
+  );
+  --gradient-scrim-top: linear-gradient(to bottom, rgb(0 0 0 / 0.7) 0%, rgb(0 0 0 / 0) 100%);
+  --gradient-brand: linear-gradient(180deg, var(--color-brand-light), var(--color-brand-deep));
+  /* Warm ambient glow behind auth and marketing content (no artwork). */
+  --gradient-glow: radial-gradient(ellipse at 30% 0%, rgb(255 163 26 / 0.14), transparent 60%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-slower: 0ms;
+    --duration-cinematic: 0ms;
+    --duration-fade: 120ms;
+    --duration-spin: 2400ms;
+  }
+}
+
+/* Explicit override (reference page toggle, tests): same values as the media query. */
+:root[data-motion="reduce"] {
+  --duration-instant: 0ms;
+  --duration-fast: 0ms;
+  --duration-base: 0ms;
+  --duration-slow: 0ms;
+  --duration-slower: 0ms;
+  --duration-cinematic: 0ms;
+  --duration-fade: 120ms;
+  --duration-spin: 2400ms;
+}

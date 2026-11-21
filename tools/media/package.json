@@ -1,0 +1,32 @@
+{
+  "name": "@webflix/media",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Offline media pipeline: artwork generation and HLS packaging (ffmpeg runs in Docker).",
+  "type": "module",
+  "bin": {
+    "webflix-media": "./src/cli.ts"
+  },
+  "scripts": {
+    "media": "node src/cli.ts",
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/adapters-node": "workspace:*",
+    "@webflix/catalog": "workspace:*",
+    "@webflix/contracts": "workspace:*",
+    "@webflix/core": "workspace:*",
+    "fontkit": "3.0.0",
+    "sharp": "catalog:",
+    "thumbhash": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "hls.js": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

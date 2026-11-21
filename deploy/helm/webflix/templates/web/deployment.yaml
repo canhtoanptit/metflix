@@ -1,0 +1,107 @@
+{{- $c := .Values.web -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webflix.component" (list . "web") }}
+  labels:
+    {{- include "webflix.labels" (list . "web") | nindent 4 }}
+spec:
+  {{- if not $c.autoscaling.enabled }}
+  replicas: {{ $c.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "web") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 25%
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "web") | nindent 8 }}
+        {{- with $c.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/headers: {{ include (print $.Template.BasePath "/web/configmap.yaml") . | sha256sum }}
+        {{- with $c.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "webflix.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "webflix.imagePullSecrets" . | nindent 6 }}
+      {{- with $c.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      containers:
+        - name: web
+          image: {{ include "webflix.image" (list . $c.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: status
+              containerPort: 8081
+              protocol: TCP
+          # Keep serving while the gateway drops this endpoint, then the image's stop signal
+          # (SIGQUIT) lets nginx finish in-flight responses.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: status
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: status
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 101
+            runAsGroup: 101
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: headers
+              mountPath: /etc/nginx/security-headers.conf
+              subPath: security-headers.conf
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: headers
+          configMap:
+            name: {{ include "webflix.component" (list . "web") }}
+      topologySpreadConstraints:
+        {{- include "webflix.topologySpread" (list . "web" $c.topologySpreadConstraints) | nindent 8 }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

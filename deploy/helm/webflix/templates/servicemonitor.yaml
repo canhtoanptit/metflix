@@ -1,0 +1,29 @@
+{{- $m := .Values.metrics.serviceMonitor -}}
+{{- if $m.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+{{- fail "metrics.serviceMonitor.enabled needs the Prometheus Operator CRDs (monitoring.coreos.com/v1)" }}
+{{- end }}
+{{- range $component := list "api" "worker" }}
+{{- if or (eq $component "api") $.Values.worker.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "webflix.component" (list $ $component) }}
+  labels:
+    {{- include "webflix.labels" (list $ $component) | nindent 4 }}
+    {{- with $m.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list $ $component) | nindent 6 }}
+  endpoints:
+    - port: ops
+      path: /metrics
+      interval: {{ $m.interval }}
+      scrapeTimeout: 10s
+{{- end }}
+{{- end }}
+{{- end }}

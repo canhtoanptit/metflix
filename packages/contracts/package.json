@@ -1,0 +1,27 @@
+{
+  "name": "@webflix/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "HTTP API contracts: zod schemas, DTOs, error codes, route table, typed API client, seed and media manifest schemas.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./openapi": "./src/openapi.ts",
+    "./fixtures": "./src/fixtures/index.ts"
+  },
+  "scripts": {
+    "generate": "node scripts/generate-route-index.mjs",
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@readme/openapi-parser": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

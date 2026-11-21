@@ -1,0 +1,25 @@
+apiVersion: v2
+name: webflix
+description: >-
+  Webflix streaming platform: API (several replicas), job worker, single-page web app,
+  migrations and seed, with optional in-cluster PostgreSQL, Valkey and S3-compatible object
+  storage (Garage), routed through the Gateway API.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.31.0-0"
+keywords:
+  - streaming
+  - gateway-api
+home: https://github.com/webflix/webflix
+# The Webflix mark (apps/web/public/favicon.svg), inline so the chart needs no hosting.
+icon: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9Ii0yMzEuOCAtNDMyLjIgMTYyMi42IDE2MjIuNiI+PHRpdGxlPldlYmZsaXg8L3RpdGxlPjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMCIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iI2ZmYzA0ZCIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI2ZmOGExYSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHg9Ii0yMzEuOCIgeT0iLTQzMi4yIiB3aWR0aD0iMTYyMi42IiBoZWlnaHQ9IjE2MjIuNiIgcng9IjM1Ny4wIiBmaWxsPSJ1cmwoI2cpIi8+PHBhdGggZmlsbD0iIzFhMTAwMyIgZD0iTTE5MiA3MjkgMCAwSDI1MUwzMTkgMzM3TDM0OCA1MDdIMzU5TDM5MyAzNDBMNDYzIDBINzA3TDc3OSAzMzRMODE2IDUwOUg4MjVMODU0IDMyOUw5MTYgMEgxMTU5TDk3NyA3MjlINjg0TDYxOCA0MzNMNTg1IDI4NUg1NzdMNTQ3IDQzMkw0ODYgNzI5Wk0xMTkzIDcyOVYwSDE4MzFWMTc5SDEzNzdMMTQyMiAxMzRWNTk1TDEzNzcgNTUwSDE4MzRWNzI5Wk0xMzc3IDQ0N1YyODBIMTc4MVY0NDdaTTE4OTMgNzI5VjBIMjMyMlEyNDU2IDAgMjUxNyA0N1EyNTc4IDk0IDI1NzggMTg1UTI1NzggMjI2IDI1NjMgMjU4UTI1NDggMjkwIDI1MjEgMzExLjVRMjQ5NCAzMzMgMjQ1OCAzNDVWMzUyUTI1MDIgMzYxIDI1MzQgMzgzUTI1NjYgNDA1IDI1ODMuNSA0NDBRMjYwMSA0NzUgMjYwMSA1MjNRMjYwMSA1OTMgMjU2NyA2MzguNVEyNTMzIDY4NCAyNDY4IDcwNi41UTI0MDMgNzI5IDIzMTAgNzI5Wk0yMTIxIDU3NEgyMjY4UTIzMjggNTc0IDIzNTAgNTU0UTIzNzIgNTM0IDIzNzIgNTAyUTIzNzIgNDY0IDIzNDYuNSA0NDcuNVEyMzIxIDQzMSAyMjY4IDQzMUgyMTA1VjI4MkgyMjU5UTIyOTUgMjgyIDIzMTUgMjc0UTIzMzUgMjY2IDIzNDMuNSAyNTFRMjM1MiAyMzYgMjM1MiAyMTZRMjM1MiAxODEgMjMyNiAxNjguNVEyMzAwIDE1NiAyMjU4IDE1NkgyMTIxWk0yNjQ5IDcyOVYwSDMyNTlWMTc5SDI4NjNMMjg3OCAxNjRWNzI5Wk0yODQ3IDQ3MlYzMDNIMzIxOVY0NzJaTTMzMDUgNzI5VjBIMzUzNFY1ODhMMzQ4OSA1NDNIMzg2NFY3MjlaTTM5MDYgNzI5VjBINDEzNVY3MjlaTTQxNjQgNzI5IDQ0NjEgMzUxIDQxODMgMEg0NDY5TDQ1NTQgMTI0TDQ2MDYgMjAzTDQ2MTUgMjA0TDQ2NjkgMTI0TDQ3NTQgMEg1MDMzTDQ3NjEgMzQ0TDUwNDkgNzI5SDQ3NjNMNDY1OCA1ODRMNDYwNyA1MTBINDU5OEw0NTQ1IDU4NEw0NDM2IDcyOVoiLz48L3N2Zz4=
+annotations:
+  # Images the chart deploys by default (for scanners and air-gapped mirrors).
+  artifacthub.io/images: |
+    - name: postgres
+      image: postgres:19.0-alpine3.24
+    - name: valkey
+      image: valkey/valkey:9.2.0-alpine3.24
+    - name: garage
+      image: dxflrs/garage:v2.5.0

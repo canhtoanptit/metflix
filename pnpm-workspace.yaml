@@ -1,0 +1,64 @@
+packages:
+  - apps/*
+  - packages/*
+  - tools/*
+  - e2e
+
+# Shared versions. Reference them from a package.json as "catalog:" so every
+# package resolves the same version (vitest in particular must be a single copy:
+# the contract suites in @webflix/core/testing are run by each adapter package).
+# Add a dependency with: pnpm --filter <package> add <dep>@catalog:  (after adding it here)
+catalog:
+  # tooling
+  "@biomejs/biome": ^2.6.8
+  turbo: ^2.11.13
+  typescript: ^7.0.2
+  # Keep vitest within the peer range of @cloudflare/vitest-plugin (workerd test runner).
+  vitest: ^5.1.1
+  "@vitest/coverage-v8": ^5.1.1
+  "@playwright/test": ^1.65.1
+  "@types/node": ^26.6.6
+  # runtime
+  zod: ^4.6.7
+  hono: ^4.13.19
+  "@hono/node-server": ^2.1.11
+  "@scalar/hono-api-reference": ^0.12.23
+  "@readme/openapi-parser": ^11.0.0
+  kysely: ^0.29.9
+  pg: ^8.23.1
+  "@types/pg": ^8.23.1
+  # cloudflare
+  wrangler: ^4.166.0
+  "@cloudflare/workers-types": ^5.20261121.1
+  "@cloudflare/vitest-plugin": ^1.9.0
+  # web
+  react: ^19.3.1
+  react-dom: ^19.3.1
+  "@types/react": ^19.3.0
+  "@types/react-dom": ^19.3.0
+  vite: ^8.3.8
+  "@vitejs/plugin-react": ^6.3.0
+  "@tanstack/react-query": ^5.108.2
+  "@tanstack/react-router": ^1.170.46
+  "@tanstack/router-plugin": ^1.169.0
+  tailwindcss: ^4.3.5
+  "@tailwindcss/vite": ^4.3.5
+  radix-ui: ^1.8.1
+  motion: ^14.14.0
+  hls.js: ^1.7.4
+  jsdom: ^31.0.1
+  "@testing-library/react": ^16.3.3
+  "@testing-library/user-event": ^14.6.13
+  "@testing-library/jest-dom": ^8.0.0
+  # media
+  sharp: ^0.35.5
+  thumbhash: ^0.1.1
+
+# pnpm 10 does not run dependency lifecycle scripts unless the package is listed here.
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - workerd
+
+linkWorkspacePackages: true
+saveWorkspaceProtocol: rolling

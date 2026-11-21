@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Node tooling that also handles binding objects (getPlatformProxy): both type sets.
+    "types": ["node", "@cloudflare/workers-types"]
+  },
+  "include": ["scripts", "test/node", "vitest.config.ts", "src/worker-env.d.ts"]
+}

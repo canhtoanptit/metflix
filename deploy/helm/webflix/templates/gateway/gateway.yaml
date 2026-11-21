@@ -1,0 +1,54 @@
+{{- $g := .Values.gateway -}}
+{{- if $g.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "webflix.fullname" . }}
+  labels:
+    {{- include "webflix.labels" (list . "gateway") | nindent 4 }}
+  {{- if or $g.annotations (and $g.tls.enabled $g.tls.certManager.issuer) }}
+  annotations:
+    {{- with $g.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if and $g.tls.enabled $g.tls.certManager.issuer }}
+    {{- if eq $g.tls.certManager.issuerKind "Issuer" }}
+    cert-manager.io/issuer: {{ $g.tls.certManager.issuer | quote }}
+    {{- else }}
+    cert-manager.io/cluster-issuer: {{ $g.tls.certManager.issuer | quote }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ required "gateway.className is required when gateway.enabled is true" $g.className }}
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: {{ $g.http.port }}
+      {{- with .Values.httpRoute.hostnames }}
+      {{- if eq (len .) 1 }}
+      hostname: {{ first . | quote }}
+      {{- end }}
+      {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- if $g.tls.enabled }}
+    - name: https
+      protocol: HTTPS
+      port: {{ $g.tls.port }}
+      {{- with .Values.httpRoute.hostnames }}
+      {{- if eq (len .) 1 }}
+      hostname: {{ first . | quote }}
+      {{- end }}
+      {{- end }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ default (include "webflix.component" (list . "tls")) $g.tls.secretName }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+{{- end }}

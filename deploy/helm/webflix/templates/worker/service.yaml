@@ -1,0 +1,19 @@
+{{- if .Values.worker.enabled }}
+# Metrics only: nothing routes requests to the worker.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webflix.component" (list . "worker") }}
+  labels:
+    {{- include "webflix.labels" (list . "worker") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "webflix.selectorLabels" (list . "worker") | nindent 4 }}
+  ports:
+    - name: ops
+      port: 4001
+      targetPort: ops
+      protocol: TCP
+      appProtocol: http
+{{- end }}

@@ -1,0 +1,18 @@
+/*
+ * @webflix/ui stylesheet entry. Apps import exactly this file:
+ *   @import "@webflix/ui/styles.css";
+ * It brings Tailwind's preflight and utilities, the Webflix tokens (Tailwind's default theme is
+ * not loaded), self-hosted fonts, base styles and component CSS, and tells Tailwind to scan the
+ * design-system sources for class names.
+ */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@import "./tokens.css";
+@import "./fonts.css";
+@import "./base.css";
+@import "./components.css";
+
+@source "../";

@@ -1,0 +1,34 @@
+{
+  "name": "@webflix/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Domain types, application services and ports. Web-standard APIs only.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./memory": "./src/memory/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "vitest": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

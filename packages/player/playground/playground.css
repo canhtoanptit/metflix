@@ -1,0 +1,262 @@
+/* Playground host chrome only; the player styles itself. */
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0b0b0c;
+  color: #e9e9ea;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.pg {
+  display: grid;
+  grid-template-columns: 1fr;
+  height: 100%;
+}
+
+.pg[data-ui] {
+  grid-template-columns: minmax(0, 1fr) 340px;
+}
+
+.pg-stage {
+  position: relative;
+  min-height: 0;
+  background: #000;
+}
+
+.pg-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+  overflow: auto;
+  border-left: 1px solid #222;
+  background: #121214;
+  font-size: 13px;
+}
+
+.pg-panel h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.pg-panel h2 {
+  margin: 0 0 8px;
+  color: #9a9aa0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pg-panel label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.pg-panel button,
+.pg-blocking button {
+  padding: 7px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #1c1c1f;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pg-panel button[aria-pressed="true"] {
+  border-color: #ff2d55;
+  background: #2a1218;
+}
+
+.pg-scenarios,
+.pg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pg-log ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+.pg-log li {
+  padding: 3px 0;
+  border-bottom: 1px solid #1d1d20;
+  word-break: break-all;
+}
+
+.pg-log code {
+  color: #8f8f96;
+}
+
+.pg-message {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: #aaa;
+}
+
+/* Host-provided end-screen slot ("More Like This"). */
+.pg-recs h3 {
+  margin: 0 0 14px;
+  font-size: clamp(16px, 1.6cqw, 24px);
+}
+
+.pg-recs ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 40cqw), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pg-recs button {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  padding: 12px;
+  border: 0;
+  border-radius: 6px;
+  color: #fff;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: transform 160ms ease;
+}
+
+.pg-recs button:hover {
+  transform: scale(1.04);
+}
+
+.pg-recs__title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.pg-recs__meta {
+  color: rgb(255 255 255 / 0.75);
+  font-size: 12px;
+}
+
+/* Host-provided blocking overlay ("too many screens"). */
+.pg-blocking {
+  text-align: center;
+}
+
+.pg-blocking h2 {
+  margin: 0 0 10px;
+  font-size: 28px;
+}
+
+.pg-blocking p {
+  margin: 0 auto 16px;
+  color: #c9c9cc;
+  line-height: 1.5;
+}
+
+.pg-blocking ul {
+  display: inline-grid;
+  gap: 6px;
+  margin: 0 0 22px;
+  padding: 12px 18px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.06);
+  color: #c9c9cc;
+  list-style: none;
+  text-align: start;
+}
+
+.pg-blocking__actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.pg-blocking button {
+  padding: 11px 20px;
+  font-weight: 600;
+}
+
+.pg-blocking .pg-primary {
+  border-color: #fff;
+  background: #fff;
+  color: #000;
+}
+
+/* Preview page. */
+.pv {
+  min-height: 100%;
+}
+
+.pv-billboard {
+  position: relative;
+  height: min(56.25vw, 80vh);
+}
+
+.pv-billboard__copy {
+  position: absolute;
+  left: 4vw;
+  bottom: 18%;
+  max-width: 36vw;
+  text-shadow: 0 2px 8px rgb(0 0 0 / 0.6);
+}
+
+.pv-billboard__copy h1 {
+  margin: 0 0 12px;
+  font-size: clamp(32px, 5vw, 72px);
+}
+
+.pv-billboard__copy p {
+  margin: 0;
+  font-size: clamp(14px, 1.3vw, 20px);
+  line-height: 1.45;
+}
+
+.pv-row {
+  padding: 24px 4vw;
+}
+
+.pv-row h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.pv-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.pv-card {
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #222;
+  transition: transform 200ms ease;
+}
+
+.pv-card[data-hovered] {
+  transform: scale(1.06);
+}
+
+.pv-log {
+  margin: 0 4vw;
+  color: #888;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+}

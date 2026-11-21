@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": [
+    "scripts",
+    "vitest.config.ts",
+    "playground/vite.config.ts",
+    "playground/playwright.config.ts",
+    "playground/e2e"
+  ]
+}

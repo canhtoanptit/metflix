@@ -1,0 +1,143 @@
+{{- $c := .Values.postgresql -}}
+{{- if $c.enabled }}
+# A single PostgreSQL primary on the official image, data on a PersistentVolume. Fine for a
+# small deployment; for anything that needs failover, point externalDatabase at a managed
+# service or an operator (CloudNativePG) instead.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "webflix.component" (list . "postgresql") }}
+  labels:
+    {{- include "webflix.labels" (list . "postgresql") | nindent 4 }}
+spec:
+  serviceName: {{ include "webflix.component" (list . "postgresql") }}
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "postgresql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "postgresql") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The postgres user of the Alpine image.
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # The image's stop signal (SIGINT) is a fast shutdown: clients are disconnected and a
+      # checkpoint is written, well within the grace period.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgresql
+          image: {{ include "webflix.thirdPartyImage" $c.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - -c
+            - max_connections={{ $c.maxConnections }}
+            - -c
+            - shared_buffers={{ $c.sharedBuffers }}
+            - -c
+            - listen_addresses=*
+            - -c
+            - log_min_duration_statement=1000
+          env:
+            - name: POSTGRES_DB
+              value: {{ $c.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ $c.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.postgresql.secretName" . }}
+                  key: {{ $c.auth.passwordKey }}
+            - name: POSTGRES_INITDB_ARGS
+              value: "--data-checksums"
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          # TCP, not the socket: during first initialisation the image runs a temporary
+          # server on the socket only, then restarts it.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "{{ $c.username }}", "-d", "{{ $c.database }}"]
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "{{ $c.username }}", "-d", "{{ $c.database }}"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "{{ $c.username }}", "-d", "{{ $c.database }}"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            # Postgres 18+ images keep data in a major-version directory below this mount
+            # (PGDATA=/var/lib/postgresql/<major>/docker), which keeps pg_upgrade simple.
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "webflix.selectorLabels" (list . "postgresql") | nindent 10 }}
+      spec:
+        accessModes: {{ $c.persistence.accessModes | toJson }}
+        {{- with $c.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $c.persistence.size }}
+{{- end }}

@@ -1,0 +1,205 @@
+// Webflix on Cloudflare (blueprint §2.1, docs/CLOUDFLARE.md).
+//
+// Top level = LOCAL development (`make cf-dev`, `wrangler dev`, the workerd test suite): every
+// binding is emulated by miniflare and persisted in .wrangler/state. Its resource ids are
+// deliberately not real ids, so an accidental `wrangler deploy` without `--env` fails.
+// `env.production` = the real account (`make cf-deploy`). Bindings, vars and secrets are not
+// inherited by environments, so production restates all of them.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "webflix",
+  "main": "src/index.ts",
+  // Newest date the pinned runtime (workerd 1.20261119) supports. No compatibility flags: no
+  // Node.js compatibility layer, the code is Web-standard (blueprint §2.1).
+  "compatibility_date": "2026-11-19",
+
+  // The SPA (apps/web build, staged with the API docs bundle and _headers by
+  // `make cf-assets`) is served by the static-asset layer: free, cached, no Worker CPU.
+  // Server-owned prefixes run the Worker first. A request that matches no file also reaches
+  // the Worker ("none", not the asset layer's SPA mode): it answers client-side routes with
+  // index.html and missing files with a 404 that nothing caches (src/spa.ts).
+  "assets": {
+    "directory": "./dist/public",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": [
+      "/api/*",
+      "!/api/docs/scalar.js",
+      "/media/*",
+      "/cdn/*",
+      "/healthz",
+      "/readyz"
+    ]
+  },
+
+  // Durable Object classes (SQLite storage) and the cache-enabled media origin entrypoint.
+  // The default entrypoint (the gateway that authenticates) is never cached.
+  "exports": {
+    "RateLimiterObject": { "type": "durable-object", "storage": "sqlite" },
+    "StreamGateObject": { "type": "durable-object", "storage": "sqlite" },
+    "MediaOrigin": { "type": "worker", "cache": { "enabled": true } }
+  },
+  // Media cache entries are keyed by a media generation (bumped when media is replaced), not by
+  // code: keep them warm across deploys.
+  "cache": { "enabled": false, "cross_version_cache": true },
+
+  // The scheduler only publishes idempotent jobs (stats rollups, baseline, cleanup).
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  // Media tokens live in URL paths (/media/{token}/..., so HLS-relative URIs inherit them).
+  // The platform's invocation logs and traces record the full URL and cannot redact a path,
+  // so both are off; the record is our own access log (`http.request`, one JSON line per
+  // request, tokens replaced by `:token`), persisted by Workers Logs. `wrangler tail` still
+  // shows raw URLs live (operators only, not stored).
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1, "invocation_logs": false },
+    "traces": { "enabled": false }
+  },
+  "upload_source_maps": true,
+
+  // 8787 is the product's local URL (blueprint §8); the inspector stays in this mode's range.
+  "dev": {
+    "ip": "localhost",
+    "port": 8787,
+    "inspector_port": 4609,
+    "local_protocol": "http"
+  },
+
+  // ---- Local bindings (miniflare) -----------------------------------------------------------
+  "vars": {
+    "WEBFLIX_MODE": "cloudflare",
+    "WEBFLIX_ENV": "development",
+    "WEBFLIX_PUBLIC_ORIGIN": "http://localhost:8787",
+    "WEBFLIX_LOG_LEVEL": "info",
+    "WEBFLIX_PASSWORD_ITERATIONS": "600000",
+    "WEBFLIX_EDGE_CACHE": "on",
+    // Exactly the Node dev mode's relaxed profile (apps/api/src/config.ts; a test compares the
+    // composed limits): people, e2e suites and the conformance suite share the demo account
+    // and 127.0.0.1 locally. Other policies keep their defaults, as in dev. Production keeps
+    // the strict defaults. Run strict locally with
+    // CF_DEV_FLAGS='--var WEBFLIX_RATE_LIMIT_AUTH:10/60 …' (docs/CLOUDFLARE.md §7).
+    "WEBFLIX_RATE_LIMIT_AUTH": "60/60",
+    "WEBFLIX_RATE_LIMIT_SIGNUP": "60/60",
+    "WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP": "300/60",
+    "WEBFLIX_RATE_LIMIT_PROFILE_PIN": "60/60"
+  },
+  // `make cf-dev` writes a random per-clone key to .dev.vars (git-ignored).
+  "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "webflix",
+      "database_id": "webflix-local",
+      // Generated from the TypeScript migrations (pnpm --filter @webflix/db generate).
+      "migrations_dir": "../../packages/db/migrations/d1"
+    }
+  ],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "webflix-local-cache" }],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "webflix-media" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIMITS", "class_name": "RateLimiterObject" },
+      { "name": "STREAMS", "class_name": "StreamGateObject" }
+    ]
+  },
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "webflix-jobs" }],
+    "consumers": [
+      {
+        "queue": "webflix-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 2,
+        // 5 attempts in total (JOBS_MAX_ATTEMPTS in src/env.ts), then the dead-letter queue.
+        "max_retries": 4,
+        "retry_delay": 30,
+        "max_concurrency": 2,
+        "dead_letter_queue": "webflix-jobs-dlq"
+      }
+    ]
+  },
+
+  "env": {
+    // ---- Production (a real account; ids are written by `make cf-provision`) ---------------
+    "production": {
+      "name": "webflix",
+      // One public hostname: the origin in WEBFLIX_PUBLIC_ORIGIN. A custom domain there means
+      // no workers.dev URL (it would bypass the zone's WAF and rate-limiting rules);
+      // `make cf-provision` derives `workers_dev` and `routes` from that origin, so a first
+      // deploy without a domain is an explicit https://webflix.<subdomain>.workers.dev origin.
+      "workers_dev": false,
+      "preview_urls": false,
+      // Halves the upload (≈ 820 KiB raw, 195 KiB gzip) and trims startup; source maps are
+      // uploaded for readable stack traces. Local dev stays unminified.
+      "minify": true,
+      // Same routing as local; staged separately (its _headers add HSTS) so a deploy never
+      // rewrites what a running dev server serves.
+      "assets": {
+        "directory": "./dist/production-assets",
+        "binding": "ASSETS",
+        "html_handling": "auto-trailing-slash",
+        "not_found_handling": "none",
+        "run_worker_first": [
+          "/api/*",
+          "!/api/docs/scalar.js",
+          "/media/*",
+          "/cdn/*",
+          "/healthz",
+          "/readyz"
+        ]
+      },
+      // Guard rail against runaway CPU. The heaviest legitimate request is a sign-in for an
+      // unknown address in a fresh isolate (two PBKDF2 derivations, ~80 ms at 600k
+      // iterations); 1 s leaves an order of magnitude of headroom. Workers Paid.
+      "limits": { "cpu_ms": 1000 },
+      "vars": {
+        "WEBFLIX_MODE": "cloudflare",
+        "WEBFLIX_ENV": "production",
+        // Set to the origin users load the app from (custom domain or workers.dev URL).
+        "WEBFLIX_PUBLIC_ORIGIN": "https://webflix.example.com",
+        "WEBFLIX_LOG_LEVEL": "info",
+        "WEBFLIX_PASSWORD_ITERATIONS": "600000",
+        "WEBFLIX_EDGE_CACHE": "on",
+        // Empty = no override: production runs the strict defaults of @webflix/core (a test
+        // checks the composed limits). Listed because vars are not inherited from the top level.
+        "WEBFLIX_RATE_LIMIT_AUTH": "",
+        "WEBFLIX_RATE_LIMIT_SIGNUP": "",
+        "WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP": "",
+        "WEBFLIX_RATE_LIMIT_PROFILE_PIN": ""
+      },
+      // `wrangler deploy` refuses to deploy while one of these is unset (cf-provision sets them).
+      "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "webflix",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "../../packages/db/migrations/d1"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "CACHE", "id": "00000000000000000000000000000000" }],
+      "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "webflix-media" }],
+      "durable_objects": {
+        "bindings": [
+          { "name": "LIMITS", "class_name": "RateLimiterObject" },
+          { "name": "STREAMS", "class_name": "StreamGateObject" }
+        ]
+      },
+      "queues": {
+        "producers": [{ "binding": "JOBS", "queue": "webflix-jobs" }],
+        "consumers": [
+          {
+            "queue": "webflix-jobs",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 4,
+            "retry_delay": 30,
+            "max_concurrency": 2,
+            "dead_letter_queue": "webflix-jobs-dlq"
+          }
+        ]
+      }
+    }
+  }
+}

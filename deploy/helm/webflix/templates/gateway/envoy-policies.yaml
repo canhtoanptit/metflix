@@ -1,0 +1,52 @@
+{{- if and .Values.httpRoute.enabled .Values.httpRoute.envoy.retries (.Capabilities.APIVersions.Has "gateway.envoyproxy.io/v1alpha1/BackendTrafficPolicy") }}
+# Envoy Gateway only (rendered when its CRDs are installed). Retries only for requests that
+# never reached a backend (connection refused, reset before the request was sent), so they
+# are safe for any method: a pod that just stopped listening during a rollout costs a retry,
+# never a failed request.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "webflix.fullname" . }}
+  labels:
+    {{- include "webflix.labels" (list . "gateway") | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "webflix.fullname" . }}
+  # Close idle upstream connections before the backends do (the API keeps them 65 s, nginx
+  # 65 s): a request is never written to a connection the backend is closing.
+  timeout:
+    http:
+      connectionIdleTimeout: 60s
+  retry:
+    numRetries: 2
+    retryOn:
+      triggers:
+        - connect-failure
+        - refused-stream
+        - reset-before-request
+    perRetry:
+      backOff:
+        baseInterval: 50ms
+        maxInterval: 500ms
+{{- end }}
+{{- if and .Values.gateway.enabled (.Capabilities.APIVersions.Has "gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy") }}
+---
+# Envoy Gateway only. Keep a valid X-Request-Id sent by the client (the API's contract: one id
+# from the browser to the logs), generate one otherwise: the gateway's access log and the
+# API's logs then share the same id.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: {{ include "webflix.fullname" . }}
+  labels:
+    {{- include "webflix.labels" (list . "gateway") | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "webflix.fullname" . }}
+  headers:
+    requestID: {{ .Values.gateway.envoy.requestId }}
+{{- end }}

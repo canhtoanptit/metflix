@@ -1,0 +1,113 @@
+suite: NetworkPolicies
+templates:
+  - networkpolicy.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: isolates every component
+    asserts:
+      - hasDocuments:
+          count: 7
+
+  - it: lets only the gateway (and tests, and metrics) reach the API
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: webflix-api
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels
+          value: { kubernetes.io/metadata.name: envoy-gateway-system }
+      - equal:
+          path: spec.ingress[0].ports
+          value: [{ port: 4000, protocol: TCP }]
+      # Monitoring (and the helm test pod) reach the ops port; the gateway does not.
+      - equal:
+          path: spec.ingress[1].ports
+          value: [{ port: 4001, protocol: TCP }]
+      - notContains:
+          path: spec.ingress[1].from
+          content:
+            namespaceSelector:
+              { matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system } }
+            podSelector: {}
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: webflix
+                    app.kubernetes.io/instance: webflix
+                    app.kubernetes.io/component: postgresql
+            ports: [{ port: 5432, protocol: TCP }]
+
+  - it: gives the static web app no egress at all
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: metadata.name
+          value: webflix-web
+      - equal:
+          path: spec.egress
+          value: []
+
+  - it: leaves egress open when asked, and adds rules for external services
+    set:
+      networkPolicy.egress.restrict: false
+    documentIndex: 0
+    asserts:
+      - notExists:
+          path: spec.egress
+      - equal:
+          path: spec.policyTypes
+          value: [Ingress]
+  - it: appends extra egress rules
+    set:
+      networkPolicy.egress.extraRules:
+        - to: [{ ipBlock: { cidr: 10.20.0.0/16 } }]
+          ports: [{ port: 5432, protocol: TCP }]
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to: [{ ipBlock: { cidr: 10.20.0.0/16 } }]
+            ports: [{ port: 5432, protocol: TCP }]
+
+  - it: can be disabled
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: allows DNS on port 53 to any destination by default (kube-dns and NodeLocal DNSCache)
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+  - it: narrows DNS when told where it runs
+    documentIndex: 0
+    set:
+      networkPolicy.dns.to:
+        - ipBlock: { cidr: 169.254.20.10/32 }
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+            to: [{ ipBlock: { cidr: 169.254.20.10/32 } }]
+
+  - it: keeps the helm test pod away from the data stores
+    documentIndex: 4
+    asserts:
+      - equal:
+          path: metadata.name
+          value: webflix-postgresql
+      - equal:
+          path: spec.ingress[0].from[0].podSelector.matchExpressions[0].values
+          value: [api, worker, migrate, seed]

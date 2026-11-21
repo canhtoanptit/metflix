@@ -1,0 +1,27 @@
+{
+  "name": "@webflix/smoke",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deployment conformance suite: black-box checks of any Webflix mode from nothing but a base URL.",
+  "type": "module",
+  "bin": {
+    "webflix-smoke": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "smoke": "node src/cli.ts",
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

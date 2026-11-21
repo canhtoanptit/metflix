@@ -1,0 +1,61 @@
+suite: Autoscaling and disruption budgets
+templates:
+  - api/hpa.yaml
+  - api/pdb.yaml
+  - web/hpa.yaml
+  - web/pdb.yaml
+  - worker/pdb.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: autoscales the API on CPU and keeps at most one pod out during disruptions
+    asserts:
+      - template: api/hpa.yaml
+        equal:
+          path: spec.minReplicas
+          value: 3
+      - template: api/hpa.yaml
+        equal:
+          path: spec.metrics[0].resource.target.averageUtilization
+          value: 70
+      - template: api/pdb.yaml
+        equal:
+          path: spec.maxUnavailable
+          value: 1
+      - template: worker/pdb.yaml
+        hasDocuments:
+          count: 1
+
+  - it: drops the HPA when autoscaling is off
+    set:
+      api.autoscaling.enabled: false
+      web.autoscaling.enabled: false
+    asserts:
+      - template: api/hpa.yaml
+        hasDocuments:
+          count: 0
+      - template: web/hpa.yaml
+        hasDocuments:
+          count: 0
+
+  - it: has no budget a single replica could never satisfy
+    set:
+      api.autoscaling.minReplicas: 1
+      worker.replicas: 1
+    asserts:
+      - template: api/pdb.yaml
+        hasDocuments:
+          count: 0
+      - template: worker/pdb.yaml
+        hasDocuments:
+          count: 0
+
+  - it: adds a memory target when asked
+    template: api/hpa.yaml
+    set:
+      api.autoscaling.targetMemoryUtilizationPercentage: 80
+    asserts:
+      - equal:
+          path: spec.metrics[1].resource.name
+          value: memory

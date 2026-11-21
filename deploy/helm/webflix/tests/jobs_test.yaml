@@ -1,0 +1,73 @@
+suite: Migrate and seed Jobs
+templates:
+  - jobs/migrate.yaml
+  - jobs/seed.yaml
+release:
+  name: webflix
+  namespace: webflix
+  revision: 7
+tests:
+  - it: names Jobs after the revision so every upgrade runs them
+    asserts:
+      - template: jobs/migrate.yaml
+        equal:
+          path: metadata.name
+          value: webflix-migrate-7
+      - template: jobs/seed.yaml
+        equal:
+          path: metadata.name
+          value: webflix-seed-7
+
+  - it: migrates once the database answers
+    template: jobs/migrate.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [migrate]
+      - equal:
+          path: spec.template.spec.initContainers[0].args
+          value: [wait, --skip-migrations, --timeout, "600"]
+      - equal:
+          path: spec.template.spec.restartPolicy
+          value: OnFailure
+
+  - it: seeds from the manifest in the bucket after migrations, without the demo account
+    template: jobs/seed.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [seed, --manifest, blob:manifests/media.json, --no-demo]
+      - equal:
+          path: spec.template.spec.initContainers[0].args
+          value: [wait, --blobs, --timeout, "900"]
+
+  - it: seeds the demo account only when asked (kind does), and can skip packaged media
+    template: jobs/seed.yaml
+    set:
+      seed.demo: true
+      seed.manifest: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [seed, --no-manifest]
+
+  - it: records the media checksum it was triggered for
+    template: jobs/seed.yaml
+    set:
+      seed.mediaChecksum: abc123
+    asserts:
+      - equal:
+          path: metadata.annotations["webflix.dev/media-checksum"]
+          value: abc123
+
+  - it: can be disabled
+    set:
+      migrations.enabled: false
+      seed.enabled: false
+    asserts:
+      - template: jobs/migrate.yaml
+        hasDocuments:
+          count: 0
+      - template: jobs/seed.yaml
+        hasDocuments:
+          count: 0

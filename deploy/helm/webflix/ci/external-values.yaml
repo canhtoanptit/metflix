@@ -1,0 +1,59 @@
+# A production-shaped install against managed services (rendering and schema checks only):
+# managed PostgreSQL, Valkey over TLS and AWS S3 through the pod's IAM role (IRSA), TLS at the
+# gateway with cert-manager, Prometheus Operator scraping.
+config:
+  publicOrigin: https://watch.example.com
+  rateLimits:
+    auth: 20/60
+    playback-start: 120/60
+secrets:
+  existingSecret: webflix-media-token-keys
+api:
+  image:
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+web:
+  image:
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+postgresql:
+  enabled: false
+externalDatabase:
+  url: postgres://webflix@webflix.cluster-abc.eu-west-1.rds.amazonaws.com:5432/webflix?sslmode=require&sslcert=/etc/webflix/tls/database/tls.crt&sslkey=/etc/webflix/tls/database/tls.key
+  existingSecret: webflix-rds
+  clientCertSecret: webflix-rds-client
+tls:
+  extraCaCerts:
+    secretName: rds-ca-bundle
+valkey:
+  enabled: false
+externalValkey:
+  url: rediss://master.webflix.abc.euw1.cache.amazonaws.com:6379/0
+  existingSecret: webflix-elasticache
+  passwordKey: auth-token
+objectStore:
+  enabled: false
+externalS3:
+  region: eu-west-1
+  bucket: acme-webflix-media
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/webflix-media
+gateway:
+  className: eg
+  tls:
+    enabled: true
+    certManager:
+      issuer: letsencrypt
+httpRoute:
+  hostnames: [watch.example.com]
+networkPolicy:
+  egress:
+    extraRules:
+      - to: [{ ipBlock: { cidr: 10.20.0.0/16 } }]
+        ports:
+          - { port: 5432, protocol: TCP }
+          - { port: 6379, protocol: TCP }
+      - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+        ports: [{ port: 443, protocol: TCP }]
+metrics:
+  serviceMonitor:
+    enabled: true

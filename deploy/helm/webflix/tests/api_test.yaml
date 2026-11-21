@@ -1,0 +1,271 @@
+suite: API Deployment
+templates:
+  - api/deployment.yaml
+  # Rendered for the checksum annotation only.
+  - configmap.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: runs the API image unprivileged with a read-only root filesystem
+    template: api/deployment.yaml
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: webflix-api:0.1.0
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [serve]
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value: [ALL]
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: leaves replicas to the autoscaler, and sets them when autoscaling is off
+    template: api/deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.replicas
+  - it: sets replicas without autoscaling
+    template: api/deployment.yaml
+    set:
+      api.autoscaling.enabled: false
+      api.replicas: 4
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 4
+
+  - it: never drops below capacity during a rollout
+    template: api/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+
+  - it: probes liveness without dependencies and readiness with them
+    template: api/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 40
+
+  - it: waits for migrated schema and Valkey before starting
+    template: api/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-dependencies
+      - equal:
+          path: spec.template.spec.initContainers[0].args
+          value: [wait, --timeout, "900"]
+
+  - it: pins images by digest and prefixes a registry
+    template: api/deployment.yaml
+    set:
+      image.registry: ghcr.io/acme/
+      api.image.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/acme/webflix-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  - it: reads every credential from Secrets, never from values
+    template: api/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: webflix-postgresql
+                key: password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_VALKEY_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: webflix-valkey
+                key: password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_S3_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: webflix-objectstore
+                key: secret-access-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_MEDIA_TOKEN_KEYS
+            valueFrom:
+              secretKeyRef:
+                name: webflix-media-tokens
+                key: WEBFLIX_MEDIA_TOKEN_KEYS
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: webflix-config
+
+  - it: uses external services' Secrets, and the pod identity for S3 when no keys are given
+    template: api/deployment.yaml
+    set:
+      postgresql.enabled: false
+      externalDatabase.url: postgres://webflix@db.internal:5432/webflix?sslmode=require
+      externalDatabase.existingSecret: rds-webflix
+      valkey.enabled: false
+      externalValkey.url: rediss://cache.internal:6380/0
+      externalValkey.existingSecret: elasticache-webflix
+      externalValkey.passwordKey: auth-token
+      objectStore.enabled: false
+      secrets.existingSecret: webflix-media-keys
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rds-webflix
+                key: password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_VALKEY_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: elasticache-webflix
+                key: auth-token
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: WEBFLIX_S3_ACCESS_KEY_ID
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_MEDIA_TOKEN_KEYS
+            valueFrom:
+              secretKeyRef:
+                name: webflix-media-keys
+                key: WEBFLIX_MEDIA_TOKEN_KEYS
+
+  - it: adds component extra environment
+    template: api/deployment.yaml
+    set:
+      api.extraEnv:
+        NODE_OPTIONS: --max-old-space-size=384
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: NODE_OPTIONS
+            value: --max-old-space-size=384
+
+  - it: rolls pods when the configuration changes
+    template: api/deployment.yaml
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: serves probes and metrics on the ops port, never the public one
+    template: api/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: { name: ops, containerPort: 4001, protocol: TCP }
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value: { path: /readyz, port: ops }
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value: { path: /healthz, port: ops }
+      - exists:
+          path: spec.template.metadata.annotations["checksum/secrets"]
+
+  - it: trusts a private CA from a Secret in every container that talks to the data stores
+    template: api/deployment.yaml
+    set:
+      tls.extraCaCerts.secretName: rds-ca
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: ca-bundle
+            secret: { secretName: rds-ca, items: [{ key: ca.crt, path: ca.crt }] }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: NODE_EXTRA_CA_CERTS, value: /etc/webflix/ca/ca.crt }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: ca-bundle, mountPath: /etc/webflix/ca, readOnly: true }
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content: { name: NODE_EXTRA_CA_CERTS, value: /etc/webflix/ca/ca.crt }
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content: { name: ca-bundle, mountPath: /etc/webflix/ca, readOnly: true }
+
+  - it: trusts a private CA from a ConfigMap, with a custom key
+    template: api/deployment.yaml
+    set:
+      tls.extraCaCerts.configMapName: corp-roots
+      tls.extraCaCerts.key: bundle.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: ca-bundle
+            configMap: { name: corp-roots, items: [{ key: bundle.pem, path: bundle.pem }] }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: NODE_EXTRA_CA_CERTS, value: /etc/webflix/ca/bundle.pem }
+
+  - it: mounts a PostgreSQL client certificate for mutual TLS
+    template: api/deployment.yaml
+    set:
+      externalDatabase.clientCertSecret: webflix-db-client
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: database-client-cert
+            secret: { secretName: webflix-db-client, defaultMode: 288 }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            { name: database-client-cert, mountPath: /etc/webflix/tls/database, readOnly: true }
+
+  - it: adds no TLS material by default
+    template: api/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content: { name: NODE_EXTRA_CA_CERTS }
+      - equal:
+          path: spec.template.spec.volumes
+          value: [{ name: tmp, emptyDir: { sizeLimit: 64Mi } }]

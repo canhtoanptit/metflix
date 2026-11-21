@@ -1,0 +1,3 @@
+/* The whole design system (Tailwind preflight + utilities, tokens, fonts, component CSS). App
+   code styles with token utilities only; add nothing here that a component could own. */
+@import "@webflix/ui/styles.css";

@@ -1,0 +1,37 @@
+{
+  "name": "@webflix/db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kysely schema, migrations, repositories, SQL search index and dialect factories (PostgreSQL, SQLite, D1).",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./d1": "./src/d1.ts",
+    "./sqlite": "./src/sqlite.ts",
+    "./postgres": "./src/postgres.ts"
+  },
+  "scripts": {
+    "generate": "node scripts/generate-d1-migrations.ts",
+    "typecheck": "tsc -p . && tsc -p test/workerd",
+    "lint": "biome check .",
+    "test": "vitest run",
+    "test:postgres": "node scripts/with-postgres.ts vitest run --project node"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*",
+    "@webflix/core": "workspace:*",
+    "kysely": "catalog:",
+    "pg": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "@webflix/http": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,143 @@
+suite: Gateway API routing
+templates:
+  - gateway/gateway.yaml
+  - gateway/httproute.yaml
+  - gateway/envoy-policies.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: sends /api, /media and /cdn to the API and everything else to the web app
+    template: gateway/httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.rules[0].matches[0].path
+          value: { type: PathPrefix, value: /api }
+      - equal:
+          path: spec.rules[0].backendRefs[0]
+          value: { name: webflix-api, port: 80 }
+      - equal:
+          path: spec.rules[1].matches[0].path.value
+          value: /media
+      - equal:
+          path: spec.rules[1].backendRefs[0].name
+          value: webflix-api
+      - equal:
+          path: spec.rules[2].matches[0].path.value
+          value: /cdn
+      - equal:
+          path: spec.rules[3].matches[0].path.value
+          value: /
+      - equal:
+          path: spec.rules[3].backendRefs[0]
+          value: { name: webflix-web, port: 80 }
+      - equal:
+          path: spec.parentRefs
+          value: [{ name: webflix, sectionName: http }]
+
+  - it: never routes the API's ops endpoints
+    template: gateway/httproute.yaml
+    asserts:
+      - notMatchRegex:
+          path: spec.rules[0].matches[0].path.value
+          pattern: healthz|readyz|metrics
+
+  - it: creates a Gateway for the configured class
+    template: gateway/gateway.yaml
+    set:
+      gateway.className: envoy
+    asserts:
+      - equal:
+          path: spec.gatewayClassName
+          value: envoy
+      - equal:
+          path: spec.listeners[0]
+          value:
+            name: http
+            protocol: HTTP
+            port: 80
+            allowedRoutes: { namespaces: { from: Same } }
+
+  - it: terminates TLS with a cert-manager certificate and redirects HTTP
+    set:
+      httpRoute.hostnames: [watch.example.com]
+      gateway.tls.enabled: true
+      gateway.tls.certManager.issuer: letsencrypt
+    asserts:
+      - template: gateway/gateway.yaml
+        equal:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]
+          value: letsencrypt
+      - template: gateway/gateway.yaml
+        equal:
+          path: spec.listeners[1].tls.certificateRefs[0].name
+          value: webflix-tls
+      - template: gateway/gateway.yaml
+        equal:
+          path: spec.listeners[1].hostname
+          value: watch.example.com
+      - template: gateway/httproute.yaml
+        hasDocuments:
+          count: 2
+      - template: gateway/httproute.yaml
+        documentIndex: 0
+        equal:
+          path: spec.parentRefs[0].sectionName
+          value: https
+      - template: gateway/httproute.yaml
+        documentIndex: 1
+        equal:
+          path: spec.rules[0].filters[0].requestRedirect
+          value: { scheme: https, statusCode: 301 }
+
+  - it: attaches to an existing Gateway instead of creating one
+    set:
+      gateway.enabled: false
+      httpRoute.parentRefs:
+        - name: shared
+          namespace: infra
+    asserts:
+      - template: gateway/gateway.yaml
+        hasDocuments:
+          count: 0
+      - template: gateway/httproute.yaml
+        equal:
+          path: spec.parentRefs
+          value: [{ name: shared, namespace: infra }]
+
+  - it: needs parentRefs when it does not create the Gateway
+    template: gateway/httproute.yaml
+    set:
+      gateway.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: httpRoute.parentRefs is required when gateway.enabled is false
+
+  - it: adds Envoy Gateway policies only when its CRDs are installed
+    template: gateway/envoy-policies.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: retries only requests that never reached a backend, and preserves request ids
+    template: gateway/envoy-policies.yaml
+    capabilities:
+      apiVersions:
+        - gateway.envoyproxy.io/v1alpha1/BackendTrafficPolicy
+        - gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        equal:
+          path: spec.retry.retryOn.triggers
+          value: [connect-failure, refused-stream, reset-before-request]
+      - documentIndex: 0
+        equal:
+          path: spec.timeout.http.connectionIdleTimeout
+          value: 60s
+      - documentIndex: 1
+        equal:
+          path: spec.headers.requestID
+          value: PreserveOrGenerate

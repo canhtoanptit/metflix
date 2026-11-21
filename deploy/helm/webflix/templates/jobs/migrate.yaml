@@ -1,0 +1,46 @@
+{{- $c := .Values.migrations -}}
+{{- if $c.enabled }}
+# One Job per release revision (Job specs are immutable): migrations run on every install and
+# upgrade. Pods of the new revision wait for them in their init container, while the previous
+# revision keeps serving; Kysely's migration lock makes concurrent runs safe. Migrations must
+# therefore be backward compatible with the running version (expand, then contract).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "webflix.component" (list . (printf "migrate-%d" .Release.Revision)) }}
+  labels:
+    {{- include "webflix.labels" (list . "migrate") | nindent 4 }}
+spec:
+  backoffLimit: {{ $c.backoffLimit }}
+  activeDeadlineSeconds: {{ $c.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ $c.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "webflix.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "webflix.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "webflix.waitContainer" (list . (list "wait" "--skip-migrations" "--timeout" "600")) | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "webflix.image" (list . .Values.api.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [migrate]
+          {{- include "webflix.appEnv" . | nindent 10 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 10001
+            runAsGroup: 10001
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "webflix.appVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "webflix.appVolumes" . | nindent 8 }}
+{{- end }}

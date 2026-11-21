@@ -1,0 +1,160 @@
+{{- $c := .Values.valkey -}}
+{{- if $c.enabled }}
+# A single Valkey primary with AOF persistence on the official image. For high availability
+# use a managed service (externalValkey) or a Sentinel/replica setup.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "webflix.component" (list . "valkey") }}
+  labels:
+    {{- include "webflix.labels" (list . "valkey") | nindent 4 }}
+spec:
+  serviceName: {{ include "webflix.component" (list . "valkey") }}
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "valkey") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "valkey") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/valkey/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The valkey user of the official image.
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # SIGTERM: Valkey flushes the AOF and exits.
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        # The password reaches Valkey through a file in memory, never through arguments.
+        - name: auth
+          image: {{ include "webflix.thirdPartyImage" $c.image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - umask 077 && printf 'requirepass "%s"\n' "$VALKEY_PASSWORD" > /run/valkey/auth.conf
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.valkey.secretName" . }}
+                  key: {{ $c.auth.passwordKey }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          volumeMounts:
+            - name: run
+              mountPath: /run/valkey
+      containers:
+        - name: valkey
+          image: {{ include "webflix.thirdPartyImage" $c.image }}
+          imagePullPolicy: IfNotPresent
+          args: ["valkey-server", "/etc/valkey/valkey.conf"]
+          env:
+            # valkey-cli (probes) authenticates with this.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.valkey.secretName" . }}
+                  key: {{ $c.auth.passwordKey }}
+          ports:
+            - name: valkey
+              containerPort: 6379
+              protocol: TCP
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "-c", "valkey-cli -h 127.0.0.1 ping | grep -q PONG"]
+            periodSeconds: 2
+            failureThreshold: 90
+          # Not ready while the AOF loads (PING answers LOADING until then).
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "valkey-cli -h 127.0.0.1 ping | grep -q PONG"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket:
+              port: valkey
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/valkey
+              readOnly: true
+            - name: run
+              mountPath: /run/valkey
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "webflix.component" (list . "valkey") }}
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- if not $c.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if $c.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "webflix.selectorLabels" (list . "valkey") | nindent 10 }}
+      spec:
+        accessModes: {{ $c.persistence.accessModes | toJson }}
+        {{- with $c.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $c.persistence.size }}
+  {{- end }}
+{{- end }}

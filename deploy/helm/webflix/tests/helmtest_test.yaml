@@ -1,0 +1,23 @@
+suite: helm test hook
+templates:
+  - tests/smoke-test.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: is packaged as a test hook that checks the API (ops and public ports) and the web app
+    asserts:
+      - isKind:
+          of: Pod
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: test
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: test
+      - matchRegex:
+          path: spec.containers[0].command[3]
+          pattern: "webflix-api:4001"
+      - equal:
+          path: spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true

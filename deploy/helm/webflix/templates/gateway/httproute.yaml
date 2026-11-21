@@ -1,0 +1,94 @@
+{{- $r := .Values.httpRoute -}}
+{{- $g := .Values.gateway -}}
+{{- if $r.enabled }}
+{{- $api := include "webflix.component" (list . "api") }}
+{{- $web := include "webflix.component" (list . "web") }}
+{{- $redirect := and $g.enabled $g.tls.enabled $g.tls.redirectHttp (not $r.parentRefs) }}
+# Routing (docs/BACKEND.md §5): /api, /media and /cdn go to the API, everything else to the
+# web app. The API's ops endpoints (/healthz, /readyz, /metrics) are deliberately not routed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "webflix.fullname" . }}
+  labels:
+    {{- include "webflix.labels" (list . "gateway") | nindent 4 }}
+spec:
+  parentRefs:
+    {{- if $r.parentRefs }}
+    {{- toYaml $r.parentRefs | nindent 4 }}
+    {{- else if $g.enabled }}
+    - name: {{ include "webflix.fullname" . }}
+      sectionName: {{ ternary "https" "http" $redirect }}
+    {{- else }}
+    {{- fail "httpRoute.parentRefs is required when gateway.enabled is false" }}
+    {{- end }}
+    {{- if and $g.enabled $g.tls.enabled (not $redirect) (not $r.parentRefs) }}
+    - name: {{ include "webflix.fullname" . }}
+      sectionName: https
+    {{- end }}
+  {{- with $r.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: {{ $api }}
+          port: 80
+      timeouts:
+        request: {{ $r.timeouts.api }}
+    # Signed media: long transfers (Range requests) on slow links.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /media
+      backendRefs:
+        - name: {{ $api }}
+          port: 80
+      timeouts:
+        request: {{ $r.timeouts.media }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /cdn
+      backendRefs:
+        - name: {{ $api }}
+          port: 80
+      timeouts:
+        request: {{ $r.timeouts.media }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $web }}
+          port: 80
+      timeouts:
+        request: {{ $r.timeouts.web }}
+{{- if $redirect }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "webflix.component" (list . "https-redirect") }}
+  labels:
+    {{- include "webflix.labels" (list . "gateway") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "webflix.fullname" . }}
+      sectionName: http
+  {{- with $r.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+{{- end }}

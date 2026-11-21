@@ -1,0 +1,95 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "root": true,
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**", "!**/routeTree.gen.ts", "!**/worker-configuration.d.ts"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "markdown": {
+    "formatter": {
+      "enabled": false
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "useImportExtensions": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "noParameterAssign": "error",
+        "useImportType": "error",
+        "useExportType": "error",
+        "useNodejsImportProtocol": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "packages/contracts/src/**",
+        "packages/contracts/test/**",
+        "packages/core/src/**",
+        "packages/core/test/**",
+        "packages/http/src/**",
+        "packages/http/test/**",
+        "packages/ui/src/**",
+        "packages/player/src/**",
+        "apps/web/src/**"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noNodejsModules": "error"
+          },
+          "style": {
+            "noProcessEnv": "error"
+          }
+        }
+      }
+    }
+  ]
+}

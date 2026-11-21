@@ -1,0 +1,22 @@
+Webflix {{ .Chart.AppVersion }} is deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+  Public origin   {{ include "webflix.publicOrigin" . }}
+  API             {{ include "webflix.component" (list . "api") }} ({{ if .Values.api.autoscaling.enabled }}{{ .Values.api.autoscaling.minReplicas }}-{{ .Values.api.autoscaling.maxReplicas }} replicas, autoscaled{{ else }}{{ .Values.api.replicas }} replicas{{ end }})
+  Worker          {{ if .Values.worker.enabled }}{{ include "webflix.component" (list . "worker") }} ({{ .Values.worker.replicas }} replicas){{ else }}disabled{{ end }}
+  PostgreSQL      {{ if .Values.postgresql.enabled }}in-chart ({{ include "webflix.component" (list . "postgresql") }}){{ else }}external{{ end }}
+  Valkey          {{ if .Values.valkey.enabled }}in-chart ({{ include "webflix.component" (list . "valkey") }}){{ else }}external{{ end }}
+  Object storage  {{ if .Values.objectStore.enabled }}in-chart Garage ({{ include "webflix.component" (list . "objectstore") }}, bucket {{ .Values.objectStore.bucket }}){{ else }}external S3 (bucket {{ .Values.externalS3.bucket }}){{ end }}
+
+Migrations and seed ran as Jobs of revision {{ .Release.Revision }}:
+  kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Check the stack from inside the cluster:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Packaged media is uploaded to the bucket with the media pipeline (tools/media, `upload --target s3:`);
+the next seed (any `helm upgrade`) picks up manifests/media.json. Until then titles play the
+external HLS fallback. See docs/KUBERNETES.md.
+{{- if and .Values.seed.enabled .Values.seed.demo }}
+
+Demo account: demo@webflix.dev / webflix-demo (disable with seed.demo=false).
+{{- end }}

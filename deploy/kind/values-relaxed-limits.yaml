@@ -1,0 +1,13 @@
+# Opt-in for local test runs (make k8s-up RATE_LIMITS=relaxed): the documented relaxed profile
+# dev mode uses (docs/BACKEND.md §3), because every client on this machine shares one address.
+# Still enforced exactly across all API replicas; only the numbers change. Exactly the dev
+# profile: payment, auth-email and playback-start keep their defaults there too (keyed by
+# account or email address, not by the shared client address), and a browser run stays inside
+# them (the browser that signed up to an account, and the demo account, are exempt from
+# auth-email).
+config:
+  rateLimits:
+    auth: 60/60
+    signup: 60/60
+    emailLookup: 300/60
+    profilePin: 60/60

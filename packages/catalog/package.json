@@ -1,0 +1,23 @@
+{
+  "name": "@webflix/catalog",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Seed dataset (titles, people, genres, avatars, demo account) and loaders.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

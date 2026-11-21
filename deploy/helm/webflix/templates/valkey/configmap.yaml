@@ -1,0 +1,27 @@
+{{- $c := .Values.valkey -}}
+{{- if $c.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "webflix.component" (list . "valkey") }}
+  labels:
+    {{- include "webflix.labels" (list . "valkey") | nindent 4 }}
+data:
+  valkey.conf: |
+    bind * -::*
+    port 6379
+    # Authentication is on (requirepass, written by the init container from the Secret).
+    protected-mode no
+    include /run/valkey/auth.conf
+    dir /data
+    # Durability: append-only file, fsync every second. Stream leases, rate-limit state and
+    # queued jobs survive a restart; no RDB snapshots on top.
+    appendonly yes
+    appendfsync everysec
+    save ""
+    # Never evict: losing a lease or a queued job silently is worse than refusing a write.
+    maxmemory {{ $c.maxMemory }}
+    maxmemory-policy noeviction
+    tcp-keepalive 60
+    loglevel notice
+{{- end }}

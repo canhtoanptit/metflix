@@ -1,0 +1,109 @@
+suite: In-chart data stores
+templates:
+  - postgresql/statefulset.yaml
+  - valkey/statefulset.yaml
+  - valkey/configmap.yaml
+  - objectstore/statefulset.yaml
+  - objectstore/configmap.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: runs official images pinned by digest, unprivileged, with persistent volumes
+    asserts:
+      - template: postgresql/statefulset.yaml
+        matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ^postgres:19\.0-alpine3\.24@sha256:[0-9a-f]{64}$
+      - template: valkey/statefulset.yaml
+        matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ^valkey/valkey:9\.2\.0-alpine3\.24@sha256:[0-9a-f]{64}$
+      - template: objectstore/statefulset.yaml
+        matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ^dxflrs/garage:v2\.5\.0@sha256:[0-9a-f]{64}$
+      - template: postgresql/statefulset.yaml
+        equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - template: postgresql/statefulset.yaml
+        equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - template: postgresql/statefulset.yaml
+        equal:
+          path: spec.volumeClaimTemplates[0].spec.resources.requests.storage
+          value: 10Gi
+      - template: postgresql/statefulset.yaml
+        equal:
+          path: spec.persistentVolumeClaimRetentionPolicy.whenDeleted
+          value: Retain
+
+  - it: never evicts Valkey keys and persists them with AOF
+    template: valkey/configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["valkey.conf"]
+          pattern: "maxmemory-policy noeviction"
+      - matchRegex:
+          path: data["valkey.conf"]
+          pattern: "appendonly yes"
+
+  - it: hands Valkey its password through a file, never arguments
+    template: valkey/statefulset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [valkey-server, /etc/valkey/valkey.conf]
+      - equal:
+          path: spec.template.spec.initContainers[0].env[0].valueFrom.secretKeyRef.name
+          value: webflix-valkey
+
+  - it: can run Valkey without persistence
+    template: valkey/statefulset.yaml
+    set:
+      valkey.persistence.enabled: false
+    asserts:
+      - notExists:
+          path: spec.volumeClaimTemplates
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: data
+            emptyDir: {}
+
+  - it: bootstraps Garage's bucket and key from the Secret
+    template: objectstore/statefulset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [/garage, server, --single-node, --default-bucket]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GARAGE_DEFAULT_BUCKET
+            value: webflix-media
+
+  - it: deploys no data store that is external
+    set:
+      postgresql.enabled: false
+      valkey.enabled: false
+      objectStore.enabled: false
+    asserts:
+      - template: postgresql/statefulset.yaml
+        hasDocuments:
+          count: 0
+      - template: valkey/statefulset.yaml
+        hasDocuments:
+          count: 0
+      - template: objectstore/statefulset.yaml
+        hasDocuments:
+          count: 0
+
+  - it: gives Valkey room to fork for AOF rewrites (limit >= 2 x maxmemory + 128Mi)
+    template: valkey/statefulset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 1152Mi

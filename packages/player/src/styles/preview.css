@@ -1,0 +1,88 @@
+/*
+ * @webflix/player — preview player styles. Same `--wfp-*` theme properties as the player.
+ * The element fills its box; the host sizes it (billboard backdrop, card media).
+ */
+
+.wfp-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--wfp-preview-backdrop, transparent);
+  isolation: isolate;
+}
+
+.wfp-preview__poster,
+.wfp-preview__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wfp-preview__video {
+  opacity: 0;
+  transition: opacity var(--wfp-preview-fade, 600ms) var(--wfp-ease, cubic-bezier(0.2, 0, 0, 1));
+}
+
+.wfp-preview[data-ready] .wfp-preview__video {
+  opacity: 1;
+}
+
+.wfp-preview[data-fit="contain"] .wfp-preview__poster,
+.wfp-preview[data-fit="contain"] .wfp-preview__video {
+  object-fit: contain;
+}
+
+.wfp-preview__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.wfp-preview__overlay > * {
+  pointer-events: auto;
+}
+
+.wfp-preview__mute {
+  appearance: none;
+  position: absolute;
+  right: var(--wfp-preview-mute-inset, 16px);
+  bottom: var(--wfp-preview-mute-inset, 16px);
+  display: grid;
+  place-items: center;
+  width: var(--wfp-preview-mute-size, 44px);
+  height: var(--wfp-preview-mute-size, 44px);
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid rgb(255 255 255 / 0.72);
+  border-radius: 50%;
+  background: rgb(20 20 20 / 0.35);
+  color: var(--wfp-text, #fff);
+  cursor: pointer;
+  transition:
+    background-color var(--wfp-duration-fast, 140ms) ease,
+    border-color var(--wfp-duration-fast, 140ms) ease;
+}
+
+.wfp-preview__mute:hover {
+  border-color: #fff;
+  background: rgb(255 255 255 / 0.14);
+}
+
+.wfp-preview__mute:focus-visible {
+  outline: 2px solid var(--wfp-focus-ring, #fff);
+  outline-offset: 2px;
+}
+
+.wfp-preview__mute .wfp-icon {
+  width: 52%;
+  height: 52%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wfp-preview__video {
+    transition-duration: 1ms;
+  }
+}

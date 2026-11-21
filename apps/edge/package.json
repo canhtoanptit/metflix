@@ -1,0 +1,38 @@
+{
+  "name": "@webflix/edge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cloudflare Worker entrypoint for the cloudflare mode: fetch, queue, scheduled, Durable Objects.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "ops": "node scripts/ops.ts",
+    "deploy": "node scripts/deploy.ts deploy",
+    "typecheck": "tsc -p . && tsc -p tsconfig.node.json",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/adapters-cloudflare": "workspace:*",
+    "@webflix/catalog": "workspace:*",
+    "@webflix/contracts": "workspace:*",
+    "@webflix/core": "workspace:*",
+    "@webflix/db": "workspace:*",
+    "@webflix/http": "workspace:*",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@scalar/api-reference": "1.82.1",
+    "@types/node": "catalog:",
+    "@webflix/adapters-node": "workspace:^",
+    "@webflix/media": "workspace:^",
+    "jsonc-parser": "3.3.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:",
+    "yaml": "2.9.1"
+  }
+}

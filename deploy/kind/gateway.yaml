@@ -1,0 +1,118 @@
+# Cluster-level gateway setup for kind (applied by `make k8s-up` after Envoy Gateway is
+# installed). On a real cluster the platform team owns the GatewayClass; the chart only needs
+# its name (`gateway.className`).
+#
+# EnvoyProxy: how Envoy Gateway runs the data plane for Gateways of this class. Here: a
+# NodePort Service on 30080 (published by kind as localhost:8080), two Envoy replicas, and
+# a drain period long enough for rolling updates of Envoy itself.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: webflix-kind
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 2
+        container:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+        # The shutdown-manager sidecar ships without limits.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: shutdown-manager
+                      resources:
+                        limits:
+                          cpu: 100m
+                          memory: 64Mi
+      envoyService:
+        type: NodePort
+        externalTrafficPolicy: Cluster
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: 80
+                  nodePort: 30080
+  shutdown:
+    drainTimeout: 15s
+    minDrainDuration: 5s
+  # Access logs, JSON on stdout. Signed media URLs carry the playback token in the path
+  # (/media/<token>/vod/...), so those requests are logged without their path: the request id
+  # correlates them with the API's log line, where the token is redacted.
+  telemetry:
+    accessLog:
+      settings:
+        - matches:
+            - "!request.path.startsWith('/media/')"
+          format:
+            type: JSON
+            json:
+              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              protocol: "%PROTOCOL%"
+              response_code: "%RESPONSE_CODE%"
+              response_flags: "%RESPONSE_FLAGS%"
+              response_code_details: "%RESPONSE_CODE_DETAILS%"
+              bytes_received: "%BYTES_RECEIVED%"
+              bytes_sent: "%BYTES_SENT%"
+              duration: "%DURATION%"
+              upstream_host: "%UPSTREAM_HOST%"
+              x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
+              user_agent: "%REQ(USER-AGENT)%"
+              request_id: "%REQ(X-REQUEST-ID)%"
+              route_name: "%ROUTE_NAME%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
+        - matches:
+            - "request.path.startsWith('/media/')"
+          format:
+            type: JSON
+            json:
+              path: "/media/[redacted]"
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              protocol: "%PROTOCOL%"
+              response_code: "%RESPONSE_CODE%"
+              response_flags: "%RESPONSE_FLAGS%"
+              response_code_details: "%RESPONSE_CODE_DETAILS%"
+              bytes_received: "%BYTES_RECEIVED%"
+              bytes_sent: "%BYTES_SENT%"
+              duration: "%DURATION%"
+              upstream_host: "%UPSTREAM_HOST%"
+              x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
+              user_agent: "%REQ(USER-AGENT)%"
+              request_id: "%REQ(X-REQUEST-ID)%"
+              route_name: "%ROUTE_NAME%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: webflix
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: webflix-kind
+    namespace: envoy-gateway-system

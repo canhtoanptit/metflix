@@ -1,0 +1,18 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webflix.component" (list . "postgresql") }}
+  labels:
+    {{- include "webflix.labels" (list . "postgresql") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "webflix.selectorLabels" (list . "postgresql") | nindent 4 }}
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+      appProtocol: postgresql
+{{- end }}

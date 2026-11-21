@@ -1,0 +1,22 @@
+{
+  "name": "@webflix/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright end-to-end suites. Run against any mode with BASE_URL.",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:mock": "playwright test --config playwright.mock.config.ts",
+    "e2e:install": "playwright install chromium firefox webkit",
+    "shot": "node scripts/screenshot.ts",
+    "typecheck": "tsc -p .",
+    "lint": "biome check ."
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "catalog:",
+    "@types/node": "catalog:",
+    "@webflix/contracts": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

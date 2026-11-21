@@ -1,0 +1,141 @@
+{{- $c := .Values.objectStore -}}
+{{- if $c.enabled }}
+# Garage (https://garagehq.deuxfleurs.fr), an S3-compatible store, as one node with one
+# bucket. On first start it lays out a single-node cluster and creates the bucket and the
+# access key from the Secret (--single-node --default-bucket); later starts keep both.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "webflix.component" (list . "objectstore") }}
+  labels:
+    {{- include "webflix.labels" (list . "objectstore") | nindent 4 }}
+spec:
+  serviceName: {{ include "webflix.component" (list . "objectstore") }}
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "objectstore") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "objectstore") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/objectstore/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: garage
+          image: {{ include "webflix.thirdPartyImage" $c.image }}
+          imagePullPolicy: IfNotPresent
+          args: ["/garage", "server", "--single-node", "--default-bucket"]
+          env:
+            - name: GARAGE_CONFIG_FILE
+              value: /etc/garage/garage.toml
+            - name: GARAGE_DEFAULT_BUCKET
+              value: {{ $c.bucket | quote }}
+            - name: GARAGE_DEFAULT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.objectStore.secretName" . }}
+                  key: access-key-id
+            - name: GARAGE_DEFAULT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.objectStore.secretName" . }}
+                  key: secret-access-key
+            - name: GARAGE_RPC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.objectStore.secretName" . }}
+                  key: rpc-secret
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.objectStore.secretName" . }}
+                  key: admin-token
+            - name: RUST_LOG
+              value: garage=info
+          ports:
+            - name: s3
+              containerPort: 3900
+              protocol: TCP
+            - name: admin
+              containerPort: 3903
+              protocol: TCP
+          # /health on the admin API: 200 once the node serves requests.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: s3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/garage
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "webflix.component" (list . "objectstore") }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "webflix.selectorLabels" (list . "objectstore") | nindent 10 }}
+      spec:
+        accessModes: {{ $c.persistence.accessModes | toJson }}
+        {{- with $c.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $c.persistence.size }}
+{{- end }}

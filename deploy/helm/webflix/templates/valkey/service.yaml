@@ -1,0 +1,18 @@
+{{- if .Values.valkey.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webflix.component" (list . "valkey") }}
+  labels:
+    {{- include "webflix.labels" (list . "valkey") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "webflix.selectorLabels" (list . "valkey") | nindent 4 }}
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+      protocol: TCP
+      appProtocol: redis
+{{- end }}

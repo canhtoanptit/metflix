@@ -1,0 +1,431 @@
+# Webflix Helm chart: production-leaning defaults.
+#
+# Local kind overrides live in deploy/kind/values.yaml. Every key is validated by
+# values.schema.json. docs/KUBERNETES.md is the reference for the important knobs.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Images --------------------------------------------------------------------------------
+
+image:
+  # Prepended to every first-party repository, e.g. "ghcr.io/acme/".
+  registry: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# --- Application configuration (non-secret; becomes the ConfigMap the pods read) -----------
+
+config:
+  # The origin users load the app from. https makes cookies Secure and __Host- prefixed and
+  # adds HSTS. Empty: derived from httpRoute.hostnames[0] and gateway.tls, else
+  # http://localhost:8080.
+  publicOrigin: ""
+  # "production" refuses the development media token key.
+  environment: production
+  logLevel: info
+  # Rate-limit overrides as "limit/windowSec", keyed by policy name (`email-lookup` or
+  # `emailLookup` both become WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP), so a policy the API adds later
+  # needs no chart change. Empty or absent keeps the application's strict defaults.
+  rateLimits: {}
+  # Proxies that append to X-Forwarded-For in front of the API: the gateway (1), plus one per
+  # load balancer in front of it. The client IP used for rate limiting is read that many
+  # entries from the right; anything a client sends itself is ignored.
+  trustedProxyHops: 1
+  # Lifetime of signed media URLs.
+  mediaTokenTtlSec: 21600
+  # Seconds between scheduler ticks in the worker (stats rollups, daily baseline, cleanup).
+  schedulerIntervalSec: 300
+  # Prefix of every key in Valkey (lets environments share one Valkey).
+  valkeyKeyPrefix: "webflix:"
+  # Extra environment variables for the API, worker and jobs (name: value).
+  extraEnv: {}
+
+# Secrets the application needs besides the data stores' credentials.
+secrets:
+  # Name of an existing Secret providing WEBFLIX_MEDIA_TOKEN_KEYS ("id:secret[,id:secret]",
+  # secret >= 32 characters; the first signs, all verify: rotate by prepending a new key).
+  # Empty: the chart generates one key on first install and keeps it across upgrades.
+  # Rotate in two phases (docs/KUBERNETES.md §5): add the new key as verify-only, roll; then
+  # promote it to first, roll; retire the old one after the token lifetime.
+  existingSecret: ""
+  # Generated credentials need `lookup` (a live cluster) to stay stable across renders; the
+  # chart refuses to generate them under `helm template` / GitOps renderers unless this is set
+  # (throwaway renders only, e.g. CI schema checks). Use the existingSecret values instead.
+  generateWithoutCluster: false
+
+# TLS trust for the API, worker and Jobs.
+tls:
+  # Extra certificate authorities, for managed services whose certificates chain to a private
+  # CA (RDS, Cloud SQL, ElastiCache, an internal S3 endpoint): a PEM bundle in a Secret or a
+  # ConfigMap, mounted and passed as NODE_EXTRA_CA_CERTS. node-postgres verifies
+  # `sslmode=require` fully (chain and hostname), so this is what makes it connect.
+  extraCaCerts:
+    secretName: ""
+    configMapName: ""
+    key: ca.crt
+
+# --- API: HTTP serving (/api, /media, /cdn) ------------------------------------------------
+
+api:
+  image:
+    repository: webflix-api
+    # Defaults to the chart's appVersion.
+    tag: ""
+    # Pin by digest in production (overrides the tag).
+    digest: ""
+  # Ignored while autoscaling is enabled.
+  replicas: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 0
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  # Postgres connections per pod: keep (maxReplicas + worker replicas + 2) x poolMax below
+  # the server's max_connections.
+  databasePoolMax: 10
+  # On SIGTERM: fail /readyz, keep serving this long (endpoint propagation to the gateway),
+  # then drain in-flight requests. terminationGracePeriodSeconds must exceed it by 30 s.
+  shutdownDelaySec: 5
+  terminationGracePeriodSeconds: 40
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  extraEnv: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Empty: spread over zones and nodes (best effort).
+  topologySpreadConstraints: []
+  priorityClassName: ""
+
+# --- Worker: job consumer (Valkey Streams) and scheduler ----------------------------------
+
+worker:
+  enabled: true
+  # Consumers share the queue (consumer group); a delivery abandoned by a dead pod is
+  # reclaimed by another one.
+  replicas: 2
+  # Jobs one pod processes concurrently.
+  concurrency: 4
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  terminationGracePeriodSeconds: 30
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      memory: 384Mi
+  extraEnv: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+
+# --- Web: the single-page app (static files, nginx) ---------------------------------------
+
+web:
+  image:
+    repository: webflix-web
+    tag: ""
+    digest: ""
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  terminationGracePeriodSeconds: 30
+  # Security headers on every SPA response (mounted over the image's default). Media and XHR
+  # may use any https origin for titles that fall back to an external HLS stream.
+  contentSecurityPolicy: >-
+    default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+    img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob: https:;
+    connect-src 'self' https:; worker-src 'self' blob:; manifest-src 'self';
+    object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+
+# --- Database migrations and seed (Jobs, one per release revision) ------------------------
+
+migrations:
+  enabled: true
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      memory: 384Mi
+
+seed:
+  # Catalog, search index, synthetic stats and the demo account. Idempotent: skipped when
+  # nothing changed, so it runs on every upgrade.
+  enabled: true
+  # The publicly documented demo account (demo@webflix.dev): off for real deployments; the
+  # kind values turn it on.
+  demo: false
+  # Media manifest uploaded with the packaged media; when absent, titles play the external
+  # HLS fallback until a later seed finds it.
+  manifest: "blob:manifests/media.json"
+  # Informational: the manifest checksum the last seed was triggered for (set by tooling).
+  mediaChecksum: ""
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+# --- PostgreSQL: in-cluster (official image) or external -----------------------------------
+
+postgresql:
+  # false: use externalDatabase.
+  enabled: true
+  image:
+    repository: postgres
+    tag: 19.0-alpine3.24
+    digest: sha256:8b0ff4cdf221f0c53d7fcda681d3b461be725c492cd881c5ec9c0ad25023f188
+  database: webflix
+  username: webflix
+  auth:
+    # Existing Secret with the password under `passwordKey`. Empty: generated once and kept.
+    existingSecret: ""
+    passwordKey: password
+  maxConnections: 200
+  sharedBuffers: 256MB
+  persistence:
+    size: 10Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+externalDatabase:
+  # postgres://USER@HOST:5432/DB?sslmode=require (no password: it comes from the Secret).
+  # Private CA: tls.extraCaCerts.
+  url: ""
+  existingSecret: ""
+  passwordKey: password
+  # Mutual TLS: a kubernetes.io/tls Secret, mounted at /etc/webflix/tls/database; add
+  # `&sslcert=/etc/webflix/tls/database/tls.crt&sslkey=/etc/webflix/tls/database/tls.key`
+  # to the URL.
+  clientCertSecret: ""
+
+# --- Valkey: in-cluster (official image) or external ---------------------------------------
+
+valkey:
+  # false: use externalValkey.
+  enabled: true
+  image:
+    repository: valkey/valkey
+    tag: 9.2.0-alpine3.24
+    digest: sha256:c8e2d17498838af5d91e12eb7c11220b3434a7b7131a333e3af52ad5e0b80882
+  auth:
+    existingSecret: ""
+    passwordKey: password
+  # Keys holding stream leases, rate-limit state and queued jobs must never be evicted:
+  # writes fail (503) when full instead. Size it with headroom and alert on used memory.
+  # The container limit must cover maxMemory twice (an AOF rewrite forks, and copy-on-write
+  # can duplicate every page written meanwhile) plus ~128 MiB for buffers and the process:
+  # limit >= 2 x maxMemory + 128Mi.
+  maxMemory: 512mb
+  # AOF: leases, counters and queued jobs survive a restart (at most ~1 s of writes lost).
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 1152Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+externalValkey:
+  # redis://HOST:6379/0 or rediss://HOST:6380/0 (TLS). Standalone/primary endpoint.
+  url: ""
+  existingSecret: ""
+  passwordKey: password
+
+# --- Object storage: in-cluster Garage (S3 API) or any external S3 ---------------------------
+
+objectStore:
+  # false: use externalS3.
+  enabled: true
+  image:
+    repository: dxflrs/garage
+    tag: v2.5.0
+    digest: sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+  bucket: webflix-media
+  region: garage
+  auth:
+    # Existing Secret with `access-key-id` (GK + 24 hex), `secret-access-key` (64 hex),
+    # `rpc-secret` (64 hex) and `admin-token`. Empty: generated once and kept.
+    existingSecret: ""
+  persistence:
+    size: 20Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+externalS3:
+  # Empty endpoint: AWS S3 for `region`.
+  endpoint: ""
+  region: us-east-1
+  bucket: webflix-media
+  forcePathStyle: false
+  # Secret with static keys; leave empty to use the pod's identity (IRSA, EKS Pod Identity,
+  # Workload Identity) through serviceAccount.annotations.
+  existingSecret: ""
+  accessKeyIdKey: access-key-id
+  secretAccessKeyKey: secret-access-key
+
+# --- Routing (Gateway API) ------------------------------------------------------------------
+
+gateway:
+  # Create a dedicated Gateway. false: attach the routes to an existing one (parentRefs).
+  enabled: true
+  # GatewayClass of the installed implementation (Envoy Gateway's documentation calls its
+  # class "eg"; kind uses "webflix", see deploy/kind/gateway.yaml).
+  className: eg
+  annotations: {}
+  http:
+    port: 80
+  tls:
+    enabled: false
+    port: 443
+    # Secret holding the certificate (type kubernetes.io/tls); cert-manager fills it when an
+    # issuer is set.
+    secretName: ""
+    certManager:
+      issuer: ""
+      issuerKind: ClusterIssuer
+    # Redirect plain HTTP to HTTPS.
+    redirectHttp: true
+  # Envoy Gateway only (applied if its CRDs exist): X-Request-Id handling at the edge.
+  envoy:
+    requestId: PreserveOrGenerate
+
+httpRoute:
+  enabled: true
+  hostnames: []
+  # Parent Gateways when gateway.enabled is false, e.g. [{name: shared, namespace: infra}].
+  parentRefs: []
+  # Request timeouts per backend (Gateway API duration; "0s" disables).
+  timeouts:
+    api: 60s
+    media: 300s
+    web: 30s
+  # Envoy Gateway policies (applied only if its CRDs exist): retry a request that never
+  # reached a backend (connection refused or reset before sending: safe for any method).
+  envoy:
+    retries: true
+
+# --- Pods and security ----------------------------------------------------------------------
+
+serviceAccount:
+  create: true
+  name: ""
+  # e.g. eks.amazonaws.com/role-arn for S3 access through IRSA.
+  annotations: {}
+
+# Applied to every first-party pod.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+networkPolicy:
+  enabled: true
+  # Where the gateway's proxies run: only they may reach the API and the web app.
+  gateway:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: envoy-gateway-system
+    podSelector: {}
+  # Who may scrape /metrics (when metrics.serviceMonitor is used).
+  metrics:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+    podSelector: {}
+  # DNS egress. Empty `to`: port 53 to any destination, which works with kube-dns/CoreDNS
+  # pods and with NodeLocal DNSCache (a link-local IP on each node). Narrow it if you like,
+  # e.g. [{namespaceSelector: {}, podSelector: {matchLabels: {k8s-app: kube-dns}}},
+  #       {ipBlock: {cidr: 169.254.20.10/32}}].
+  dns:
+    to: []
+  egress:
+    # Restrict egress to DNS and the in-chart data stores; add rules for external services.
+    restrict: true
+    # Extra egress rules (NetworkPolicyEgressRule) for the API, worker and jobs, e.g.
+    # [{to: [{ipBlock: {cidr: 10.20.0.0/16}}], ports: [{port: 5432, protocol: TCP}]}].
+    extraRules: []
+
+metrics:
+  # Prometheus Operator ServiceMonitor for the API and worker /metrics.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  # prometheus.io/* annotations for annotation-based scrapers.
+  podAnnotations: true

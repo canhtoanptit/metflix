@@ -1,0 +1,117 @@
+# Webflix on the local kind cluster (make k8s-up). Overrides of the chart's production-leaning
+# defaults: smaller footprint (with CPU limits, so the cluster can never take over the laptop)
+# and the kind GatewayClass; behaviour (rate limits, environment, security) stays production.
+# Images (repository and content-derived tag) are passed by deploy/kind/up.sh.
+
+config:
+  publicOrigin: http://localhost:8080
+  # Rate limits: the production (strict) defaults, as in a real deployment. Everyone on this
+  # machine reaches the gateway from one client address, so heavy local test runs can opt into
+  # the documented relaxed profile: make k8s-up RATE_LIMITS=relaxed (values-relaxed-limits.yaml).
+  # Stats rollups and the daily baseline every minute instead of every five.
+  schedulerIntervalSec: 60
+
+image:
+  # Loaded into the nodes with `kind load`; never pulled.
+  pullPolicy: IfNotPresent
+
+api:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+  resources:
+    requests:
+      cpu: 100m
+      memory: 160Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+web:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 3
+  resources:
+    requests:
+      cpu: 20m
+      memory: 16Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+
+postgresql:
+  sharedBuffers: 128MB
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 768Mi
+
+valkey:
+  # limit >= 2 x maxMemory + 128Mi (fork headroom for AOF rewrites, see the chart values).
+  maxMemory: 128mb
+  persistence:
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+objectStore:
+  persistence:
+    # The fast media profile is ~50 MB; the full one several GB.
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+gateway:
+  enabled: true
+  # Created by deploy/kind/gateway.yaml (Envoy Gateway, NodePort 30080 → localhost:8080).
+  className: webflix
+
+networkPolicy:
+  enabled: true
+
+seed:
+  # The documented demo account (demo@webflix.dev / webflix-demo) on the local cluster.
+  demo: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 1000m
+      memory: 768Mi
+
+migrations:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
