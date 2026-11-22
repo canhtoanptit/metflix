@@ -1,7 +1,7 @@
 import { serializeError } from "../../ports/logger.ts";
 import type { ProviderEvent, ProviderSubscription } from "../../ports/payment-provider.ts";
 import { mirrorLegacySubscription, readAccount } from "./accounts.ts";
-import type { BillingContext } from "./context.ts";
+import { type BillingContext, ProjectionContendedError } from "./context.ts";
 import { emailReceipt, emailsForChange, emailTrialsEnding } from "./emails.ts";
 import { invoiceRecord } from "./presenters.ts";
 import {
@@ -30,7 +30,21 @@ const RECONCILE_PAGE = 1_000;
 const RECONCILE_MAX_PAGES = 5;
 /** A membership not synced for this long is read from the provider again. */
 export const RECONCILE_STALE_MS = 6 * 3_600_000;
-const CAS_ATTEMPTS = 5;
+/**
+ * Pauses before retrying a lost compare-and-set (finding K13), each jittered between half and
+ * one and a half times: six attempts within about half a second at worst. A competing write is
+ * one statement after one provider read (milliseconds on a healthy cluster), so contention that
+ * outlasts this means the record keeps changing or the service is in trouble, and only then does
+ * a request fall back (its current state, or `service_unavailable`).
+ */
+const CAS_PAUSES_MS = [10, 20, 40, 80, 160] as const;
+/**
+ * A projection the provider confirms unchanged is not written again (finding K13), unless its
+ * sync time is older than this (reconciliation re-reads memberships not synced for six hours).
+ */
+const UNCHANGED_REFRESH_MS = 3_600_000;
+/** The provider clock's offset moves by the call's latency between reads; an advance, by far more. */
+const CLOCK_OFFSET_TOLERANCE_MS = 1_000;
 
 export interface SyncOutcome {
   accountId: string;
@@ -137,7 +151,11 @@ export async function processProviderEvent(
  * The order matters: read the stored version first, then the provider, then compare-and-set.
  * Any write that wins was computed from a provider read made after the version it replaced was
  * read, so a slow processor holding an older provider state can never overwrite a newer one;
- * a lost race starts over with a fresh provider read.
+ * a lost race starts over with a fresh provider read, after a short pause (`CAS_PAUSES_MS`).
+ *
+ * A sync that finds the record already saying what the provider says now writes nothing: a
+ * burst of events (a renewal, a clock advance) then makes one write, not one per event, and the
+ * requests reading alongside the worker stop contending for a record none of them changes.
  */
 export async function syncSubscription(
   context: BillingContext,
@@ -146,7 +164,7 @@ export async function syncSubscription(
   accountHint: string | null,
 ): Promise<SyncOutcome | null> {
   const { repos, logger } = context.deps;
-  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     const accountId = accountHint ?? (await accountOfSubscription(context, subscriptionId));
     if (!accountId) return null;
     const previous = await repos.billing.getMembership(accountId);
@@ -185,19 +203,33 @@ export async function syncSubscription(
       latestInvoice,
       now,
     });
-    if (!(await repos.billing.saveMembership(next, previous?.version ?? null))) continue;
     const changed = !sameProjection(previous, next);
-    if (changed) await afterWrite(context, previous, next, subscription);
     // Checkouts follow the projection on every sync, changed or not (finding K1). The
     // confirmation saves the subscription's id on its checkout only after the provider created
     // the subscription, so the worker may write the projection before that checkout can be
     // found; every sync that starts after the save (the confirmation's own, a poll, any later
-    // event or reconciliation) looks it up after its own write and completes it.
-    await settleCheckouts(context, subscription.id, next);
-    return { accountId, membership: next, changed };
+    // event or reconciliation) looks it up after its own write (or its finding that none was
+    // needed) and completes it.
+    if (
+      previous &&
+      !changed &&
+      Math.abs(previous.clockOffsetMs - next.clockOffsetMs) < CLOCK_OFFSET_TOLERANCE_MS &&
+      now - previous.providerSyncedAt < UNCHANGED_REFRESH_MS
+    ) {
+      await settleCheckouts(context, subscription.id, previous);
+      return { accountId, membership: previous, changed: false };
+    }
+    if (await repos.billing.saveMembership(next, previous?.version ?? null)) {
+      if (changed) await afterWrite(context, previous, next, subscription);
+      await settleCheckouts(context, subscription.id, next);
+      return { accountId, membership: next, changed };
+    }
+    const pause = CAS_PAUSES_MS[attempt];
+    if (pause === undefined) break;
+    await new Promise((resolve) => setTimeout(resolve, pause * (0.5 + Math.random())));
   }
   logger.warn("billing.sync_contended", { subscriptionId });
-  throw new Error("billing: the projection kept changing under this sync; retry");
+  throw new ProjectionContendedError("billing: the projection kept changing under this sync");
 }
 
 /** Which account a provider subscription belongs to, through our own customer records. */

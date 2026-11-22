@@ -12,6 +12,34 @@ import type { ServiceDependencies } from "../../services/context.ts";
 import type { AreaSeams } from "../module.ts";
 import type { BillingOperationKind, DeclineReason } from "./repository.ts";
 
+/**
+ * The membership record kept changing under a sync (other replicas or the worker writing it):
+ * nothing was written; reading again later succeeds. Transient, like a provider's `unavailable`.
+ */
+export class ProjectionContendedError extends Error {
+  override readonly name = "ProjectionContendedError";
+}
+
+/**
+ * A failure that is an ordinary event with several replicas and says nothing about the
+ * membership (finding K12): the provider briefly unavailable or rate limited, the same
+ * idempotent call in flight elsewhere (the fake's `unavailable`, Stripe's 409
+ * `idempotency_key_in_use`), or the projection contended. A request that meets one answers
+ * the current state where it has one, else a retryable `service_unavailable`.
+ */
+export function isTransient(error: unknown): boolean {
+  return (
+    (error instanceof PaymentProviderError && error.retryable) ||
+    error instanceof ProjectionContendedError
+  );
+}
+
+/** For logs: which transient failure it was (never a provider message). */
+export function transientReason(error: unknown): string {
+  if (error instanceof PaymentProviderError) return error.code;
+  return error instanceof ProjectionContendedError ? "projection_contended" : "unknown";
+}
+
 /** What every part of the billing area works with, built once per service. */
 export interface BillingContext {
   deps: ServiceDependencies;
@@ -122,6 +150,11 @@ export function declineReason(code: PaymentFailureCode | null): DeclineReason {
  * `service_unavailable` (retry); anything else is a conflict with what the provider holds.
  */
 export function providerProblem(error: unknown): unknown {
+  if (error instanceof ProjectionContendedError) {
+    return new AppError("service_unavailable", {
+      detail: "The membership is being updated. Try again in a moment.",
+    });
+  }
   if (!(error instanceof PaymentProviderError)) return error;
   if (error.code in DECLINES) {
     return new AppError("payment_declined", { declineReason: declineReason(error.code) });

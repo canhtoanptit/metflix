@@ -31,6 +31,7 @@ import { serializeError } from "../../ports/logger.ts";
 import {
   type CatalogueEntry,
   PaymentProviderError,
+  type ProviderSetup,
   type ProviderSubscription,
   WebhookSignatureError,
 } from "../../ports/payment-provider.ts";
@@ -42,9 +43,12 @@ import { readAccount } from "./accounts.ts";
 import {
   createBillingContext,
   declineReason,
+  isTransient,
   nextAttempt,
+  ProjectionContendedError,
   providerCall,
   providerProblem,
+  transientReason,
 } from "./context.ts";
 import {
   isProviderMembership,
@@ -59,7 +63,7 @@ import {
   presentRefund,
   presentSetup,
 } from "./presenters.ts";
-import { priceLookupKey } from "./projection.ts";
+import { priceLookupKey, projectMembership, supersedes } from "./projection.ts";
 import type {
   CheckoutPromotion,
   CheckoutRecord,
@@ -395,7 +399,14 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     const setup = await repos.billing.findSetupByProviderId(provider, providerSetupId);
     if (!setup || setup.status === "succeeded") return;
     const confirmed = await payments.retrieveSetup(providerSetupId);
-    if (!confirmed) return;
+    if (confirmed) await finishSetup(setup, confirmed);
+  }
+
+  /** `completeSetup` once the provider's setup is read (the member's poll reads it itself). */
+  async function finishSetup(
+    setup: PaymentMethodSetupRecord,
+    confirmed: ProviderSetup,
+  ): Promise<void> {
     if (confirmed.status === "failed") {
       if (setup.status !== "failed") {
         await repos.billing.saveSetup({ ...setup, status: "failed", updatedAt: context.now() });
@@ -481,9 +492,78 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     return { record, subscriptionId };
   }
 
+  /**
+   * The membership right after a change the provider accepted (`subscription` is its answer):
+   * synced now; or, when the projection cannot be written at this moment (the provider briefly
+   * unavailable, the same call in flight, the record contended: finding K12), as the provider's
+   * answer projects it, without writing. The projection follows from the change's event, or the
+   * next read. Never a 500 for a change that was made.
+   */
+  async function snapshotAfter(
+    accountId: string,
+    subscription: ProviderSubscription,
+  ): Promise<MembershipSnapshot> {
+    try {
+      await syncSubscription(context, subscription.id, accountId);
+      return await snapshot(accountId);
+    } catch (error) {
+      if (!isTransient(error)) throw error;
+      logger.info("billing.sync_deferred", { accountId, reason: transientReason(error) });
+      const loaded = await readAccount(deps, accountId);
+      if (!loaded) throw new AppError("unauthenticated");
+      const previous = await repos.billing.getMembership(accountId);
+      const now = context.now();
+      const projected = supersedes(previous, subscription)
+        ? projectMembership({
+            previous,
+            accountId,
+            provider,
+            subscription,
+            firstFailureAt: null,
+            now,
+          })
+        : previous;
+      return snapshotMembership(
+        projected,
+        loaded.subscription,
+        context.graceSec,
+        now,
+        loaded.account.createdAt,
+      );
+    }
+  }
+
   async function membershipAfter(accountId: string, subscription: ProviderSubscription | null) {
-    if (subscription) await syncSubscription(context, subscription.id, accountId);
-    return (await snapshot(accountId)).legacy;
+    return (subscription ? await snapshotAfter(accountId, subscription) : await snapshot(accountId))
+      .legacy;
+  }
+
+  /** The account's subscription: its membership's, or the one its open checkout started. */
+  async function subscriptionOf(accountId: string): Promise<string | null> {
+    const record = await repos.billing.getMembership(accountId);
+    return (
+      record?.providerSubscriptionId ??
+      (await repos.billing.findOpenCheckout(accountId, context.now()))?.providerSubscriptionId ??
+      null
+    );
+  }
+
+  /** Reads the provider and writes the projection, unless that cannot happen right now. */
+  async function syncIfPossible(
+    subscriptionId: string,
+    accountId: string,
+    what: string,
+  ): Promise<void> {
+    try {
+      await syncSubscription(context, subscriptionId, accountId);
+    } catch (error) {
+      if (!isTransient(error)) throw error;
+      logger.info("billing.sync_deferred", {
+        accountId,
+        during: what,
+        reason: transientReason(error),
+      });
+    }
   }
 
   const service: BillingService = {
@@ -726,11 +806,13 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       }
       // Polling a checkout that waits on the provider reads the provider (reconciliation):
       // the membership activates when the provider says so, with or without a webhook.
+      // When that read cannot happen right now (finding K12), the checkout is answered as it
+      // stands and the next poll settles it.
       if (
         (checkout.status === "processing" || checkout.status === "requires_payment") &&
         checkout.providerSubscriptionId
       ) {
-        await syncSubscription(context, checkout.providerSubscriptionId, accountId);
+        await syncIfPossible(checkout.providerSubscriptionId, accountId, "checkout_poll");
         checkout = (await repos.billing.getCheckout(accountId, checkoutId)) ?? checkout;
       }
       return checkoutView(checkout);
@@ -853,6 +935,22 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           (created) => created.id,
         );
       } catch (error) {
+        if (
+          isTransient(error) ||
+          (error instanceof PaymentProviderError && error.code === "idempotency_conflict")
+        ) {
+          // Another confirmation of this checkout is creating the subscription under the same
+          // key (a double submit on another replica: in flight), or created it with terms of
+          // its own (idempotency conflict): its outcome stands, nothing is marked failed.
+          const current = await repos.billing.getCheckout(accountId, checkoutId);
+          if (current && current.status !== "requires_setup") {
+            return service.getCheckout(accountId, checkoutId);
+          }
+          throw new AppError("service_unavailable", {
+            detail:
+              "The payment provider is busy with this checkout or not answering. Try again in a moment.",
+          });
+        }
         if (error instanceof PaymentProviderError && !error.retryable) {
           // Refused outright: give the trial claim back and let the member start again.
           if (subscribe.trialFingerprint) {
@@ -876,8 +974,12 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         }
         throw providerProblem(error);
       }
+      // Display only (the amount due now): not worth failing a confirmation that succeeded.
       const invoice = subscription.latestInvoiceId
-        ? await payments.retrieveInvoice(subscription.latestInvoiceId)
+        ? await payments.retrieveInvoice(subscription.latestInvoiceId).catch((error: unknown) => {
+            if (!isTransient(error)) throw error;
+            return null;
+          })
         : null;
       const confirmed: CheckoutRecord = {
         ...subscribe,
@@ -898,8 +1000,9 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         status: confirmed.status,
       });
       // The projection is the provider's to decide: read it now (reconciliation) as well as on
-      // its events, so the member sees `trialing` as soon as the provider has it.
-      await syncSubscription(context, subscription.id, accountId);
+      // its events, so the member sees `trialing` as soon as the provider has it. If that read
+      // cannot happen right now, the checkout is answered `processing` and its poll settles it.
+      await syncIfPossible(subscription.id, accountId, "checkout_confirmation");
       return checkoutView((await repos.billing.getCheckout(accountId, checkoutId)) ?? confirmed);
     },
 
@@ -1074,15 +1177,36 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     async getPaymentMethodSetup(accountId, setupId) {
       const record = await repos.billing.getSetup(accountId, setupId);
       if (!record) throw new AppError("not_found", { detail: "No such card change" });
+      if (record.status === "succeeded") return presentSetup(record, null);
       // Polling reads the provider (the event may not have arrived yet, or its processing
-      // stopped half-way): anything not recorded as succeeded is looked at again.
-      if (record.status !== "succeeded") await completeSetup(record.providerSetupId);
+      // stopped half-way) and finishes what it can. Without the provider's answer there is
+      // nothing to report beyond "try again" (`service_unavailable`).
+      const confirmed = await payments.retrieveSetup(record.providerSetupId);
+      if (confirmed) {
+        try {
+          await finishSetup(record, confirmed);
+        } catch (error) {
+          // The same completion is running elsewhere (the worker on the setup's event, another
+          // replica's poll: the provider says its key is in flight), or the provider or the
+          // projection is briefly unavailable. Every step is idempotent and success is recorded
+          // last: this poll reports where it stands, a later one finds it finished (K12).
+          if (!isTransient(error)) throw error;
+          logger.info("billing.setup_completion_deferred", {
+            accountId,
+            setupId,
+            reason: transientReason(error),
+          });
+        }
+      }
       const current = (await repos.billing.getSetup(accountId, setupId)) ?? record;
-      const setup =
-        current.status === "requires_confirmation"
-          ? await payments.retrieveSetup(current.providerSetupId)
-          : null;
-      return presentSetup(current, setup?.clientSecret ?? null);
+      if (current.status === "succeeded" || current.status === "failed") {
+        return presentSetup(current, null);
+      }
+      if (confirmed?.status === "succeeded" || confirmed?.status === "processing") {
+        // Confirmed at the provider; the change is being finished.
+        return presentSetup({ ...current, status: "processing" }, null);
+      }
+      return presentSetup(current, confirmed?.clientSecret ?? null);
     },
 
     async listInvoices(accountId, page) {
@@ -1145,10 +1269,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
 
     async syncAccount(accountId) {
-      const record = await repos.billing.getMembership(accountId);
-      const subscriptionId =
-        record?.providerSubscriptionId ??
-        (await repos.billing.findOpenCheckout(accountId, context.now()))?.providerSubscriptionId;
+      const subscriptionId = await subscriptionOf(accountId);
       if (!subscriptionId) return null;
       await syncSubscription(context, subscriptionId, accountId);
       return snapshot(accountId);
@@ -1166,7 +1287,12 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         throw new AppError("not_found", { detail: "This account has no customer at the provider" });
       }
       const now = await payments.advanceTestClock(customer.customerId, seconds);
-      await service.syncAccount(accountId);
+      // The clock has moved: that is the answer, whatever happens next (a second advance would
+      // move it again). The projection is read now when it can be; otherwise it follows from
+      // the advance's events (finding K13). Not through `service.syncAccount`: the request
+      // boundary there would already have turned a contended write into a 503.
+      const subscriptionId = await subscriptionOf(accountId);
+      if (subscriptionId) await syncIfPossible(subscriptionId, accountId, "clock_advance");
       return { now: toIsoString(now) };
     },
 
@@ -1226,7 +1352,11 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           ),
         (created) => created.id,
       ).catch(async (error: unknown) => {
-        await repos.billing.saveRefund({ ...base, status: "failed", updatedAt: context.now() });
+        // A transient failure leaves the outcome unknown (the provider may have refunded):
+        // the refund stays pending, and the invoice's events tell what happened.
+        if (!isTransient(error)) {
+          await repos.billing.saveRefund({ ...base, status: "failed", updatedAt: context.now() });
+        }
         throw providerProblem(error);
       });
       const stored = {
@@ -1237,7 +1367,13 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         updatedAt: context.now(),
       };
       await repos.billing.saveRefund(stored);
-      const updated = await payments.retrieveInvoice(invoice.providerInvoiceId);
+      // The refund is made; the invoice's own events update it if it cannot be read now.
+      const updated = await payments
+        .retrieveInvoice(invoice.providerInvoiceId)
+        .catch((error: unknown) => {
+          if (!isTransient(error)) throw error;
+          return null;
+        });
       if (updated) await storeInvoice(context, updated);
       logger.info("billing.refunded", {
         accountId: input.accountId,
@@ -1254,8 +1390,9 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       if (!subscriptionId)
         throw new AppError("subscription_required", { subscriptionStatus: "ended" });
       let refund: Refund | null = null;
+      let changed: ProviderSubscription;
       if (input.when === "period_end") {
-        await providerCall(
+        changed = await providerCall(
           context,
           {
             id: `staff-cancel-${ids.next()}`,
@@ -1269,7 +1406,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           throw providerProblem(error);
         });
       } else {
-        await providerCall(
+        changed = await providerCall(
           context,
           {
             id: `staff-cancel-now-${ids.next()}`,
@@ -1287,7 +1424,18 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           record.currentPeriodEnd &&
           record.currentPeriodStart
         ) {
-          const invoice = await payments.retrieveInvoice(record.latestInvoiceId);
+          const invoice = await payments
+            .retrieveInvoice(record.latestInvoiceId)
+            .catch((error: unknown) => {
+              // The cancellation is made; the refund of the unused time is skipped (and said
+              // so: `refund: null`), staff can refund the invoice on its own.
+              if (!isTransient(error)) throw error;
+              logger.warn("billing.staff_refund_skipped", {
+                accountId: input.accountId,
+                reason: transientReason(error),
+              });
+              return null;
+            });
           const providerNow = context.now() + record.clockOffsetMs;
           const span = record.currentPeriodEnd - record.currentPeriodStart;
           const unused = span > 0 ? Math.max(0, record.currentPeriodEnd - providerNow) / span : 0;
@@ -1299,20 +1447,32 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
             : [];
           const local = stored.find((candidate) => candidate.providerInvoiceId === invoice?.id);
           if (local && amount > 0) {
-            refund = await service.refundInvoice({
-              accountId: input.accountId,
-              invoiceId: local.id,
-              amount: { amountMinor: amount, currency: local.currency },
-              reason: input.reason,
-              staffSubject: input.staffSubject,
-            });
+            refund = await service
+              .refundInvoice({
+                accountId: input.accountId,
+                invoiceId: local.id,
+                amount: { amountMinor: amount, currency: local.currency },
+                reason: input.reason,
+                staffSubject: input.staffSubject,
+              })
+              .catch((error: unknown) => {
+                // Mapped already (`service_unavailable`): the refund's outcome is unknown and it
+                // stays pending; the cancellation stands and the answer says no refund was made.
+                if (!(error instanceof AppError && error.code === "service_unavailable")) {
+                  throw error;
+                }
+                logger.warn("billing.staff_refund_skipped", {
+                  accountId: input.accountId,
+                  reason: "unavailable",
+                });
+                return null;
+              });
           }
         }
       }
-      await syncSubscription(context, subscriptionId, input.accountId);
       // The refund (of the unused time, when asked) comes back with the membership, for the
       // staff audit entry; the member-facing routes are unaffected.
-      return { membership: (await snapshot(input.accountId)).state, refund };
+      return { membership: (await snapshotAfter(input.accountId, changed)).state, refund };
     },
 
     async extendTrial(input) {
@@ -1322,7 +1482,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         throw new AppError("checkout_state_conflict", { detail: "There is no running trial." });
       }
       const trialEnd = record.trialEndsAt + input.days * 24 * 3_600_000;
-      await providerCall(
+      const changed = await providerCall(
         context,
         {
           id: `extend-trial-${ids.next()}`,
@@ -1334,8 +1494,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       ).catch((error: unknown) => {
         throw providerProblem(error);
       });
-      await syncSubscription(context, subscriptionId, input.accountId);
-      return (await snapshot(input.accountId)).state;
+      return (await snapshotAfter(input.accountId, changed)).state;
     },
 
     async grantComplimentaryPeriod(input) {
@@ -1355,7 +1514,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         record.trialEndsAt ?? 0,
       );
       const trialEnd = from + input.days * 24 * 3_600_000;
-      await providerCall(
+      const changed = await providerCall(
         context,
         {
           id: `complimentary-${ids.next()}`,
@@ -1367,8 +1526,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       ).catch((error: unknown) => {
         throw providerProblem(error);
       });
-      await syncSubscription(context, subscriptionId, input.accountId);
-      return (await snapshot(input.accountId)).state;
+      return (await snapshotAfter(input.accountId, changed)).state;
     },
 
     async listAdminPlans() {
@@ -1440,8 +1598,52 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
   };
 
+  // The boundary of every request-facing method (finding K12): a provider failure or a
+  // contended projection that no step above turned into an answer becomes the member's
+  // problem (`service_unavailable` when retrying can help), never an unhandled 500.
+  for (const name of REQUEST_METHODS) {
+    const method = service[name] as (...args: never[]) => Promise<unknown>;
+    (service as unknown as Record<string, unknown>)[name] = async (...args: never[]) => {
+      try {
+        return await method(...args);
+      } catch (error) {
+        if (error instanceof PaymentProviderError || error instanceof ProjectionContendedError) {
+          throw providerProblem(error);
+        }
+        throw error;
+      }
+    };
+  }
+
   return service;
 }
+
+/** Methods a request (member or staff) reaches; jobs keep raw failures so the queue retries. */
+const REQUEST_METHODS = [
+  "plans",
+  "startCheckout",
+  "getCheckout",
+  "confirmCheckout",
+  "previewPlanChange",
+  "changePlan",
+  "cancel",
+  "resume",
+  "setupPaymentMethod",
+  "getPaymentMethodSetup",
+  "listInvoices",
+  "validatePromotion",
+  "receiveWebhook",
+  "syncAccount",
+  "advanceClock",
+  "memberBilling",
+  "refundInvoice",
+  "cancelForStaff",
+  "extendTrial",
+  "grantComplimentaryPeriod",
+  "listAdminPlans",
+  "setPlanPrice",
+  "syncPlans",
+] as const satisfies readonly (keyof BillingService)[];
 
 /** The membership a snapshot reads (for playback's entitlement check). */
 export { snapshotMembership };

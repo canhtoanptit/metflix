@@ -96,6 +96,7 @@ export const billingRoutes = {
       "demo_account_protected",
       "subscription_required",
       "checkout_state_conflict",
+      "service_unavailable",
     ],
     rateLimit: "payment",
     rateLimitScope: "handler",
@@ -128,7 +129,12 @@ export const billingRoutes = {
     auth: "account-holder",
     summary: "Cancel the membership at the end of the billing period",
     response: Membership,
-    errors: ["demo_account_protected", "subscription_required", "checkout_state_conflict"],
+    errors: [
+      "demo_account_protected",
+      "subscription_required",
+      "checkout_state_conflict",
+      "service_unavailable",
+    ],
   }),
   resumeMembership: defineRoute({
     method: "POST",
@@ -138,7 +144,12 @@ export const billingRoutes = {
     auth: "account-holder",
     summary: "Resume a canceled or ended membership",
     response: Membership,
-    errors: ["payment_declined", "subscription_required", "checkout_state_conflict"],
+    errors: [
+      "payment_declined",
+      "subscription_required",
+      "checkout_state_conflict",
+      "service_unavailable",
+    ],
   }),
   getBillingConfig: defineRoute({
     method: "GET",
@@ -170,6 +181,7 @@ export const billingRoutes = {
       "unrestricted_profile_required",
       "demo_account_protected",
       "payments_not_configured",
+      "service_unavailable",
     ],
     examples: { request: { planId: "standard" } },
   }),
@@ -182,7 +194,7 @@ export const billingRoutes = {
     summary: "Where a checkout stands",
     params: IdParams,
     response: Checkout,
-    errors: ["not_found"],
+    errors: ["not_found", "service_unavailable"],
   }),
   confirmCheckout: defineRoute({
     method: "POST",
@@ -195,7 +207,13 @@ export const billingRoutes = {
       "Reads the confirmed card's fingerprint, checks trial eligibility, then creates the subscription with the trial, or as a paid one whose first payment the browser confirms next (`requires_payment`). Limited per account (`payment`).",
     params: IdParams,
     response: Checkout,
-    errors: ["not_found", "checkout_state_conflict", "payment_declined", "payments_not_configured"],
+    errors: [
+      "not_found",
+      "checkout_state_conflict",
+      "payment_declined",
+      "payments_not_configured",
+      "service_unavailable",
+    ],
     rateLimit: "payment",
   }),
   previewPlanChange: defineRoute({
@@ -209,7 +227,12 @@ export const billingRoutes = {
       "Apply exactly this preview with `PUT /account/subscription` and its `previewToken` (same proration date).",
     body: PlanChangePreviewBody,
     response: PlanChangePreview,
-    errors: ["subscription_required", "checkout_state_conflict", "demo_account_protected"],
+    errors: [
+      "subscription_required",
+      "checkout_state_conflict",
+      "demo_account_protected",
+      "service_unavailable",
+    ],
     examples: { request: { planId: "premium" } },
   }),
   setupPaymentMethod: defineRoute({
@@ -223,7 +246,12 @@ export const billingRoutes = {
       "The provider's event makes the confirmed card the default; a `past_due` membership's open invoice is then paid explicitly.",
     response: PaymentMethodSetup,
     successStatus: 201,
-    errors: ["subscription_required", "demo_account_protected", "payments_not_configured"],
+    errors: [
+      "subscription_required",
+      "demo_account_protected",
+      "payments_not_configured",
+      "service_unavailable",
+    ],
   }),
   getPaymentMethodSetup: defineRoute({
     method: "GET",
@@ -234,7 +262,7 @@ export const billingRoutes = {
     summary: "Where a card replacement stands",
     params: IdParams,
     response: PaymentMethodSetup,
-    errors: ["not_found"],
+    errors: ["not_found", "service_unavailable"],
   }),
   listInvoices: defineRoute({
     method: "GET",
@@ -257,7 +285,7 @@ export const billingRoutes = {
       "Reads the code first (the provider refuses exhausted and expired codes without saying which). Limited per account (`promotion`).",
     body: ValidatePromotionBody,
     response: PromotionQuote,
-    errors: ["promotion_code_invalid", "payments_not_configured"],
+    errors: ["promotion_code_invalid", "payments_not_configured", "service_unavailable"],
     rateLimit: "promotion",
     examples: { request: { code: "WELCOME50", planId: "standard" } },
   }),

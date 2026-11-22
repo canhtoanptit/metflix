@@ -600,3 +600,31 @@ erasure. Two staff routes, role `admin`, shaped as the job expects (40 staff rou
 - Fake provider (local modes, not the contract): its state is safe to share across replicas and
   isolates (finding K2); a request that keeps losing the race answers the port's retryable
   `unavailable` (the API's `service_unavailable`).
+
+## 2026-11-23 — billing fix round 4: a request that meets a provider call in flight (behaviour, documentation)
+
+- **No billing request answers 500 for a provider that is busy** (finding K12). With several
+  replicas a member's request can meet the same idempotent provider call already running
+  elsewhere (the worker, another replica): the fake answers "in flight", Stripe a 409
+  `idempotency_key_in_use` (both now the port's retryable `unavailable`), or the membership
+  record is contended. Such a request answers the current state where there is one, else
+  `503 service_unavailable` (retry):
+  - `GET /billing/payment-method/setup/:id` answers `status: "processing"` (no client secret)
+    while a card confirmed at the provider is being finished elsewhere; a later poll answers
+    `succeeded`.
+  - `GET /billing/checkout/:id` and `POST /billing/checkout/:id/confirm` answer the checkout as
+    it stands (`processing`) when the provider or the record cannot be read right then; a second
+    confirmation racing the first answers the checkout once the first has moved it on, else 503.
+  - Plan changes, cancel, resume and the staff actions (cancel, extend a trial, complimentary
+    period) answer the membership as the provider's own answer projects it when the change was
+    made but the projection cannot be written at that moment; it follows from the change's event.
+  - Anything else (a provider read that fails for a moment) answers 503.
+  `service_unavailable` is now listed in the `errors` of the billing member routes and of the
+  staff routes that refund, cancel, extend a trial or grant a complimentary period.
+- **A membership write that meets the worker's is waited out** (finding K13): a request retries
+  its write up to six times within about half a second (jittered pauses of 10 to 160 ms), and a
+  sync that finds the membership already as the provider has it writes nothing, so a burst of
+  events no longer contends with the requests reading alongside it. Only contention that
+  outlasts that falls back as above, or answers 503. `POST /diagnostics/billing/clock` always
+  answers the moved clock once the provider's clock has moved (it never answers 503 for the sync
+  after it; a second advance would move the clock again).

@@ -703,7 +703,11 @@ HPA ran the API at 5 replicas through every run):
 | C | conformance with the strict limits (`make k8s-redeploy RATE_LIMITS=strict`) | 134 | 131 | 1 | 2 | 1 066 s |
 | D | production | 134 | 93 | 1 | 40 | 649 s |
 | D′ | production, after routing `/_pay` and `/dev-idp` to the API in every environment | 134 | 94 | 0 | 40 | 652 s |
-| E | conformance, again (the cluster left running) | 134 | 129 | 1 | 4 | 305 s |
+| E | conformance, again | 134 | 129 | 1 | 4 | 305 s |
+| F1 | conformance, after billing's fix of K12 (new API image) | 134 | 130 | 0 | 4 | 294 s |
+| F2 | conformance, again, same database | 134 | 130 | 0 | 4 | 317 s |
+| F3 | conformance, again, same database (the cluster left running) | 134 | 130 | 0 | 4 | 283 s |
+| F4 | conformance with the strict limits, same database | 134 | 132 | 0 | 2 | 1 062 s |
 
 Run D's failure was the chart's: `billing.provider-config` (new) asserts that without a
 provider `/_pay` is not served, and production routed `/_pay` to the web app, whose SPA
@@ -713,7 +717,17 @@ skip reason true (billing: "the deployment has no payment provider (GET /billing
 answers provider none …)"; the staff checks: the development issuer "answered 404
 application/problem+json", Keycloak being the issuer).
 
-On the conformance variant every check passes except one, in three of four runs:
+**After billing's fix of K12** (runs F1 to F4) nothing fails: `billing.dunning` passes in all
+four, and so does every other check that can run (the skips are the four expected ones under
+relaxed limits, two under strict). Beside the suite's verdict, the logs of the same windows: no
+`http.unhandled_error`, no API `http.request` with a 5xx status and no `level: error` line in the
+API's or the workers' logs, and no 5xx in Envoy's access log of the same windows (2 869,
+1 920, 2 965 and 3 638 lines; in F4 the autoscaler took the API from 5 to 2 replicas mid-run,
+so the API's own logs cover only the surviving pods there, and the gateway's log, which every
+request crosses, is the one that counts).
+
+Before that fix, on the conformance variant every check passed except one, in three of four
+runs:
 `billing.dunning` got a `500
 internal_error` from `GET /billing/payment-method/setup/:id` (finding K12, §9.11): the poll's
 completion of the card change ran into the same completion running elsewhere (the worker
@@ -1072,7 +1086,7 @@ outside; the table below it is the finding as first reported):
 | K8 | yes: `export-events` reads and posts through the staff API | the chart's wrapper is gone; a member's export deferred under the grace, then completed and recorded by the next round; an erasure confirmed by the round after the cooling-off |
 | K9 | yes: tokens renewed, rate-limit waits not counted | the strict run (C, 1 066 s) passed its staff and experiment checks |
 | K10, K11 | corrected here (docs and the comment) | — |
-| **K12** (new) | — | see the table below |
+| K12 (found in this round) | yes: a card-change poll that meets the completion running elsewhere answers `processing` (the next poll `succeeded`); every request-facing billing method answers the current state or a 503 on a busy provider or a lost race, never an unhandled 500; Stripe's 409 for a key in use maps to the same retryable answer | `billing.dunning` passes in four of four runs (F1 to F4 in §9.2, three relaxed and one strict, five API replicas and two workers); zero `http.unhandled_error`, zero 5xx in the API's and the gateway's logs over those runs. No chart change was needed |
 
 | # | Owner | Where | Seen | The design calls for |
 | --- | --- | --- | --- | --- |

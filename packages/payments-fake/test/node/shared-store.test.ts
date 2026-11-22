@@ -10,7 +10,7 @@ import type { FakeTestCard } from "../../src/cards.ts";
 import { FakePaymentProvider } from "../../src/provider.ts";
 import { createSqlFakeStore } from "../../src/sql-store.ts";
 import { type FakeStore, MemoryFakeStore } from "../../src/store.ts";
-import { TEST_PRICES, TEST_WEBHOOK_SECRET } from "../harness.ts";
+import { forwardStore, TEST_PRICES, TEST_WEBHOOK_SECRET } from "../harness.ts";
 
 /**
  * Finding K2 (docs/KUBERNETES.md §9.11): API and worker replicas each run a fake provider over
@@ -22,23 +22,6 @@ import { TEST_PRICES, TEST_WEBHOOK_SECRET } from "../harness.ts";
 const DAY_SEC = 24 * 60 * 60;
 const key = () => ({ idempotencyKey: billingIdempotencyKey(crypto.randomUUID(), 1) });
 
-function forward(inner: FakeStore): FakeStore {
-  return {
-    get: (kind, id) => inner.get(kind, id),
-    byCustomer: (customerId, kinds) => inner.byCustomer(customerId, kinds),
-    byKind: (kind, options) => inner.byKind(kind, options),
-    write: (documents) => inner.write(documents),
-    delete: (keys) => inner.delete(keys),
-    reserveKey: (k, fingerprint, now) => inner.reserveKey(k, fingerprint, now),
-    settleKey: (k, outcome) => inner.settleKey(k, outcome),
-    releaseKey: (k) => inner.releaseKey(k),
-    clock: (customerId) => inner.clock(customerId),
-    setClock: (customerId, clock) => inner.setClock(customerId, clock),
-    guardVersions: (keys) => inner.guardVersions(keys),
-    commit: (input) => inner.commit(input),
-  };
-}
-
 /** Two views of one store whose first commits, once armed, meet before either goes ahead. */
 function racing(inner: FakeStore) {
   let armed = false;
@@ -49,7 +32,7 @@ function racing(inner: FakeStore) {
   const party = (): FakeStore => {
     let waiting = false;
     return {
-      ...forward(inner),
+      ...forwardStore(inner),
       async commit(input) {
         if (armed && !waiting) {
           waiting = true;
@@ -224,7 +207,7 @@ for (const [name, open] of stores) {
       try {
         const { customerId, paymentMethodId } = await member(a);
         const losing = new FakePaymentProvider({
-          store: { ...forward(store), commit: async () => false },
+          store: { ...forwardStore(store), commit: async () => false },
           webhookSecret: TEST_WEBHOOK_SECRET,
         });
         const code = await failure(

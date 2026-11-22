@@ -85,8 +85,11 @@ export function mapStripeError(
   const decline = typeof error?.decline_code === "string" ? error.decline_code : null;
   if (status === 429 || code === "rate_limit" || code === "lock_timeout") return "rate_limited";
   if (status >= 500) return "unavailable";
+  // Another request with this key is still running (another replica, the worker): retryable,
+  // like the fake's "in flight" (finding K12). Checked before the type, whatever type Stripe
+  // gives it; only a key reused with other parameters is an idempotency conflict.
+  if (code === "idempotency_key_in_use") return "unavailable";
   if (type === "idempotency_error") return "idempotency_conflict";
-  if (status === 409 && code === "idempotency_key_in_use") return "unavailable";
   if (status === 404 || code === "resource_missing") return "not_found";
   if (
     code === "invoice_payment_intent_requires_action" ||

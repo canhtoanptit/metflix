@@ -3,6 +3,24 @@ import type { PaymentProviderHarness } from "@webflix/core/testing";
 import { FakePaymentProvider, type FakePaymentProviderOptions } from "../src/provider.ts";
 import type { FakeStore } from "../src/store.ts";
 
+/** A store that forwards every call to `inner` (tests override the calls they hold or count). */
+export function forwardStore(inner: FakeStore): FakeStore {
+  return {
+    get: (kind, id) => inner.get(kind, id),
+    byCustomer: (customerId, kinds) => inner.byCustomer(customerId, kinds),
+    byKind: (kind, options) => inner.byKind(kind, options),
+    write: (documents) => inner.write(documents),
+    delete: (keys) => inner.delete(keys),
+    reserveKey: (key, fingerprint, now) => inner.reserveKey(key, fingerprint, now),
+    settleKey: (key, outcome) => inner.settleKey(key, outcome),
+    releaseKey: (key) => inner.releaseKey(key),
+    clock: (customerId) => inner.clock(customerId),
+    setClock: (customerId, clock) => inner.setClock(customerId, clock),
+    guardVersions: (keys) => inner.guardVersions(keys),
+    commit: (input) => inner.commit(input),
+  };
+}
+
 export const TEST_WEBHOOK_SECRET = "whsec_fake_test_only_0000000000000000";
 
 export const TEST_PRICES: { basic: CatalogueEntry; premium: CatalogueEntry } = {

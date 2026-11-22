@@ -125,6 +125,8 @@ describe("Stripe client", () => {
       "authentication_required",
     ],
     [400, { type: "idempotency_error" }, "idempotency_conflict"],
+    [409, { type: "invalid_request_error", code: "idempotency_key_in_use" }, "unavailable"],
+    [409, { type: "idempotency_error", code: "idempotency_key_in_use" }, "unavailable"],
     [404, { type: "invalid_request_error", code: "resource_missing" }, "not_found"],
     [429, { type: "invalid_request_error", code: "rate_limit" }, "rate_limited"],
     [500, { type: "api_error" }, "unavailable"],
@@ -167,6 +169,29 @@ describe("Stripe client", () => {
     expect(customer.id).toBe("cus_1");
     expect(seen.map((call) => call.key)).toEqual(["webflix-op-1", "webflix-op-1", "webflix-op-1"]);
     expect(new Set(seen.map((call) => call.version))).toEqual(new Set(["2026-11-18.endive"]));
+  });
+
+  it("answers a key still in use after its retries as retryable, like the fake's in flight", async () => {
+    let calls = 0;
+    const client = new StripeClient({
+      secretKey: "rk_test_x",
+      sleep: async () => {},
+      fetch: async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({ error: { type: "idempotency_error", code: "idempotency_key_in_use" } }),
+          { status: 409 },
+        );
+      },
+    });
+    const error = await client.post("/v1/customers", {}, "webflix-op-2").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(calls).toBe(3);
+    expect(error).toBeInstanceOf(PaymentProviderError);
+    expect((error as PaymentProviderError).code).toBe("unavailable");
+    expect((error as PaymentProviderError).retryable).toBe(true);
   });
 
   it("turns a decline into the port's error, and an answer of 404 into null for reads", async () => {
