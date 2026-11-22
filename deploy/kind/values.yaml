@@ -2,6 +2,13 @@
 # defaults: smaller footprint (with CPU limits, so the cluster can never take over the laptop)
 # and the kind GatewayClass; behaviour (rate limits, environment, security) stays production.
 # Images (repository and content-derived tag) are passed by deploy/kind/up.sh.
+#
+# Milestone 2 in its production configuration: the staff issuer is the in-chart Keycloak (the
+# console client, the webflix-admin-api audience, the roles, demo staff, the jobs' service
+# account), email leaves through SMTP to the in-chart mail catcher, behaviour events go to the
+# lake in the bucket, and the pipeline's CronJobs run against it with Keycloak's service
+# account. No payment provider is configured: production refuses the fake one and Stripe's test
+# keys, so checkout stays closed (the conformance variant, values-conformance.yaml, has the fake).
 
 config:
   publicOrigin: http://localhost:8080
@@ -106,6 +113,39 @@ seed:
     limits:
       cpu: 1000m
       memory: 768Mi
+
+keycloak:
+  enabled: true
+  # One demo staff member per role (password in the webflix-keycloak Secret, key staff-password).
+  demoStaff: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+mailcatcher:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+pipeline:
+  enabled: true
+  threads: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1536Mi
 
 migrations:
   resources:

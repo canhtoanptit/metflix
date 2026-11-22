@@ -171,6 +171,7 @@ the ConfigMap, then secrets by reference (never inlined).
 envFrom:
   - configMapRef:
       name: {{ include "webflix.component" (list . "config") }}
+  {{- include "webflix.appSecretEnvFrom" . | nindent 2 }}
 env:
   - name: WEBFLIX_MEDIA_TOKEN_KEYS
     valueFrom:
@@ -221,14 +222,23 @@ env:
   # Private CAs (managed PostgreSQL, Valkey over TLS, an internal S3 endpoint), trusted by
   # every TLS client in the process on top of the public roots.
   - name: NODE_EXTRA_CA_CERTS
-    value: /etc/webflix/ca/{{ .Values.tls.extraCaCerts.key }}
+    value: /etc/webflix/ca/{{ include "webflix.caBundle.key" . }}
 {{- end }}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ TLS trust --- */}}
 
 {{- define "webflix.caBundle.enabled" -}}
-{{- if or .Values.tls.extraCaCerts.secretName .Values.tls.extraCaCerts.configMapName -}}true{{- end -}}
+{{- if or .Values.tls.extraCaCerts.secretName .Values.tls.extraCaCerts.configMapName .Values.keycloak.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/* The key of the CA bundle file: tls.extraCaCerts' own, else Keycloak's CA (ca.crt). */}}
+{{- define "webflix.caBundle.key" -}}
+{{- if or .Values.tls.extraCaCerts.secretName .Values.tls.extraCaCerts.configMapName -}}
+{{- .Values.tls.extraCaCerts.key -}}
+{{- else -}}
+ca.crt
+{{- end -}}
 {{- end -}}
 
 {{/* Volumes every pod running the API image needs: /tmp, and TLS material when configured. */}}
@@ -251,6 +261,14 @@ env:
     items:
       - key: {{ $ca.key }}
         path: {{ $ca.key }}
+{{- else if .Values.keycloak.enabled }}
+# The CA of Keycloak's certificate (the staff issuer's discovery, keys and token endpoint).
+- name: ca-bundle
+  secret:
+    secretName: {{ include "webflix.keycloak.tlsSecretName" . }}
+    items:
+      - key: ca.crt
+        path: ca.crt
 {{- end }}
 {{- with .Values.externalDatabase.clientCertSecret }}
 - name: database-client-cert
@@ -282,7 +300,7 @@ cluster), so a `helm upgrade` after rotating a key rolls the pods. Empty without
 */}}
 {{- define "webflix.secretsChecksum" -}}
 {{- $data := dict -}}
-{{- range $name := list (include "webflix.mediaTokens.secretName" .) (include "webflix.postgresql.secretName" .) (include "webflix.valkey.secretName" .) (ternary (include "webflix.objectStore.secretName" .) .Values.externalS3.existingSecret .Values.objectStore.enabled) -}}
+{{- range $name := concat (list (include "webflix.appSecret.name" .)) .Values.secrets.envFrom (list (include "webflix.mediaTokens.secretName" .) (include "webflix.postgresql.secretName" .) (include "webflix.valkey.secretName" .) (ternary (include "webflix.objectStore.secretName" .) .Values.externalS3.existingSecret .Values.objectStore.enabled)) -}}
 {{- if $name -}}
 {{- $secret := lookup "v1" "Secret" $.Release.Namespace $name -}}
 {{- if $secret -}}{{- $_ := set $data $name ($secret.data | default dict) -}}{{- end -}}

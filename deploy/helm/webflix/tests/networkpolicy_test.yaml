@@ -110,4 +110,4 @@ tests:
           value: webflix-postgresql
       - equal:
           path: spec.ingress[0].from[0].podSelector.matchExpressions[0].values
-          value: [api, worker, migrate, seed]
+          value: [api, worker, migrate, seed, pipeline]

@@ -259,7 +259,12 @@ async function milestone1Rows(database: Database) {
 for (const harness of dialectHarnesses) {
   describe.skipIf(harness.skip)(`milestone 2 migrations on ${harness.label}`, () => {
     it("upgrade a milestone 1 database without touching its rows", async () => {
-      const { database, cleanup } = await harness.create();
+      // PostgreSQL: a schema of its own, left empty (dropping a migrated one would race the
+      // other test files' migrators); SQLite: its own in-memory database, emptied below.
+      const { database, cleanup } =
+        harness.name === "postgres"
+          ? await createPostgresHarness({ migrate: false })
+          : await harness.create();
       try {
         // Back to the milestone 1 schema: a fresh database migrated by the previous release.
         await resetToPreviousRelease(database);
@@ -302,11 +307,20 @@ for (const harness of dialectHarnesses) {
  * the test starts from exactly the milestone 1 schema.
  */
 async function resetToPreviousRelease(database: Database): Promise<void> {
+  let schema: string | undefined;
   if (database.dialect === "postgres") {
-    await sql`DROP SCHEMA IF EXISTS ${sql.raw(await currentSchemaName(database))} CASCADE`.execute(
+    // The harness created this schema empty: nothing to drop.
+    const tables = await sql<{ count: string }>`
+      SELECT count(*) AS count FROM pg_tables WHERE schemaname = current_schema()`.execute(
       database.db,
     );
-    await sql`CREATE SCHEMA ${sql.raw(await currentSchemaName(database))}`.execute(database.db);
+    if (Number(tables.rows[0]?.count ?? 0) !== 0) {
+      throw new Error("resetToPreviousRelease: expected an empty PostgreSQL schema");
+    }
+    const current = await sql<{ schema: string }>`SELECT current_schema() AS schema`.execute(
+      database.db,
+    );
+    schema = current.rows[0]?.schema;
   } else {
     await sql`PRAGMA foreign_keys = OFF`.execute(database.db);
     const tables = await sql<{
@@ -321,6 +335,9 @@ async function resetToPreviousRelease(database: Database): Promise<void> {
   }
   const migrator = new Migrator({
     db: database.db,
+    // As migrateToLatest does: Kysely otherwise looks for its bookkeeping tables in every schema,
+    // finds another test file's and skips creating this schema's own.
+    ...(schema ? { migrationTableSchema: schema } : {}),
     provider: {
       async getMigrations() {
         return Object.fromEntries(
@@ -334,11 +351,4 @@ async function resetToPreviousRelease(database: Database): Promise<void> {
   });
   const { error } = await migrator.migrateToLatest();
   if (error) throw error;
-}
-
-async function currentSchemaName(database: Database): Promise<string> {
-  const result = await sql<{ schema: string }>`SELECT current_schema() AS schema`.execute(
-    database.db,
-  );
-  return result.rows[0]?.schema ?? "public";
 }

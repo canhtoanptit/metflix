@@ -8,13 +8,20 @@ metadata:
     {{- include "webflix.labels" (list . "web") | nindent 4 }}
 data:
   security-headers.conf: |
-    add_header Content-Security-Policy {{ .Values.web.contentSecurityPolicy | replace "\n" " " | trim | quote }} always;
+    {{- /* The CSP, plus Stripe.js's sources when Stripe is the payment provider (webflix.web.csp).
+    Kept as one expression on .Values.web.contentSecurityPolicy: the Cloudflare mode reads this
+    file (apps/edge/scripts/lib/security-headers.ts) and adds the same sources itself. */}}
+    add_header Content-Security-Policy {{ .Values.web.contentSecurityPolicy | list $ | include "webflix.web.csp" | quote }} always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
     add_header Cross-Origin-Resource-Policy "same-origin" always;
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+    {{- /* payment: the card wallets (Apple Pay, Google Pay) of Stripe's Payment Element run the
+    Payment Request API inside Stripe.js's frames, which payment=() disables in every frame
+    whatever their allow attribute says. Delegable to Stripe.js's origins only; inert unless the
+    CSP lets those frames load, which it does only when Stripe is the provider. */}}
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(self \"https://js.stripe.com\" \"https://*.js.stripe.com\"), usb=()" always;
     {{- if .Values.gateway.tls.enabled }}
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     {{- end }}

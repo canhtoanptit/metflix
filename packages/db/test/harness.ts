@@ -44,21 +44,30 @@ async function adminQuery(sql: string): Promise<void> {
 export async function createPostgresHarness(
   options: Partial<
     Pick<PostgresOptions, "applicationName" | "maxConnections" | "onIdleConnectionError">
-  > = {},
+  > & {
+    /**
+     * `false`: leave the new schema empty (a test that migrates it with an older migration list).
+     * Never drop a schema or its tables to get there: Kysely's migrator introspects every schema
+     * of the server by name (`has_schema_privilege`, `pg_get_serial_sequence`), so an object
+     * dropped while another test file migrates fails that file's migration.
+     */
+    migrate?: boolean;
+  } = {},
 ): Promise<DatabaseHarness> {
   if (!postgresAvailable) throw new Error("WEBFLIX_TEST_POSTGRES_URL is not set");
   // Unquoted lowercase identifier: safe to interpolate, matches `search_path` without quoting.
   const schema = `t_${randomUUID().replaceAll("-", "").slice(0, 20)}`;
   await adminQuery(`CREATE SCHEMA ${schema}`);
+  const { migrate = true, ...poolOptions } = options;
   const database = createPostgresDatabase({
     connectionString: postgresUrl,
     schema,
     maxConnections: 2,
     applicationName: "webflix-db-test",
-    ...options,
+    ...poolOptions,
   });
   try {
-    await migrateToLatest(database);
+    if (migrate) await migrateToLatest(database);
   } catch (error) {
     await database.close();
     throw error;

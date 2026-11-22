@@ -12,7 +12,8 @@ export const KUBECONFIG =
   process.env.WEBFLIX_KUBECONFIG ?? resolve(import.meta.dirname, "../../../.cache/kube/config");
 if (!CONTEXT.startsWith("kind-webflix")) throw new Error(`Refusing to use ${CONTEXT}`);
 export const NAMESPACE = process.env.WEBFLIX_NAMESPACE ?? "webflix";
-export const RELEASE = process.env.WEBFLIX_RELEASE ?? "webflix";
+// The Helm release name (WEBFLIX_HELM_RELEASE; WEBFLIX_RELEASE is a product setting).
+export const RELEASE = process.env.WEBFLIX_HELM_RELEASE ?? "webflix";
 
 export function kubectl(args: string[], input?: string): string {
   return execFileSync(

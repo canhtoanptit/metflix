@@ -6,6 +6,13 @@
 # Safe to re-run: every step converges (existing cluster reused, unchanged images keep their
 # tag so nothing rolls, Helm upgrades in place, media uploads skip what is already stored).
 #
+#   NODES=1|3        nodes of a new cluster: 1 (default, everyday work) or 3 (the failure-
+#                    injection targets: node loss, partition, spread across zones). Fixed at
+#                    creation: an existing cluster is reused as it is, and a different NODES
+#                    for it is refused (make k8s-down first)
+#   VARIANT=         production (default: the chart in its production configuration, kind
+#                    sizes) or conformance (the development stand-ins, short timers and the
+#                    pipeline's privacy jobs on a schedule: deploy/kind/values-conformance.yaml)
 #   SKIP_BUILD=1     reuse the images already loaded (fast config-only redeploy)
 #   MEDIA_PROFILE=   fast|full: packaged media to upload (default: whichever exists)
 #   SKIP_MEDIA=1     do not upload media (titles play the external HLS fallback)
@@ -40,6 +47,11 @@ ok "docker $(docker version --format '{{.Server.Version}}'), $(kind version | cu
 # --- 2. cluster --------------------------------------------------------------------------------
 step "Cluster '$CLUSTER'"
 if cluster_exists; then
+  have_nodes="$(cluster_nodes)"
+  if [ -n "${NODES:-}" ] && [ "$NODES" != "$have_nodes" ]; then
+    FAIL_HINT="The node count is fixed when a kind cluster is created: make k8s-down && make k8s-up NODES=$NODES" \
+      fail "NODES=$NODES, but the existing cluster '$CLUSTER' has $have_nodes node$([ "$have_nodes" = 1 ] || echo s)."
+  fi
   # After a Docker restart the node containers may be stopped.
   for node in $(kind get nodes --name "$CLUSTER"); do
     if [ "$(docker inspect -f '{{.State.Running}}' "$node" 2>/dev/null)" != "true" ]; then
@@ -51,16 +63,19 @@ if cluster_exists; then
   assert_own_cluster
   kc wait --for=condition=Ready nodes --all --timeout=180s >/dev/null \
     || fail "The cluster exists but its nodes are not Ready. Try: make k8s-down && make k8s-up"
-  ok "reusing the existing cluster"
+  ok "reusing the existing cluster ($have_nodes node$([ "$have_nodes" = 1 ] || echo s))"
 else
+  nodes="${NODES:-1}"
+  config="$(cluster_config "$nodes")"
   mkdir -p "$(dirname "$KUBECONFIG_FILE")"
   # --kubeconfig: kind writes credentials (and its current-context) only to the repo's file.
-  ( umask 077 && kind create cluster --config "$KIND_DIR/cluster.yaml" --name "$CLUSTER" \
+  ( umask 077 && kind create cluster --config "$config" --name "$CLUSTER" \
       --kubeconfig "$KUBECONFIG_FILE" --wait 180s ) \
     || fail "kind could not create the cluster (see above)."
   chmod 600 "$KUBECONFIG_FILE"
   assert_own_cluster
-  ok "created (1 control plane, 2 workers, Kubernetes $(kc version -o yaml | awk '/serverVersion/ {f=1} f && /gitVersion/ {print $2; exit}'))"
+  if [ "$nodes" = 1 ]; then shape="1 node"; else shape="1 control plane, 2 workers in 2 zones"; fi
+  ok "created ($shape, Kubernetes $(kc version -o yaml | awk '/serverVersion/ {f=1} f && /gitVersion/ {print $2; exit}'))"
 fi
 info "kubeconfig: ${KUBECONFIG_FILE#"$ROOT/"} (~/.kube/config is never touched)"
 
@@ -103,14 +118,37 @@ else
   fi
   rm -f "$build_log"
 fi
+# The pipeline's jobs (pipeline.enabled in the kind values): the webflix-recs image (built by the
+# pipeline's own target) and the Node tools image. One build at a time.
+if [ -n "${SKIP_BUILD:-}" ] && docker image inspect webflix-recs:dev webflix-tools:dev >/dev/null 2>&1; then
+  info "SKIP_BUILD set: reusing webflix-recs:dev and webflix-tools:dev"
+else
+  info "building webflix-tools (the pipeline's Node steps, the importers) and webflix-recs (services/recs/Dockerfile)"
+  build_log="$(mktemp -t webflix-build.XXXXXX)"
+  git_dirty=1
+  [ -z "$(git -C "$ROOT" status --porcelain -- services/recs 2>/dev/null)" ] && git_dirty=0
+  if ! docker buildx bake -f "$ROOT/deploy/docker/docker-bake.hcl" --load tools >"$build_log" 2>&1 \
+    || ! GIT_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" GIT_DIRTY="$git_dirty" \
+      docker buildx bake -f "$ROOT/deploy/docker/docker-bake.hcl" --load recs >>"$build_log" 2>&1; then
+    tail -n 40 "$build_log" >&2
+    FAIL_HINT="Full log: $build_log" fail "Pipeline image build failed."
+  fi
+  rm -f "$build_log"
+fi
 API_TAG="$(image_tag webflix-api:dev)"
 WEB_TAG="$(image_tag webflix-web:dev)"
+RECS_TAG="$(image_tag webflix-recs:dev)"
+TOOLS_TAG="$(image_tag webflix-tools:dev)"
 docker tag webflix-api:dev "webflix-api:$API_TAG"
 docker tag webflix-web:dev "webflix-web:$WEB_TAG"
+docker tag webflix-recs:dev "webflix-recs:$RECS_TAG"
+docker tag webflix-tools:dev "webflix-tools:$TOOLS_TAG"
 # kind skips images a node already has.
-kind load docker-image --name "$CLUSTER" "webflix-api:$API_TAG" "webflix-web:$WEB_TAG" >/dev/null \
+kind load docker-image --name "$CLUSTER" "webflix-api:$API_TAG" "webflix-web:$WEB_TAG" \
+  "webflix-recs:$RECS_TAG" "webflix-tools:$TOOLS_TAG" >/dev/null \
   || fail "kind could not load the images into the nodes."
-ok "webflix-api:$API_TAG ($(docker image inspect webflix-api:dev --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1e6}')), webflix-web:$WEB_TAG"
+size() { docker image inspect "$1" --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1e6}'; }
+ok "webflix-api:$API_TAG ($(size webflix-api:dev)), webflix-web:$WEB_TAG, webflix-recs:$RECS_TAG ($(size webflix-recs:dev)), webflix-tools:$TOOLS_TAG ($(size webflix-tools:dev))"
 
 # --- 5. release ---------------------------------------------------------------------------------
 # Restricted Pod Security: every pod of the chart must run unprivileged.
@@ -123,8 +161,10 @@ deploy_release() { # $1: media checksum this revision seeds with
   local log pid last summary conflicts
   log="$(mktemp -t webflix-helm.XXXXXX)"
   local values=(-f "$KIND_DIR/values.yaml")
+  [ "$VARIANT" = "conformance" ] && values+=(-f "$KIND_DIR/values-conformance.yaml")
   [ "${RATE_LIMITS:-strict}" = "relaxed" ] && values+=(-f "$KIND_DIR/values-relaxed-limits.yaml")
   values+=(--set "api.image.tag=$API_TAG" --set "web.image.tag=$WEB_TAG" --set-string "seed.mediaChecksum=$1")
+  values+=(--set "pipeline.image.tag=$RECS_TAG" --set "pipeline.tools.image.tag=$TOOLS_TAG")
   local force=()
   if [ "${K8S_OWNERSHIP:-take}" != "off" ] && hc -n "$NAMESPACE" status "$RELEASE" >/dev/null 2>&1; then
     conflicts="$(ownership_conflicts "${values[@]}")"
@@ -170,11 +210,19 @@ deploy_release() { # $1: media checksum this revision seeds with
   rm -f "$log"
 }
 
+# The variant: VARIANT=production|conformance, else the one deployed now (so k8s-redeploy keeps
+# it), else production.
+VARIANT="${VARIANT:-$(deployed_variant)}"
+case "$VARIANT" in
+  production | conformance) ;;
+  *) fail "VARIANT=$VARIANT: production (default) or conformance" ;;
+esac
 PROFILE="$(media_profile)"
 SEEDED="$(seeded_media_checksum)"
 step "Release '$RELEASE' (helm upgrade --install, migrate + seed Jobs)"
 deploy_release "$SEEDED"
-ok "revision $(hc -n "$NAMESPACE" history "$RELEASE" --max 1 -o yaml | awk '/revision:/ {print $2}') deployed (rate limits: ${RATE_LIMITS:-strict})"
+if [ -n "${RATE_LIMITS:-}" ]; then limits="$RATE_LIMITS"; elif [ "$VARIANT" = conformance ]; then limits="relaxed (the variant's)"; else limits=strict; fi
+ok "revision $(hc -n "$NAMESPACE" history "$RELEASE" --max 1 -o yaml | awk '/revision:/ {print $2}') deployed ($VARIANT configuration, rate limits: $limits)"
 
 # --- 6. media -------------------------------------------------------------------------------------
 step "Media"

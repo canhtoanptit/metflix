@@ -52,7 +52,7 @@
         },
         "rateLimits": {
           "type": "object",
-          "description": "Rate-limit overrides by policy name (kebab or camel case) → WEBFLIX_RATE_LIMIT_<POLICY>",
+          "description": "Rate-limit overrides by policy name (kebab or camel case) \u2192 WEBFLIX_RATE_LIMIT_<POLICY>",
           "propertyNames": {
             "pattern": "^[a-zA-Z][a-zA-Z0-9-]*$"
           },
@@ -87,7 +87,7 @@
         "databaseTimeouts": {
           "type": "object",
           "additionalProperties": false,
-          "description": "PostgreSQL budgets per role in ms → WEBFLIX_DATABASE_<ROLE>_{STATEMENT,QUERY}_TIMEOUT_MS",
+          "description": "PostgreSQL budgets per role in ms \u2192 WEBFLIX_DATABASE_<ROLE>_{STATEMENT,QUERY}_TIMEOUT_MS",
           "properties": {
             "request": {
               "type": "object",
@@ -143,6 +143,221 @@
           "type": ["integer", "null"],
           "minimum": 0,
           "description": "TCP keepalive first probe on database connections (ms; 0 off; null: 10000)"
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "oidcProviders": {
+              "type": "string",
+              "pattern": "^$|^(google|apple|keycloak)(,(google|apple|keycloak))*$",
+              "description": "WEBFLIX_OIDC_PROVIDERS"
+            },
+            "google": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clientId": {
+                  "type": "string"
+                },
+                "issuer": {
+                  "type": "string",
+                  "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+                }
+              }
+            },
+            "apple": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clientId": {
+                  "type": "string"
+                },
+                "teamId": {
+                  "type": "string"
+                },
+                "keyId": {
+                  "type": "string"
+                },
+                "issuer": {
+                  "type": "string",
+                  "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+                }
+              }
+            },
+            "keycloak": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clientId": {
+                  "type": "string"
+                },
+                "issuer": {
+                  "type": "string",
+                  "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+                }
+              }
+            }
+          },
+          "description": "Consumer sign-in (docs/BACKEND.md \u00a74, identity)"
+        },
+        "email": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sender": {
+              "type": "string",
+              "enum": ["", "memory", "outbox", "smtp", "http"]
+            },
+            "from": {
+              "type": "string"
+            },
+            "smtp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "type": ["integer", "null"],
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "tls": {
+                  "type": "string",
+                  "enum": ["", "none", "implicit"]
+                },
+                "username": {
+                  "type": "string"
+                }
+              }
+            },
+            "http": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+                },
+                "provider": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "description": "Email sender (identity)"
+        },
+        "billing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paymentProvider": {
+              "type": "string",
+              "enum": ["", "fake", "stripe", "memory"]
+            },
+            "graceSec": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
+            "fake": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "delivery": {
+                  "type": "string",
+                  "enum": ["", "orderly", "unruly", "outage"]
+                },
+                "promotions": {
+                  "type": "string"
+                },
+                "retriesExhausted": {
+                  "type": "string",
+                  "enum": ["", "unpaid", "cancel"]
+                }
+              }
+            }
+          },
+          "description": "Payments (billing)"
+        },
+        "events": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sink": {
+              "type": "string",
+              "enum": ["", "lake", "memory"]
+            },
+            "consentMode": {
+              "type": "string",
+              "enum": ["", "opt-in", "opt-out", "off"]
+            },
+            "exportEvents": {
+              "type": "string",
+              "enum": ["", "batch", "inline"]
+            },
+            "deletionCoolingOffSec": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
+            "retentionDays": {
+              "type": ["integer", "null"],
+              "minimum": 1
+            },
+            "aggregatesRetentionDays": {
+              "type": ["integer", "null"],
+              "minimum": 1
+            },
+            "exportLinkTtlSec": {
+              "type": ["integer", "null"],
+              "minimum": 60
+            },
+            "release": {
+              "type": "string",
+              "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$"
+            }
+          },
+          "description": "Behaviour events and privacy (events)"
+        },
+        "recommendations": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "store": {
+              "type": "string",
+              "enum": ["", "database", "memory"]
+            },
+            "defaultPolicy": {
+              "type": "string",
+              "enum": ["", "learned", "rules"]
+            },
+            "exploreShare": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "description": "Recommendation serving (personalisation)"
+        },
+        "staff": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "verifier": {
+              "type": "string",
+              "enum": ["", "oidc", "memory"]
+            },
+            "issuer": {
+              "type": "string",
+              "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+            },
+            "algorithms": {
+              "type": "string",
+              "pattern": "^$|^(RS256|ES256)(,(RS256|ES256))*$"
+            }
+          },
+          "description": "The staff API's token verifier (admin)"
         }
       },
       "additionalProperties": false
@@ -157,6 +372,18 @@
         "generateWithoutCluster": {
           "type": "boolean",
           "description": "Allow generating credentials when rendering without cluster access (throwaway renders only)"
+        },
+        "appExistingSecret": {
+          "type": "string",
+          "description": "Secret with WEBFLIX_PSEUDONYM_KEY (and outside production WEBFLIX_DEV_IDP_SECRET, WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET); empty: generated and kept"
+        },
+        "envFrom": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Secrets whose keys become environment variables (provider credentials)"
         }
       },
       "additionalProperties": false
@@ -1429,6 +1656,339 @@
           }
         }
       }
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^$|^sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^$|^sha256:[a-f0-9]{64}$"
+                }
+              }
+            }
+          }
+        },
+        "store": {
+          "type": "string",
+          "pattern": "^$|^s3://[^\\s]+$"
+        },
+        "threads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "staffApi": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+            },
+            "tokenUrl": {
+              "type": "string",
+              "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+            },
+            "clientId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "concurrencyPolicy": {
+          "type": "string",
+          "enum": ["Forbid", "Replace", "Allow"]
+        },
+        "successfulJobsHistoryLimit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failedJobsHistoryLimit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 60
+        },
+        "backoffLimit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ttlSecondsAfterFinished": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "type": "object"
+        },
+        "jobs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "compact": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "type": "string",
+                  "minLength": 9
+                },
+                "graceMinutes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "deleteSources": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "erase": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "type": "string",
+                  "minLength": 9
+                }
+              }
+            },
+            "exportEvents": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "type": "string",
+                  "minLength": 9
+                },
+                "graceMinutes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "analyse": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "type": "string",
+                  "minLength": 9
+                }
+              }
+            },
+            "trainAndScore": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "type": "string",
+                  "minLength": 9
+                }
+              }
+            }
+          }
+        },
+        "extraEnv": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        },
+        "lake": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Serialize the lake-rewriting jobs in one CronJob (stores without conditional writes, such as Garage)",
+          "properties": {
+            "serialize": {
+              "type": ["string", "boolean"],
+              "enum": ["auto", true, false]
+            },
+            "schedule": {
+              "type": "string",
+              "minLength": 9
+            },
+            "compactEveryMinutes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "eraseEveryHours": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        }
+      },
+      "description": "The recommendation pipeline's and the privacy jobs' CronJobs (services/recs)"
+    },
+    "keycloak": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^$|^sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "realm": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "hostname": {
+          "type": "string",
+          "pattern": "^$|^https?://[^\\s]+[^/\\s]$"
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": {
+              "type": "string"
+            }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "jdbcUrl": {
+              "type": "string",
+              "pattern": "^$|^jdbc:postgresql://[^\\s]+$"
+            },
+            "username": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string"
+            }
+          }
+        },
+        "demoStaff": {
+          "type": "boolean"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "tolerations": {
+          "type": "array"
+        },
+        "affinity": {
+          "type": "object"
+        }
+      },
+      "description": "Keycloak, the staff issuer (optional)"
+    },
+    "mailcatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^$|^sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        }
+      },
+      "description": "Mailpit: catches what the SMTP sender sends (local clusters)"
     }
   }
 }

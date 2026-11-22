@@ -19,13 +19,13 @@ API_VERSIONS=(
   --api-versions gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy
   --api-versions monitoring.coreos.com/v1/ServiceMonitor
 )
-VALUE_SETS=("" "$KIND_DIR/values.yaml" "$CHART/ci/external-values.yaml" "$CHART/ci/shared-gateway-values.yaml")
+VALUE_SETS=("" "$KIND_DIR/values.yaml" "$KIND_DIR/values.yaml $KIND_DIR/values-conformance.yaml" "$CHART/ci/external-values.yaml" "$CHART/ci/shared-gateway-values.yaml")
 
 step "helm lint"
 for values in "${VALUE_SETS[@]}"; do
   label="${values:-defaults}"
   args=()
-  [ -n "$values" ] && args=(-f "$values")
+  for file in $values; do args+=(-f "$file"); done
   output="$(helm lint --strict "$CHART" --kube-version "$K8S_SCHEMA_VERSION" "${args[@]+"${args[@]}"}" 2>&1)" \
     || { echo "$output" >&2; fail "helm lint failed for ${label#"$ROOT/"}"; }
   info "clean: ${label#"$ROOT/"}"
@@ -37,7 +37,7 @@ mkdir -p "${TMPDIR:-/tmp}/webflix-kubeconform-cache"
 for values in "${VALUE_SETS[@]}"; do
   label="${values:-defaults}"
   args=()
-  [ -n "$values" ] && args=(-f "$values")
+  for file in $values; do args+=(-f "$file"); done
   # A throwaway render without a cluster: allow generated credentials (the chart refuses them
   # under helm template / GitOps renders otherwise).
   helm template webflix "$CHART" -n webflix --kube-version "$K8S_SCHEMA_VERSION" \

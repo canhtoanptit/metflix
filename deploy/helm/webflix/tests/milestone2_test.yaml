@@ -1,0 +1,148 @@
+suite: Milestone 2 settings, routes and headers
+release:
+  name: webflix
+  namespace: webflix
+set:
+  secrets.generateWithoutCluster: true
+tests:
+  - it: sets only what is configured, plus the lake sink, batch exports and the release
+    template: configmap.yaml
+    asserts:
+      - equal:
+          path: data.WEBFLIX_EVENT_SINK
+          value: lake
+      - equal:
+          path: data.WEBFLIX_EXPORT_EVENTS
+          value: batch
+      - equal:
+          path: data.WEBFLIX_RELEASE
+          value: 0.1.0
+      - notExists:
+          path: data.WEBFLIX_PAYMENT_PROVIDER
+      - notExists:
+          path: data.WEBFLIX_STAFF_ISSUER
+      - notExists:
+          path: data.WEBFLIX_EMAIL_SENDER
+
+  - it: stamps server events with the API image's tag
+    template: configmap.yaml
+    set:
+      api.image.tag: 51ddcc82c524
+    asserts:
+      - equal:
+          path: data.WEBFLIX_RELEASE
+          value: 51ddcc82c524
+
+  - it: points the staff API at the in-chart Keycloak realm and email at the mail catcher
+    template: configmap.yaml
+    set:
+      keycloak.enabled: true
+      mailcatcher.enabled: true
+    asserts:
+      - equal:
+          path: data.WEBFLIX_STAFF_VERIFIER
+          value: oidc
+      - equal:
+          path: data.WEBFLIX_STAFF_ISSUER
+          value: https://webflix-keycloak:8443/realms/webflix
+      - equal:
+          path: data.WEBFLIX_EMAIL_SENDER
+          value: smtp
+      - equal:
+          path: data.WEBFLIX_SMTP_HOST
+          value: webflix-mailcatcher
+      - equal:
+          path: data.WEBFLIX_SMTP_PORT
+          value: "1025"
+      - equal:
+          path: data.WEBFLIX_SMTP_TLS
+          value: none
+
+  - it: writes whole numbers as integers
+    template: configmap.yaml
+    set:
+      config.events.deletionCoolingOffSec: 1209600
+      config.billing.graceSec: 604800
+    asserts:
+      - equal:
+          path: data.WEBFLIX_DELETION_COOLING_OFF_SEC
+          value: "1209600"
+      - equal:
+          path: data.WEBFLIX_BILLING_GRACE_SEC
+          value: "604800"
+
+  - it: gives every app pod the app Secret and the provider Secrets
+    template: api/deployment.yaml
+    set:
+      secrets.envFrom: [stripe-keys]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: webflix-app
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: stripe-keys
+
+  - it: admits Stripe.js in the web app's CSP only when Stripe is the provider
+    template: web/configmap.yaml
+    asserts:
+      - notMatchRegex:
+          path: data["security-headers.conf"]
+          pattern: "Content-Security-Policy [^\n]*stripe"
+  - it: adds exactly Stripe.js's sources with Stripe (the Worker's sources, the same order)
+    template: web/configmap.yaml
+    set:
+      config.billing.paymentProvider: stripe
+    asserts:
+      - matchRegex:
+          path: data["security-headers.conf"]
+          pattern: "script-src 'self' https://js.stripe.com https://\\*.js.stripe.com https://maps.googleapis.com;"
+      - matchRegex:
+          path: data["security-headers.conf"]
+          pattern: "connect-src 'self' https: https://api.stripe.com https://maps.googleapis.com;"
+      - matchRegex:
+          path: data["security-headers.conf"]
+          pattern: "form-action 'self'; frame-src 'self' https://js.stripe.com https://\\*.js.stripe.com https://hooks.stripe.com\""
+  - it: lets Stripe.js's frames use the Payment Request API (card wallets), nobody else's
+    template: web/configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["security-headers.conf"]
+          pattern: 'payment=\(self \\"https://js.stripe.com\\" \\"https://\*.js.stripe.com\\"\)'
+
+  - it: routes the development stand-ins only outside production
+    template: gateway/httproute.yaml
+    asserts:
+      - lengthEqual:
+          path: spec.rules
+          count: 4
+      - equal:
+          path: spec.rules[3].matches[0].path.value
+          value: /
+  - it: routes /dev-idp and the fake provider's /_pay in development
+    template: gateway/httproute.yaml
+    set:
+      config.environment: development
+    asserts:
+      - equal:
+          path: spec.rules[3].matches[0].path.value
+          value: /dev-idp
+      - equal:
+          path: spec.rules[4].matches[0].path.value
+          value: /_pay
+      - equal:
+          path: spec.rules[4].backendRefs[0].name
+          value: webflix-api
+  - it: does not route /_pay when the provider is not the fake
+    template: gateway/httproute.yaml
+    set:
+      config.environment: development
+      config.billing.paymentProvider: stripe
+    asserts:
+      - equal:
+          path: spec.rules[4].matches[0].path.value
+          value: /

@@ -1,0 +1,98 @@
+{{- $m := .Values.mailcatcher -}}
+{{- if $m.enabled }}
+# Mailpit: an SMTP server that delivers nothing and keeps every message for its web UI and REST
+# API (port 8025, never routed: kubectl port-forward). For local clusters, where the SMTP sender
+# (config.email.sender, smtp by default with this) must show what it would have sent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webflix.component" (list . "mailcatcher") }}
+  labels:
+    {{- include "webflix.labels" (list . "mailcatcher") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "mailcatcher") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "mailcatcher") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The image declares no user: run it as an unprivileged one.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mailpit
+          image: {{ include "webflix.thirdPartyImage" $m.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            # Messages in a database on the pod's own volume (gone with the pod).
+            - name: MP_DATABASE
+              value: /data/mailpit.db
+            - name: MP_MAX_MESSAGES
+              value: "5000"
+            - name: MP_SMTP_AUTH_ACCEPT_ANY
+              value: "true"
+            - name: MP_SMTP_AUTH_ALLOW_INSECURE
+              value: "true"
+          ports:
+            - name: smtp
+              containerPort: 1025
+              protocol: TCP
+            - name: http
+              containerPort: 8025
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webflix.component" (list . "mailcatcher") }}
+  labels:
+    {{- include "webflix.labels" (list . "mailcatcher") | nindent 4 }}
+spec:
+  selector:
+    {{- include "webflix.selectorLabels" (list . "mailcatcher") | nindent 4 }}
+  ports:
+    - name: smtp
+      port: 1025
+      targetPort: smtp
+      protocol: TCP
+    - name: http
+      port: 8025
+      targetPort: http
+      protocol: TCP
+{{- end }}

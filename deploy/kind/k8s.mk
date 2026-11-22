@@ -18,16 +18,22 @@ K8S_KUBECTL := kubectl --kubeconfig $(K8S_KUBECONFIG) --context $(K8S_CONTEXT) -
 K8S_HELM := helm --kubeconfig $(K8S_KUBECONFIG) --kube-context $(K8S_CONTEXT) -n $(K8S_NAMESPACE)
 C ?= api
 
+# Exported to every recipe of the Makefile (dev mode and the Worker's included), so none of
+# these may share a name with a product setting: the Helm release name is WEBFLIX_HELM_RELEASE,
+# never WEBFLIX_RELEASE (the release stamped on server events, docs/BACKEND.md §4).
 export WEBFLIX_KIND_CLUSTER := $(K8S_CLUSTER)
 export WEBFLIX_NAMESPACE := $(K8S_NAMESPACE)
-export WEBFLIX_RELEASE := $(K8S_RELEASE)
+export WEBFLIX_HELM_RELEASE := $(K8S_RELEASE)
 export WEBFLIX_KUBECONFIG := $(K8S_KUBECONFIG)
+# Targets that take a node away or need zones refuse to run on the one-node cluster.
+K8S_REQUIRE_NODES = bash -c '. deploy/kind/lib.sh && require_nodes $$0 "$$1"'
 
 .PHONY: k8s-up k8s-down k8s-clean k8s-redeploy k8s-media k8s-status k8s-logs k8s-restart \
 	k8s-test k8s-lint k8s-psql k8s-valkey-cli k8s-images k8s-kubeconfig k8s-verify k8s-chaos \
-	k8s-rotate-media-key k8s-outage k8s-test-web k8s-test-pg-tls k8s-ownership k8s-test-drift
+	k8s-rotate-media-key k8s-outage k8s-partition k8s-spread k8s-test-web k8s-test-pg-tls \
+	k8s-ownership k8s-test-drift k8s-pipeline-smoke k8s-test-keycloak k8s-test-smtp
 
-k8s-up: ## Kubernetes mode on kind: everything from nothing to http://localhost:8080 (re-runnable; RATE_LIMITS=relaxed)
+k8s-up: ## Kubernetes mode on kind: everything from nothing to http://localhost:8080 (re-runnable; NODES=1|3, VARIANT=conformance, RATE_LIMITS=relaxed)
 	@deploy/kind/up.sh
 
 k8s-redeploy: ## Fast path after a code change: rebuild images, roll out only what changed (no media step)
@@ -40,8 +46,8 @@ k8s-down: ## Delete the kind cluster (its node containers and volumes) and its k
 	else echo "No kind cluster named $(K8S_CLUSTER)."; fi
 	@rm -f "$(K8S_KUBECONFIG)"
 
-k8s-clean: k8s-down ## k8s-down, then remove the webflix-api/web/media-tools images it built (base images and BuildKit cache stay)
-	@ids="$$(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^webflix-(api|web|media-tools):' || true)"; \
+k8s-clean: k8s-down ## k8s-down, then remove the webflix-api/web/tools/recs/media-tools images it built (base images and BuildKit cache stay)
+	@ids="$$(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^webflix-(api|web|tools|recs|media-tools):' || true)"; \
 		if [ -n "$$ids" ]; then docker image rm $$ids >/dev/null && echo "Removed: $$(echo $$ids | wc -w | tr -d ' ') webflix images"; \
 		else echo "No webflix images."; fi
 
@@ -94,13 +100,36 @@ k8s-test-pg-tls: ## Build the API image and connect it to a TLS-only PostgreSQL 
 k8s-test:## Chart unit tests (helm-unittest), lint and schema validation, in containers
 	@deploy/kind/chart-check.sh all
 
+k8s-pipeline-smoke: ## The recommendation pipeline at smoke size as a Job against the bucket (sim/ prefix), then the importers
+	@deploy/kind/pipeline-smoke.sh
+
+k8s-test-keycloak: ## Staff sign-in through the in-chart Keycloak with real tokens, roles enforced (production configuration)
+	@deploy/kind/verify/staff-keycloak.sh
+
+k8s-test-smtp: ## Email through SMTP to the in-chart mail catcher (production configuration)
+	@deploy/kind/verify/smtp.sh
+
 k8s-verify: ## Multi-replica journey, job pipeline and zero-downtime rollout checks (needs Node)
 	node deploy/kind/verify/journey.ts
 	node deploy/kind/verify/jobs.ts
 	node deploy/kind/verify/rollout.ts api,web 16
 
-k8s-outage: ## A long dependency outage (pod deleted, its node cordoned): TARGET=valkey|postgresql OUTAGE_SEC=45 (needs Node)
+k8s-outage: ## A long dependency outage (pod deleted, its node cordoned): TARGET=valkey|postgresql OUTAGE_SEC=45 (3-node cluster; needs Node)
+	@$(K8S_REQUIRE_NODES) 3 "k8s-outage (a node cordoned while the store is away)"
 	node deploy/kind/verify/outage.ts $(or $(TARGET),valkey) $(or $(OUTAGE_SEC),45)
+
+k8s-partition: ## PostgreSQL partitioned without a goodbye: MODE=heal|lost SEC=… (3-node cluster; needs Node)
+	@$(K8S_REQUIRE_NODES) 3 "k8s-partition (packets dropped on the database's node)"
+	node deploy/kind/verify/partition.ts $(or $(MODE),heal) $(SEC)
+
+k8s-spread: ## Replicas spread across zones and nodes (3-node cluster)
+	@$(K8S_REQUIRE_NODES) 3 "k8s-spread (two zones)"
+	@for c in api web; do \
+		zones="$$($(K8S_KUBECTL) get pods -l app.kubernetes.io/component=$$c -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' \
+			| while read -r node; do $(K8S_KUBECTL) get node "$$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}{"\n"}'; done | sort | uniq -c | awk '{ printf " %s %s", $$2, $$1 }')"; \
+		echo "$$c pods per zone:$$zones"; \
+		[ "$$(printf '%s\n' "$$zones" | grep -o zone- | wc -l)" -ge 2 ] || { echo "$$c is not spread over two zones"; exit 1; }; \
+	done
 
 k8s-ownership: ## Fields of release objects owned by a manager other than Helm, and whether that is expected (needs Node)
 	node deploy/kind/verify/ownership.ts

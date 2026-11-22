@@ -62,26 +62,30 @@ Restart `make dev` to use it; `make k8s-up` and `make cf-dev` upload it to their
 ### Kubernetes mode (kind)
 
 ```sh
-make k8s-up                     # cluster, gateway, images, Helm release, media: http://localhost:8080
+make k8s-up                     # one node, production configuration: http://localhost:8080
+make k8s-up VARIANT=conformance # the configuration the whole conformance suite runs on
 make k8s-status                 # release, pods, routes, autoscalers, recent jobs
 make k8s-down                   # delete the cluster and its kubeconfig
 ```
 
-`make k8s-up` creates a three-node kind cluster named `webflix` (port 8080 must be free),
-installs Envoy Gateway, builds the API and web images, and deploys the chart: API replicas
-behind the gateway, the job worker, PostgreSQL, Valkey and Garage (S3), with migrate and seed
-Jobs. If `make content` has run, it uploads the media. It is safe to re-run. Measured in
-[docs/KUBERNETES.md](docs/KUBERNETES.md) §2: 177 s from nothing with a warm Docker cache (about
-2 minutes more without one), 28 s for a re-run with nothing changed, about 40 s for
-`make k8s-redeploy` after a code change. Idle, the node containers use about 2.5 GiB of memory
-(§7 there).
+`make k8s-up` creates a one-node kind cluster named `webflix` (port 8080 must be free;
+`NODES=3` for the failure-injection targets that take a node away), installs Envoy Gateway,
+builds the API, web, pipeline and tools images, and deploys the chart: API replicas behind the
+gateway, the job worker, PostgreSQL, Valkey and Garage (S3), Keycloak as the staff issuer, a
+mail catcher, the pipeline's CronJobs, with migrate and seed Jobs. If `make content` has run, it
+uploads the media. It is safe to re-run. Measured in
+[docs/KUBERNETES.md](docs/KUBERNETES.md) §2: about 4.5 minutes from nothing with a warm Docker
+cache, about 40 s for a re-run or `make k8s-redeploy`. Idle, the node container uses about
+3.3 GiB of memory (§7 there). Milestone 2 on Kubernetes, the conformance variant and what was
+found doing it: §9 there.
 
-The rate limits are the strict production values, and every local client shares one address.
-For browser runs use `make k8s-up RATE_LIMITS=relaxed`; run `make k8s-up` again to go back.
+The production configuration's rate limits are the strict production values, and every local
+client shares one address. For browser runs use `make k8s-up RATE_LIMITS=relaxed` (the
+conformance variant already runs the relaxed profile); run `make k8s-up` again to go back.
 
-`make k8s-down` leaves the built `webflix-api`, `webflix-web` and `webflix-media-tools` images
-(so the next `k8s-up` is fast; `make k8s-clean` also removes them), Docker's BuildKit cache and
-the pulled base images. To use kubectl or k9s: `export KUBECONFIG=$(make -s k8s-kubeconfig)`.
+`make k8s-down` leaves the built `webflix-*` images (so the next `k8s-up` is fast;
+`make k8s-clean` also removes them), Docker's BuildKit cache and the pulled base images. To
+use kubectl or k9s: `export KUBECONFIG=$(make -s k8s-kubeconfig)`.
 
 ### Cloudflare mode (local)
 

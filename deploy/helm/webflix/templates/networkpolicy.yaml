@@ -6,7 +6,7 @@
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [api, worker, migrate, seed]
+        values: [api, worker, migrate, seed, pipeline]
 {{- end }}
 {{- define "webflix.np.selector" -}}
 podSelector:
@@ -51,6 +51,21 @@ with NodeLocal DNSCache (a link-local address on the node); narrow it with netwo
     - port: 3900
       protocol: TCP
 {{- end }}
+{{- if $ctx.Values.keycloak.enabled }}
+# The staff issuer: discovery, keys, the jobs' token endpoint.
+- to:
+    - {{- include "webflix.np.selector" (list $name $instance "keycloak") | nindent 6 }}
+  ports:
+    - port: 8443
+      protocol: TCP
+{{- end }}
+{{- if $ctx.Values.mailcatcher.enabled }}
+- to:
+    - {{- include "webflix.np.selector" (list $name $instance "mailcatcher") | nindent 6 }}
+  ports:
+    - port: 1025
+      protocol: TCP
+{{- end }}
 {{- with $ctx.Values.networkPolicy.egress.extraRules }}
 {{ toYaml . }}
 {{- end }}
@@ -59,7 +74,9 @@ with NodeLocal DNSCache (a link-local address on the node); narrow it with netwo
 {{- /*
 Least privilege between the pieces:
   gateway ─► api :4000, web :8080           (nothing else is reachable from outside)
-  api, worker, migrate, seed ─► postgresql :5432, valkey :6379, objectstore :3900, DNS
+  api, worker, migrate, seed, pipeline ─► postgresql :5432, valkey :6379, objectstore :3900, DNS
+  api, worker, pipeline ─► keycloak :8443 (staff issuer); api, worker ─► mailcatcher :1025
+  pipeline ─► api :4000 (staff API); keycloak ─► postgresql :5432
   monitoring ─► api/worker :4000, objectstore :3903 (metrics)
   web, data stores: no egress at all
 Kubelet probes and port-forwards are not subject to NetworkPolicy.
@@ -87,6 +104,15 @@ spec:
               app.kubernetes.io/name: {{ $name }}
               app.kubernetes.io/instance: {{ $instance }}
               app.kubernetes.io/component: test
+        {{- if .Values.pipeline.enabled }}
+        # The pipeline's jobs: the staff API (and outside production the development issuer's
+        # token endpoint).
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+              app.kubernetes.io/instance: {{ $instance }}
+              app.kubernetes.io/component: pipeline
+        {{- end }}
       ports:
         - port: 4000
           protocol: TCP
@@ -148,6 +174,107 @@ spec:
   egress:
     {{- include "webflix.np.appEgress" (list . $name $instance) | nindent 4 }}
   {{- end }}
+{{- if .Values.pipeline.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "pipeline") }}
+  labels:
+    {{- include "webflix.labels" (list . "pipeline") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "pipeline") | nindent 2 }}
+  policyTypes: [Ingress{{ if $np.egress.restrict }}, Egress{{ end }}]
+  ingress: []
+  {{- if $np.egress.restrict }}
+  egress:
+    {{- include "webflix.np.appEgress" (list . $name $instance) | nindent 4 }}
+    - to:
+        - {{- include "webflix.np.selector" (list $name $instance "api") | nindent 10 }}
+      ports:
+        - port: 4000
+          protocol: TCP
+  {{- end }}
+{{- end }}
+{{- if .Values.keycloak.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "keycloak") }}
+  labels:
+    {{- include "webflix.labels" (list . "keycloak") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "keycloak") | nindent 2 }}
+  policyTypes: [Ingress{{ if $np.egress.restrict }}, Egress{{ end }}]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+              app.kubernetes.io/instance: {{ $instance }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker, pipeline, test]
+      ports:
+        - port: 8443
+          protocol: TCP
+    - from:
+        - {{- toYaml $metricsPeer | nindent 10 }}
+      ports:
+        - port: 9000
+          protocol: TCP
+  {{- if $np.egress.restrict }}
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      {{- with $np.dns.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if and .Values.postgresql.enabled (not .Values.keycloak.database.jdbcUrl) }}
+    - to:
+        - {{- include "webflix.np.selector" (list $name $instance "postgresql") | nindent 10 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    {{- with $np.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if .Values.mailcatcher.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webflix.component" (list . "mailcatcher") }}
+  labels:
+    {{- include "webflix.labels" (list . "mailcatcher") | nindent 4 }}
+spec:
+  {{- include "webflix.np.selector" (list $name $instance "mailcatcher") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+              app.kubernetes.io/instance: {{ $instance }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker]
+      ports:
+        - port: 1025
+          protocol: TCP
+  # Delivers nothing: no egress at all.
+  egress: []
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -185,6 +312,9 @@ spec:
   ingress:
     - from:
         {{- include "webflix.np.clients" (list $name $instance) | nindent 8 }}
+        {{- if and .Values.keycloak.enabled (not .Values.keycloak.database.jdbcUrl) }}
+        - {{- include "webflix.np.selector" (list $name $instance "keycloak") | nindent 10 }}
+        {{- end }}
       ports:
         - port: 5432
           protocol: TCP

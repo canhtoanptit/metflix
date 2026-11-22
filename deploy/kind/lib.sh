@@ -18,7 +18,10 @@ case "$CLUSTER" in
   *) printf 'Refusing: WEBFLIX_KIND_CLUSTER=%s is not a webflix* cluster.\n' "$CLUSTER" >&2; exit 1 ;;
 esac
 NAMESPACE="${WEBFLIX_NAMESPACE:-webflix}"
-RELEASE="${WEBFLIX_RELEASE:-webflix}"
+# The Helm release name. Not WEBFLIX_RELEASE: that is the product's own setting (the release
+# stamped on server events, docs/BACKEND.md §4), and the make fragment's variables reach every
+# recipe of the Makefile, dev mode and the Worker's included.
+RELEASE="${WEBFLIX_HELM_RELEASE:-webflix}"
 HOST_PORT=8080
 BASE_URL="http://localhost:$HOST_PORT"
 # Host ports for temporary port-forwards (4500-4549 is this workflow's range).
@@ -120,6 +123,28 @@ helm_doctor() {
 
 cluster_exists() { kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; }
 
+# Node count: one node for everyday work (cluster.yaml), three for the failure-injection
+# targets (cluster-3.yaml). Fixed when the cluster is created.
+cluster_config() { # <nodes>
+  case "$1" in
+    1) echo "$KIND_DIR/cluster.yaml" ;;
+    3) echo "$KIND_DIR/cluster-3.yaml" ;;
+    *) fail "NODES=$1: the kind cluster has 1 node (default) or 3 (failure injection)" ;;
+  esac
+}
+cluster_nodes() { kind get nodes --name "$CLUSTER" 2>/dev/null | grep -c . || true; }
+
+# For targets that take a node away or need zones: refuse, and say how, on a smaller cluster.
+require_nodes() { # <minimum> <what>
+  local have
+  cluster_exists || fail "No kind cluster named $CLUSTER: make k8s-up NODES=$1 first."
+  have="$(cluster_nodes)"
+  if [ "$have" -lt "$1" ]; then
+    FAIL_HINT="The node count is fixed when the cluster is created: make k8s-down && make k8s-up NODES=$1 (then make k8s-down && make k8s-up for the one-node cluster again)." \
+      fail "$2 needs the $1-node cluster; '$CLUSTER' has $have node$([ "$have" = 1 ] || echo s)."
+  fi
+}
+
 # Diagnostics for a failed rollout: what is not ready, and why.
 diagnose() {
   printf '\n%sPods not ready in namespace %s:%s\n' "$C_BOLD" "$NAMESPACE" "$C_RESET" >&2
@@ -145,6 +170,15 @@ image_tag() {
 seeded_media_checksum() {
   hc -n "$NAMESPACE" get values "$RELEASE" -o json 2>/dev/null \
     | grep -o '"mediaChecksum":"[0-9a-f]*"' | cut -d'"' -f4 || true
+}
+
+# The deployed variant (deploy/kind/values-conformance.yaml sets the development environment).
+deployed_variant() {
+  if hc -n "$NAMESPACE" get values "$RELEASE" -o json 2>/dev/null | grep -q '"environment":"development"'; then
+    echo conformance
+  else
+    echo production
+  fi
 }
 
 # The packaged media profile to upload: MEDIA_PROFILE, else fast, else full (when built).

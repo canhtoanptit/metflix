@@ -1,0 +1,62 @@
+# The conformance variant of the kind deployment (make k8s-up VARIANT=conformance): everything
+# the conformance suite can drive runs, so nothing it can check is skipped (tools/smoke/README.md,
+# "What a deployment must provide"). Layered over values.yaml; still several API replicas behind
+# the gateway, PostgreSQL, Valkey streams and the bucket, as in production.
+#
+#   environment development   mounts /dev-idp/* (the development issuer: Google, Apple, staff),
+#                             /_pay/* (the fake provider's form) and the diagnostics routes;
+#                             the gateway routes /dev-idp and /_pay to the API
+#   fake payment provider     state in PostgreSQL, so every replica sees the same customers
+#   outbox email sender       the database outbox: the mailbox read-back sees what any replica
+#                             sent (an in-memory mailbox would be per pod)
+#   shared issuer secret      WEBFLIX_DEV_IDP_SECRET in the chart's app Secret, so a code sealed
+#                             by one replica is redeemed by another; single use across replicas
+#                             through the identity area's claims table
+#   short timers              deletion cooling-off 10 s, scheduler tick 10 s (both <= 30 s)
+#   privacy jobs every minute the lake round (erase, export-events with a 1 min grace, above the
+#                             10 s outbox tick, then compact when due), with the development
+#                             issuer's webflix-jobs service client
+config:
+  environment: development
+  # The relaxed profile (as on the local Worker): every check shares one client address, and
+  # under the strict one a run takes about 16 minutes, past the 5-minute life of the staff
+  # tokens the suite fetches once per run (tools/smoke memoises them; docs/KUBERNETES.md
+  # §9.11). The strict profile is exercised by the production configuration's run.
+  rateLimits:
+    auth: 60/60
+    signup: 60/60
+    emailLookup: 300/60
+    profilePin: 60/60
+    oidc: 300/60
+    emailSend: 120/60
+    events: 600/60
+  schedulerIntervalSec: 10
+  email:
+    sender: outbox
+  billing:
+    paymentProvider: fake
+  events:
+    deletionCoolingOffSec: 10
+  staff:
+    # The development issuer's staff realm (in process), which the suite mints tokens from.
+    verifier: oidc
+
+# Two consumers of the Valkey streams (jobs, provider events, event batches, emails), beside the
+# two API replicas of values.yaml: what is shared must hold across pods, not within one.
+worker:
+  replicas: 2
+
+keycloak:
+  enabled: false
+
+mailcatcher:
+  enabled: false
+
+pipeline:
+  # Garage ignores conditional writes, so erase, export-events and compact run in one lake round
+  # (pipeline.lake in the chart's values): every minute here.
+  lake:
+    schedule: "* * * * *"
+  jobs:
+    exportEvents:
+      graceMinutes: 1

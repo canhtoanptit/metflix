@@ -6,6 +6,7 @@
 #   docker build -f deploy/docker/Dockerfile --target api .      # API + worker + migrate + seed
 #   docker build -f deploy/docker/Dockerfile --target web .      # the SPA behind nginx
 #   docker build -f deploy/docker/Dockerfile --target media-tools .   # media uploader (kind)
+#   docker build -f deploy/docker/Dockerfile --target tools .   # the pipeline's Node steps (jobs)
 #
 # Every base is pinned by digest. Dependencies are installed from the lockfile in a layer
 # keyed only by the package manifests, with a persistent pnpm store cache, so a code change
@@ -118,3 +119,26 @@ RUN --mount=type=cache,id=webflix-pnpm-store,target=/pnpm/store,sharing=locked \
       --filter "@webflix/media..."
 COPY --parents tools/media packages ./
 ENTRYPOINT ["node", "/src/tools/media/src/cli.ts"]
+
+# --- tools: the repository's TypeScript for the pipeline's jobs (CronJobs on Kubernetes) ---------
+# Not a server: the recommendation pipeline's Node steps (services/recs/scripts: the catalogue
+# snapshot, the rule-engine baseline of train-and-score) and the product's importers
+# (apps/api/src/recs.ts: a recommendation run, experiment results), run from source as in dev
+# mode (Node strips the types; workspace packages resolve to their real paths, outside
+# node_modules). Production dependencies only; read-only root filesystem, non-root.
+FROM workspace AS tools-deps
+RUN --mount=type=cache,id=webflix-pnpm-store,target=/pnpm/store,sharing=locked \
+    pnpm install --frozen-lockfile --ignore-scripts --prod --store-dir /pnpm/store \
+      --filter "@webflix/api..."
+
+FROM tools-deps AS tools
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="webflix-tools" \
+      org.opencontainers.image.description="Webflix pipeline job steps in Node (catalogue snapshot, rule engine, importers)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="UNLICENSED"
+COPY --parents apps/api packages services/recs/scripts ./
+ENV NODE_ENV=production
+USER 10001:10001
+ENTRYPOINT []
+CMD ["node", "--version"]

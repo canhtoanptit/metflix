@@ -53,6 +53,95 @@ config:
   # Extra environment variables for the API, worker and jobs (name: value).
   extraEnv: {}
 
+  # --- Milestone 2 areas (docs/BACKEND.md §4). An empty string or null keeps the application's
+  # default for the environment; each key names the variable it sets. Credentials never go
+  # here: they come from secrets.envFrom (provider keys) or the chart's app Secret.
+  identity:
+    # WEBFLIX_OIDC_PROVIDERS: consumer issuers offered, in button order (google, apple,
+    # keycloak). Empty: google,apple; in production an issuer without a client is not offered.
+    oidcProviders: ""
+    # A real Google client (its secret: WEBFLIX_OIDC_GOOGLE_CLIENT_SECRET in secrets.envFrom).
+    google:
+      clientId: ""
+      issuer: ""
+    # Sign in with Apple (its key: WEBFLIX_OIDC_APPLE_PRIVATE_KEY in secrets.envFrom).
+    apple:
+      clientId: ""
+      teamId: ""
+      keyId: ""
+      issuer: ""
+    # Keycloak as a consumer issuer (optional on Kubernetes): the realm URL and a client.
+    keycloak:
+      issuer: ""
+      clientId: ""
+  email:
+    # WEBFLIX_EMAIL_SENDER: smtp (a relay, or the in-chart mail catcher), http (Resend's API;
+    # key WEBFLIX_EMAIL_HTTP_API_KEY in secrets.envFrom), outbox (the database: every replica
+    # reads it, nothing is delivered) or memory (one process). Empty: smtp when mailcatcher is
+    # enabled, else the application's default (memory, which delivers nothing in production
+    # and says so at every start).
+    sender: ""
+    # WEBFLIX_EMAIL_FROM, e.g. "Webflix <no-reply@example.com>".
+    from: ""
+    smtp:
+      # Empty with mailcatcher.enabled: the in-chart catcher.
+      host: ""
+      port: null
+      # none (the catcher) | implicit (TLS from the first byte); credentials need TLS.
+      tls: ""
+      # Its password: WEBFLIX_SMTP_PASSWORD in secrets.envFrom.
+      username: ""
+    http:
+      url: ""
+      provider: ""
+  billing:
+    # WEBFLIX_PAYMENT_PROVIDER: stripe (keys STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY,
+    # STRIPE_WEBHOOK_SECRET in secrets.envFrom; the web app's CSP then admits Stripe.js), fake
+    # (refused in production; its form is routed at /_pay) or memory. Empty: fake outside
+    # production, memory in production (no checkout can complete).
+    paymentProvider: ""
+    # WEBFLIX_BILLING_GRACE_SEC: past_due stays entitled this long after a failed renewal.
+    graceSec: null
+    # The fake provider (development only).
+    fake:
+      delivery: ""
+      promotions: ""
+      retriesExhausted: ""
+  events:
+    # WEBFLIX_EVENT_SINK: lake (gzip NDJSON under events/ in the bucket, read by the pipeline)
+    # or memory (nothing kept).
+    sink: lake
+    # WEBFLIX_CONSENT_MODE: opt-in | opt-out | off. Empty: opt-in.
+    consentMode: ""
+    # WEBFLIX_EXPORT_EVENTS: batch (the pipeline's export-events job reads the member's events:
+    # pipeline.jobs.exportEvents) or inline (the export job reads up to 13 months of hours
+    # itself: small deployments only).
+    exportEvents: batch
+    # WEBFLIX_DELETION_COOLING_OFF_SEC (default 14 days), the retention of raw events and
+    # aggregates in days (396 / 1126), and the life of a data export's link (7 days).
+    deletionCoolingOffSec: null
+    retentionDays: null
+    aggregatesRetentionDays: null
+    exportLinkTtlSec: null
+    # WEBFLIX_RELEASE, the app.version of server events. Empty: the API image's tag.
+    release: ""
+  recommendations:
+    # WEBFLIX_RECOMMENDATION_STORE: database (PostgreSQL) or memory.
+    store: database
+    # WEBFLIX_RECS_DEFAULT_POLICY: learned | rules; WEBFLIX_RECS_EXPLORE_SHARE: 0..1.
+    defaultPolicy: ""
+    exploreShare: null
+  staff:
+    # WEBFLIX_STAFF_VERIFIER: oidc | memory. Empty: oidc when an issuer is known (issuer below,
+    # or keycloak.enabled), else the application's default (oidc against the development issuer
+    # outside production; memory in production, which admits nobody).
+    verifier: ""
+    # WEBFLIX_STAFF_ISSUER: the exact staff issuer (https in production). Empty with
+    # keycloak.enabled: the in-chart realm.
+    issuer: ""
+    # WEBFLIX_STAFF_ALGORITHMS (RS256 and/or ES256). Empty: RS256.
+    algorithms: ""
+
 # Secrets the application needs besides the data stores' credentials.
 secrets:
   # Name of an existing Secret providing WEBFLIX_MEDIA_TOKEN_KEYS ("id:secret[,id:secret]",
@@ -62,6 +151,18 @@ secrets:
   # Rotate in two phases (docs/KUBERNETES.md §5): add the new key as verify-only, roll; then
   # promote it to first, roll; retire the old one after the token lifetime.
   existingSecret: ""
+  # The application's own secrets besides the media keys: WEBFLIX_PSEUDONYM_KEY (the HMAC key of
+  # the events' pseudonymous subjects: never replace it, or every member's history splits in
+  # two) and, outside production, WEBFLIX_DEV_IDP_SECRET and WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET
+  # (shared by every replica). Empty: generated on first install and kept, like the data
+  # stores' credentials. Or name an existing Secret holding them.
+  appExistingSecret: ""
+  # More Secrets whose every key becomes an environment variable of the API, worker and Jobs:
+  # provider credentials (STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET,
+  # WEBFLIX_OIDC_GOOGLE_CLIENT_SECRET, WEBFLIX_OIDC_APPLE_PRIVATE_KEY,
+  # WEBFLIX_OIDC_KEYCLOAK_CLIENT_SECRET, WEBFLIX_SMTP_PASSWORD, WEBFLIX_EMAIL_HTTP_API_KEY,
+  # WEBFLIX_EMAIL_WEBHOOK_SECRET). Names only; the Secrets are yours.
+  envFrom: []
   # Generated credentials need `lookup` (a live cluster) to stay stable across renders; the
   # chart refuses to generate them under `helm template` / GitOps renderers unless this is set
   # (throwaway renders only, e.g. CI schema checks). Use the existingSecret values instead.
@@ -223,6 +324,98 @@ seed:
     limits:
       memory: 768Mi
 
+# --- Recommendation pipeline and privacy jobs (services/recs; CronJobs) ---------------------
+# The `webflix-recs` image against the bucket through its S3 API, plus a Node image with the
+# repository's packages for the steps that need TypeScript (the catalogue snapshot, the rule
+# engine baseline of train-and-score, the product's importers). services/recs/README.md "Jobs".
+
+pipeline:
+  enabled: false
+  image:
+    repository: webflix-recs
+    tag: ""
+    digest: ""
+  tools:
+    image:
+      repository: webflix-tools
+      tag: ""
+      digest: ""
+  # The store every job reads and writes: the product's bucket. Empty: s3://<bucket>.
+  store: ""
+  # Native thread budget of each job (WEBFLIX_RECS_THREADS).
+  threads: 2
+  # Worker processes of each job (webflix-recs --workers). 1 by default: the pipeline's process
+  # pools use Python's default start method, fork on Linux, after its native thread pools have
+  # started, and a forked worker can inherit a held lock (an erase on kind hung that way with 9
+  # workers, every process asleep on a futex); its default count is also the node's CPUs, not
+  # the container's limit. Raise it with a large lake once the pipeline starts its pools safely.
+  workers: 1
+  # How the jobs reach the staff API (erasures, exports, experiment definitions): a service
+  # account of the staff issuer with the `admin` and `experiments` roles of webflix-admin.
+  staffApi:
+    # Empty: the API's Service (http://<api>/api/admin/v1).
+    url: ""
+    # The issuer's token endpoint (client credentials). Empty: the in-chart Keycloak realm when
+    # keycloak.enabled; outside production the development issuer's (http://<api>/dev-idp/staff/token).
+    tokenUrl: ""
+    clientId: webflix-jobs
+    # Secret with the client's secret under `client-secret`. Empty: Keycloak's generated one
+    # (keycloak.enabled), or outside production the development issuer's published secret.
+    existingSecret: ""
+  # The lake lease is a create-only write (PutObject with If-None-Match: *). Garage accepts the
+  # header and ignores it (measured on v2.5.0: every concurrent writer "wins"), so with the
+  # in-chart store the three jobs that rewrite the lake (erase, export-events, compact) run one
+  # after another in one CronJob, the lake round, whose concurrencyPolicy Forbid is the lock.
+  # auto: serialized with objectStore.enabled; separate CronJobs with an external store that
+  # honours the header (AWS S3, R2). jobs.*.enabled and graceMinutes still apply to each step.
+  lake:
+    serialize: auto
+    schedule: "*/5 * * * *"
+    compactEveryMinutes: 60
+    eraseEveryHours: 24
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  # A job that runs longer is stopped (the lake lease it holds expires after 6 h anyway).
+  activeDeadlineSeconds: 3600
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  jobs:
+    # Hourly: each closed hour (end + grace) into one Parquet file.
+    compact:
+      enabled: true
+      schedule: "20 * * * *"
+      graceMinutes: 15
+      deleteSources: false
+    # Erased members out of the lake, datasets and artefacts; confirmed through the staff API.
+    erase:
+      enabled: true
+      schedule: "40 3 * * *"
+    # The events of pending data exports (WEBFLIX_EXPORT_EVENTS=batch). The grace must exceed
+    # the scheduler tick (playback events reach the lake through an outbox on each tick).
+    exportEvents:
+      enabled: true
+      schedule: "*/5 * * * *"
+      graceMinutes: 15
+    # Experiment results from the lake; the worker imports them on its next tick.
+    analyse:
+      enabled: true
+      schedule: "30 4 * * *"
+    # Catalogue snapshot, train-and-score (prepare, the Node rule-engine step, finish), publish
+    # (the gate may refuse: then nothing changes) and the import of the published run.
+    trainAndScore:
+      enabled: true
+      schedule: "0 4 * * *"
+  # Extra environment for the pipeline's containers (name: value).
+  extraEnv: {}
+
 # --- PostgreSQL: in-cluster (official image) or external -----------------------------------
 
 postgresql:
@@ -345,6 +538,67 @@ externalS3:
   existingSecret: ""
   accessKeyIdKey: access-key-id
   secretAccessKeyKey: secret-access-key
+
+# --- Keycloak: the staff issuer (optional; docs/BLUEPRINT-M2.md §8.3) -----------------------
+# One Keycloak with an imported realm: the console client webflix-admin (code flow with PKCE),
+# the webflix-admin-api audience on its access tokens, the five staff roles, demo staff (one
+# per role) and the jobs' service account webflix-jobs. It serves HTTPS itself with a
+# certificate from a CA the chart generates (or yours), and the API trusts that CA; the staff
+# API then validates its tokens (config.staff.issuer defaults to this realm). Its own data is
+# in the in-chart PostgreSQL (database `keycloak`) or `keycloak.database.url`.
+
+keycloak:
+  enabled: false
+  image:
+    repository: quay.io/keycloak/keycloak
+    tag: "26.8.2"
+    digest: sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
+  realm: webflix
+  # The URL everyone reaches Keycloak at (browsers, the API, the jobs): the issuer is
+  # <hostname>/realms/<realm>. Empty: https://<fullname>-keycloak:8443, which resolves inside
+  # the namespace (kind: a browser needs a hosts entry and a port-forward; docs/KUBERNETES.md).
+  hostname: ""
+  tls:
+    # kubernetes.io/tls Secret with the server certificate (and ca.crt). Empty: the chart
+    # generates a CA and a certificate for the Service's names, kept across upgrades.
+    secretName: ""
+  database:
+    # An external PostgreSQL for Keycloak: jdbc:postgresql://HOST:5432/DB, its user, and a
+    # Secret with the password. Empty: the in-chart PostgreSQL, database and role `keycloak`
+    # (created, or its password brought in line, by an init container at every start).
+    jdbcUrl: ""
+    username: ""
+    existingSecret: ""
+    passwordKey: password
+  # Demo staff (staff-support, staff-billing, staff-content, staff-experiments, staff-admin,
+  # staff-none): local and staging realms only.
+  demoStaff: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# --- Mail catcher (Mailpit; local clusters only) --------------------------------------------
+# Catches everything the SMTP sender sends (config.email.sender defaults to smtp with it): read
+# it with `kubectl port-forward svc/<fullname>-mailcatcher 8025` (web UI and REST API).
+
+mailcatcher:
+  enabled: false
+  image:
+    repository: axllent/mailpit
+    tag: v1.34.0
+    digest: sha256:23a2ef85bc50853ab3093645d1d64679afd8887e89da5e48a88940c172591a4e
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
 
 # --- Routing (Gateway API) ------------------------------------------------------------------
 

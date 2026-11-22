@@ -1,0 +1,94 @@
+{{- $p := .Values.pipeline -}}
+{{- if $p.enabled }}
+{{- $j := $p.jobs -}}
+{{- $store := include "webflix.pipeline.store" . -}}
+{{- /* Every webflix-recs invocation: the store and the worker processes (pipeline.workers). */}}
+{{- $root := list "--store" $store "--workers" (toString ($p.workers | int)) -}}
+{{- if and (not (include "webflix.pipeline.tokenUrl" .)) (or $j.erase.enabled $j.exportEvents.enabled $j.analyse.enabled) }}
+{{- fail "webflix: the pipeline's erase, exportEvents and analyse jobs call the staff API with a service account: set pipeline.staffApi.tokenUrl (and existingSecret), or enable keycloak" }}
+{{- end }}
+# The recommendation pipeline and the privacy jobs (services/recs/README.md, "Jobs: what a
+# scheduler runs"), each against the product's bucket through its S3 API. Every job is safe to
+# rerun and holds the lake lease while it rewrites (compact, erase, export-events): a second one
+# finds it busy (exit 75) and its CronJob tries again on the next schedule.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "webflix.component" (list . "pipeline") }}
+  labels:
+    {{- include "webflix.labels" (list . "pipeline") | nindent 4 }}
+data:
+  export_round.py: {{ .Files.Get "files/pipeline/export_round.py" | quote }}
+  lake_round.py: {{ .Files.Get "files/pipeline/lake_round.py" | quote }}
+  copy_objects.py: {{ .Files.Get "files/pipeline/copy_objects.py" | quote }}
+{{- $serialize := ternary .Values.objectStore.enabled $p.lake.serialize (eq (toString $p.lake.serialize) "auto") }}
+{{- if $serialize }}
+{{- if or $j.erase.enabled $j.exportEvents.enabled $j.compact.enabled }}
+---
+{{- /* The lake round (files/pipeline/lake_round.py): erase, export-events, compact in order. */}}
+{{- $env := list
+  (dict "name" "LAKE_ERASE" "value" (toString $j.erase.enabled))
+  (dict "name" "LAKE_EXPORT_EVENTS" "value" (toString $j.exportEvents.enabled))
+  (dict "name" "LAKE_COMPACT" "value" (toString $j.compact.enabled))
+  (dict "name" "EXPORT_GRACE_MINUTES" "value" (toString ($j.exportEvents.graceMinutes | int)))
+  (dict "name" "COMPACT_GRACE_MINUTES" "value" (toString ($j.compact.graceMinutes | int)))
+  (dict "name" "COMPACT_DELETE_SOURCES" "value" (toString $j.compact.deleteSources))
+  (dict "name" "COMPACT_EVERY_MINUTES" "value" (toString ($p.lake.compactEveryMinutes | int)))
+  (dict "name" "ERASE_EVERY_HOURS" "value" (toString ($p.lake.eraseEveryHours | int)))
+}}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "lake-round" "command" (list "python" "/scripts/lake_round.py") "env" $env)) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "lake-round" "schedule" $p.lake.schedule "pod" $pod) }}
+{{- end }}
+{{- else }}
+{{- if $j.compact.enabled }}
+---
+{{- $args := concat $root (list "compact" "--grace-minutes" (toString ($j.compact.graceMinutes | int))) }}
+{{- if $j.compact.deleteSources }}{{- $args = append $args "--delete-sources" }}{{- end }}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "compact" "args" $args)) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "compact" "schedule" $j.compact.schedule "pod" $pod) }}
+{{- end }}
+{{- if $j.erase.enabled }}
+---
+{{- /* Keys from the staff API, rewrite, verify, then confirm (--keys api --confirm api). */}}
+{{- $args := concat $root (list "erase" "--keys" "api" "--confirm" "api" "--reason" "pipeline erase CronJob (Kubernetes): verified removal from the lake, datasets and artefacts") }}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "erase" "args" $args)) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "erase" "schedule" $j.erase.schedule "pod" $pod) }}
+{{- end }}
+{{- if $j.exportEvents.enabled }}
+---
+{{- $env := list (dict "name" "EXPORT_GRACE_MINUTES" "value" (toString ($j.exportEvents.graceMinutes | int))) }}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "export-events" "command" (list "python" "/scripts/export_round.py") "env" $env)) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "export-events" "schedule" $j.exportEvents.schedule "pod" $pod) }}
+{{- end }}
+{{- end }}
+{{- if $j.analyse.enabled }}
+---
+{{- /* Definitions from the staff API (role experiments); the worker imports the results on its
+next scheduler tick (experiments.import-results). */}}
+{{- $args := concat $root (list "analyse-experiments" "--definitions" "api") }}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "analyse" "args" $args)) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "analyse" "schedule" $j.analyse.schedule "pod" $pod) }}
+{{- end }}
+{{- if $j.trainAndScore.enabled }}
+---
+{{- /*
+One pod, steps in order on a shared /work: the catalogue snapshot (Node: @webflix/catalog as the
+seeder builds it) copied into the bucket, train-and-score's first phase (dataset, backtest run,
+the rule engine's input), the rule engine's rankings (Node: @webflix/core), the second phase
+(evaluation, production run, scoring), then publish, which the gate may refuse (exit 3: nothing
+is published and the served run stays). The import then publishes recs/current.json into the
+recommendation store; it is a no-op when that run is already served.
+*/}}
+{{- $init := list
+  (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "catalog" "command" (list "node" "services/recs/scripts/export-catalog.ts" "--store" "/work/catalog")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "catalog-upload" "command" (list "python" "/scripts/copy_objects.py" "/work/catalog" $store "catalog/")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "prepare" "args" (concat $root (list "train-and-score" "--phase" "prepare" "--work" "/work/train"))))
+  (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "rule-engine" "command" (list "node" "services/recs/scripts/rule-engine-rankings.ts" "--input" "/work/train/engine-input.ndjson" "--out-dir" "/work/train")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "finish" "args" (concat $root (list "train-and-score" "--phase" "finish" "--work" "/work/train"))))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "publish" "command" (list "sh" "-c" "webflix-recs --store \"$WEBFLIX_RECS_STORE\" --workers \"$WEBFLIX_RECS_WORKERS\" publish; code=$?; if [ \"$code\" = 3 ]; then echo 'publish refused by the gate (exit 3): the served run stays' >&2; exit 0; fi; exit \"$code\"")))
+}}
+{{- $main := include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "import" "command" (list "node" "apps/api/src/recs.ts" "import")) }}
+{{- $pod := printf "initContainers:\n%s\ncontainers:\n%s" (join "\n" $init) $main }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "train-and-score" "schedule" $j.trainAndScore.schedule "pod" $pod) }}
+{{- end }}
+{{- end }}

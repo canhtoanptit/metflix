@@ -13,6 +13,7 @@
 !apps/web
 !packages
 !tools/media
+!services/recs/scripts
 !deploy/docker/web
 
 # Never, even inside the allowed trees.

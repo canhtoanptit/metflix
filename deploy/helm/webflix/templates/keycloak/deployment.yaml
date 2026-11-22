@@ -1,0 +1,218 @@
+{{- $k := .Values.keycloak -}}
+{{- if $k.enabled }}
+{{- $inChartDb := not $k.database.jdbcUrl }}
+{{- if and $inChartDb (not .Values.postgresql.enabled) }}
+{{- fail "webflix: keycloak.enabled needs keycloak.database.jdbcUrl when postgresql.enabled is false" }}
+{{- end }}
+{{- $secret := include "webflix.keycloak.secretName" . }}
+# Keycloak, the staff issuer (docs/BLUEPRINT-M2.md §8.3), in production mode (`start`): HTTPS on
+# 8443 with the certificate from keycloak.tls, a fixed hostname (so every token's `iss` is the
+# same whatever URL reached it: hostname v2, backchannel URLs equal to the frontchannel ones),
+# its data in PostgreSQL, and the realm imported at start when it does not exist yet. One
+# replica: a second one needs Keycloak's own clustering (Infinispan), out of scope here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webflix.component" (list . "keycloak") }}
+  labels:
+    {{- include "webflix.labels" (list . "keycloak") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    # One instance owns the realm import and the caches: never two at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "webflix.selectorLabels" (list . "keycloak") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webflix.labels" (list . "keycloak") | nindent 8 }}
+      annotations:
+        checksum/realm: {{ include (print $.Template.BasePath "/keycloak/secrets.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "webflix.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        # The keycloak user of the official image.
+        runAsUser: 1000
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      {{- if $inChartDb }}
+      initContainers:
+        # Its own role and database in the in-chart PostgreSQL: created on first start, the
+        # role's password brought in line with the Secret on every start (idempotent).
+        - name: database
+          image: {{ include "webflix.thirdPartyImage" .Values.postgresql.image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - |
+              until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" >/dev/null; do sleep 2; done
+              psql -v ON_ERROR_STOP=1 -v kcpass="$KEYCLOAK_DB_PASSWORD" <<'SQL'
+              SELECT format('CREATE ROLE keycloak LOGIN PASSWORD %L', :'kcpass')
+                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'keycloak') \gexec
+              SELECT format('ALTER ROLE keycloak LOGIN PASSWORD %L', :'kcpass') \gexec
+              SELECT 'CREATE DATABASE keycloak OWNER keycloak'
+                WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'keycloak') \gexec
+              SQL
+          env:
+            - name: PGHOST
+              value: {{ include "webflix.component" (list . "postgresql") }}
+            - name: PGUSER
+              value: {{ .Values.postgresql.username | quote }}
+            - name: PGDATABASE
+              value: {{ .Values.postgresql.database | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webflix.postgresql.secretName" . }}
+                  key: {{ .Values.postgresql.auth.passwordKey }}
+            - name: KEYCLOAK_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-password
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 70
+            runAsGroup: 70
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+      {{- end }}
+      containers:
+        - name: keycloak
+          image: {{ include "webflix.thirdPartyImage" $k.image }}
+          imagePullPolicy: IfNotPresent
+          args: [start, --import-realm]
+          env:
+            - name: KC_HOSTNAME
+              value: {{ include "webflix.keycloak.url" . | quote }}
+            - name: KC_HTTP_ENABLED
+              value: "false"
+            - name: KC_HTTPS_CERTIFICATE_FILE
+              value: /etc/keycloak/tls/tls.crt
+            - name: KC_HTTPS_CERTIFICATE_KEY_FILE
+              value: /etc/keycloak/tls/tls.key
+            # Health on the management port (9000, HTTPS like the main listener).
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_DB
+              value: postgres
+            {{- if $inChartDb }}
+            - name: KC_DB_URL
+              value: {{ printf "jdbc:postgresql://%s:5432/keycloak" (include "webflix.component" (list . "postgresql")) | quote }}
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-password
+            {{- else }}
+            - name: KC_DB_URL
+              value: {{ $k.database.jdbcUrl | quote }}
+            - name: KC_DB_USERNAME
+              value: {{ $k.database.username | quote }}
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "keycloak.database.existingSecret is required with keycloak.database.jdbcUrl" $k.database.existingSecret }}
+                  key: {{ $k.database.passwordKey }}
+            {{- end }}
+            # The bootstrap administrator (master realm), for operators only: its password is in
+            # the Secret; nothing routes Keycloak's admin console outside the cluster.
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: admin-password
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            - name: management
+              containerPort: 9000
+              protocol: TCP
+          # `start` without --optimized builds first (about a minute on a laptop), then imports.
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+              scheme: HTTPS
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+              scheme: HTTPS
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+              scheme: HTTPS
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml (omit .Values.containerSecurityContext "readOnlyRootFilesystem") | nindent 12 }}
+            # Keycloak writes its build and data under /opt/keycloak.
+            readOnlyRootFilesystem: false
+          resources:
+            {{- toYaml $k.resources | nindent 12 }}
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            - name: tls
+              mountPath: /etc/keycloak/tls
+              readOnly: true
+      volumes:
+        - name: realm
+          secret:
+            secretName: {{ include "webflix.component" (list . "keycloak-realm") }}
+        - name: tls
+          secret:
+            secretName: {{ include "webflix.keycloak.tlsSecretName" . }}
+      {{- with $k.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $k.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $k.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webflix.component" (list . "keycloak") }}
+  labels:
+    {{- include "webflix.labels" (list . "keycloak") | nindent 4 }}
+spec:
+  selector:
+    {{- include "webflix.selectorLabels" (list . "keycloak") | nindent 4 }}
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP
+{{- end }}

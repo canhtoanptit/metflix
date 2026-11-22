@@ -1,0 +1,153 @@
+suite: Pipeline CronJobs, Keycloak and the mail catcher
+release:
+  name: webflix
+  namespace: webflix
+set:
+  secrets.generateWithoutCluster: true
+  pipeline.enabled: true
+  config.environment: development
+tests:
+  - it: serialises the lake jobs in one round on Garage (no conditional writes)
+    template: pipeline/cronjobs.yaml
+    asserts:
+      - hasDocuments:
+          count: 4
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: webflix-recs-lake-round
+      - documentIndex: 1
+        equal:
+          path: spec.concurrencyPolicy
+          value: Forbid
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].command
+          value: [python, /scripts/lake_round.py]
+  - it: runs separate CronJobs on a store that honours conditional writes
+    template: pipeline/cronjobs.yaml
+    set:
+      objectStore.enabled: false
+      externalS3.bucket: acme-media
+    asserts:
+      - hasDocuments:
+          count: 6
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: webflix-recs-compact
+      - documentIndex: 1
+        contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].args
+          content: s3://acme-media
+  - it: gets the jobs' token from the development issuer outside production
+    template: pipeline/cronjobs.yaml
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_STAFF_TOKEN_URL
+            value: http://webflix-api/dev-idp/staff/token
+  - it: gets it from Keycloak's service account when Keycloak is enabled
+    template: pipeline/cronjobs.yaml
+    documentIndex: 1
+    set:
+      config.environment: production
+      keycloak.enabled: true
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_STAFF_TOKEN_URL
+            value: https://webflix-keycloak:8443/realms/webflix/protocol/openid-connect/token
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_STAFF_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: webflix-keycloak
+                key: jobs-client-secret
+  - it: refuses a production pipeline that cannot reach the staff API
+    template: pipeline/cronjobs.yaml
+    set:
+      config.environment: production
+    asserts:
+      - failedTemplate:
+          errorMessage: "webflix: the pipeline's erase, exportEvents and analyse jobs call the staff API with a service account: set pipeline.staffApi.tokenUrl (and existingSecret), or enable keycloak"
+  - it: splits train-and-score around the Node rule-engine step, then imports
+    template: pipeline/cronjobs.yaml
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: metadata.name
+          value: webflix-recs-train-and-score
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[0].name
+          value: catalog
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[1].name
+          value: catalog-upload
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[2].name
+          value: prepare
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[3].name
+          value: rule-engine
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[4].name
+          value: finish
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[5].name
+          value: publish
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].command
+          value: [node, apps/api/src/recs.ts, import]
+  - it: imports the realm with the staff client, the audience, the roles and the jobs' account
+    template: keycloak/secrets.yaml
+    set:
+      keycloak.enabled: true
+    documentIndex: 1
+    asserts:
+      - matchRegex:
+          path: stringData["webflix-realm.json"]
+          pattern: '"included.custom.audience":"webflix-admin-api"'
+      - matchRegex:
+          path: stringData["webflix-realm.json"]
+          pattern: '"serviceAccountClientId":"webflix-jobs"'
+      - matchRegex:
+          path: stringData["webflix-realm.json"]
+          pattern: '"redirectUris":\["http://localhost:8080/admin/auth/callback"\]'
+  - it: runs Keycloak in production mode over HTTPS with its database in PostgreSQL
+    template: keycloak/deployment.yaml
+    set:
+      keycloak.enabled: true
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[0].args
+          value: [start, --import-realm]
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DB_URL
+            value: jdbc:postgresql://webflix-postgresql:5432/keycloak
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.scheme
+          value: HTTPS
+  - it: runs the mail catcher unprivileged with a writable data volume
+    template: mailcatcher/deployment.yaml
+    set:
+      mailcatcher.enabled: true
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true

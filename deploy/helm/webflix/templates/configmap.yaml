@@ -71,6 +71,9 @@ data:
   WEBFLIX_RATE_LIMIT_{{ $policy | replace "-" "_" | snakecase | upper }}: {{ $limit | quote }}
   {{- end }}
   {{- end }}
+  {{- /* Milestone 2 areas (docs/BACKEND.md §4): only what is set, so the application's
+  defaults for the environment apply to the rest. */}}
+  {{- include "webflix.areaSettings" . | trim | nindent 2 }}
   {{- range $name, $value := .Values.config.extraEnv }}
   {{ $name }}: {{ $value | toString | quote }}
   {{- end }}

@@ -6,6 +6,9 @@ Webflix {{ .Chart.AppVersion }} is deployed as release "{{ .Release.Name }}" in 
   PostgreSQL      {{ if .Values.postgresql.enabled }}in-chart ({{ include "webflix.component" (list . "postgresql") }}){{ else }}external{{ end }}
   Valkey          {{ if .Values.valkey.enabled }}in-chart ({{ include "webflix.component" (list . "valkey") }}){{ else }}external{{ end }}
   Object storage  {{ if .Values.objectStore.enabled }}in-chart Garage ({{ include "webflix.component" (list . "objectstore") }}, bucket {{ .Values.objectStore.bucket }}){{ else }}external S3 (bucket {{ .Values.externalS3.bucket }}){{ end }}
+  Environment     {{ .Values.config.environment }}; payments {{ include "webflix.paymentProvider" . }}; email {{ include "webflix.email.sender" . | default "memory" }}
+  Staff issuer    {{ include "webflix.staff.issuer" . | default (ternary "none (the staff API admits nobody)" "the development issuer (/dev-idp/staff)" (eq .Values.config.environment "production")) }}
+  Pipeline        {{ if .Values.pipeline.enabled }}CronJobs webflix-recs-* against {{ include "webflix.pipeline.store" . }}{{ else }}disabled (batch exports stay processing){{ end }}
 
 Migrations and seed ran as Jobs of revision {{ .Release.Revision }}:
   kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/instance={{ .Release.Name }}
@@ -16,6 +19,15 @@ Check the stack from inside the cluster:
 Packaged media is uploaded to the bucket with the media pipeline (tools/media, `upload --target s3:`);
 the next seed (any `helm upgrade`) picks up manifests/media.json. Until then titles play the
 external HLS fallback. See docs/KUBERNETES.md.
+{{- if .Values.keycloak.enabled }}
+
+Keycloak (realm {{ .Values.keycloak.realm }}) serves {{ include "webflix.keycloak.url" . }} inside the cluster; its
+admin password and the demo staff's are in Secret {{ include "webflix.keycloak.secretName" . }}.
+{{- end }}
+{{- if .Values.mailcatcher.enabled }}
+
+Mail catcher: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "webflix.component" (list . "mailcatcher") }} 8025, then http://localhost:8025
+{{- end }}
 {{- if and .Values.seed.enabled .Values.seed.demo }}
 
 Demo account: demo@webflix.dev / webflix-demo (disable with seed.demo=false).

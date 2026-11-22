@@ -46,3 +46,33 @@ target "media-tools" {
   target   = "media-tools"
   tags     = ["webflix-media-tools:${TAG}"]
 }
+
+# The pipeline's Node steps and the product's importers, run by the CronJobs (pipeline.enabled).
+target "tools" {
+  inherits = ["_common"]
+  target   = "tools"
+  tags     = ["${REGISTRY}webflix-tools:${TAG}"]
+}
+
+# The recommendation pipeline's job image (services/recs/Dockerfile, the pipeline's own; `make
+# recs-image` builds the same with `docker build`). Built here with fixed timestamps and no
+# provenance, like the others, so an unchanged tree keeps its image ID and nothing rolls.
+variable "GIT_COMMIT" {
+  default = "unknown"
+}
+
+variable "GIT_DIRTY" {
+  default = "1"
+}
+
+target "recs" {
+  context    = "services/recs"
+  dockerfile = "Dockerfile"
+  tags       = ["webflix-recs:${TAG}"]
+  args = {
+    GIT_COMMIT        = "${GIT_COMMIT}"
+    GIT_DIRTY         = "${GIT_DIRTY}"
+    SOURCE_DATE_EPOCH = "0"
+  }
+  attest = ["type=provenance,disabled=true"]
+}
