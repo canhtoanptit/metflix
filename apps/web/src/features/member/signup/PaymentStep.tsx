@@ -11,12 +11,15 @@ import { cardErrorsFrom, describeDecline } from "../shared/billing.ts";
 import { CardFields, type CardFieldsHandle, EMPTY_CARD } from "../shared/CardFields.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown, formatMoney, formatMonthlyPrice } from "../shared/format.ts";
-import { RetryTimer } from "../shared/RetryTimer.tsx";
 import { TestCardsNote } from "../shared/TestCardsNote.tsx";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
-import { type CardFormErrors, toCardPayment, validateNewPassword } from "../shared/validation.ts";
+import {
+  type CardFormErrors,
+  toCardPayment,
+  validateChosenPassword,
+} from "../shared/validation.ts";
 import { clearDraft, draftPassword, readDraft, rememberPassword } from "./draft.ts";
 import { StepBody, StepHeading } from "./SignupLayout.tsx";
 
@@ -93,13 +96,13 @@ export function PaymentStep() {
     });
   };
 
-  const passwordError = needsPassword && checkPassword ? validateNewPassword(password) : null;
+  const passwordError = needsPassword && checkPassword ? validateChosenPassword(password) : null;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (flight.isBusy() || signup.isSuccess || rate.limited) return;
     setCheckPassword(true);
-    if (needsPassword && validateNewPassword(password)) {
+    if (needsPassword && validateChosenPassword(password)) {
       passwordRef.current?.focus();
       return;
     }
@@ -141,9 +144,7 @@ export function PaymentStep() {
   ) : ApiError.is(error, "rate_limited") ? (
     <FormAlert ref={alertRef} title="Too many attempts">
       {rate.limited ? (
-        <>
-          Please wait <RetryTimer seconds={rate.waiting} /> and try again.
-        </>
+        <>For your security, please wait a moment. The button shows when you can try again.</>
       ) : (
         "You can try again now."
       )}

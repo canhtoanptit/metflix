@@ -1,6 +1,7 @@
 /**
  * `webflix-media check-art`: perceptual-hash checks over the rendered artwork, so no two titles
- * share a backdrop or poster and no two episodes of a series share a still.
+ * share a backdrop or poster and no two episodes of a series share a still; and the text rule
+ * for art under a logo (`art-text.ts`): real films' key frames are clear of any text.
  *
  * Each image gets a 64-bit difference hash (dHash: a 9×8 greyscale thumbnail, one bit per
  * horizontal gradient) plus a colour signature; two images are duplicates when both are close
@@ -8,7 +9,7 @@
  * scenes of the same photo land far apart; re-encodes and tiny shifts of one image do not.
  */
 import { join } from "node:path";
-import { catalog } from "@webflix/catalog";
+import { catalog, openFilms } from "@webflix/catalog";
 import { fillImageTemplate, type MediaManifest, type MediaProfile } from "@webflix/contracts";
 import sharp from "sharp";
 import { resolveDirection } from "../art/direction.ts";
@@ -16,6 +17,7 @@ import { cachedPhoto, readPhotoLibrary } from "../art/photos.ts";
 import { manifestPath, mediaCacheDir } from "../paths.ts";
 import { readJson } from "../util/fs.ts";
 import { log } from "../util/log.ts";
+import { checkArtFrames } from "./art-text.ts";
 
 /** At most this many of 64 hash bits may differ for two images to count as the same. */
 export const MAX_DISTANCE = 10;
@@ -182,7 +184,16 @@ export async function runArtCheck(profile: MediaProfile): Promise<number> {
   log.info(
     `check-art ${profile}: ${report.sharedSources.length} shared key-art sources, ${report.procedural.length} procedural fallbacks, ${report.backdrops.length} shared backdrops, ${report.posters.length} shared posters, ${stillPairs} duplicate still pairs across ${report.stills.length} series (${report.stillCount} stills)`,
   );
+  const frames = checkArtFrames(catalog.titles, catalog.videoAssets, openFilms);
+  for (const problem of frames.problems) log.warn(problem);
+  log.info(
+    `check-art ${profile}: ${frames.checked} real-film key/poster frames checked text-free, ${frames.problems.length} near text`,
+  );
   const problems =
-    report.sharedSources.length + report.backdrops.length + report.posters.length + stillPairs;
+    report.sharedSources.length +
+    report.backdrops.length +
+    report.posters.length +
+    stillPairs +
+    frames.problems.length;
   return problems > 0 ? 1 : 0;
 }

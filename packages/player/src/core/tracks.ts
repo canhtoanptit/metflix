@@ -1,12 +1,14 @@
 /**
  * Track selection rules: which subtitle track to show for a preference, how audio tracks are
- * labelled, and which renditions the quality menu offers under the plan's height cap.
+ * labelled, and which quality classes the quality menu offers under the plan's height cap.
  */
 import {
   effectiveVideoQuality,
   nominalVideoHeight,
   type PlaybackSession,
   type TextTrack,
+  VIDEO_QUALITY_TIERS,
+  type VideoQualityTier,
   videoQualityForHeight,
   videoQualityLabel,
 } from "@webflix/contracts";
@@ -83,21 +85,27 @@ export interface QualityLevel {
 }
 
 export interface QualityOption extends QualityLevel {
+  /** The class this option stands for. */
+  quality: VideoQualityTier;
+  /** The class in the shared vocabulary ("SD", "HD", "Full HD", "4K"): never a bitrate or "720p". */
   label: string;
-  /** The shared quality vocabulary: "SD", "HD", "Full HD" or "4K". */
-  badge: string;
 }
 
-export function qualityLabel(height: number): string {
-  return `${height}p`;
+function tierRank(tier: VideoQualityTier): number {
+  return VIDEO_QUALITY_TIERS.indexOf(tier);
 }
 
 /**
- * A rendition's quality in the contract's shared vocabulary (cards, details and the player
- * agree). Judged on the nominal 16:9 height, so a 1280×536 scope rendition counts as 720 (HD).
+ * A rendition's quality class (cards, details and the player agree). Judged on the nominal
+ * 16:9 height, so a 1280×536 scope rendition counts as 720 (HD).
  */
+export function qualityTier(level: { width: number; height: number }): VideoQualityTier {
+  return videoQualityForHeight(nominalVideoHeight(level.width, level.height));
+}
+
+/** A rendition's quality in the contract's shared vocabulary: "SD", "HD", "Full HD" or "4K". */
 export function qualityBadge(level: { width: number; height: number }): string {
-  return videoQualityLabel(videoQualityForHeight(nominalVideoHeight(level.width, level.height)));
+  return videoQualityLabel(qualityTier(level));
 }
 
 /**
@@ -113,26 +121,49 @@ export function sessionQualityLabel(
 }
 
 /**
- * Menu options: renditions within the plan cap, tallest first, one entry per height (the
- * highest bitrate wins when a ladder has several at the same height).
+ * The title's best quality when the title, not the plan, is the limit (a 4K plan watching an
+ * HD-only title), so the quality menu can say so once. Null when the plan is the limit or the
+ * title's quality is unknown.
+ */
+export function titleQualityLimit(
+  session: Partial<Pick<PlaybackSession, "bestVideoQuality">> &
+    Pick<PlaybackSession, "maxVideoHeight">,
+): string | null {
+  const best = session.bestVideoQuality;
+  if (!best) return null;
+  return tierRank(best) < tierRank(videoQualityForHeight(session.maxVideoHeight))
+    ? videoQualityLabel(best)
+    : null;
+}
+
+/**
+ * Menu options: one per quality class within the plan cap, best class first. Renditions of
+ * the same class collapse into their best one (tallest nominal height, then highest bitrate):
+ * the viewer chooses "HD", not one of two 720p encodes.
  */
 export function qualityOptions(
   levels: readonly QualityLevel[],
   maxVideoHeight: number,
 ): QualityOption[] {
-  const byHeight = new Map<number, QualityLevel>();
+  const capRank = tierRank(videoQualityForHeight(maxVideoHeight));
+  const byTier = new Map<VideoQualityTier, { level: QualityLevel; nominal: number }>();
   for (const level of levels) {
     if (level.height <= 0 || level.height > maxVideoHeight) continue;
-    const current = byHeight.get(level.height);
-    if (!current || level.bitrate > current.bitrate) byHeight.set(level.height, level);
+    const tier = qualityTier(level);
+    if (tierRank(tier) > capRank) continue;
+    const nominal = nominalVideoHeight(level.width, level.height);
+    const current = byTier.get(tier);
+    if (
+      !current ||
+      nominal > current.nominal ||
+      (nominal === current.nominal && level.bitrate > current.level.bitrate)
+    ) {
+      byTier.set(tier, { level, nominal });
+    }
   }
-  return [...byHeight.values()]
-    .sort((a, b) => b.height - a.height || b.bitrate - a.bitrate)
-    .map((level) => ({
-      ...level,
-      label: qualityLabel(level.height),
-      badge: qualityBadge(level),
-    }));
+  return [...byTier.entries()]
+    .sort(([a], [b]) => tierRank(b) - tierRank(a))
+    .map(([quality, { level }]) => ({ ...level, quality, label: videoQualityLabel(quality) }));
 }
 
 /**

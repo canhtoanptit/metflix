@@ -16,13 +16,17 @@ export const profileMenuModule = preloadable(() => import("./ProfileMenu.tsx"));
 export const browseMenuModule = preloadable(() => import("./BrowseMenu.tsx"));
 export const genreMenuModule = preloadable(() => import("./GenreMenu.tsx"));
 
-/** The menu module once the stand-in has been reached for and its code has arrived. */
-function useRequestedModule<T>(module: Preloadable<T>, requested: boolean): T | undefined {
+/**
+ * The menu module as soon as its code is here (preloaded on idle, or requested by the stand-in):
+ * the real trigger replaces the stand-in then, before anyone presses it, so a press never lands
+ * half on one and half on the other.
+ */
+export function useRequestedModule<T>(module: Preloadable<T>, requested: boolean): T | undefined {
   const loaded = useModule(module);
   useEffect(() => {
     if (requested) void module.load().catch(() => {});
   }, [module, requested]);
-  return requested ? loaded : undefined;
+  return loaded;
 }
 
 /** Props every lazily loaded menu accepts from its stand-in trigger. */

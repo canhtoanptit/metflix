@@ -27,7 +27,7 @@ import {
 } from "@webflix/http";
 import { type Context, Hono, type NotFoundHandler } from "hono";
 import { compress } from "hono/compress";
-import { createInfrastructure, type Infrastructure } from "./adapters.ts";
+import { createInfrastructure, type Infrastructure, type RuntimeComponent } from "./adapters.ts";
 import { type ApiConfig, BLOB_MANIFEST_PREFIX } from "./config.ts";
 import {
   createHealth,
@@ -58,7 +58,7 @@ export function createLogger(config: ApiConfig, component: string): Logger {
 }
 
 /** Wire ports into services. No I/O happens until something is called. */
-export function createRuntime(config: ApiConfig, component: string): Runtime {
+export function createRuntime(config: ApiConfig, component: RuntimeComponent): Runtime {
   const logger = createLogger(config, component);
   const clock = systemClock;
   const ids = createUuidV7Generator({ clock });

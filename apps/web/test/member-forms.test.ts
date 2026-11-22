@@ -1,6 +1,7 @@
 import { ApiError, createProblem, MOCK_CARDS } from "@webflix/contracts";
 import { makeAvatar, makeProfile } from "@webflix/contracts/fixtures";
 import { beforeEach, describe, expect, it } from "vitest";
+import { upgradeChargeToday } from "../src/features/member/account/membership.ts";
 import { profileChanges } from "../src/features/member/profiles/EditProfilePage.tsx";
 import { clampForKids, raisesCeiling } from "../src/features/member/profiles/maturity.ts";
 import { cardErrorsFrom, describeDecline } from "../src/features/member/shared/billing.ts";
@@ -177,12 +178,28 @@ describe("profiles", () => {
       { avatars: [makeAvatar({ id: "k1" }), makeAvatar({ id: "k2" })] },
     ];
     const rows = [
-      { name: "Sam", isKids: false, createdId: null },
-      { name: "Pip", isKids: true, createdId: null },
-      { name: "Robin", isKids: false, createdId: null },
+      { isKids: false, avatarId: null },
+      { isKids: true, avatarId: null },
+      { isKids: false, avatarId: null },
     ];
     const ids = pickAvatars(groups, rows).map((avatar) => avatar.id);
     expect(ids).toEqual(["a1", "k2", "a3"]);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it("keeps the avatars the member chose, and never gives another row the same one", () => {
+    const groups = [
+      { avatars: [makeAvatar({ id: "a1" }), makeAvatar({ id: "a2" }), makeAvatar({ id: "a3" })] },
+      { avatars: [makeAvatar({ id: "k1" }), makeAvatar({ id: "k2" })] },
+    ];
+    const rows = [
+      { isKids: false, avatarId: "a2" },
+      { isKids: false, avatarId: null },
+      { isKids: true, avatarId: "k1" },
+    ];
+    const ids = pickAvatars(groups, rows).map((avatar) => avatar.id);
+    expect(ids[0]).toBe("a2");
+    expect(ids[2]).toBe("k1");
     expect(new Set(ids).size).toBe(3);
   });
 
@@ -219,5 +236,34 @@ describe("copy helpers", () => {
     expect(formatCountdown(125.2)).toBe("2:06");
     expect(possessive("Mara")).toBe("Mara's");
     expect(possessive("Kids")).toBe("Kids'");
+  });
+});
+
+describe("plan changes", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.parse("2026-11-01T12:00:00Z");
+  const endIn = (days: number) => new Date(now + days * DAY).toISOString();
+
+  it("charges the price difference for the days left, rounded to the cent like the server", () => {
+    // $7.99 → $22.99 with the whole 30-day period ahead: the full difference.
+    expect(upgradeChargeToday(799, 2299, endIn(30), now)).toEqual({
+      amountMinor: 1500,
+      daysLeft: 30,
+    });
+    // Half the period left: half the difference.
+    expect(upgradeChargeToday(799, 2299, endIn(15), now)).toEqual({
+      amountMinor: 750,
+      daysLeft: 15,
+    });
+    // 10.5 days left: 1500 × 10.5 / 30 = 525 cents, and it reads as 11 days.
+    expect(upgradeChargeToday(799, 2299, endIn(10.5), now)).toEqual({
+      amountMinor: 525,
+      daysLeft: 11,
+    });
+  });
+
+  it("never charges for a downgrade or a period that has already ended", () => {
+    expect(upgradeChargeToday(2299, 799, endIn(20), now).amountMinor).toBe(0);
+    expect(upgradeChargeToday(799, 2299, endIn(-1), now)).toEqual({ amountMinor: 0, daysLeft: 0 });
   });
 });

@@ -1,14 +1,34 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ConfigError, type CoreConfig, loadCoreConfig } from "@webflix/core";
+import { POSTGRES_ROLE_TIMEOUTS, type PostgresRole } from "@webflix/db/postgres";
 import { z } from "zod";
 
 /** Repository root (apps/api/src → ../../..): dev-mode data lives in `.data/`, media in `.cache/`. */
 export const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 
+/** Overrides of a PostgreSQL role's budgets (`POSTGRES_ROLE_TIMEOUTS`), in milliseconds. */
+export interface PostgresTimeouts {
+  statementTimeoutMs?: number;
+  queryTimeoutMs?: number;
+}
+
 export type DatabaseConfig =
   | { kind: "sqlite"; path: string }
-  | { kind: "postgres"; url: string; maxConnections: number };
+  | {
+      kind: "postgres";
+      url: string;
+      maxConnections: number;
+      /** Per role; a role without an entry keeps its defaults. */
+      timeouts: Partial<Record<PostgresRole, PostgresTimeouts>>;
+      /** TCP keepalive's first probe after this much idle time (0: off); null: the default. */
+      keepAliveInitialDelayMs: number | null;
+    };
+
+const POSTGRES_ROLES = Object.keys(POSTGRES_ROLE_TIMEOUTS) as PostgresRole[];
+/** `request` → `WEBFLIX_DATABASE_REQUEST_STATEMENT_TIMEOUT_MS` / `..._QUERY_TIMEOUT_MS`. */
+const timeoutVariable = (role: PostgresRole, kind: "STATEMENT" | "QUERY") =>
+  `WEBFLIX_DATABASE_${role.toUpperCase()}_${kind}_TIMEOUT_MS`;
 
 export type BlobStoreConfig =
   | { kind: "fs"; root: string }
@@ -114,6 +134,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     HOST: z.string().min(1).optional(),
     WEBFLIX_DATABASE_URL: z.string().min(1).optional(),
     WEBFLIX_DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
+    WEBFLIX_DATABASE_KEEPALIVE_MS: z.coerce.number().int().min(0).optional(),
     WEBFLIX_BLOB_STORE: z.enum(["fs", "memory", "s3"]).optional(),
     WEBFLIX_BLOB_DIR: z.string().min(1).optional(),
     WEBFLIX_MEDIA_DIR: z.string().optional(),
@@ -164,6 +185,16 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (vars.WEBFLIX_OPS_PORT !== undefined && vars.WEBFLIX_OPS_PORT === vars.PORT)
     issues.push("WEBFLIX_OPS_PORT: must differ from PORT");
 
+  /** A whole number of milliseconds (0 allowed) from `env`, or undefined when unset. */
+  const millis = (name: string): number | undefined => {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return undefined;
+    const value = Number(raw);
+    if (Number.isInteger(value) && value >= 0) return value;
+    issues.push(`${name}: expected a whole number of milliseconds (0 for none)`);
+    return undefined;
+  };
+
   let database: DatabaseConfig;
   const url =
     vars.WEBFLIX_DATABASE_URL ??
@@ -172,7 +203,35 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     issues.push("WEBFLIX_DATABASE_URL: required outside dev mode (postgres://...)");
     database = { kind: "sqlite", path: ":memory:" };
   } else if (url.startsWith("postgres://") || url.startsWith("postgresql://")) {
-    database = { kind: "postgres", url, maxConnections: vars.WEBFLIX_DATABASE_POOL_MAX };
+    const timeouts: Partial<Record<PostgresRole, PostgresTimeouts>> = {};
+    for (const role of POSTGRES_ROLES) {
+      const statement = millis(timeoutVariable(role, "STATEMENT"));
+      const query = millis(timeoutVariable(role, "QUERY"));
+      if (statement === undefined && query === undefined) continue;
+      timeouts[role] = {
+        ...(statement !== undefined ? { statementTimeoutMs: statement } : {}),
+        ...(query !== undefined ? { queryTimeoutMs: query } : {}),
+      };
+      // The client-side bound fires only when the server cannot answer: it must leave the
+      // server's own timeout room to answer first, or slow statements would be cut as outages.
+      const effectiveStatement = statement ?? POSTGRES_ROLE_TIMEOUTS[role].statementTimeoutMs;
+      const effectiveQuery = query ?? POSTGRES_ROLE_TIMEOUTS[role].queryTimeoutMs;
+      if (
+        effectiveQuery > 0 &&
+        (effectiveStatement === 0 || effectiveQuery <= effectiveStatement)
+      ) {
+        issues.push(
+          `${timeoutVariable(role, "QUERY")}: ${effectiveQuery} must exceed the ${role} statement timeout (${effectiveStatement || "none"}), or be 0`,
+        );
+      }
+    }
+    database = {
+      kind: "postgres",
+      url,
+      maxConnections: vars.WEBFLIX_DATABASE_POOL_MAX,
+      timeouts,
+      keepAliveInitialDelayMs: vars.WEBFLIX_DATABASE_KEEPALIVE_MS ?? null,
+    };
   } else if (url.startsWith("sqlite:")) {
     const path = url.slice("sqlite:".length);
     database = { kind: "sqlite", path: path === ":memory:" ? path : resolve(path) };
@@ -254,7 +313,15 @@ export function describeConfig(config: ApiConfig): Record<string, unknown> {
     publicOrigin: config.core.publicOrigin,
     port: config.port,
     opsPort: config.opsPort ?? "same as port",
-    database: config.database.kind === "sqlite" ? `sqlite:${config.database.path}` : "postgres",
+    database:
+      config.database.kind === "sqlite"
+        ? `sqlite:${config.database.path}`
+        : {
+            kind: "postgres",
+            poolMax: config.database.maxConnections,
+            timeoutOverrides: config.database.timeouts,
+            keepAliveInitialDelayMs: config.database.keepAliveInitialDelayMs ?? "default",
+          },
     blobs:
       config.blobs.kind === "fs"
         ? `fs:${config.blobs.root}`

@@ -1,0 +1,1152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/event/1",
+  "title": "Webflix behaviour event (envelope version 1)",
+  "description": "One event as stored in the event lake (docs/BLUEPRINT-M2.md §6.1). Provisional: authored by services/recs until packages/contracts exports the authoritative JSON Schema. Every decision the blueprint left open is listed in services/recs/README.md (Event schema decisions). Closed at every level: a new optional field is a new `version` of its type.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "type",
+    "version",
+    "source",
+    "occurredAt",
+    "receivedAt",
+    "deviceId",
+    "sessionSeq",
+    "app",
+    "context",
+    "subject",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "description": "UUIDv7, generated where the event is created (client or server). The deduplication key of the lake.",
+      "$ref": "#/$defs/uuidv7"
+    },
+    "type": {
+      "$ref": "#/$defs/eventType"
+    },
+    "version": {
+      "description": "Version of this type's payload schema. Readers accept the versions they know and count the rest.",
+      "type": "integer",
+      "const": 1
+    },
+    "source": {
+      "description": "Who produced the event: `client` events are untrusted (clock, ids); `server` events are emitted by Webflix services.",
+      "enum": ["client", "server"]
+    },
+    "occurredAt": {
+      "description": "When it happened, by the producer's clock (the client clock for client events).",
+      "$ref": "#/$defs/timestamp"
+    },
+    "receivedAt": {
+      "description": "When the ingestion endpoint accepted it (server clock). The lake partition is derived from this.",
+      "$ref": "#/$defs/timestamp"
+    },
+    "deviceId": {
+      "description": "Anonymous, client-generated device id. Null on server events that are not tied to a device.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/opaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sessionSeq": {
+      "description": "Per-device counter of events within the current app session (resets at app start): ordering and loss detection. Null on server events.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "version"],
+      "properties": {
+        "platform": {
+          "enum": ["web", "ios", "android", "tv", "server"]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      }
+    },
+    "context": {
+      "$ref": "#/$defs/context"
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "#/$defs/dispatch/impression"
+    },
+    {
+      "$ref": "#/$defs/dispatch/row.view"
+    },
+    {
+      "$ref": "#/$defs/dispatch/title.open"
+    },
+    {
+      "$ref": "#/$defs/dispatch/preview.start"
+    },
+    {
+      "$ref": "#/$defs/dispatch/preview.complete"
+    },
+    {
+      "$ref": "#/$defs/dispatch/search.query"
+    },
+    {
+      "$ref": "#/$defs/dispatch/search.click"
+    },
+    {
+      "$ref": "#/$defs/dispatch/list.add"
+    },
+    {
+      "$ref": "#/$defs/dispatch/list.remove"
+    },
+    {
+      "$ref": "#/$defs/dispatch/rating.set"
+    },
+    {
+      "$ref": "#/$defs/dispatch/rating.clear"
+    },
+    {
+      "$ref": "#/$defs/dispatch/signup.step"
+    },
+    {
+      "$ref": "#/$defs/dispatch/client.error"
+    },
+    {
+      "$ref": "#/$defs/dispatch/playback.start"
+    },
+    {
+      "$ref": "#/$defs/dispatch/playback.progress"
+    },
+    {
+      "$ref": "#/$defs/dispatch/playback.complete"
+    },
+    {
+      "$ref": "#/$defs/dispatch/playback.abandon"
+    },
+    {
+      "$ref": "#/$defs/dispatch/billing.transition"
+    },
+    {
+      "$ref": "#/$defs/dispatch/auth.signin"
+    },
+    {
+      "$ref": "#/$defs/dispatch/auth.signup"
+    },
+    {
+      "$ref": "#/$defs/dispatch/experiment.exposure"
+    },
+    {
+      "$ref": "#/$defs/dispatch/consent.change"
+    }
+  ],
+  "$defs": {
+    "eventType": {
+      "enum": [
+        "impression",
+        "row.view",
+        "title.open",
+        "preview.start",
+        "preview.complete",
+        "search.query",
+        "search.click",
+        "list.add",
+        "list.remove",
+        "rating.set",
+        "rating.clear",
+        "signup.step",
+        "client.error",
+        "playback.start",
+        "playback.progress",
+        "playback.complete",
+        "playback.abandon",
+        "billing.transition",
+        "auth.signin",
+        "auth.signup",
+        "experiment.exposure",
+        "consent.change"
+      ]
+    },
+    "uuidv7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 UTC instant with millisecond precision, as produced by Date.prototype.toISOString().",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "titleId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "pseudonym": {
+      "description": "Keyed hash (HMAC-SHA256, base64url, first 22 characters = 128 bits) of an internal id. See README: Pseudonymous keys.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{22}$"
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "rowId", "rowRank", "rank", "experiments", "policy"],
+      "properties": {
+        "surface": {
+          "anyOf": [
+            {
+              "enum": [
+                "home",
+                "series",
+                "movies",
+                "new-popular",
+                "genre",
+                "search",
+                "title-detail",
+                "my-list",
+                "player",
+                "account",
+                "signup",
+                "landing"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rowId": {
+          "description": "Row id as the engine names it (`home:genre:thriller`); `{view}:billboard` for the billboard.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rowRank": {
+          "description": "1-based vertical position of the module on the page (the billboard, when shown, is 1).",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rank": {
+          "description": "1-based position of the card within its row.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "experiments": {
+          "description": "Experiment assignments in force for the unit: experiment key -> variant.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          }
+        },
+        "policy": {
+          "description": "Which ranking policy produced the page, and whether its order was randomised for exploration (needed for unbiased learning and off-policy evaluation). Null when no ranked page is involved.",
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "explore"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "explore": {
+                  "type": "boolean"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "subject": {
+      "description": "Added by the server from the session; client-supplied identities are ignored (blueprint §6.1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account", "profile", "plan", "country", "restricted", "consent"],
+      "properties": {
+        "account": {
+          "description": "Pseudonymous subject: keyed hash of the account id. Null for signed-out events.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pseudonym"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profile": {
+          "description": "Keyed hash of the active profile id. Null at the profile gate or when signed out. Recommendation artefacts are keyed by it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pseudonym"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "enum": ["basic", "standard", "premium"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "country": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Z]{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "restricted": {
+          "description": "True for a kids profile or a profile with a lowered maturity ceiling (standingOf() in packages/core). Such events are excluded from training, analytics and experiments.",
+          "type": "boolean"
+        },
+        "consent": {
+          "description": "Consent in force for the subject when the event was received (blueprint §6.3).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["analytics", "personalisation"],
+          "properties": {
+            "analytics": {
+              "type": "boolean"
+            },
+            "personalisation": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "membershipState": {
+      "enum": ["none", "incomplete", "trialing", "active", "past_due", "suspended", "canceled"]
+    },
+    "playbackItem": {
+      "type": "object",
+      "required": [
+        "playbackSessionId",
+        "titleId",
+        "episodeId",
+        "positionSec",
+        "durationSec",
+        "watchedSec"
+      ],
+      "properties": {
+        "playbackSessionId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "titleId": {
+          "$ref": "#/$defs/titleId"
+        },
+        "episodeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/titleId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "positionSec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "durationSec": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "watchedSec": {
+          "description": "Seconds of watching credited to this playback session so far (the server's credit clock).",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "payloads": {
+      "impression": {
+        "description": "A card visible for at least 1 s. Sampled per app session: every impression of a sampled session is logged, so pages stay whole.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId", "sampleRate"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          },
+          "sampleRate": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "row.view": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rowKind", "itemCount", "sampleRate"],
+        "properties": {
+          "rowKind": {
+            "enum": [
+              "billboard",
+              "continue-watching",
+              "my-list",
+              "top-10",
+              "trending",
+              "new-releases",
+              "because-you-watched",
+              "genre",
+              "watch-again",
+              "originals",
+              "top-picks"
+            ]
+          },
+          "itemCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sampleRate": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "title.open": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          }
+        }
+      },
+      "preview.start": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          }
+        }
+      },
+      "preview.complete": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId", "watchedSec"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          },
+          "watchedSec": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
+      "search.query": {
+        "description": "The query text is not collected: its length and the result count are enough for search analytics here.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["queryLength", "resultCount"],
+        "properties": {
+          "queryLength": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "resultCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "search.click": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId", "resultRank", "queryLength"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          },
+          "resultRank": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "queryLength": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      },
+      "list.add": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          }
+        }
+      },
+      "list.remove": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          }
+        }
+      },
+      "rating.set": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId", "value"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          },
+          "value": {
+            "enum": ["dislike", "like", "love"]
+          }
+        }
+      },
+      "rating.clear": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["titleId"],
+        "properties": {
+          "titleId": {
+            "$ref": "#/$defs/titleId"
+          }
+        }
+      },
+      "signup.step": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step", "outcome"],
+        "properties": {
+          "step": {
+            "enum": ["email", "plan", "payment", "profiles", "complete"]
+          },
+          "outcome": {
+            "enum": ["viewed", "completed", "failed"]
+          }
+        }
+      },
+      "client.error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "fatal"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "fatal": {
+            "type": "boolean"
+          }
+        }
+      },
+      "playback.start": {
+        "$ref": "#/$defs/playbackItem",
+        "unevaluatedProperties": false
+      },
+      "playback.progress": {
+        "description": "Emitted by the server as credited watching crosses each quarter of the item's duration.",
+        "$ref": "#/$defs/playbackItem",
+        "unevaluatedProperties": false
+      },
+      "playback.complete": {
+        "description": "The item reached the completion ratio (95%) or ended.",
+        "$ref": "#/$defs/playbackItem",
+        "unevaluatedProperties": false
+      },
+      "playback.abandon": {
+        "$ref": "#/$defs/playbackItem",
+        "unevaluatedProperties": false,
+        "required": ["reason"],
+        "properties": {
+          "reason": {
+            "enum": ["closed", "error", "stalled", "replaced"]
+          }
+        }
+      },
+      "billing.transition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "planId"],
+        "properties": {
+          "from": {
+            "$ref": "#/$defs/membershipState"
+          },
+          "to": {
+            "$ref": "#/$defs/membershipState"
+          },
+          "planId": {
+            "anyOf": [
+              {
+                "enum": ["basic", "standard", "premium"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "auth.signin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "outcome"],
+        "properties": {
+          "method": {
+            "enum": ["password", "oidc"]
+          },
+          "outcome": {
+            "enum": ["success", "failure"]
+          }
+        }
+      },
+      "auth.signup": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "outcome"],
+        "properties": {
+          "method": {
+            "enum": ["password", "oidc"]
+          },
+          "outcome": {
+            "enum": ["success", "failure"]
+          }
+        }
+      },
+      "experiment.exposure": {
+        "description": "Logged when the treatment is experienced, not when assigned (blueprint §8.1).",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["experimentKey", "variant", "unitType"],
+        "properties": {
+          "experimentKey": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "variant": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "unitType": {
+            "enum": ["profile", "device"]
+          }
+        }
+      },
+      "consent.change": {
+        "description": "The account's consent for one purpose changed (blueprint §6.3). The subject stamp of this event carries the new state, so consumers that honour the latest stamp see a withdrawal even when the member never comes back.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["purpose", "granted", "source"],
+        "properties": {
+          "purpose": {
+            "enum": ["analytics", "personalisation"]
+          },
+          "granted": {
+            "type": "boolean"
+          },
+          "source": {
+            "enum": ["banner", "settings", "gpc", "support"]
+          }
+        }
+      }
+    },
+    "dispatch": {
+      "impression": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "impression"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/impression"
+            }
+          }
+        }
+      },
+      "row.view": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "row.view"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/row.view"
+            }
+          }
+        }
+      },
+      "title.open": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "title.open"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/title.open"
+            }
+          }
+        }
+      },
+      "preview.start": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "preview.start"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/preview.start"
+            }
+          }
+        }
+      },
+      "preview.complete": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "preview.complete"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/preview.complete"
+            }
+          }
+        }
+      },
+      "search.query": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "search.query"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/search.query"
+            }
+          }
+        }
+      },
+      "search.click": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "search.click"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/search.click"
+            }
+          }
+        }
+      },
+      "list.add": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "list.add"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/list.add"
+            }
+          }
+        }
+      },
+      "list.remove": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "list.remove"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/list.remove"
+            }
+          }
+        }
+      },
+      "rating.set": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "rating.set"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/rating.set"
+            }
+          }
+        }
+      },
+      "rating.clear": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "rating.clear"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/rating.clear"
+            }
+          }
+        }
+      },
+      "signup.step": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "signup.step"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/signup.step"
+            }
+          }
+        }
+      },
+      "client.error": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "client.error"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "client"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/client.error"
+            }
+          }
+        }
+      },
+      "playback.start": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "playback.start"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/playback.start"
+            }
+          }
+        }
+      },
+      "playback.progress": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "playback.progress"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/playback.progress"
+            }
+          }
+        }
+      },
+      "playback.complete": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "playback.complete"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/playback.complete"
+            }
+          }
+        }
+      },
+      "playback.abandon": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "playback.abandon"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/playback.abandon"
+            }
+          }
+        }
+      },
+      "billing.transition": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "billing.transition"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/billing.transition"
+            }
+          }
+        }
+      },
+      "auth.signin": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "auth.signin"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/auth.signin"
+            }
+          }
+        }
+      },
+      "auth.signup": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "auth.signup"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/auth.signup"
+            }
+          }
+        }
+      },
+      "experiment.exposure": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "experiment.exposure"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/experiment.exposure"
+            }
+          }
+        }
+      },
+      "consent.change": {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "consent.change"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "source": {
+              "const": "server"
+            },
+            "payload": {
+              "$ref": "#/$defs/payloads/consent.change"
+            }
+          }
+        }
+      }
+    }
+  }
+}

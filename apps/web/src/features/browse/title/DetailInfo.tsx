@@ -1,5 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import type { TitleDetail } from "@webflix/contracts";
+import {
+  formatTimeLeft,
+  formatTimeLeftSpoken,
+  progressFraction,
+  type TitleDetail,
+} from "@webflix/contracts";
 import {
   cx,
   MaturityBadge,
@@ -9,14 +14,7 @@ import {
   Top10Badge,
 } from "@webflix/ui";
 import type { ReactNode } from "react";
-import {
-  episodeCode,
-  formatLength,
-  formatProgress,
-  progressFraction,
-  qualityLabel,
-  top10RankLabel,
-} from "../common/format.ts";
+import { episodeCode, formatLength, qualityLabel, top10RankLabel } from "../common/format.ts";
 import { useBrowseSession } from "../common/session.ts";
 
 /** Match, year, length, quality, rating; resume point; synopsis; the people and genres. */
@@ -79,10 +77,11 @@ export function DetailInfo({ title, phone }: { title: TitleDetail; phone: boolea
                 size="sm"
                 className="flex-1"
                 label="Watched"
-                valueText={`${formatProgress(progress).replace("m", " minutes")} watched`}
+                valueText={formatTimeLeftSpoken(progress)}
               />
-              <span className="shrink-0 type-caption text-fg-muted tabular-nums">
-                {formatProgress(progress)}
+              {/* Bar and label from the same position and duration: they always agree. */}
+              <span aria-hidden className="shrink-0 type-caption text-fg-muted tabular-nums">
+                {formatTimeLeft(progress)}
               </span>
             </div>
           </div>

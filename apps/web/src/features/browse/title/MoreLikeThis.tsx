@@ -69,9 +69,6 @@ function SimilarCard({ card }: { card: TitleCard }) {
           className="rounded-b-none"
           {...titleOverlayLinkProps(card.id)}
         />
-        <span className="pointer-events-none absolute end-2 top-2 rounded-xs bg-black/60 px-1.5 py-0.5 type-caption text-fg">
-          {formatLength(card)}
-        </span>
       </span>
       <div className="flex flex-1 flex-col gap-2 p-3">
         <div className="flex items-start justify-between gap-2">
@@ -79,9 +76,12 @@ function SimilarCard({ card }: { card: TitleCard }) {
             {card.matchScore !== null ? (
               <span className="type-label text-positive">{card.matchScore}% Match</span>
             ) : null}
-            <span className="flex items-center gap-2 type-body-sm text-fg-muted">
+            {/* The length sits with the year, not on the picture: the picture's corners hold
+                the Originals mark and the card's badge, and its foot the title treatment. */}
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1 type-body-sm text-fg-muted">
               <MaturityBadge rating={card.maturity} />
               <span>{card.releaseYear}</span>
+              <span data-duration="">{formatLength(card)}</span>
             </span>
           </div>
           <MyListButton title={card} card={card} size="sm" />

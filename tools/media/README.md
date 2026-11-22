@@ -35,9 +35,9 @@ The CLI is `node tools/media/src/cli.ts <command>` (`help` lists everything):
 | --- | --- |
 | `build --profile fast\|full [--only ids] [--skip-art] [--skip-video]` | art stage, video stage, manifest |
 | `upload --profile p [--target fs:] [--prune] [--concurrency 16]` | push the tree + manifest through a `BlobStore` |
-| `validate-manifest <file>` | check a manifest against `MediaManifest` |
-| `contact-sheets --profile p` / `review --profile p [--port 4400]` | look at the results (incl. `previews-N.jpg`: each title's card next to three frames of its preview, with genres, source asset and how it was chosen) |
-| `check-art --profile p` | perceptual-hash and source check: no two titles share a key-art source, backdrop or poster; no series repeats a still |
+| `validate-manifest <file>` | check a manifest against `MediaManifest`; next to its files also timing and previews (declared `kind`/`hasAudio` against the decoded clip, motion art against the backdrop) |
+| `contact-sheets --profile p [--only boundaries,…]` / `review --profile p [--port 4400]` | look at the results (incl. `previews-N.jpg`: each title's card next to three frames of its preview; `boundaries-NN.jpg`: the edge frames of every playable clip, see *Reviewing footage*) |
+| `check-art --profile p` | perceptual-hash and source check: no two titles share a key-art source, backdrop or poster; no series repeats a still; real films' key-art frames are clear of any text |
 | `photos fetch \| auto \| search "<q>" \| pick <id> "<q>" <n>` | photo library curation and prefetch |
 | `credits` | regenerate `docs/CREDITS.md` |
 | `status` / `clean --profile p` | cache sizes / delete a profile's output |
@@ -59,17 +59,19 @@ The CLI is `node tools/media/src/cli.ts <command>` (`help` lists everything):
 
 - **Sources** are the open films in `packages/catalog/src/data/open-films.ts` (URL, licence,
   verified credits, subtitle URLs, medium, every stretch with burned-in text — studio cards,
-  title cards, credits — read off a 3 s frame grid, opening titles, credits timecode, chapters,
-  highlight windows, rating). The catalog (`assemble.ts`, rules in `footage.ts`) turns them
-  into assets:
+  title cards, credits — measured as described under *Reviewing footage*, on-screen story text
+  that must stay out of key art, opening titles, credits timecode, chapters, highlight
+  windows, rating). The catalog (`assemble.ts`, rules in `footage.ts`) turns them into assets,
+  every borrowed window at least `TEXT_MARGIN_SEC` (1 s) clear of any text span, in whole
+  seconds:
 
   | asset | what | played by |
   | --- | --- | --- |
   | `v-<film>` | the complete film | its own real title only |
   | `v-<film>-cut` | its longest text-free stretch | fictional movies |
   | `v-<film>-epN` | text-free chapters; each after the first opens with the last 20 s of the one before | fictional series |
-  | `v-<film>-pvN` | a ~30 s excerpt | the film's own preview, or a curated match |
-  | `v-art-<title>` | a 16 s motion-art clip from the title's own key art | every other fictional title's preview |
+  | `v-<film>-pv<start>-<end>-<rev>` | a ~30 s excerpt; `<rev>` hashes the source, the window and `FOOTAGE_PREVIEW_RECIPE` | the film's own preview, or a curated match |
+  | `v-art-<title>-<rev>` | a 16 s motion-art clip from the title's own key art; `<rev>` hashes `MOTION_ART_RECIPE` and the title's art direction | every other fictional title's preview |
 
   Playback footage is matched by medium (live action vs animation), then genre affinity, never
   rated above the title, spread so a genre row does not keep playing one film. **Previews never
@@ -77,12 +79,35 @@ The CLI is `node tools/media/src/cli.ts <command>` (`help` lists everything):
   hand-reviewed excerpt only when it is the same medium, text-free and believable as that title
   (`CURATED_PREVIEWS`); (c) everything else gets motion art. `pnpm --filter @webflix/catalog
   test` fails on a cross-medium preview or on footage showing a film's titles under another title.
-- **Motion art** (`artwork` sources): the art stage keeps each title's textless 1920×1080
-  backdrop master (`work/art/masters/<title>/backdrop.png`); the video stage animates it with an
-  eased push or pull and drift (zoompan on a 2x upscale, so no jitter), a soft warm light that
-  crosses the frame, a breathing exposure, grain and a vignette, faded in and out of black so
-  it loops. A silent AAC track keeps the preview HLS honest to its CODECS. Changing a title's art
-  re-renders its clip (keyed by the master's SHA-256).
+- **Motion art** (`artwork` sources, `src/video/motion.ts`): the art stage keeps each title's
+  textless 1920×1080 backdrop master (`work/art/masters/<title>/backdrop.png`). The web plays the
+  clip over that backdrop on the billboard and the detail hero, so the clip **starts and ends
+  exactly on the still**: zoom 1, no fade, grade, grain or vignette at either end, converted to
+  BT.709 limited range once and tagged as such (an untagged BT.601 conversion shifts colours by
+  several levels when the clip starts). In between: a push to a seeded peak of 1.20–1.25 at
+  half-time towards a drifting point and back (zoompan on a 2x upscale, so no jitter; it reads
+  at billboard size and loops seamlessly), and a soft warm light that enters and leaves outside
+  the frame. Video only: no audio track. Packaging decodes the first and last frames and fails
+  the clip unless both match the master (reduced to 320×180 and softened, so grain and
+  compression noise count for little: mean error ≤ 4.5 levels, luma shift ≤ 3; a 2 % zoom on
+  any detailed image, a vignette or a BT.601/709 slip all fail; calibrated on every clip). Changing a title's
+  art re-renders its clip under a new id; so does `MOTION_ART_RECIPE`.
+- **Previews declare what they are** (`preview.kind`, `preview.hasAudio` in the manifest):
+  motion art is `motion` with `hasAudio: false`; a footage clip is `footage` and its
+  `hasAudio` comes from measuring the decoded audio (`astats` peak above −60 dBFS), never from
+  whether a track exists. `validate-manifest` measures every preview again: a clip declaring
+  sound must be audible, one declaring none must be digitally silent (no track, or all samples
+  zero), and motion art must match the published backdrop at both ends.
+- **Preview clips are immutable**: they are public keys with no `?v=`, cached for a year by
+  browsers and edges nobody can purge. So a preview id is derived from everything that defines
+  the clip (footage: source, window, `FOOTAGE_PREVIEW_RECIPE`; motion art:
+  `MOTION_ART_RECIPE`, art direction), and two guards catch anything the derivation misses,
+  such as an encoder change without a recipe bump:
+  - `build` snapshots what the profile published before (its ledger
+    `work/<p>/published-public.json`, the previous manifest's files, every upload record) and
+    fails, listing the keys, if a preview key comes back with other bytes (`src/published.ts`);
+  - `upload` refuses to replace a stored preview with different bytes.
+  Bump the recipe revision when the encode changes; never reuse an id.
 - **Profiles** (`src/profiles.ts`):
 
   | | fast | full |
@@ -132,7 +157,13 @@ The CLI is `node tools/media/src/cli.ts <command>` (`help` lists everything):
 - **Episode stills**: a series' still photos, then its key image; each further use of the
   same source takes the next framing (wide, tight left, tight right mirrored, high, low
   detail…), so no two episodes repeat a still. Real series use a frame of each episode's own
-  footage (the most detailed of five candidates).
+  footage (the most detailed of five candidates, all clear of text by the footage margin).
+- **No text under a logo**: the billboard and detail hero lay the logo over the backdrop, so
+  backdrops carry no text at all. For the real films this is a rule `check-art` enforces: key,
+  poster and pinned still frames must be clear of the film's text spans and on-screen story
+  text (`screenText`: Tears of Steel's PLAYBACK console, holographic captions) by the margin.
+  Photo and procedural backdrops carry none by construction (photos are reviewed for signs and
+  marks when pinned); the billboard and logo sheets show every backdrop under its logo.
 - **Art direction** lives on each seed title (`art`, opaque to the API) in
   `packages/catalog/src/data/art.ts`: photo, focus point, grade, type style, card/poster
   placement. Titles without direction get genre defaults (`src/art/direction.ts`).
@@ -158,6 +189,26 @@ person (distant, silhouetted or turned-away figures are fine). Then `make conten
 `check-art`. An automated OCR + face-detector pass was tried and dropped: it missed most signs
 and flagged animals and carved stone as faces, so the review is visual.
 
+## Reviewing footage
+
+Burned-in cards (studio logos, "presents", title cards, credits, licence cards) are measured,
+not guessed. For each open film: a 1 fps frame grid of the whole film (`work/review-frames/
+dense`), on which every stretch with any visible text is marked; then a fine strip around each
+edge at every third frame (1/8 s), from which the span runs from the first frame where any of
+the text shows (fades included) to the first clean frame. Spans are stored as measured;
+`TEXT_MARGIN_SEC` (1 s) is added on both sides wherever footage is lent or a frame is used as
+art, and windows are cut to whole seconds inwards. Diegetic text (interface words in Tears of
+Steel) is listed separately as `screenText`: fine in playback, never in key art.
+
+Automated text detection was tried and was unreliable (it missed small studio cards and
+faint fades), so the check stays visual, and it is part of every build's review output:
+`contact-sheets` writes `boundaries-NN.jpg`, one row per playable clip (complete films,
+feature cuts, episode chapters, previews of every kind) with its first frame, +0.5 s, +1 s,
++3 s, the middle, −3 s, −1 s and the last frame, decoded from the packaged output, labelled
+with every title that plays it and its source film and window. No row of a fictional title may
+show a source film's title, credits, studio card or watermark; the first frames of a later
+chapter are its recap and must be clean too. Look at every sheet whenever cuts change.
+
 ## Cache layout
 
 ```
@@ -166,8 +217,11 @@ and flagged animals and carved stone as faces, so the review is visual.
   downloads/subs/<film>/ subtitles as published
   downloads/photos/      photos at 1920 px
   art/public/img/…       rendered artwork (blob layout)
-  work/art/              art step stamps, extracted film frames
-  work/<profile>/        video step stamps, upload hash/target records
+  work/art/              art step stamps, extracted film frames, backdrop masters
+  work/<profile>/        video step stamps (incl. measured preview audio), upload records
+  work/review-frames/    1 fps grids and fine edge strips used to measure text spans
+  work/preview-strips/, work/boundary-strips/   cached rows of the review sheets
+  work/validate/         frames decoded by validate-manifest
   <profile>/             publishable tree: public/…, vod/…, manifest.json
   review/<profile>/      contact sheets
 ```
@@ -189,8 +243,8 @@ direction in `art.ts`, then `make content`.
 
 **A source film**: add an `OpenFilm` to `open-films.ts` (verify the licence on the official
 project page; prefer Blender's own video server or download.blender.org), with its
-subtitles, opening titles, credits timecode, chapters and highlight windows (look at a frame
-grid first), its rating and the genres it can stand in for. Add a title for it in
+subtitles, measured text spans (see *Reviewing footage*), opening titles, credits timecode,
+chapters and highlight windows, its rating and the genres it can stand in for. Add a title for it in
 `OPEN_TITLES` with its real credits, then `make content` and `make content-credits`.
 
 **A font**: add it to `fonts/fonts.json`, run `node tools/media/src/cli.ts fetch-fonts`, commit
@@ -231,7 +285,9 @@ Measured on a 12-core arm64 Mac (Docker with 12 CPUs), 16 MB/s downloads:
 | video fast (165 assets) | 10 min 20 s | stamps only (0.3 s) | 2.1 GB (`.cache/media/fast` 2.4 GB with art) |
 | video full (165 assets, complete films, 5 rungs) | 41 min | stamps only | 10.3 GB (`.cache/media/full` 11 GB) |
 | upload fast to `fs:` | 9 s (13 k objects, 2.3 GB) | 3.7 s, nothing sent | |
-| `make content PROFILE=fast`, nothing changed | | 5 s | |
+| `validate-manifest` (timing, and decoding all 119 previews) | 1 min (fast), 1 min (full) | same | |
+| `contact-sheets --only boundaries` (165 rows) | 45 s | 4 s (rows cached by asset bytes) | |
+| `make content PROFILE=fast`, nothing changed | | 30 s (most of it the preview checks) | |
 
 **Wikimedia throttling.** upload.wikimedia.org throttles bulk thumbnail traffic from one IP
 (429 with a two-minute Retry-After, and HTTP/1.1 clients are throttled outright). The pipeline

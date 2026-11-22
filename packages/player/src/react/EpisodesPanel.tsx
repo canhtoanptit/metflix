@@ -3,11 +3,19 @@
  * `episodes.loadEpisodes(season, signal)`. Results are cached per source object, so reopening
  * the panel or switching back to a season does not refetch.
  */
-import { imageUrl, pickImageWidth } from "@webflix/contracts";
+import {
+  formatTimeLeft,
+  formatTimeLeftSpoken,
+  imageUrl,
+  type PlaybackPoint,
+  pickImageWidth,
+  progressFraction,
+  timeLeftSec,
+} from "@webflix/contracts";
 import { useEffect, useRef, useState } from "react";
-import { formatRuntime } from "../core/format.ts";
+import { formatRuntime, formatSpokenDuration } from "../core/format.ts";
 import type { EpisodeSummary, EpisodesSource } from "../types.ts";
-import { usePlayer } from "./context.ts";
+import { usePlayer, usePlayerState } from "./context.ts";
 import { Icon } from "./icons.tsx";
 
 type SeasonState =
@@ -16,6 +24,46 @@ type SeasonState =
   | { status: "error" };
 
 const caches = new WeakMap<EpisodesSource, Map<number, readonly EpisodeSummary[]>>();
+
+interface EpisodeTime {
+  text: string;
+  spoken: string;
+  /** Bar fill, 0–1 (0: no bar). */
+  fraction: number;
+}
+
+function timeLeft(point: PlaybackPoint): EpisodeTime {
+  return {
+    text: formatTimeLeft(point),
+    spoken: formatTimeLeftSpoken(point),
+    fraction: progressFraction(point),
+  };
+}
+
+/** Re-render the live row when its words change or its bar moves visibly, not at 4 Hz. */
+function sameTime(a: EpisodeTime | null, b: EpisodeTime | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.text === b.text && Math.abs(a.fraction - b.fraction) < 0.005;
+}
+
+/**
+ * Started episodes say what is left, with a bar from the same numbers, and completed ones
+ * "Finished" under a full bar (the shared wording of `@webflix/contracts`); unwatched ones say
+ * their runtime. The playing episode uses the live position, the others the host's progress.
+ */
+function episodeTime(episode: EpisodeSummary, live: EpisodeTime | null): EpisodeTime {
+  if (live) return live;
+  const progress = episode.progress;
+  const runtime = {
+    text: formatRuntime(episode.runtimeSec),
+    spoken: formatSpokenDuration(
+      episode.runtimeSec >= 60 ? Math.round(episode.runtimeSec / 60) * 60 : episode.runtimeSec,
+    ),
+  };
+  if (progress?.completed) return timeLeft(progress);
+  if (progress && progress.positionSec > 0 && timeLeftSec(progress) > 0) return timeLeft(progress);
+  return { ...runtime, fraction: 0 };
+}
 
 function cacheFor(source: EpisodesSource): Map<number, readonly EpisodeSummary[]> {
   let cache = caches.get(source);
@@ -42,6 +90,11 @@ export function EpisodesPanel() {
     return cached ? { status: "ready", items: cached } : { status: "loading" };
   });
   const [attempt, setAttempt] = useState(0);
+  // The playing episode's position as the progress reports carry it (same two numbers).
+  const live = usePlayerState((s) => {
+    const durationSec = s.duration || (s.source?.durationHint ?? 0);
+    return durationSec > 0 ? timeLeft({ positionSec: s.currentTime, durationSec }) : null;
+  }, sameTime);
 
   useEffect(() => {
     if (!episodes) return;
@@ -158,12 +211,7 @@ export function EpisodesPanel() {
           <ul className="wfp-episodes__list">
             {state.items.map((episode) => {
               const current = episode.id === currentId;
-              const progress =
-                episode.progress && episode.progress.durationSec > 0
-                  ? episode.progress.completed
-                    ? 1
-                    : episode.progress.positionSec / episode.progress.durationSec
-                  : 0;
+              const time = episodeTime(episode, current ? live : null);
               const still = episode.still;
               return (
                 <li key={episode.id}>
@@ -194,9 +242,9 @@ export function EpisodesPanel() {
                           decoding="async"
                         />
                       ) : null}
-                      {progress > 0 ? (
+                      {time.fraction > 0 ? (
                         <span className="wfp-episode__progress">
-                          <span style={{ transform: `scaleX(${Math.min(1, progress)})` }} />
+                          <span style={{ transform: `scaleX(${time.fraction})` }} />
                         </span>
                       ) : null}
                     </span>
@@ -204,7 +252,8 @@ export function EpisodesPanel() {
                       <span className="wfp-episode__head">
                         <span className="wfp-episode__name">{episode.name}</span>
                         <span className="wfp-episode__runtime">
-                          {formatRuntime(episode.runtimeSec)}
+                          <span aria-hidden="true">{time.text}</span>
+                          <span className="wfp-sr-only">{time.spoken}</span>
                         </span>
                       </span>
                       {current ? (

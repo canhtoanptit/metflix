@@ -20,7 +20,7 @@ function runtimeWith(env: Record<string, string> = {}): Runtime {
       WEBFLIX_LOG_LEVEL: "error",
       ...env,
     }),
-    "test",
+    "api",
   );
 }
 

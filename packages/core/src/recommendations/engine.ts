@@ -1,4 +1,5 @@
 import {
+  BADGES_PER_LIST,
   type BrowseView,
   type GenreSort,
   type MaturityLevel,
@@ -104,12 +105,15 @@ export interface ResumePoint {
 }
 
 /**
- * Where one cards list sits, for badge selection: `single` (billboard, title detail) earns any
- * badge, `list` (rows, genre pages, search, My List, More Like This) caps Top 10 badges at
- * `TOP_10_BADGES_PER_LIST`, `progress` and `ranked` rows show no Top 10 badge at all (the row is
- * about progress; the numeral already says it).
+ * Where one cards list sits, for badge selection (docs/RECOMMENDATIONS.md, Badges):
+ * - `single` (billboard, title detail): its badge, whatever it is.
+ * - `list` (rows, genre pages, search, My List, More Like This): at most `BADGES_PER_LIST`
+ *   badges, the first earned in list order, of which at most `TOP_10_BADGES_PER_LIST` Top 10.
+ * - `new-list` (New Releases): the same, without "new": the row says it.
+ * - `progress` (Continue Watching): only "new episodes", at most `BADGES_PER_LIST`.
+ * - `ranked` (the Top 10 row): none, the rank is the badge.
  */
-export type BadgeSurface = "single" | "list" | "progress" | "ranked";
+export type BadgeSurface = "single" | "list" | "new-list" | "progress" | "ranked";
 
 /** The cards of one surface: the view whose Top 10 list applies and each card's badge. */
 export interface CardSurface {
@@ -301,37 +305,63 @@ export class Personalization {
   }
 
   /**
-   * One badge per card, chosen by the server (docs/RECOMMENDATIONS.md, Badges). Priority:
-   * `leaving-soon` (reserved: the catalog has no availability windows), `new-episodes`,
-   * `top-10` (only in `view`'s Top 10 list, and only where `surface` allows it), `new`.
-   * In a `list`, only the first `TOP_10_BADGES_PER_LIST` ranked cards in list order earn it.
+   * One badge per card at most, chosen by the server (docs/RECOMMENDATIONS.md, Badges), and
+   * few per list. Priority: `leaving-soon` (reserved: the catalog has no availability windows),
+   * `new-episodes`, `top-10` (only in `view`'s Top 10 list), `new`; then what the surface
+   * allows (`BadgeSurface`).
    */
   cardSurface(ids: readonly string[], view: BrowseView, surface: BadgeSurface): CardSurface {
-    let top10Left =
-      surface === "single"
-        ? Number.POSITIVE_INFINITY
-        : surface === "list"
-          ? TOP_10_BADGES_PER_LIST
-          : 0;
+    const capped = surface !== "single";
+    let left = capped ? BADGES_PER_LIST : Number.POSITIVE_INFINITY;
+    let top10Left = capped ? TOP_10_BADGES_PER_LIST : Number.POSITIVE_INFINITY;
     const badges = new Map<string, TitleBadge | null>();
     for (const id of ids) {
       if (badges.has(id)) continue;
-      const status = this.statusBadge(id);
-      let badge: TitleBadge | null = status;
-      if (status !== "new-episodes" && top10Left > 0 && this.top10Rank(id, view) !== null) {
-        badge = "top-10";
-        top10Left -= 1;
+      let badge: TitleBadge | null = null;
+      if (surface !== "ranked") {
+        const status = this.statusBadge(id);
+        if (status === "new-episodes") badge = status;
+        else if (surface !== "progress") {
+          if (top10Left > 0 && this.top10Rank(id, view) !== null) badge = "top-10";
+          else if (surface !== "new-list") badge = status;
+        }
+      }
+      if (badge !== null && left > 0) {
+        left -= 1;
+        if (badge === "top-10") top10Left -= 1;
+      } else {
+        badge = null;
       }
       badges.set(id, badge);
     }
     return { view, badges };
   }
 
-  /** Badges that are not about popularity. */
+  /**
+   * Badges that are not about popularity. "Recently added" is news only to a profile that has
+   * not played any of the title. "New episodes" is for a series it has watched: recently added
+   * with more than one season (the catalog dates seasons, not episodes, so the latest season is
+   * what is new), and an episode of the latest season beyond the furthest it has watched.
+   */
   private statusBadge(titleId: string): "new-episodes" | "new" | null {
     const title = this.input.snapshot.title(titleId);
     if (!title || this.ageDays(title) > NEW_BADGE_DAYS) return null;
-    return title.type === "series" && (title.seasonCount ?? 0) > 1 ? "new-episodes" : "new";
+    const progress = this.progressByTitle.get(titleId);
+    if (!progress) return "new";
+    if (title.type !== "series" || (title.seasonCount ?? 0) < 2 || !progress.anchor) return null;
+    const episodes = this.input.snapshot.episodes(titleId);
+    const latestSeason = Math.max(...episodes.map((episode) => episode.seasonNumber));
+    const furthest = Math.max(
+      0,
+      ...progress.items.map((item) =>
+        item.episodeId ? (this.input.snapshot.episode(item.episodeId)?.seq ?? 0) : 0,
+      ),
+    );
+    return episodes.some(
+      (episode) => episode.seasonNumber === latestSeason && episode.seq > furthest,
+    )
+      ? "new-episodes"
+      : null;
   }
 
   /** Best video quality the title's packaged media offers; null without packaged media. */

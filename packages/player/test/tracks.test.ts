@@ -8,6 +8,7 @@ import {
   qualityOptions,
   selectTextTrack,
   sessionQualityLabel,
+  titleQualityLimit,
 } from "../src/core/tracks.ts";
 
 const track = (id: string, language: string, extra: Partial<TextTrack> = {}): TextTrack => ({
@@ -61,13 +62,37 @@ describe("quality ladder under the plan cap", () => {
     { id: 4, width: 1920, height: 1080, bitrate: 5_000_000 },
   ];
 
-  it("offers allowed heights, tallest first, one per height", () => {
-    expect(qualityOptions(levels, 720).map((o) => [o.label, o.id, o.badge])).toEqual([
-      ["720p", 2, "HD"],
-      ["480p", 1, "SD"],
-      ["360p", 0, "SD"],
+  it("offers one option per quality class within the cap, best class first", () => {
+    expect(qualityOptions(levels, 720).map((o) => [o.label, o.id, o.quality])).toEqual([
+      ["HD", 2, "hd"],
+      ["SD", 1, "sd"],
     ]);
-    expect(qualityOptions(levels, 2160)[0]).toMatchObject({ label: "1080p", badge: "Full HD" });
+    expect(qualityOptions(levels, 2160).map((o) => o.label)).toEqual(["Full HD", "HD", "SD"]);
+  });
+
+  it("represents a class by its best rendition: tallest, then highest bitrate", () => {
+    // 360p and 480p are both SD: one "SD" choice, the 480p rendition.
+    expect(qualityOptions(levels, 480).map((o) => [o.label, o.id])).toEqual([["SD", 1]]);
+    // Two 720p encodes are one "HD" choice, the higher bitrate.
+    expect(qualityOptions(levels, 720)[0]?.id).toBe(2);
+    // Scope renditions join their nominal class: 1920×800 is Full HD next to 1920×1080.
+    const scope = [
+      { id: 0, width: 1280, height: 536, bitrate: 2_500_000 },
+      { id: 1, width: 1920, height: 800, bitrate: 4_500_000 },
+    ];
+    expect(qualityOptions(scope, 1080).map((o) => [o.label, o.id])).toEqual([
+      ["Full HD", 1],
+      ["HD", 0],
+    ]);
+  });
+
+  it("never offers a class above the plan's", () => {
+    // 1920×800 fits under a 900-line cap by height, but it is Full HD and the plan is HD.
+    const scope = [
+      { id: 0, width: 1280, height: 536, bitrate: 2_500_000 },
+      { id: 1, width: 1920, height: 800, bitrate: 4_500_000 },
+    ];
+    expect(qualityOptions(scope, 900).map((o) => o.label)).toEqual(["HD"]);
   });
 
   it("names renditions in the shared vocabulary, by their nominal 16:9 height", () => {
@@ -85,6 +110,16 @@ describe("quality ladder under the plan cap", () => {
     expect(sessionQualityLabel({ bestVideoQuality: "hd", maxVideoHeight: 2160 })).toBe("HD");
     // External media: quality unknown, so no label rather than a guess.
     expect(sessionQualityLabel({ maxVideoHeight: 2160 })).toBeNull();
+  });
+
+  it("names the title's limit only when the title, not the plan, tops out lower", () => {
+    expect(titleQualityLimit({ bestVideoQuality: "hd", maxVideoHeight: 2160 })).toBe("HD");
+    expect(titleQualityLimit({ bestVideoQuality: "full-hd", maxVideoHeight: 2160 })).toBe(
+      "Full HD",
+    );
+    expect(titleQualityLimit({ bestVideoQuality: "4k", maxVideoHeight: 720 })).toBeNull();
+    expect(titleQualityLimit({ bestVideoQuality: "hd", maxVideoHeight: 720 })).toBeNull();
+    expect(titleQualityLimit({ maxVideoHeight: 2160 })).toBeNull();
   });
 
   it("removes levels above the cap, highest index first", () => {

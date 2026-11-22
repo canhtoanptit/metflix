@@ -116,6 +116,16 @@ export const TITLE_BADGE_LABELS: Record<Exclude<TitleBadgeValue, "top-10">, stri
   "leaving-soon": "Leaving soon",
 };
 
+/**
+ * One short word for the same badges, for narrow cards (posters, phones), where the full label
+ * would run across the card into the Originals mark. The full label stays in the accessible name.
+ */
+export const TITLE_BADGE_SHORT_LABELS: Record<Exclude<TitleBadgeValue, "top-10">, string> = {
+  new: "New",
+  "new-episodes": "New",
+  "leaving-soon": "Leaving",
+};
+
 export interface TitleBadgeProps {
   badge: TitleBadgeValue;
   className?: string;

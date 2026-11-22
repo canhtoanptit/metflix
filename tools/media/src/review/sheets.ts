@@ -2,14 +2,16 @@
  * `webflix-media contact-sheets`: review sheets that show artwork the way the product shows
  * it — browse rows of cards at real size, billboards with the logo over the backdrop, a Top 10
  * row, poster walls, episode lists, logos and avatars — so it can be judged like an art
- * director would, not one file at a time.
+ * director would, not one file at a time. Plus the footage reviews: previews against their
+ * titles, and the boundary frames of every playable asset (where burned-in cards hide).
  */
 import { join } from "node:path";
-import { CURATED_PREVIEWS, catalog } from "@webflix/catalog";
+import { CURATED_PREVIEWS, catalog, openFilms } from "@webflix/catalog";
 import {
   fillImageTemplate,
   type MediaManifest,
   type MediaProfile,
+  type PackagedVideoAsset,
   type TitleSeed,
 } from "@webflix/contracts";
 import sharp, { type OverlayOptions } from "sharp";
@@ -448,6 +450,225 @@ async function previews(ctx: Ctx): Promise<string[]> {
   return files;
 }
 
+/** Offsets of the boundary frames: first, +0.5 s, +1 s, +3 s, middle, −3 s, −1 s, last. */
+export function boundaryTimes(durationSec: number): { label: string; at: number }[] {
+  const end = durationSec;
+  return [
+    { label: "first", at: 0 },
+    { label: "+0.5 s", at: Math.min(0.5, end) },
+    { label: "+1 s", at: Math.min(1, end) },
+    { label: "+3 s", at: Math.min(3, end) },
+    { label: "middle", at: end / 2 },
+    { label: "−3 s", at: Math.max(0, end - 3) },
+    { label: "−1 s", at: Math.max(0, end - 1) },
+    { label: "last", at: end },
+  ];
+}
+
+const TILE_W = 240;
+const TILE_H = 135;
+
+/**
+ * Eight boundary frames of one packaged clip, side by side (decoded from what members get:
+ * the HLS rendition nearest 480 p, or the preview MP4). The last tile is the clip's final
+ * frame: the tail is decoded and reversed, and its first frame kept.
+ */
+async function boundaryStrip(input: string, durationSec: number, target: string): Promise<void> {
+  const times = boundaryTimes(durationSec);
+  const args: string[] = [];
+  const filters: string[] = [];
+  times.forEach(({ at }, index) => {
+    const last = index === times.length - 1;
+    const seek = last ? Math.max(0, durationSec - 0.25) : at;
+    if (seek > 0) args.push("-ss", seek.toFixed(3));
+    args.push("-i", containerPath(input));
+    filters.push(
+      `[${index}:v]${last ? "reverse," : ""}trim=end_frame=1,setpts=PTS-STARTPTS,scale=${TILE_W}:${TILE_H},setsar=1,format=yuv420p[f${index}]`,
+    );
+  });
+  filters.push(
+    `${times.map((_, index) => `[f${index}]`).join("")}hstack=inputs=${times.length}[row]`,
+  );
+  await ffmpeg([
+    ...args,
+    "-filter_complex",
+    filters.join(";"),
+    "-map",
+    "[row]",
+    "-frames:v",
+    "1",
+    containerPath(target),
+  ]);
+}
+
+interface PlayableClip {
+  asset: PackagedVideoAsset;
+  /** "complete film", "feature cut", "episode chapter", "preview: own footage" … */
+  kind: string;
+  order: number;
+  file: string;
+  durationSec: number;
+  playsUnder: string[];
+  source: string;
+}
+
+/** Every clip a member can be shown, with the titles it plays under and where it comes from. */
+function playableClips(ctx: Ctx): PlayableClip[] {
+  const seeds = new Map(catalog.videoAssets.map((seed) => [seed.id, seed]));
+  const uses = new Map<string, { main: string[]; preview: string[]; roles: Set<string> }>();
+  const use = (assetId: string) => {
+    let entry = uses.get(assetId);
+    if (!entry) {
+      entry = { main: [], preview: [], roles: new Set() };
+      uses.set(assetId, entry);
+    }
+    return entry;
+  };
+  for (const title of catalog.titles) {
+    if (title.previewAssetId) use(title.previewAssetId).preview.push(title.name);
+    if (title.type === "movie") {
+      const entry = use(title.videoAssetId);
+      entry.main.push(title.name);
+      entry.roles.add(title.license ? "complete film" : "feature cut");
+    } else {
+      for (const season of title.seasons)
+        for (const episode of season.episodes) {
+          const entry = use(episode.videoAssetId);
+          entry.main.push(`${title.name} S${season.number}:E${episode.number}`);
+          entry.roles.add(title.license ? "complete film" : "episode chapter");
+        }
+    }
+  }
+  const order = ["complete film", "feature cut", "episode chapter"];
+  const clips: PlayableClip[] = [];
+  for (const asset of ctx.manifest.videoAssets) {
+    const entry = uses.get(asset.assetId);
+    const seed = seeds.get(asset.assetId);
+    const source = seed?.source;
+    const film =
+      source?.kind === "download"
+        ? openFilms.find((candidate) => candidate.source.url === source.url)
+        : undefined;
+    const sourceLabel = film
+      ? `${film.name}${source?.kind === "download" && source.startSec !== undefined ? `, ${source.startSec}–${source.startSec + (source.durationSec ?? 0)} s` : ", complete"}`
+      : "motion art from the title's own key art";
+    const list = (names: string[]) =>
+      names.length > 4 ? [...names.slice(0, 4), `+${names.length - 4} more`] : names;
+    if (entry && entry.main.length > 0) {
+      const kind = [...entry.roles][0] ?? "episode chapter";
+      const rendition =
+        [...asset.renditions].sort((a, b) => a.height - b.height).find((r) => r.height >= 400) ??
+        asset.renditions[0];
+      if (rendition)
+        clips.push({
+          asset,
+          kind,
+          order: order.indexOf(kind),
+          file: join(ctx.root, rendition.playlist),
+          durationSec: asset.durationSec,
+          playsUnder: list(entry.main),
+          source: sourceLabel,
+        });
+    }
+    if (asset.preview && entry && entry.preview.length > 0) {
+      const titleIds = catalog.titles.filter((title) => title.previewAssetId === asset.assetId);
+      const kind = titleIds.some((title) => title.license)
+        ? "preview: own footage"
+        : asset.preview.kind === "motion"
+          ? "preview: motion art"
+          : "preview: curated footage";
+      clips.push({
+        asset,
+        kind,
+        order:
+          3 +
+          ["preview: own footage", "preview: curated footage", "preview: motion art"].indexOf(kind),
+        file: join(ctx.root, asset.preview.key),
+        durationSec: asset.preview.durationSec,
+        playsUnder: list(entry.preview.map((name) => `${name} (preview)`)),
+        source: sourceLabel,
+      });
+    }
+  }
+  return clips.sort((a, b) => a.order - b.order || a.asset.assetId.localeCompare(b.asset.assetId));
+}
+
+/**
+ * Boundary review: one row per playable clip (complete films, feature cuts, episode chapters,
+ * previews) with its first frame, +0.5 s, +1 s, +3 s, middle, −3 s, −1 s and last frame,
+ * labelled with every title it plays under and its source film and window. No row of a
+ * fictional title may show a source film's title, credits, studio card or watermark; a
+ * chapter's first frames are its recap. Text detection is visual (OCR proved unreliable on
+ * these cards), so these sheets are rebuilt with every build and looked at whenever cuts change.
+ */
+async function boundaries(ctx: Ctx): Promise<string[]> {
+  const clips = playableClips(ctx);
+  const strips = join(ctx.out, "..", "..", "work", "boundary-strips", ctx.manifest.profile);
+  await ensureDir(strips);
+  const stripOf = new Map<PlayableClip, string>();
+  await mapPool(clips, 6, async (clip) => {
+    const target = join(
+      strips,
+      `${clip.asset.assetId}-${clip.file.endsWith(".mp4") ? "preview" : "main"}-${clip.asset.bytes}.png`,
+    );
+    if (!(await exists(target))) await boundaryStrip(clip.file, clip.durationSec, target);
+    stripOf.set(clip, target);
+  });
+  const perSheet = 12;
+  const labelW = 380;
+  const rowH = TILE_H + 12;
+  const width = labelW + 8 * TILE_W + 24;
+  const files: string[] = [];
+  for (let sheet = 0; sheet * perSheet < clips.length; sheet += 1) {
+    const chunk = clips.slice(sheet * perSheet, sheet * perSheet + perSheet);
+    const layers: OverlayOptions[] = [];
+    let svg = "";
+    boundaryTimes(10).forEach(({ label }, index) => {
+      svg += text(labelW + index * TILE_W + TILE_W / 2, 22, label, 15, {
+        weight: 700,
+        anchor: "middle",
+        color: "#9a9a9a",
+      });
+    });
+    for (const [index, clip] of chunk.entries()) {
+      const y = 32 + index * rowH;
+      const lines = [
+        { value: clip.asset.assetId, strong: true },
+        { value: `${clip.kind} · ${clip.durationSec.toFixed(1)} s`, strong: true },
+        ...clamp(`plays under: ${clip.playsUnder.join(", ")}`, 46, 2),
+        ...clamp(`source: ${clip.source}`, 46, 2),
+      ].map((line) => (typeof line === "string" ? { value: line, strong: false } : line));
+      lines.forEach((line, i) => {
+        svg += text(12, y + 16 + i * 17, line.value, 13, {
+          weight: line.strong ? 700 : 400,
+          color: line.strong ? "#f2f2f2" : "#bdbdbd",
+        });
+      });
+      const strip = stripOf.get(clip);
+      if (strip) layers.push({ input: await sharp(strip).toBuffer(), left: labelW, top: y });
+    }
+    const height = 32 + chunk.length * rowH + 8;
+    layers.unshift({
+      input: Buffer.from(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${svg}</svg>`,
+      ),
+      left: 0,
+      top: 0,
+    });
+    files.push(
+      await save(
+        ctx,
+        `boundaries-${String(sheet + 1).padStart(2, "0")}.jpg`,
+        width,
+        height,
+        layers,
+      ),
+    );
+  }
+  log.info(`boundary review: ${clips.length} playable clips on ${files.length} sheets`);
+  return files;
+}
+
 export async function contactSheets(
   profile: MediaProfile,
   only?: readonly string[],
@@ -482,6 +703,7 @@ export async function contactSheets(
   }
   if (wants("avatars")) files.push(await avatars(ctx));
   if (wants("previews")) files.push(...(await previews(ctx)));
+  if (wants("boundaries")) files.push(...(await boundaries(ctx)));
   for (const file of files) log.info(file);
   return 0;
 }

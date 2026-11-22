@@ -23,15 +23,21 @@ export function PosterWall({
   className?: string;
 }) {
   const showcase = useShowcase();
-  const perRow = 10;
+  // Enough posters per row to cover a 2560 px-wide screen edge to edge once the wall is
+  // rotated (posters cap at 13rem); rows are centred so any overflow falls equally off both
+  // sides and is clipped.
+  const perRow = 16;
   return (
     <div className={cx("absolute inset-0 overflow-hidden", className)}>
       {showcase.length > 0 ? (
-        <div className="absolute -inset-x-1/4 -inset-y-1/3 flex -rotate-6 flex-col justify-center gap-2 sm:gap-3">
+        <div className="absolute -inset-x-1/4 -inset-y-1/3 flex -rotate-6 flex-col items-center justify-center gap-2 sm:gap-3">
           {Array.from({ length: rows }, (_, row) => (
             <div
               key={row}
-              className={cx("flex shrink-0 gap-2 sm:gap-3", row % 2 === 1 && "translate-x-[6%]")}
+              className={cx(
+                "flex shrink-0 justify-center gap-2 sm:gap-3",
+                row % 2 === 1 && "translate-x-[3%]",
+              )}
             >
               {Array.from({ length: perRow }, (_, column) => {
                 const index = offset + row * perRow + column;

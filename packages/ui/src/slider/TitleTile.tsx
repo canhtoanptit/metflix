@@ -1,7 +1,14 @@
-import type { EpisodeRef, Progress, RowLayout, TitleCard } from "@webflix/contracts";
+import {
+  type EpisodeRef,
+  formatTimeLeftSpoken,
+  type Progress,
+  progressFraction,
+  type RowLayout,
+  type TitleCard,
+} from "@webflix/contracts";
 import type { AnchorHTMLAttributes, Ref } from "react";
 import { BrandMark } from "../brand/Brand.tsx";
-import { TITLE_BADGE_LABELS, Top10Badge } from "../components/Badge.tsx";
+import { TITLE_BADGE_LABELS, TITLE_BADGE_SHORT_LABELS, Top10Badge } from "../components/Badge.tsx";
 import { ProgressBar } from "../components/ProgressBar.tsx";
 import { ResponsiveImage } from "../components/ResponsiveImage.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
@@ -22,6 +29,8 @@ export interface TitleTileProps
   sizes?: string;
   /** Eager-load the artwork (first visible row). */
   priority?: boolean;
+  /** The artwork's loading mode (see `ResponsiveImage`): `eager` for a row's next page. */
+  loading?: "eager" | "lazy";
   ref?: Ref<HTMLAnchorElement>;
 }
 
@@ -43,6 +52,7 @@ export function TitleTile({
   episode,
   sizes,
   priority = false,
+  loading,
   className,
   ref,
   ...anchor
@@ -50,9 +60,10 @@ export function TitleTile({
   const isPoster = layout === "tall" || layout === "ranked";
   const image = isPoster ? title.images.poster : title.images.card;
   const imageSizes = sizes ?? sliderImageSizes(layout);
-  const fraction =
-    progress && progress.durationSec > 0 ? progress.positionSec / progress.durationSec : 0;
-  const ribbon = title.badge && title.badge !== "top-10" ? TITLE_BADGE_LABELS[title.badge] : null;
+  // The bar and the spoken "12 minutes left" come from the same numbers (`@webflix/contracts`).
+  const fraction = progressFraction(progress);
+  const status = title.badge && title.badge !== "top-10" ? title.badge : null;
+  const ribbon = status ? TITLE_BADGE_LABELS[status] : null;
   // Never in a ranked row (the numeral says it) or Continue Watching (that row is about
   // progress): the server does not send it there; this keeps any client from drawing it.
   const top10 = title.badge === "top-10" && layout !== "ranked" && layout !== "continue";
@@ -67,7 +78,14 @@ export function TitleTile({
         (layout === "standard" || layout === "continue") && "aspect-video",
       )}
     >
-      <ResponsiveImage image={image} alt="" sizes={imageSizes} fill priority={priority} />
+      <ResponsiveImage
+        image={image}
+        alt=""
+        sizes={imageSizes}
+        fill
+        priority={priority}
+        loading={loading}
+      />
       {/* Artwork that fails to load leaves the dominant colour; name the title on it. Drawn
           from an attribute so the name is neither repeated in the text nor announced twice. */}
       <span
@@ -88,17 +106,22 @@ export function TitleTile({
           <Top10Badge className="absolute end-0 top-0 rounded-none rounded-es-xs text-[clamp(0.625rem,0.9cqi,0.875rem)]" />
         </span>
       ) : null}
-      {/* Status lives in the top-right corner with Top 10 (the server picks one badge): card
-          artwork composites its title treatment along the bottom, where a label would cover it. */}
-      {ribbon ? (
+      {/* Corners: the Originals mark top-start, the one badge the server picked (Top 10 or a
+          status ribbon) top-end — card artwork composites its title treatment along the bottom,
+          where a label would cover it. A ribbon stays on one line and in its corner: narrow
+          frames (posters, phones) say it in one short word, so it never reaches the mark. */}
+      {status ? (
         <span
           aria-hidden
+          data-ribbon={status}
           className={cx(
-            "absolute end-0 top-0 rounded-es-xs bg-accent px-[0.6em] pt-[0.45em] pb-[0.35em]",
-            "text-[clamp(0.5625rem,4.2cqi,0.75rem)] font-bold uppercase leading-none tracking-wide text-fg-on-accent",
+            "absolute end-0 top-0 max-w-[60%] overflow-hidden whitespace-nowrap rounded-es-xs bg-accent",
+            "px-[0.6em] pt-[0.45em] pb-[0.35em] text-[clamp(0.5625rem,4.2cqi,0.75rem)] font-bold uppercase",
+            "leading-none tracking-wide text-fg-on-accent",
           )}
         >
-          {ribbon}
+          <span className="@max-[11rem]:hidden">{TITLE_BADGE_LABELS[status]}</span>
+          <span className="hidden @max-[11rem]:inline">{TITLE_BADGE_SHORT_LABELS[status]}</span>
         </span>
       ) : null}
       {layout === "continue" && progress ? (
@@ -137,7 +160,7 @@ export function TitleTile({
         {rank !== undefined ? `${rank}. ` : ""}
         {title.name}
         {episode ? `, ${episodeLabel(episode)}` : ""}
-        {layout === "continue" && progress ? `, ${Math.round(fraction * 100)}% watched` : ""}
+        {layout === "continue" && progress ? `, ${formatTimeLeftSpoken(progress)}` : ""}
         {top10 ? ", Top 10" : ""}
         {ribbon ? `, ${ribbon}` : ""}
       </span>

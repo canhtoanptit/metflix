@@ -54,117 +54,118 @@ records 3.0. Agent 327 is excluded: it is CC BY-ND.
 
 The fictional titles have no footage of their own, so their movies and episodes play the
 open films above, said plainly here. Only each film's text-free story is used: no studio
-cards, title cards or credit rolls (their timecodes are in `open-films.ts`), and footage is
-matched to the title's medium and genre as far as the pool allows (one live-action film,
-Tears of Steel; the others are animated). Previews never borrow unrelated footage: a
-fictional title previews either a reviewed excerpt that fits it (*curated*) or a
-motion-art clip rendered from its own key art (*key art*), which is original work.
+cards, title cards or credit rolls (measured to 1/8 s and kept at least a second clear;
+the timecodes are in `open-films.ts`), and footage is matched to the title's medium and
+genre as far as the pool allows (one live-action film, Tears of Steel; the others are
+animated). Previews never borrow unrelated footage: a fictional title previews either a
+reviewed excerpt that fits it (*curated*) or a motion-art clip rendered from its own key
+art (*key art*), which is original work.
 
 | Title | Plays | Preview |
 | --- | --- | --- |
 | Saltmarsh | Cosmos Laundromat: First Cycle, text-free chapters | key art |
-| The Understudy | Coffee Run 0:06–2:41 | key art |
+| The Understudy | Coffee Run 0:08–2:42 | key art |
 | Ward Nine | Sintel, text-free chapters | key art |
-| Kintsugi | Elephants Dream 0:19–9:24 | key art |
+| Kintsugi | Elephants Dream 0:20–9:24 | key art |
 | The Night Desk | Cosmos Laundromat: First Cycle, text-free chapters | key art |
-| Second Chair | Coffee Run 0:06–2:41 | key art |
-| Clean Entry | Charge 0:04–3:07 | key art |
-| The Last Ferry | Sintel 1:41–12:23 | key art |
+| Second Chair | Coffee Run 0:08–2:42 | key art |
+| Clean Entry | Charge 0:05–3:07 | key art |
+| The Last Ferry | Sintel 1:43–12:26 | key art |
 | Iron County | Tears of Steel, text-free chapters | key art |
 | Plus Ones | Cosmos Laundromat: First Cycle, text-free chapters | key art |
-| Small Claims | Wing It! 0:06–3:02 | key art |
+| Small Claims | Wing It! 0:08–3:01 | key art |
 | Branch Manager | Sprite Fright, text-free chapters | key art |
 | Carry-On Only | Sprite Fright 0:11–9:13 | key art |
 | Mother Tongue | Big Buck Bunny, text-free chapters | key art |
-| Out of Office | Wing It! 0:06–3:02 | key art |
+| Out of Office | Wing It! 0:08–3:01 | key art |
 | Parish Council | Big Buck Bunny, text-free chapters | key art |
-| Grand Prize | Spring 0:23–6:56 | key art |
-| The Long Table | Coffee Run 0:06–2:41 | key art |
-| Postcards from Lisbon | Spring 0:23–6:56 | key art |
-| Slow Dance | Sintel 1:41–12:23 | key art |
-| Monsoon Letters | Coffee Run 0:06–2:41 | key art |
-| The Wrong Train | Wing It! 0:06–3:02 | key art |
+| Grand Prize | Spring 0:24–6:56 | key art |
+| The Long Table | Coffee Run 0:08–2:42 | key art |
+| Postcards from Lisbon | Spring 0:24–6:56 | key art |
+| Slow Dance | Sintel 1:43–12:26 | key art |
+| Monsoon Letters | Coffee Run 0:08–2:42 | key art |
+| The Wrong Train | Wing It! 0:08–3:01 | key art |
 | Shortbread | Sprite Fright, text-free chapters | key art |
-| Every Other Summer | Coffee Run 0:06–2:41 | key art |
-| Tangerine Season | Tears of Steel 1:08–9:47 | key art |
-| Paper Boats | Coffee Run 0:06–2:41 | key art |
-| Last Light on Hull Street | Sintel 1:41–12:23 | key art |
-| Night Swimming | Spring 0:23–6:56 | key art |
+| Every Other Summer | Coffee Run 0:08–2:42 | key art |
+| Tangerine Season | Tears of Steel 1:11–9:47 | key art |
+| Paper Boats | Coffee Run 0:08–2:42 | key art |
+| Last Light on Hull Street | Sintel 1:43–12:26 | key art |
+| Night Swimming | Spring 0:24–6:56 | key art |
 | Dead Drop | Tears of Steel, text-free chapters | key art |
-| Signal Loss | Elephants Dream 0:19–9:24 | key art |
-| The Flat Above | Tears of Steel 1:08–9:47 | key art |
-| Ninety Seconds | Sintel 1:41–12:23 | key art |
-| Passenger 47 | Elephants Dream 0:19–9:24 | key art |
+| Signal Loss | Elephants Dream 0:20–9:24 | key art |
+| The Flat Above | Tears of Steel 1:11–9:47 | key art |
+| Ninety Seconds | Sintel 1:43–12:26 | key art |
+| Passenger 47 | Elephants Dream 0:20–9:24 | key art |
 | The Arbiter | Cosmos Laundromat: First Cycle, text-free chapters | key art |
 | Frostline | Sprite Fright 0:11–9:13 | key art |
-| Borrowed Faces | Charge 0:04–3:07 | key art |
+| Borrowed Faces | Charge 0:05–3:07 | key art |
 | The Fenwick Accounts | Elephants Dream, text-free chapters | key art |
 | The Appraisers | Cosmos Laundromat: First Cycle, text-free chapters | key art |
-| Clean Hands | Charge 0:04–3:07 | key art |
-| Idle | Tears of Steel 1:08–9:47 | key art |
+| Clean Hands | Charge 0:05–3:07 | key art |
+| Idle | Tears of Steel 1:11–9:47 | key art |
 | Gilt | Tears of Steel, text-free chapters | key art |
 | Bone Orchard | Sprite Fright 0:11–9:13 | key art |
-| Billets Doux | Wing It! 0:06–3:02 | key art |
+| Billets Doux | Wing It! 0:08–3:01 | key art |
 | Riverine | Sintel, text-free chapters | key art |
 | The Hollow Bell | Elephants Dream, text-free chapters | key art |
 | A Death at Ashcombe | Sprite Fright 0:11–9:13 | key art |
 | Cold Reading | Tears of Steel, text-free chapters | key art |
-| The Fourth Guest | Charge 0:04–3:07 | key art |
+| The Fourth Guest | Charge 0:05–3:07 | key art |
 | Tidemark | Elephants Dream, text-free chapters | key art |
-| Undelivered | Coffee Run 0:06–2:41 | key art |
+| Undelivered | Coffee Run 0:08–2:42 | key art |
 | The Varga Files | Cosmos Laundromat: First Cycle, text-free chapters | key art |
-| Breakline | Tears of Steel 1:08–9:47 | key art |
+| Breakline | Tears of Steel 1:11–9:47 | key art |
 | Rook | Sintel, text-free chapters | key art |
-| High Water | Coffee Run 0:06–2:41 | key art |
-| Overland | Charge 0:04–3:07 | key art |
-| Silverback | Tears of Steel 1:08–9:47 | key art |
-| Hard Stop | Charge 0:04–3:07 | key art |
-| Tempest Run | Sintel 1:41–12:23 | key art |
+| High Water | Coffee Run 0:08–2:42 | key art |
+| Overland | Charge 0:05–3:07 | key art |
+| Silverback | Tears of Steel 1:11–9:47 | key art |
+| Hard Stop | Charge 0:05–3:07 | key art |
+| Tempest Run | Sintel 1:43–12:26 | key art |
 | Lagrange | Tears of Steel, text-free chapters | key art |
-| Afterlight | Coffee Run 0:06–2:41 | key art |
-| Parallax | Charge 0:04–3:07 | key art |
-| Uplink | Tears of Steel, text-free chapters | curated: Tears of Steel 4:45–5:15 |
+| Afterlight | Coffee Run 0:08–2:42 | key art |
+| Parallax | Charge 0:05–3:07 | key art |
+| Uplink | Tears of Steel, text-free chapters | curated: Tears of Steel 4:41–5:11 |
 | Hadal | Sprite Fright 0:11–9:13 | key art |
 | Red Acre | Sintel, text-free chapters | key art |
-| Wake Cycle | Elephants Dream 0:19–9:24 | key art |
-| Loopback | Charge 0:04–3:07 | key art |
+| Wake Cycle | Elephants Dream 0:20–9:24 | key art |
+| Loopback | Charge 0:05–3:07 | key art |
 | The Assembly | Elephants Dream, text-free chapters | key art |
 | The Ember Crown | Sintel, text-free chapters | key art |
-| Thornwood | Wing It! 0:06–3:02 | key art |
+| Thornwood | Wing It! 0:08–3:01 | key art |
 | The Salt Witch | Spring, text-free chapters | key art |
-| Nightjar | Sintel 1:41–12:23 | key art |
+| Nightjar | Sintel 1:43–12:26 | key art |
 | Gloaming | Spring, text-free chapters | key art |
-| Riverborn | Big Buck Bunny 0:04–8:12 | key art |
-| Pale Hours | Elephants Dream 0:19–9:24 | key art |
+| Riverborn | Big Buck Bunny 0:06–8:13 | key art |
+| Pale Hours | Elephants Dream 0:20–9:24 | key art |
 | Coldharbour | Sprite Fright, text-free chapters | key art |
-| Dial Tone | Charge 0:04–3:07 | key art |
-| Hearth | Tears of Steel 1:08–9:47 | key art |
+| Dial Tone | Charge 0:05–3:07 | key art |
+| Hearth | Tears of Steel 1:11–9:47 | key art |
 | Fen | Elephants Dream, text-free chapters | key art |
 | The Visitation | Sprite Fright 0:11–9:13 | key art |
 | Meridian | Tears of Steel, text-free chapters | key art |
-| The Glass Island | Coffee Run 0:06–2:41 | key art |
+| The Glass Island | Coffee Run 0:08–2:42 | key art |
 | Bluestocking | Big Buck Bunny, text-free chapters | key art |
-| The Last Telegraph | Coffee Run 0:06–2:41 | key art |
-| Pithead | Cosmos Laundromat: First Cycle 0:57–10:01 | key art |
+| The Last Telegraph | Coffee Run 0:08–2:42 | key art |
+| Pithead | Cosmos Laundromat: First Cycle 1:00–10:03 | key art |
 | Empress of the Steppe | Sintel, text-free chapters | key art |
 | The Deep Unknown | Spring, text-free chapters | key art |
-| The Last Keepers | Coffee Run 0:06–2:41 | key art |
+| The Last Keepers | Coffee Run 0:08–2:42 | key art |
 | Closing Time | Tears of Steel, text-free chapters | key art |
 | Beyond the Blue | Spring, text-free chapters | key art |
-| Undersong | Wing It! 0:06–3:02 | key art |
+| Undersong | Wing It! 0:08–3:01 | key art |
 | Made by Hand | Spring, text-free chapters | key art |
-| The Long Run | Big Buck Bunny 0:04–8:12 | key art |
-| The Kite Maker | Wing It! 0:06–3:02 | curated: Spring 5:45–6:15 |
+| The Long Run | Big Buck Bunny 0:06–8:13 | key art |
+| The Kite Maker | Wing It! 0:08–3:01 | curated: Spring 5:45–6:15 |
 | Junkyard Knights | Big Buck Bunny, text-free chapters | key art |
 | Last Stop Diner | Cosmos Laundromat: First Cycle, text-free chapters | key art |
 | Pip and the Pocket Dragons | Big Buck Bunny, text-free chapters | key art |
 | The Burrow Brigade | Big Buck Bunny, text-free chapters | curated: Big Buck Bunny 1:56–2:26 |
-| Max and the Moon Balloon | Wing It! 0:06–3:02 | curated: Wing It! 1:24–1:54 |
+| Max and the Moon Balloon | Wing It! 0:08–3:01 | curated: Wing It! 1:24–1:54 |
 | Galaxy Garage | Spring, text-free chapters | key art |
-| Twelve Paws | Wing It! 0:06–3:02 | key art |
+| Twelve Paws | Wing It! 0:08–3:01 | key art |
 | Tiny & Tremendous | Big Buck Bunny, text-free chapters | key art |
 | Ollie's Orchard | Spring, text-free chapters | key art |
-| The Lighthouse Mouse | Coffee Run 0:06–2:41 | key art |
+| The Lighthouse Mouse | Coffee Run 0:08–2:42 | key art |
 | The Final Crumb | Big Buck Bunny, text-free chapters | key art |
 | Tiny House Takedown | Big Buck Bunny, text-free chapters | key art |
 | Second Look | Sprite Fright, text-free chapters | key art |

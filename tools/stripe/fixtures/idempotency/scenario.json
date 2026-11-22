@@ -1,0 +1,275 @@
+{
+  "name": "idempotency",
+  "title": "Idempotency keys: replay, conflict, failure, concurrency",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [],
+  "started_at": "2026-11-21T18:40:34.532Z",
+  "duration_ms": 3383,
+  "steps": [
+    {
+      "name": "same key, same body",
+      "ms": 615
+    },
+    {
+      "name": "same key, different body",
+      "ms": 247
+    },
+    {
+      "name": "same key after a declined payment",
+      "ms": 1168
+    },
+    {
+      "name": "two concurrent requests with one key",
+      "ms": 1006
+    },
+    {
+      "name": "keys the library adds by itself",
+      "ms": 348
+    }
+  ],
+  "observations": [
+    {
+      "step": "same key, same body",
+      "key": "same object returned",
+      "value": "cus_WFX0000000000H",
+      "expected": "cus_WFX0000000000H",
+      "ok": true
+    },
+    {
+      "step": "same key, same body",
+      "key": "Idempotent-Replayed header on the second response",
+      "value": [false, true],
+      "expected": [false, true],
+      "ok": true
+    },
+    {
+      "step": "same key, same body",
+      "key": "distinct Request-Id values across the two responses",
+      "value": 2
+    },
+    {
+      "step": "same key, different body",
+      "key": "reused key with a different body",
+      "value": {
+        "status": 400,
+        "type": "StripeIdempotencyError",
+        "code": null,
+        "message": "[req_WFX00000000029] Keys for idempotent requests can only be used with the same parameters they were first used with. Try using a key other than 'webflix-proof-rmwqr4nao-same' if you meant to execute a different request. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)"
+      }
+    },
+    {
+      "step": "same key, different body",
+      "key": "error type",
+      "value": "StripeIdempotencyError",
+      "expected": "StripeIdempotencyError",
+      "ok": true
+    },
+    {
+      "step": "same key after a declined payment",
+      "key": "declined twice with one key",
+      "value": {
+        "outcomes": [
+          {
+            "ok": false,
+            "status": 402,
+            "type": "StripeCardError",
+            "code": "card_declined",
+            "message": "[req_WFX0000000002A] Your card was declined. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)"
+          },
+          {
+            "ok": false,
+            "status": 402,
+            "type": "StripeCardError",
+            "code": "card_declined",
+            "message": "[req_WFX0000000002B] Your card was declined. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)"
+          }
+        ],
+        "replayed": [false, true],
+        "statuses": [402, 402]
+      }
+    },
+    {
+      "step": "two concurrent requests with one key",
+      "key": "concurrent outcomes",
+      "value": {
+        "results": [
+          {
+            "ok": true,
+            "id": "cus_WFX0000000000I"
+          },
+          {
+            "ok": true,
+            "id": "cus_WFX0000000000I"
+          }
+        ],
+        "http": [
+          {
+            "status": 409,
+            "replayed": false
+          },
+          {
+            "status": 200,
+            "replayed": false
+          },
+          {
+            "status": 200,
+            "replayed": true
+          }
+        ]
+      },
+      "note": "stripe-node retries a 409 idempotency_key_in_use, so both may succeed"
+    },
+    {
+      "step": "keys the library adds by itself",
+      "key": "idempotency key sent without one being passed",
+      "value": "stripe-node-retry-<uuid>"
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 9,
+    "secret_key": 9,
+    "publishable_key": 0,
+    "by_method": {
+      "POST": 9
+    },
+    "by_status": {
+      "200": 5,
+      "400": 1,
+      "402": 2,
+      "409": 1
+    },
+    "replayed": 3,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 3209
+  },
+  "events": {
+    "deliveries": 6,
+    "distinct": 6,
+    "types": {
+      "customer.created": 3,
+      "charge.failed": 1,
+      "payment_intent.created": 1,
+      "payment_intent.payment_failed": 1
+    },
+    "inversions_vs_created": [
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000004z",
+          "type": "payment_intent.created",
+          "created": 1795286435
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000050",
+          "type": "charge.failed",
+          "created": 1795286436
+        }
+      }
+    ]
+  },
+  "calls": [
+    {
+      "step": "same key, same body",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 371,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-same",
+      "replayed": false,
+      "request_id": "req_WFX0000000002C"
+    },
+    {
+      "step": "same key, same body",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 243,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-same",
+      "replayed": true,
+      "request_id": "req_WFX0000000002D"
+    },
+    {
+      "step": "same key, different body",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 400,
+      "ms": 246,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-same",
+      "replayed": false,
+      "request_id": "req_WFX00000000029"
+    },
+    {
+      "step": "same key after a declined payment",
+      "method": "POST",
+      "path": "/v1/payment_intents",
+      "status": 402,
+      "ms": 906,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-declined",
+      "replayed": false,
+      "request_id": "req_WFX0000000002A"
+    },
+    {
+      "step": "same key after a declined payment",
+      "method": "POST",
+      "path": "/v1/payment_intents",
+      "status": 402,
+      "ms": 260,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-declined",
+      "replayed": true,
+      "request_id": "req_WFX0000000002B"
+    },
+    {
+      "step": "two concurrent requests with one key",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 409,
+      "ms": 250,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-concurrent",
+      "replayed": false,
+      "request_id": "req_WFX0000000002E"
+    },
+    {
+      "step": "two concurrent requests with one key",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 336,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-concurrent",
+      "replayed": false,
+      "request_id": "req_WFX0000000002F"
+    },
+    {
+      "step": "two concurrent requests with one key",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 250,
+      "auth": "secret",
+      "idempotency_key": "webflix-proof-rmwqr4nao-concurrent",
+      "replayed": true,
+      "request_id": "req_WFX0000000002G"
+    },
+    {
+      "step": "keys the library adds by itself",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 347,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-3d11aed1-ccbf-4bd5-a573-34881ac25e4a",
+      "replayed": false,
+      "request_id": "req_WFX0000000002H"
+    }
+  ]
+}

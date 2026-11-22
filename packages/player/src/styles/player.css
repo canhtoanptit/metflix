@@ -41,18 +41,22 @@
   --_ease: var(--wfp-ease, cubic-bezier(0.2, 0, 0, 1));
   --_ease-out: var(--wfp-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
 
+  /* Space a host keeps clear at the top (e.g. its connection banner); see README. */
+  --_inset-top: var(--wfp-inset-top, 0px);
+
   /* --- derived geometry (container units resolve against this element in descendants) --- */
+  /* Everything keeps growing up to a 2560 px wide player, so 4K/1440p screens aren't sparse. */
   --_scale: var(--wfp-control-scale, 1);
-  --_pad-x: max(env(safe-area-inset-left, 0px), clamp(12px, 3.4cqw, 60px));
-  --_pad-y: max(env(safe-area-inset-bottom, 0px), clamp(10px, 2.8cqh, 40px));
-  --_btn: calc(clamp(40px, 3.3cqw, 60px) * var(--_scale));
+  --_pad-x: max(env(safe-area-inset-left, 0px), clamp(12px, 3.4cqw, 96px));
+  --_pad-y: max(env(safe-area-inset-bottom, 0px), clamp(10px, 2.8cqh, 56px));
+  --_btn: calc(clamp(44px, 3.3cqw, 84px) * var(--_scale));
   --_icon: calc(var(--_btn) * 0.62);
-  --_gap: clamp(2px, 0.7cqw, 14px);
-  --_text-xs: clamp(11px, 0.85cqw, 14px);
-  --_text-sm: clamp(12px, 1cqw, 15px);
-  --_text-md: clamp(14px, 1.2cqw, 19px);
-  --_text-lg: clamp(16px, 1.55cqw, 24px);
-  --_scrub-h: 30px;
+  --_gap: clamp(2px, 0.7cqw, 18px);
+  --_text-xs: clamp(12px, 0.85cqw, 22px);
+  --_text-sm: clamp(14px, 1cqw, 26px);
+  --_text-md: clamp(15px, 1.15cqw, 30px);
+  --_text-lg: clamp(17px, 1.5cqw, 38px);
+  --_scrub-h: clamp(30px, 2cqw, 52px);
   /* Height of the bottom controls block: things above it (skip, captions) clear it. */
   --_bottom-h: calc(var(--_pad-y) + var(--_btn) + var(--_scrub-h) + clamp(4px, 1cqh, 12px));
   --_pic-h: min(100cqh, calc(100cqw / var(--wfp-video-aspect, 1.7778)));
@@ -80,6 +84,11 @@
 
 .wfp-root:focus {
   outline: none;
+}
+
+/* Touch: the scrubber's hit area is a full 44 px target. */
+.wfp-root[data-layout="touch"] {
+  --_scrub-h: 44px;
 }
 
 .wfp-root[data-controls="hidden"][data-phase="playing"] {
@@ -117,8 +126,7 @@
   transform-origin: 0 0;
   transition:
     opacity var(--_slow) var(--_ease),
-    transform 700ms var(--_ease-out),
-    border-radius 700ms var(--_ease-out);
+    transform 700ms var(--_ease-out);
 }
 
 .wfp-root[data-ready] .wfp-video {
@@ -292,13 +300,13 @@
 }
 
 .wfp-btn--plain {
-  width: 40px;
-  height: 40px;
+  width: clamp(44px, 2.6cqw, 64px);
+  height: clamp(44px, 2.6cqw, 64px);
 }
 
 .wfp-btn--plain .wfp-icon {
-  width: 22px;
-  height: 22px;
+  width: 50%;
+  height: 50%;
   filter: none;
 }
 
@@ -354,9 +362,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 22px;
+  gap: 0.5em;
+  min-height: clamp(44px, 3.2cqw, 76px);
+  padding: 0 clamp(20px, 1.6cqw, 44px);
   border-radius: var(--_radius-sm);
   background: rgb(109 109 110 / 0.72);
   color: var(--_text);
@@ -369,8 +377,8 @@
 }
 
 .wfp-pill .wfp-icon {
-  width: 22px;
-  height: 22px;
+  width: 1.35em;
+  height: 1.35em;
 }
 
 .wfp-pill:hover {
@@ -400,7 +408,8 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: max(env(safe-area-inset-top, 0px), clamp(10px, 2.6cqh, 36px)) var(--_pad-x) 0;
+  padding: calc(max(env(safe-area-inset-top, 0px), clamp(10px, 2.6cqh, 56px)) + var(--_inset-top))
+    var(--_pad-x) 0;
   pointer-events: none;
 }
 
@@ -622,7 +631,7 @@
 .wfp-scrubber__track {
   position: relative;
   width: 100%;
-  height: 4px;
+  height: clamp(5px, 0.3cqw, 8px);
   border-radius: 999px;
   background: var(--_track);
   overflow: hidden;
@@ -650,11 +659,12 @@
 }
 
 .wfp-scrubber__thumb {
+  --_thumb: clamp(18px, 1.15cqw, 30px);
   position: absolute;
   top: 50%;
-  width: 16px;
-  height: 16px;
-  margin: -8px 0 0 -8px;
+  width: var(--_thumb);
+  height: var(--_thumb);
+  margin: calc(var(--_thumb) / -2) 0 0 calc(var(--_thumb) / -2);
   border-radius: 50%;
   background: var(--_accent);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
@@ -682,8 +692,8 @@
   position: absolute;
   top: 50%;
   width: 2px;
-  height: 10px;
-  margin: -5px 0 0 -1px;
+  height: 14px;
+  margin: -7px 0 0 -1px;
   border-radius: 1px;
   background: rgb(255 255 255 / 0.85);
   pointer-events: none;
@@ -782,7 +792,7 @@
 
 .wfp-volume__track {
   position: relative;
-  width: 4px;
+  width: 5px;
   height: 100%;
   border-radius: 999px;
   background: var(--_track);
@@ -818,8 +828,8 @@
   position: absolute;
   right: -8px;
   bottom: calc(100% + 12px);
-  width: min(420px, 60cqw);
-  padding: 16px;
+  width: min(clamp(380px, 26cqw, 660px), 60cqw);
+  padding: clamp(16px, 1.1cqw, 28px);
   border-radius: var(--_radius-md);
   background: var(--_surface);
   box-shadow: 0 12px 40px rgb(0 0 0 / 0.5);
@@ -854,14 +864,14 @@
 
 .wfp-next-trigger__still {
   display: block;
-  width: 150px;
+  width: clamp(150px, 9.5cqw, 250px);
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: var(--_radius-sm);
 }
 
 .wfp-next-trigger__title {
-  font-size: var(--_text-sm);
+  font-size: max(15px, var(--_text-sm));
   font-weight: 650;
 }
 
@@ -872,7 +882,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   color: var(--_text-muted);
-  font-size: var(--_text-xs);
+  font-size: max(14px, var(--_text-xs));
   line-height: 1.45;
 }
 
@@ -883,9 +893,9 @@
   right: var(--_pad-x);
   bottom: calc(var(--_pad-y) + var(--_btn) + 10px);
   z-index: 2;
-  min-width: 240px;
-  max-height: calc(100cqh - var(--_bottom-h) - 72px);
-  padding: 14px 0 10px;
+  min-width: clamp(260px, 17cqw, 440px);
+  max-height: calc(100cqh - var(--_bottom-h) - 72px - var(--_inset-top));
+  padding: clamp(14px, 1cqw, 26px) 0 clamp(10px, 0.8cqw, 20px);
   overflow: auto;
   border-radius: var(--_radius-md);
   background: var(--_surface);
@@ -905,30 +915,37 @@
 
 .wfp-menu--columns {
   display: grid;
-  grid-template-columns: repeat(2, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(clamp(220px, 14cqw, 380px), 1fr));
 }
 
 .wfp-menu--columns .wfp-menu__column + .wfp-menu__column {
   border-inline-start: 1px solid var(--_border);
 }
 
+/* Menu type: items 16 px and up, headings a step larger; both keep growing with the player. */
+.wfp-menu {
+  --_menu-text: max(16px, var(--_text-md));
+  --_menu-inline: clamp(20px, 1.4cqw, 36px);
+  --_menu-check: max(24px, 1.5em);
+}
+
 .wfp-menu__heading {
-  padding: 2px 22px 10px 52px;
-  font-size: var(--_text-lg);
+  padding: 2px var(--_menu-inline) 10px calc(var(--_menu-inline) + var(--_menu-check) + 8px);
+  font-size: max(20px, var(--_text-lg));
   font-weight: 700;
   letter-spacing: -0.005em;
 }
 
 .wfp-menu__item {
   display: grid;
-  grid-template-columns: 24px 1fr auto;
+  grid-template-columns: var(--_menu-check) 1fr auto;
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 44px;
-  padding: 6px 22px 6px 20px;
+  min-height: max(44px, calc(var(--_menu-text) * 2.6));
+  padding: 6px var(--_menu-inline);
   color: var(--_text-muted);
-  font-size: var(--_text-md);
+  font-size: var(--_menu-text);
   transition:
     color var(--_fast) var(--_ease),
     background-color var(--_fast) var(--_ease);
@@ -950,8 +967,8 @@
 }
 
 .wfp-menu__check .wfp-icon {
-  width: 20px;
-  height: 20px;
+  width: max(20px, 1.25em);
+  height: max(20px, 1.25em);
   display: block;
 }
 
@@ -964,20 +981,19 @@
 
 .wfp-menu__detail {
   color: var(--_text-dim);
-  font-size: var(--_text-sm);
+  font-size: max(14px, var(--_text-sm));
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
-.wfp-badge {
-  padding: 1px 5px;
-  border: 1px solid currentColor;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: 1.3;
-  opacity: 0.8;
+/* One sentence under the items (the quality menu's "Best available for this title"). */
+.wfp-menu__note {
+  max-width: 30ch;
+  margin: 8px 0 4px;
+  padding: 0 var(--_menu-inline) 0 calc(var(--_menu-inline) + var(--_menu-check) + 8px);
+  color: var(--_text-dim);
+  font-size: max(14px, var(--_text-sm));
+  line-height: 1.4;
 }
 
 /* Speed: five stops on a rail, like a physical selector. */
@@ -992,7 +1008,7 @@
 .wfp-speed {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(5, minmax(76px, 1fr));
+  grid-template-columns: repeat(5, minmax(clamp(80px, 5.6cqw, 150px), 1fr));
 }
 
 .wfp-speed__rail {
@@ -1013,7 +1029,7 @@
   padding: 12px 4px 8px;
   border-radius: var(--_radius-sm);
   color: var(--_text-muted);
-  font-size: var(--_text-sm);
+  font-size: max(15px, var(--_text-sm));
   white-space: nowrap;
 }
 
@@ -1103,7 +1119,7 @@
 .wfp-root[data-layout="touch"] .wfp-menu__heading {
   padding: 8px 20px 6px;
   color: var(--_text-dim);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1225,8 +1241,8 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: clamp(44px, 4.4cqh, 56px);
-  padding: 0 clamp(16px, 1.6cqw, 26px);
+  min-height: clamp(44px, 4.4cqh, 76px);
+  padding: 0 clamp(16px, 1.6cqw, 40px);
   border-radius: var(--_radius-sm);
   background: rgb(24 24 24 / 0.62);
   box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.78);
@@ -1279,8 +1295,8 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: clamp(44px, 4.4cqh, 56px);
-  padding: 0 clamp(16px, 1.6cqw, 26px) 0 clamp(12px, 1.2cqw, 18px);
+  min-height: clamp(44px, 4.4cqh, 76px);
+  padding: 0 clamp(16px, 1.6cqw, 40px) 0 clamp(12px, 1.2cqw, 28px);
   border-radius: var(--_radius-sm);
   background: #fff;
   color: #000;
@@ -1343,7 +1359,7 @@
 .wfp-postplay {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  width: min(440px, calc(100cqw - 2 * var(--_pad-x)));
+  width: min(clamp(440px, 30cqw, 760px), calc(100cqw - 2 * var(--_pad-x)));
   overflow: hidden;
   border-radius: var(--_radius-lg);
   background: var(--_surface);
@@ -1395,12 +1411,15 @@
 .wfp-advisory {
   position: absolute;
   /* On the picture (not the letterbox), below the top bar. */
-  top: max(calc(var(--_btn) + 2 * var(--_pad-y)), calc(var(--_pic-top) + var(--_pic-h) * 0.14));
+  top: calc(
+    max(calc(var(--_btn) + 2 * var(--_pad-y)), calc(var(--_pic-top) + var(--_pic-h) * 0.14)) +
+    var(--_inset-top)
+  );
   left: max(var(--_pad-x), calc(var(--_pic-left) + var(--_pic-w) * 0.035));
   z-index: 7;
   display: flex;
   gap: 14px;
-  max-width: min(60cqw, 520px);
+  max-width: min(60cqw, 900px);
   opacity: 0;
   translate: -12px 0;
   pointer-events: none;
@@ -1436,7 +1455,7 @@
 }
 
 .wfp-advisory__rating {
-  font-size: clamp(18px, 2cqw, 30px);
+  font-size: clamp(18px, 2cqw, 52px);
   font-weight: 700;
   line-height: 1.15;
   text-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
@@ -1445,7 +1464,7 @@
 .wfp-advisory__descriptors {
   margin-top: 4px;
   color: var(--_text);
-  font-size: clamp(13px, 1.2cqw, 18px);
+  font-size: clamp(14px, 1.2cqw, 30px);
   font-weight: 500;
   text-shadow:
     0 0 2px rgb(0 0 0 / 0.8),
@@ -1483,17 +1502,17 @@
 }
 
 .wfp-paused__content {
-  max-width: min(40cqw, 600px);
+  max-width: min(40cqw, 1000px);
 }
 
 .wfp-paused__eyebrow {
   color: var(--_text-muted);
-  font-size: clamp(14px, 1.4cqw, 22px);
+  font-size: clamp(14px, 1.4cqw, 36px);
 }
 
 .wfp-paused__title {
   margin: 0.15em 0 0.2em;
-  font-size: clamp(28px, 4.6cqw, 72px);
+  font-size: clamp(28px, 4.6cqw, 120px);
   font-weight: 800;
   line-height: 1.04;
   letter-spacing: -0.02em;
@@ -1509,7 +1528,7 @@
 }
 
 .wfp-paused__episode {
-  font-size: clamp(16px, 1.8cqw, 28px);
+  font-size: clamp(16px, 1.8cqw, 46px);
   font-weight: 700;
 }
 
@@ -1520,7 +1539,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
   color: var(--_text-muted);
-  font-size: clamp(14px, 1.35cqw, 21px);
+  font-size: clamp(14px, 1.35cqw, 34px);
   line-height: 1.5;
 }
 
@@ -1529,7 +1548,7 @@
   right: var(--_pad-x);
   bottom: var(--_pad-y);
   color: var(--_text-muted);
-  font-size: clamp(16px, 1.8cqw, 28px);
+  font-size: clamp(16px, 1.8cqw, 46px);
   font-weight: 600;
 }
 
@@ -1671,7 +1690,7 @@
 
 .wfp-feedback--volume,
 .wfp-feedback--toast {
-  top: clamp(64px, 14cqh, 140px);
+  top: calc(clamp(64px, 14cqh, 200px) + var(--_inset-top));
   left: 50%;
   display: flex;
   align-items: center;
@@ -1727,8 +1746,8 @@
   z-index: 3;
   display: flex;
   flex-direction: column;
-  width: min(580px, 62cqw);
-  max-height: calc(100cqh - var(--_bottom-h) - 80px);
+  width: min(clamp(420px, 40cqw, 1000px), 62cqw);
+  max-height: calc(100cqh - var(--_bottom-h) - 80px - var(--_inset-top));
   overflow: hidden;
   border-radius: var(--_radius-md);
   background: var(--_surface);
@@ -1749,7 +1768,7 @@
 
 .wfp-episodes__heading {
   margin: 0;
-  font-size: var(--_text-lg);
+  font-size: max(19px, var(--_text-lg));
   font-weight: 700;
 }
 
@@ -1762,15 +1781,16 @@
 .wfp-episodes__season select {
   appearance: none;
   margin: 0;
-  padding: 6px 34px 6px 10px;
+  padding: 6px calc(16px + max(20px, 0.9em)) 6px 10px;
   margin-left: -10px;
   border: 0;
   border-radius: var(--_radius-sm);
   background: transparent;
   color: var(--_text);
   font: inherit;
-  font-size: var(--_text-lg);
+  font-size: max(19px, var(--_text-lg));
   font-weight: 700;
+  min-height: 44px;
   cursor: pointer;
 }
 
@@ -1787,8 +1807,8 @@
 .wfp-episodes__season .wfp-icon {
   position: absolute;
   right: 8px;
-  width: 20px;
-  height: 20px;
+  width: max(20px, 0.9em);
+  height: max(20px, 0.9em);
   pointer-events: none;
 }
 
@@ -1805,11 +1825,12 @@
 
 .wfp-episode {
   display: grid;
-  grid-template-columns: 26px minmax(96px, 144px) 1fr;
+  grid-template-columns: max(26px, 1.6em) minmax(96px, clamp(144px, 10cqw, 260px)) 1fr;
   align-items: start;
-  gap: 16px;
+  gap: clamp(14px, 1.1cqw, 28px);
   width: 100%;
-  padding: 14px 22px 14px 18px;
+  padding: clamp(14px, 1cqw, 26px) clamp(20px, 1.5cqw, 36px) clamp(14px, 1cqw, 26px)
+    clamp(16px, 1.2cqw, 30px);
   transition: background-color var(--_fast) var(--_ease);
 }
 
@@ -1862,7 +1883,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: 3px;
+  height: 4px;
   background: rgb(255 255 255 / 0.3);
 }
 
@@ -1891,21 +1912,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--_text-md);
+  font-size: max(16px, var(--_text-md));
   font-weight: 650;
 }
 
 .wfp-episode__runtime {
   flex: none;
   color: var(--_text-muted);
-  font-size: var(--_text-sm);
+  font-size: max(14px, var(--_text-sm));
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .wfp-episode__badge {
   align-self: flex-start;
   color: var(--_accent);
-  font-size: var(--_text-xs);
+  font-size: max(12px, var(--_text-xs));
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1917,7 +1939,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   color: var(--_text-muted);
-  font-size: var(--_text-sm);
+  font-size: max(14px, var(--_text-sm));
   line-height: 1.45;
 }
 
@@ -1990,11 +2012,31 @@
 
 /* --- end screen (last episode / movie) ---------------------------------------------------- */
 
+/*
+ * Landscape: a left column (the shrunken picture, then title and actions) and the host's slot
+ * filling the rest, full height. Portrait: the picture full width on top, then title and
+ * actions, then the slot. The video element itself shrinks (transform only): it is scaled so
+ * its picture, not its letterbox, lands exactly on `.wfp-endscreen__frame`.
+ */
+/* Declared on the two elements that share the geometry: a container query can't restyle the
+   container (`.wfp-root`) itself, and the portrait query below overrides these. */
+.wfp-root[data-endscreen] :is(.wfp-video, .wfp-endscreen) {
+  --_end-scale: 0.3;
+  --_end-x: var(--_pad-x);
+  --_end-top: calc(clamp(16px, 5cqh, 72px) + var(--_inset-top));
+  --_end-bottom: clamp(16px, 5cqh, 72px);
+}
+
 .wfp-root[data-endscreen] .wfp-video {
-  transform: translate(var(--_pad-x), calc(var(--_pad-y) + var(--_btn) + 16px)) scale(0.42);
-  border-radius: calc(var(--_radius-md) / 0.42);
-  /* The picture is scaled: 2.4 px here is a 1 px hairline on screen. */
-  box-shadow: 0 0 0 2.4px rgb(255 255 255 / 0.16);
+  transform: translate(
+      calc(var(--_end-x) - var(--_pic-left) * var(--_end-scale)),
+      calc(var(--_end-top) - var(--_pic-top) * var(--_end-scale))
+    )
+    scale(var(--_end-scale));
+  /* Only the picture shows, rounded like the frame (the radius is in pre-scale pixels). */
+  clip-path: inset(
+    var(--_pic-top) var(--_pic-left) round calc(var(--_radius-md) / var(--_end-scale))
+  );
 }
 
 /* The end screen carries its own actions; the transport would only compete with it. */
@@ -2007,16 +2049,14 @@
 }
 
 .wfp-endscreen {
-  --_shrunk: 42cqw;
   position: absolute;
   inset: 0;
   z-index: 7;
   display: grid;
-  grid-template-columns: var(--_shrunk) minmax(0, 1fr);
-  grid-template-rows: 42cqh minmax(0, 1fr);
-  column-gap: clamp(20px, 3cqw, 48px);
-  row-gap: clamp(16px, 3cqh, 40px);
-  padding: calc(var(--_pad-y) + var(--_btn) + 16px) var(--_pad-x) var(--_pad-y);
+  grid-template-columns: calc(var(--_pic-w) * var(--_end-scale)) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  column-gap: clamp(20px, 2.4cqw, 64px);
+  padding: var(--_end-top) var(--_end-x) var(--_end-bottom);
   pointer-events: none;
   animation: wfp-fade-in var(--_slow) var(--_ease) 200ms both;
 }
@@ -2025,26 +2065,68 @@
   pointer-events: auto;
 }
 
+/* Scrollers get 4 px of inner room so focus rings inside them are never clipped. */
+.wfp-endscreen__lead,
+.wfp-endscreen__slot {
+  min-width: 0;
+  min-height: 0;
+  margin: -4px;
+  padding: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.wfp-endscreen__lead {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(16px, 2.6cqh, 40px);
+}
+
+.wfp-endscreen__frame {
+  position: relative;
+  flex: none;
+  width: calc(var(--_pic-w) * var(--_end-scale));
+  height: calc(var(--_pic-h) * var(--_end-scale));
+  overflow: hidden;
+  border-radius: var(--_radius-md);
+}
+
+.wfp-endscreen__still {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity var(--_slow) var(--_ease);
+}
+
+.wfp-endscreen__still[data-visible] {
+  opacity: 1;
+}
+
+.wfp-endscreen__still img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .wfp-endscreen__info {
-  grid-column: 2;
-  grid-row: 1;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: clamp(12px, 2cqh, 24px);
+  gap: clamp(10px, 1.6cqh, 24px);
   min-width: 0;
 }
 
 .wfp-endscreen__title {
   margin: 0;
-  font-size: clamp(22px, 3cqw, 48px);
+  font-size: clamp(22px, 2.4cqw, 60px);
   font-weight: 800;
   line-height: 1.08;
   letter-spacing: -0.015em;
 }
 
 .wfp-endscreen__episode {
-  margin: -0.4em 0 0;
+  margin: -0.2em 0 0;
   color: var(--_text-muted);
   font-size: var(--_text-lg);
   font-weight: 600;
@@ -2054,30 +2136,84 @@
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  width: 100%;
 }
 
-.wfp-endscreen__slot {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  min-height: 0;
-  overflow: auto;
+.wfp-endscreen__actions .wfp-pill {
+  flex: 1 1 auto;
 }
 
-/* Portrait: keep the picture full width, lift it to the top, stack the rest below. */
+/* Portrait: the picture full width at the top, title and actions under it, then the slot. */
 @container wfp (max-aspect-ratio: 1 / 1) {
+  .wfp-root[data-endscreen] :is(.wfp-video, .wfp-endscreen) {
+    --_end-scale: 1;
+    --_end-x: 0px;
+  }
   .wfp-root[data-endscreen] .wfp-video {
-    transform: translateY(calc(var(--_pic-top) * -1 + var(--_btn) + 24px));
-    border-radius: 0;
-    box-shadow: none;
+    clip-path: inset(var(--_pic-top) var(--_pic-left));
   }
   .wfp-endscreen {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    padding-top: calc(var(--_btn) + 24px + var(--_pic-h) + 20px);
+    row-gap: clamp(16px, 2.4cqh, 32px);
+    padding-bottom: 0;
+  }
+  .wfp-endscreen__lead {
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+  }
+  .wfp-endscreen__frame {
+    border-radius: 0;
   }
   .wfp-endscreen__info {
-    grid-column: 1;
+    padding: 0 var(--_pad-x);
   }
+  .wfp-endscreen__actions .wfp-pill {
+    flex: 0 1 auto;
+  }
+  .wfp-endscreen__slot {
+    margin: 0;
+    padding: 4px var(--_pad-x) var(--_end-bottom);
+  }
+}
+
+/* --- stats overlay (Shift+D) ------------------------------------------------------------- */
+
+.wfp-stats {
+  position: absolute;
+  top: calc(var(--_btn) + 2 * var(--_pad-y) + var(--_inset-top));
+  right: var(--_pad-x);
+  z-index: 9;
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--_radius-sm);
+  background: rgb(0 0 0 / 0.72);
+  color: var(--_text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: max(12px, var(--_text-xs));
+  font-weight: 500;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.wfp-stats__row {
+  display: grid;
+  grid-template-columns: 9ch auto;
+  gap: 12px;
+}
+
+.wfp-stats dt {
+  color: var(--_text-dim);
+}
+
+.wfp-stats dd {
+  margin: 0;
 }
 
 /* --- autoplay blocked / error / host overlay ---------------------------------------------- */
@@ -2120,7 +2256,7 @@
   z-index: 10;
   display: grid;
   place-items: center;
-  padding: var(--_pad-y) var(--_pad-x);
+  padding: calc(var(--_pad-y) + var(--_inset-top)) var(--_pad-x) var(--_pad-y);
   background: rgb(0 0 0 / 0.78);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -2130,20 +2266,20 @@
 .wfp-dialog {
   display: grid;
   justify-items: center;
-  max-width: 480px;
+  max-width: clamp(480px, 34cqw, 860px);
   text-align: center;
 }
 
 .wfp-dialog__icon {
-  width: 44px;
-  height: 44px;
+  width: clamp(44px, 3cqw, 76px);
+  height: clamp(44px, 3cqw, 76px);
   margin-bottom: 12px;
   color: var(--_text-muted);
 }
 
 .wfp-dialog__title {
   margin: 0 0 8px;
-  font-size: clamp(20px, 2.2cqw, 30px);
+  font-size: clamp(20px, 2.2cqw, 52px);
   font-weight: 700;
 }
 
@@ -2169,12 +2305,43 @@
   margin-top: 24px;
 }
 
+/*
+ * Host overlay: the dialog is the whole layer. It scrolls itself and centres its children
+ * (flex spacers, so content taller than the player starts at the top instead of being cut
+ * off). Padding keeps focus rings clear of the edges. A child with `position: absolute;
+ * inset: 0; z-index: -1` paints a full-bleed background behind the content.
+ */
+.wfp-layer--blocking {
+  display: block;
+  padding: 0;
+}
+
 .wfp-blocking {
-  max-width: min(560px, 100%);
-  max-height: 100%;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  padding: calc(var(--_pad-y) + var(--_inset-top) + 8px) calc(var(--_pad-x) + 8px)
+    calc(var(--_pad-y) + 8px);
   overflow: auto;
+  overscroll-behavior: contain;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.wfp-blocking::before,
+.wfp-blocking::after {
+  content: "";
+  flex: 1 0 0;
+}
+
+.wfp-blocking > * {
+  flex: none;
+  max-width: 100%;
 }
 
 .wfp-blocking:focus {

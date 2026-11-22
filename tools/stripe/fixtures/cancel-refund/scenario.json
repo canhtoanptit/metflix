@@ -1,0 +1,680 @@
+{
+  "name": "cancel-refund",
+  "title": "Cancel at period end, resume, cancel now, refunds, cancelled trial",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [],
+  "started_at": "2026-11-21T18:40:10.419Z",
+  "duration_ms": 112725,
+  "steps": [
+    {
+      "name": "member A subscribes",
+      "ms": 4099
+    },
+    {
+      "name": "cancel at period end, then resume",
+      "ms": 2433
+    },
+    {
+      "name": "cancel immediately",
+      "ms": 603
+    },
+    {
+      "name": "refund A's payment: partial, then the rest",
+      "ms": 2744
+    },
+    {
+      "name": "member B: immediate cancel with prorated credit, full refund",
+      "ms": 12176
+    },
+    {
+      "name": "member C: trial cancelled before it converts",
+      "ms": 90440
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "member A subscribes",
+      "key": "A pays: customer.subscription.updated with status active received",
+      "value": true
+    },
+    {
+      "step": "cancel at period end, then resume",
+      "key": "after cancel_at_period_end",
+      "value": {
+        "status": "active",
+        "cancel_at_period_end": true,
+        "cancel_at": 1797878411,
+        "canceled_at": 1795286416,
+        "ended_at": null,
+        "trial_end": null,
+        "current_period_end": 1797878411,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    },
+    {
+      "step": "cancel at period end, then resume",
+      "key": "after resume",
+      "value": {
+        "status": "active",
+        "cancel_at_period_end": false,
+        "cancel_at": null,
+        "canceled_at": null,
+        "ended_at": null,
+        "trial_end": null,
+        "current_period_end": 1797878411,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    },
+    {
+      "step": "cancel at period end, then resume",
+      "key": "resume clears cancel_at",
+      "value": null,
+      "expected": null,
+      "ok": true
+    },
+    {
+      "step": "cancel immediately",
+      "key": "status",
+      "value": "canceled",
+      "expected": "canceled",
+      "ok": true
+    },
+    {
+      "step": "refund A's payment: partial, then the rest",
+      "key": "refund amounts",
+      "value": {
+        "partial": 300,
+        "rest": 499,
+        "statuses": ["succeeded", "succeeded"]
+      }
+    },
+    {
+      "step": "refund A's payment: partial, then the rest",
+      "key": "invoice after full refund",
+      "value": {
+        "status": "paid",
+        "amount_paid": 799,
+        "amount_remaining": 0
+      },
+      "note": "a refund does not change the invoice"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "key": "B pays: customer.subscription.updated with status active received",
+      "value": true
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "key": "customer balance after a prorated immediate cancel (negative = credit)",
+      "value": 0
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "key": "B's invoices",
+      "value": [
+        {
+          "reason": "subscription_cycle",
+          "total": -1299,
+          "status": "draft"
+        },
+        {
+          "reason": "subscription_create",
+          "total": 1299,
+          "status": "paid"
+        }
+      ]
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "key": "trial set to cancel",
+      "value": {
+        "status": "trialing",
+        "cancel_at_period_end": true,
+        "cancel_at": 1795286473,
+        "canceled_at": 1795286435,
+        "ended_at": null,
+        "trial_end": 1795286473,
+        "current_period_end": 1795286473,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "key": "trial subscription after its end",
+      "value": {
+        "status": "canceled",
+        "cancel_at_period_end": true,
+        "cancel_at": 1795286473,
+        "canceled_at": 1795286435,
+        "ended_at": 1795286473,
+        "trial_end": 1795286473,
+        "current_period_end": 1795286473,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "key": "C was never charged",
+      "value": 0,
+      "expected": 0,
+      "ok": true
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 25,
+    "secret_key": 22,
+    "publishable_key": 3,
+    "by_method": {
+      "GET": 8,
+      "POST": 15,
+      "DELETE": 2
+    },
+    "by_status": {
+      "200": 25
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 20277
+  },
+  "events": {
+    "deliveries": 59,
+    "distinct": 59,
+    "types": {
+      "customer.created": 3,
+      "payment_intent.created": 2,
+      "invoice.finalized": 3,
+      "invoice.created": 4,
+      "customer.updated": 3,
+      "customer.subscription.created": 3,
+      "invoice_payment.paid": 2,
+      "charge.succeeded": 2,
+      "invoice.paid": 3,
+      "payment_method.attached": 3,
+      "customer.subscription.updated": 6,
+      "payment_intent.succeeded": 2,
+      "invoice.updated": 2,
+      "invoice.payment_succeeded": 3,
+      "customer.subscription.deleted": 3,
+      "refund.created": 3,
+      "charge.refunded": 3,
+      "refund.updated": 3,
+      "charge.refund.updated": 3,
+      "invoiceitem.created": 1,
+      "setup_intent.created": 1,
+      "setup_intent.succeeded": 1
+    },
+    "inversions_vs_created": [
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002w",
+          "type": "customer.updated",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002x",
+          "type": "invoice.finalized",
+          "created": 1795286412
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002w",
+          "type": "customer.updated",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002y",
+          "type": "invoice.created",
+          "created": 1795286412
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002z",
+          "type": "payment_method.attached",
+          "created": 1795286413
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000030",
+          "type": "invoice.paid",
+          "created": 1795286414
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000031",
+          "type": "payment_intent.succeeded",
+          "created": 1795286413
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000030",
+          "type": "invoice.paid",
+          "created": 1795286414
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000031",
+          "type": "payment_intent.succeeded",
+          "created": 1795286413
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000032",
+          "type": "customer.subscription.updated",
+          "created": 1795286414
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000033",
+          "type": "charge.succeeded",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000034",
+          "type": "invoice_payment.paid",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000035",
+          "type": "payment_method.attached",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000034",
+          "type": "invoice_payment.paid",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000036",
+          "type": "payment_intent.succeeded",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000034",
+          "type": "invoice_payment.paid",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000035",
+          "type": "payment_method.attached",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000037",
+          "type": "invoice.paid",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000036",
+          "type": "payment_intent.succeeded",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000037",
+          "type": "invoice.paid",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000036",
+          "type": "payment_intent.succeeded",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX000000000000000000038",
+          "type": "customer.subscription.updated",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000039",
+          "type": "invoiceitem.created",
+          "created": 1795286425
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000003A",
+          "type": "invoice.created",
+          "created": 1795286426
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX000000000000000000039",
+          "type": "invoiceitem.created",
+          "created": 1795286425
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000003B",
+          "type": "customer.subscription.deleted",
+          "created": 1795286426
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000003C",
+          "type": "customer.updated",
+          "created": 1795286433
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000003D",
+          "type": "invoice.finalized",
+          "created": 1795286434
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000003C",
+          "type": "customer.updated",
+          "created": 1795286433
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000003E",
+          "type": "invoice.paid",
+          "created": 1795286434
+        }
+      }
+    ]
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 231,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001H"
+    },
+    {
+      "step": "member A subscribes",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 345,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-52a4da38-0ab2-4852-b5e1-e5e853f24661",
+      "replayed": false,
+      "request_id": "req_WFX0000000001I"
+    },
+    {
+      "step": "member A subscribes",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1216,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-4390a2ff-20f0-4448-8e91-2faf9a1fe3bd",
+      "replayed": false,
+      "request_id": "req_WFX0000000001J"
+    },
+    {
+      "step": "member A subscribes",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000009/confirm",
+      "status": 200,
+      "ms": 2087,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001K"
+    },
+    {
+      "step": "cancel at period end, then resume",
+      "method": "POST",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000008",
+      "status": 200,
+      "ms": 1576,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-b0cb6991-ca43-4a3d-ad94-9804bae1debd",
+      "replayed": false,
+      "request_id": "req_WFX0000000001L"
+    },
+    {
+      "step": "cancel at period end, then resume",
+      "method": "POST",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000008",
+      "status": 200,
+      "ms": 578,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-4162f6fc-3673-4cf8-b2b0-b64faf86247c",
+      "replayed": false,
+      "request_id": "req_WFX0000000001M"
+    },
+    {
+      "step": "cancel immediately",
+      "method": "DELETE",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000008",
+      "status": 200,
+      "ms": 483,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001N"
+    },
+    {
+      "step": "refund A's payment: partial, then the rest",
+      "method": "GET",
+      "path": "/v1/invoice_payments?invoice=in_WFX00000000000000000000E&limit=10",
+      "status": 200,
+      "ms": 306,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001O"
+    },
+    {
+      "step": "refund A's payment: partial, then the rest",
+      "method": "POST",
+      "path": "/v1/refunds",
+      "status": 200,
+      "ms": 921,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-d317752b-3225-4536-8639-e8525ad1d0d7",
+      "replayed": false,
+      "request_id": "req_WFX0000000001P"
+    },
+    {
+      "step": "refund A's payment: partial, then the rest",
+      "method": "POST",
+      "path": "/v1/refunds",
+      "status": 200,
+      "ms": 971,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-f5ae8f8d-adf7-46e2-a6aa-696e017396db",
+      "replayed": false,
+      "request_id": "req_WFX0000000001Q"
+    },
+    {
+      "step": "refund A's payment: partial, then the rest",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX00000000000000000000E",
+      "status": 200,
+      "ms": 294,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001R"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 700,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-66b82b3e-f1c4-4885-ab10-2ca96f5c4292",
+      "replayed": false,
+      "request_id": "req_WFX0000000001S"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1494,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-dc4c8794-377f-4808-80c6-c667506c3313",
+      "replayed": false,
+      "request_id": "req_WFX0000000001T"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX00000000000000000000A/confirm",
+      "status": 200,
+      "ms": 1862,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001U"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "DELETE",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000009?invoice_now=true&prorate=true",
+      "status": 200,
+      "ms": 1156,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001V"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "GET",
+      "path": "/v1/customers/cus_WFX00000000008",
+      "status": 200,
+      "ms": 270,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001W"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "GET",
+      "path": "/v1/invoices?customer=cus_WFX00000000008&limit=10",
+      "status": 200,
+      "ms": 339,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001X"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "GET",
+      "path": "/v1/invoice_payments?invoice=in_WFX00000000000000000000F&limit=10",
+      "status": 200,
+      "ms": 295,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001Y"
+    },
+    {
+      "step": "member B: immediate cancel with prorated credit, full refund",
+      "method": "POST",
+      "path": "/v1/refunds",
+      "status": 200,
+      "ms": 1282,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-8b3b2be0-e42b-4ca7-b8d0-7bf62311f490",
+      "replayed": false,
+      "request_id": "req_WFX0000000001Z"
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 344,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-80e35a5a-63e9-4d4e-87f0-bbfbc5f4f89a",
+      "replayed": false,
+      "request_id": "req_WFX0000000001a"
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1031,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-dc6f42b6-3a8a-4b2f-850e-7139b1d6f00d",
+      "replayed": false,
+      "request_id": "req_WFX0000000001b"
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000007/confirm",
+      "status": 200,
+      "ms": 816,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001c"
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "method": "POST",
+      "path": "/v1/subscriptions/sub_WFX00000000000000000000A",
+      "status": 200,
+      "ms": 988,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-2b0fcfd1-e683-42b2-9f0f-5cfe1ccacf17",
+      "replayed": false,
+      "request_id": "req_WFX0000000001d"
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX00000000000000000000A",
+      "status": 200,
+      "ms": 390,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001e"
+    },
+    {
+      "step": "member C: trial cancelled before it converts",
+      "method": "GET",
+      "path": "/v1/invoices?customer=cus_WFX00000000009&limit=10",
+      "status": 200,
+      "ms": 302,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001f"
+    }
+  ]
+}

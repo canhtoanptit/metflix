@@ -9,6 +9,7 @@
     "e2e:mock": "playwright test --config playwright.mock.config.ts",
     "e2e:install": "playwright install chromium firefox webkit",
     "shot": "node scripts/screenshot.ts",
+    "test": "node scripts/check-verify-urls.ts && node scripts/check-host-guard.ts",
     "typecheck": "tsc -p .",
     "lint": "biome check ."
   },

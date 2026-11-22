@@ -18,8 +18,29 @@ import type { Medium, OpenFilm, Span } from "./open-film-types.ts";
 /** Chapters after the first open with this much of the previous chapter (a real recap). */
 export const RECAP_SEC = 20;
 
+/**
+ * Safety margin kept on both sides of every measured text span (and screen-text span, for
+ * art): a cut, chapter, excerpt or art frame never comes closer than this to a card, so a
+ * fade the measurement under-read, or a decoder landing a frame early, still shows no text.
+ */
+export const TEXT_MARGIN_SEC = 1;
+
 /** Length of a motion-art preview (tools/media renders it from the key art). */
 export const MOTION_ART_PREVIEW_SEC = 16;
+
+/**
+ * Motion-art recipe revision. Preview files are public and cached as immutable under their
+ * asset id, so a motion-art id carries this revision and a hash of the title's art direction:
+ * a new recipe or new key art always ships under a new id. Bump it whenever tools/media's
+ * motion-art rendering changes (its upload refuses to overwrite a published preview).
+ */
+export const MOTION_ART_RECIPE = 2;
+
+/**
+ * Footage-preview recipe revision, part of every footage preview id (see `MOTION_ART_RECIPE`).
+ * Bump it whenever tools/media's footage preview encode changes its bytes.
+ */
+export const FOOTAGE_PREVIEW_RECIPE = 1;
 
 /** Medium of a fictional title: animation only when the catalogue presents it as animation. */
 export function mediumOfGenres(genres: readonly string[]): Medium {
@@ -30,20 +51,38 @@ export function overlaps(a: Span, b: Span): boolean {
   return a[0] < b[1] && b[0] < a[1];
 }
 
-/** True when `window` shows any of the film's burned-in titles, logos or credits. */
+const padded = (spans: readonly Span[], margin: number): Span[] =>
+  spans.map(([start, end]) => [start - margin, end + margin] as const);
+
+/** True when `window` shows, or comes within `TEXT_MARGIN_SEC` of, burned-in source text. */
 export function showsSourceText(film: OpenFilm, window: Span): boolean {
-  return film.textSpans.some((span) => overlaps(span, window));
+  return padded(film.textSpans, TEXT_MARGIN_SEC).some((span) => overlaps(span, window));
 }
 
-/** The film's text-free stretches, in order. */
+/**
+ * True when a frame at `atSec` may show any text at all (source text or the story's own
+ * on-screen text), margin included: such a frame is never used as art under a logo.
+ */
+export function frameShowsText(film: OpenFilm, atSec: number): boolean {
+  return padded([...film.textSpans, ...(film.screenText ?? [])], TEXT_MARGIN_SEC).some(
+    ([start, end]) => atSec >= start && atSec <= end,
+  );
+}
+
+/** The film's text-free stretches (margin applied, cut to whole seconds), in order. */
 export function cleanSpans(film: OpenFilm): Span[] {
   const spans: Span[] = [];
   let cursor = 0;
-  for (const [start, end] of [...film.textSpans].sort((a, b) => a[0] - b[0])) {
-    if (start > cursor) spans.push([cursor, start]);
+  const sorted = [...film.textSpans].sort((a, b) => a[0] - b[0]);
+  for (const [start, end] of padded(sorted, TEXT_MARGIN_SEC)) {
+    const from = Math.ceil(cursor);
+    const to = Math.floor(start);
+    if (to > from) spans.push([from, to]);
     cursor = Math.max(cursor, end);
   }
-  if (cursor < film.durationSec) spans.push([cursor, film.durationSec]);
+  const from = Math.ceil(cursor);
+  const to = Math.floor(film.durationSec);
+  if (to > from) spans.push([from, to]);
   return spans;
 }
 
@@ -87,7 +126,9 @@ export const CURATED_PREVIEWS: Readonly<Record<string, CuratedPreview>> = {
   },
   "t-uplink": {
     film: "tears-of-steel",
-    highlight: 8,
+    // Not highlight 8 (285-315 s): its last seconds float a line of dialogue naming a
+    // character of the source film. Interface words (PLAYBACK) are fine; captions are not.
+    highlight: 18,
     why: "live-action near-future lab: hands on a holographic memory overwrite, the team at work",
   },
 };

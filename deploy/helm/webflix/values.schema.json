@@ -52,7 +52,7 @@
         },
         "rateLimits": {
           "type": "object",
-          "description": "Rate-limit overrides by policy name (kebab or camel case) \u2192 WEBFLIX_RATE_LIMIT_<POLICY>",
+          "description": "Rate-limit overrides by policy name (kebab or camel case) → WEBFLIX_RATE_LIMIT_<POLICY>",
           "propertyNames": {
             "pattern": "^[a-zA-Z][a-zA-Z0-9-]*$"
           },
@@ -83,6 +83,66 @@
           "additionalProperties": {
             "type": ["string", "number", "boolean"]
           }
+        },
+        "databaseTimeouts": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "PostgreSQL budgets per role in ms → WEBFLIX_DATABASE_<ROLE>_{STATEMENT,QUERY}_TIMEOUT_MS",
+          "properties": {
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "statementMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "server-side statement_timeout (0: none)"
+                },
+                "queryMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "client-side bound on an answer; must exceed statementMs (0: none)"
+                }
+              }
+            },
+            "background": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "statementMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "server-side statement_timeout (0: none)"
+                },
+                "queryMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "client-side bound on an answer; must exceed statementMs (0: none)"
+                }
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "statementMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "server-side statement_timeout (0: none)"
+                },
+                "queryMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "client-side bound on an answer; must exceed statementMs (0: none)"
+                }
+              }
+            }
+          }
+        },
+        "databaseKeepAliveMs": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "TCP keepalive first probe on database connections (ms; 0 off; null: 10000)"
         }
       },
       "additionalProperties": false
@@ -1229,6 +1289,23 @@
         }
       },
       "additionalProperties": false
+    },
+    "tcpKeepalive": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "net.ipv4.tcp_keepalive_intvl / _probes for API, worker and Job pods; null for none",
+      "properties": {
+        "intervalSec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32767
+        },
+        "probes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 127
+        }
+      }
     },
     "podSecurityContext": {
       "type": "object"

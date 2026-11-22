@@ -27,7 +27,7 @@ spec:
       automountServiceAccountToken: false
       {{- include "webflix.imagePullSecrets" . | nindent 6 }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "webflix.appPodSecurityContext" . | nindent 8 }}
       initContainers:
         {{- include "webflix.waitContainer" (list . (list "wait" "--blobs" "--timeout" "900")) | nindent 8 }}
       containers:

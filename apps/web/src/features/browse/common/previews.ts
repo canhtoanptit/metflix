@@ -1,3 +1,4 @@
+import type { PreviewClip } from "@webflix/contracts";
 import { useReducedMotion } from "@webflix/ui";
 import { useCallback, useSyncExternalStore } from "react";
 import { useBrowseProfile } from "./session.ts";
@@ -11,6 +12,20 @@ export function usePreviewsEnabled(): boolean {
   const profile = useBrowseProfile();
   const reducedMotion = useReducedMotion();
   return profile.settings.autoplayPreviews && !reducedMotion && !saveData();
+}
+
+/**
+ * The clip a hover card plays: footage only. A `motion` preview (the key art set in motion, made
+ * for the billboard and the detail hero) adds nothing in a card over the still, so the card keeps
+ * its still. The billboard and the detail hero play both kinds. Absent `kind` means footage.
+ */
+export function hoverClip(preview: PreviewClip | null | undefined): PreviewClip | null {
+  return preview && preview.kind !== "motion" ? preview : null;
+}
+
+/** Offer a sound control for this clip? Only when it has sound (absent `hasAudio` means it has). */
+export function clipHasAudio(preview: PreviewClip | null | undefined): boolean {
+  return !!preview && preview.hasAudio !== false;
 }
 
 function saveData(): boolean {

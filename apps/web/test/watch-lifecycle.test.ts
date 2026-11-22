@@ -262,6 +262,27 @@ describe("heartbeats", () => {
     expect(h.lifecycle.getState().block).toEqual({ kind: "signed-out" });
   });
 
+  it("reports at once when the page becomes visible, so a sign-out while hidden shows right away", async () => {
+    const h = harness({
+      snapshot: () => report("ps-1", { positionSec: 120, state: "paused" }),
+    });
+    await ready(h);
+    h.setHeartbeat(async () => {
+      throw problem("unauthenticated");
+    });
+    h.lifecycle.visible();
+    await flush();
+    expect(h.calls).toEqual([
+      'heartbeat ps-1 {"positionSec":120,"durationSec":1800,"state":"paused"}',
+    ]);
+    expect(h.lifecycle.getState().block).toEqual({ kind: "signed-out" });
+    // Blocked: becoming visible again sends nothing more.
+    h.calls.length = 0;
+    h.lifecycle.visible();
+    await flush();
+    expect(h.calls).toEqual([]);
+  });
+
   it("network failures keep playing, flag the connection, and report again once online", async () => {
     const h = harness({ snapshot: () => report("ps-1", { positionSec: 300 }) });
     await ready(h);

@@ -309,7 +309,10 @@ the Durable Object. Storage is $0.015/GB-month (the fast profile is 1.6 GB).
   an account) is the HTTP layer's policy (`packages/http`), and that policy, not the platform,
   decides how far one client with many addresses can multiply the cost.
 - Node modes use memory-hard scrypt; scrypt hashes do not verify on Workers. A database moved
-  from a Node mode to Cloudflare needs those users to reset or sign in once on Node first.
+  from a Node mode to Cloudflare needs those users to sign in once on Node running with
+  `WEBFLIX_PASSWORD_HASHER=pbkdf2` first (the sign-in rehashes the password; there is no
+  password reset). Profile PINs are not rehashed that way: a PIN set on Node must be removed
+  with the account password ("Forgot PIN?") and set again.
 
 ---
 
@@ -373,13 +376,13 @@ validation) into every isolate, need a privileged HTTP endpoint, and put one-off
 The tooling path runs the same seeder code with none of that, locally and remotely.
 
 **Rate limits locally.** The local environment uses exactly the Node dev mode's relaxed profile
-(sign-in and sign-up 60/min, email lookup 300/min, profile selection 60/min; a config test
-compares the composed limits with what `apps/api` computes for dev), set as vars in the top
-level of wrangler.jsonc, because people, the e2e suites and the conformance suite all share the
-demo account and 127.0.0.1 here. The account- and email-keyed policies (`payment`, `auth-email`
-10 per 15 min per email, `playback-start` 60/min per account) keep their defaults locally too,
-as in dev. Production lists the same keys empty (vars are not inherited; empty means no
-override) and runs the strict defaults; a test checks that production's composed limits equal
+(the values are in docs/BACKEND.md §3: `auth`, `signup`, `email-lookup` and `profile-pin`, the
+budget of every PIN or password check, are raised; a config test compares the composed limits
+with what `apps/api` computes for dev), set as vars in the top level of wrangler.jsonc, because
+people, the e2e suites and the conformance suite all share the demo account and 127.0.0.1 here.
+`payment`, `auth-email` and `playback-start` keep their defaults locally too, as in dev.
+Production lists the same keys empty (vars are not inherited; empty means no override) and
+runs the strict defaults; a test checks that production's composed limits equal
 `DEFAULT_RATE_LIMITS`, and another that every policy the route table names resolves in both
 environments. The Worker's own tests run on the strict defaults. To run strict locally:
 
@@ -398,9 +401,10 @@ browse D1, KV, R2 and Durable Objects and query captured logs; the inspector lis
 
 ### Conformance (`make smoke TARGET=cf`)
 
-Latest run (2026-11-21, round 2), against an isolated local instance (`make cf-dev
+Latest run recorded here (2026-11-21, round 2), against an isolated local instance (`make cf-dev
 CF_PORT=4620 …`, web build served, the fast media profile in its local R2, local rate-limit
-profile): **83 checks: 80 passed, 0 failed, 3 skipped**. Skips:
+profile): **83 checks: 80 passed, 0 failed, 3 skipped**. The suite has since grown to 93 checks
+(`make smoke-list`); this document records no run of the current suite. Skips:
 
 - `media.external-fallback`: every title is packaged; it passes on an external-HLS seed
   (`seed --no-media`).
@@ -537,7 +541,7 @@ cache flag without code changes).
 | Media upload | S3 API | R2 binding locally; S3 API (same adapter) or remote binding in production |
 | Media delivery | API process streams from S3 | Gateway authorises; Workers edge cache in front of R2 |
 | Client IP for limits | socket or trusted `X-Forwarded-For` | `CF-Connecting-IP` |
-| Metrics | Prometheus `/metrics` | none; Workers Logs, traces, analytics |
+| Metrics | Prometheus `/metrics` | none; Workers Logs and analytics (invocation logs and traces are off, §8) |
 | Shutdown / draining | `/readyz` 503 while draining | not applicable (no processes) |
 | Compression | Node gzips `/api/*` | Cloudflare compresses at the edge |
 | Request timing in logs | real | `durationMs` reads 0: Workers time only advances across I/O |

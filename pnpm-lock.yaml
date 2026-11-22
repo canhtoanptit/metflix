@@ -477,6 +477,27 @@ importers:
         specifier: 'catalog:'
         version: 5.1.1(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
+  packages/dev-idp:
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 'catalog:'
+        version: 1.9.0(@types/node@26.6.6)(vitest@5.1.1(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)))
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      '@webflix/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      oauth4webapi:
+        specifier: 3.8.8
+        version: 3.8.8
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.1(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
+
   packages/http:
     dependencies:
       '@scalar/hono-api-reference':
@@ -646,6 +667,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/contracts
     devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.1(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  tools/stripe:
+    dependencies:
+      stripe:
+        specifier: 23.2.0
+        version: 23.2.0(@types/node@26.6.6)
+    devDependencies:
+      '@stripe/cli':
+        specifier: 1.55.14
+        version: 1.55.14
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -2417,6 +2457,36 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  '@stripe/cli-darwin-arm64@1.55.14':
+    resolution: {integrity: sha512-iW8MylBl0LnVx8VqmymjUV63Xp0aCxqsa5LOXnTGdcDNyZyq8A43wSYr3+lueG/hLhK3rNdYaf5jXNvi7yUZlg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@stripe/cli-darwin-x64@1.55.14':
+    resolution: {integrity: sha512-a7Nrt5faW2NpW0+Dwi4zG9VkoHkl44jvdQEUvpAPkDgw9U2kQ9lpMTHkwyuWG8pDhF5DJCmagpDLJuc6keXwew==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@stripe/cli-linux-arm64@1.55.14':
+    resolution: {integrity: sha512-Ik0hEoTGeI/ecrLOhCDEw8LcTvHhVfd4S9YOxOil4ZCf8WAcLheuVRzTZVsieGVzfd+luN26zg+jAQWnqnWwwA==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@stripe/cli-linux-x64@1.55.14':
+    resolution: {integrity: sha512-m+K5PS47kwqsOCcR+WyB8temlLYQqWRaw0VBm1Ij2ysA7vkUeAwdc1memHkth0YV6bg4s+IH3aKbefcsjkRN7g==}
+    cpu: [x64]
+    os: [linux]
+
+  '@stripe/cli-win32-x64@1.55.14':
+    resolution: {integrity: sha512-4Y+7Zt08nmtqzGGJCKd8jr61EK+AzXPpyMvEB+paMddBpqYplTwo4PKfXrXdbq7Bk5cUvQzSthTc2NuuY1wY/Q==}
+    cpu: [x64]
+    os: [win32]
+
+  '@stripe/cli@1.55.14':
+    resolution: {integrity: sha512-U6wOvxakcG7oNu1FBBN3wUbfQ7jK3vGb50ZT8p3OXER3pMCHCUMhHBRNhnEa6wxb/GEDZl4c+wbxVTnfDTlh8g==}
+    engines: {node: '>=18.0.0'}
+    hasBin: true
+
   '@swc/helpers@0.5.24':
     resolution: {integrity: sha512-6tcXo4kA8HgGO7AVmawB57RYi/piBPYVHVcO6dXjX+SZw8GoHmi262sp4v2Ha2kNP9Cx84qei27yT+fjS1lxgg==}
 
@@ -3905,6 +3975,9 @@ packages:
     resolution: {integrity: sha512-PfvofsGQ+MiOQIPkX9fU8ELUWmy5zL74CdQaph/ismKszfFkfwXaw0cGiwbwym2hT9k5+mdyl8O5WQ1MD8EHmA==}
     engines: {node: '>=18'}
 
+  oauth4webapi@3.8.8:
+    resolution: {integrity: sha512-8N28E+a/oxfXWBgOMt+ZP/JUf/XR+IFbvkAEPP3gznXOMv9BpAAwiIj0TFNz3tGTPc0ZQ8zmWBNgN1nAys0gng==}
+
   obug@3.0.0:
     resolution: {integrity: sha512-5vvB5+W7ePv+p3uqxi+RcW1XAzLW0/hxt3/4X4Lc4qHudzOhmBiBwOY6DRob4WnanAEGvNcLjF+KNOufrUoEQw==}
     engines: {node: '>=12.20.0'}
@@ -4218,6 +4291,15 @@ packages:
   strip-indent@3.0.0:
     resolution: {integrity: sha512-laJTa3Jb+VQpaC6DseHhF7dXVqHTfJPCRDaEbid/drOhgitgYku/letMUqOXFoWV0zIIUbjpdH2t+tYj4bQMRQ==}
     engines: {node: '>=8'}
+
+  stripe@23.2.0:
+    resolution: {integrity: sha512-0W0J4yA9qFO2rnF61v8Y62OiO2SmAR+Cv04VJaFUMpCxiq8lG5bxEYbeSMSpMDR9ofFZGd+Z/iUIgSFbOolmUw==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@types/node': '>=20'
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
 
   style-mod@4.1.5:
     resolution: {integrity: sha512-WQ2llCZa9sZSkJA+aOwpg5DkfbAXFKGh//t3MRTBeruFiSBC+GXUmbBzrw3bXyboCWAbtCW9InDfBsXrRD/rAg==}
@@ -6825,6 +6907,29 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@stripe/cli-darwin-arm64@1.55.14':
+    optional: true
+
+  '@stripe/cli-darwin-x64@1.55.14':
+    optional: true
+
+  '@stripe/cli-linux-arm64@1.55.14':
+    optional: true
+
+  '@stripe/cli-linux-x64@1.55.14':
+    optional: true
+
+  '@stripe/cli-win32-x64@1.55.14':
+    optional: true
+
+  '@stripe/cli@1.55.14':
+    optionalDependencies:
+      '@stripe/cli-darwin-arm64': 1.55.14
+      '@stripe/cli-darwin-x64': 1.55.14
+      '@stripe/cli-linux-arm64': 1.55.14
+      '@stripe/cli-linux-x64': 1.55.14
+      '@stripe/cli-win32-x64': 1.55.14
+
   '@swc/helpers@0.5.24': {}
 
   '@tailwindcss/node@4.3.5':
@@ -8408,6 +8513,8 @@ snapshots:
 
   node-releases@2.0.65: {}
 
+  oauth4webapi@3.8.8: {}
+
   obug@3.0.0: {}
 
   oxc-walker@1.1.1(@oxc-project/types@0.156.0)(rolldown@1.2.19):
@@ -8812,6 +8919,10 @@ snapshots:
   strip-indent@3.0.0:
     dependencies:
       min-indent: 1.0.1
+
+  stripe@23.2.0(@types/node@26.6.6):
+    optionalDependencies:
+      '@types/node': 26.6.6
 
   style-mod@4.1.5: {}
 

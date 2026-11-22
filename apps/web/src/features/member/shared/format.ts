@@ -1,4 +1,9 @@
-import type { Money, Plan } from "@webflix/contracts";
+import {
+  type Money,
+  type Plan,
+  videoQualityForHeight,
+  videoQualityLabel,
+} from "@webflix/contracts";
 
 /**
  * Display formatting for the member screens. Locale-aware through `Intl`, with the formatter
@@ -65,16 +70,12 @@ export function formatScreens(count: number): string {
   return count === 1 ? "1 screen at a time" : `${count} screens at a time`;
 }
 
-/** Human quality name for a plan's cap. */
-export function describeQuality(plan: Plan): string {
-  switch (plan.maxQuality) {
-    case "720p":
-      return "HD";
-    case "1080p":
-      return "Full HD";
-    case "2160p":
-      return "4K Ultra HD";
-  }
+/**
+ * Quality name for a plan's cap, in the one vocabulary the player's Quality menu and the plan
+ * features also use ("HD", "Full HD", "4K").
+ */
+export function describeQuality(plan: Pick<Plan, "maxVideoHeight">): string {
+  return videoQualityLabel(videoQualityForHeight(plan.maxVideoHeight));
 }
 
 /** "Mara's", "Kids'", "James'" */

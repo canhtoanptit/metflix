@@ -6,6 +6,8 @@
 #   apps/edge/cloudflare.mk    make cf-dev / make cf-deploy
 #   e2e/e2e.mk                 make e2e TARGET=dev|k8s|cf
 #   tools/smoke/smoke.mk       make smoke BASE_URL=http://localhost:8080
+#   tools/stripe/stripe.mk     make stripe-sandbox (milestone 2, docs/BLUEPRINT-M2.md)
+#   services/recs/recs.mk      make recs (milestone 2, docs/BLUEPRINT-M2.md)
 #
 # Fragments may extend `setup`, `clean` and `doctor` with double-colon rules
 # (`setup:: content`), and document their targets with `## description` for `make help`.
@@ -27,7 +29,7 @@ help: ## List available targets
 install: ## Install dependencies (pnpm workspace)
 	$(PNPM) install
 
-setup:: install ## One-time setup: dependencies and the Playwright browser
+setup:: install ## One-time setup: dependencies and the Playwright browsers (Chromium, Firefox, WebKit)
 	$(PNPM) --filter @webflix/e2e e2e:install
 
 dev: ## Run the dev mode: API on :4000, web on :5173
@@ -64,3 +66,5 @@ doctor:: ## Check the host toolchain
 -include apps/edge/cloudflare.mk
 -include e2e/e2e.mk
 -include tools/smoke/smoke.mk
+-include tools/stripe/stripe.mk
+-include services/recs/recs.mk

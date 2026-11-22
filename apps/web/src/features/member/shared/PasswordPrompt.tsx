@@ -2,8 +2,8 @@ import { ApiError } from "@webflix/contracts";
 import { Button, DialogFooter, PasswordField } from "@webflix/ui";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { FormAlert } from "./FormAlert.tsx";
+import { formatCountdown } from "./format.ts";
 import { describeMemberError } from "./privileges.ts";
-import { RetryTimer } from "./RetryTimer.tsx";
 import { useRetryAfter } from "./useRetryAfter.ts";
 
 /**
@@ -70,7 +70,7 @@ export function PasswordPrompt({
       {other ? <FormAlert title={other.title}>{other.description}</FormAlert> : null}
       {rate.limited ? (
         <FormAlert title="Too many attempts">
-          Please wait <RetryTimer seconds={rate.waiting} /> and try again.
+          For your security, please wait a moment. The button shows when you can try again.
         </FormAlert>
       ) : null}
       <PasswordField
@@ -91,7 +91,7 @@ export function PasswordPrompt({
           Cancel
         </Button>
         <Button type="submit" variant="accent" loading={pending} disabled={rate.limited}>
-          {submitLabel}
+          {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : submitLabel}
         </Button>
       </DialogFooter>
     </form>

@@ -11,7 +11,6 @@ import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberFooter, MemberHeader } from "../shared/Chrome.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown } from "../shared/format.ts";
-import { RetryTimer } from "../shared/RetryTimer.tsx";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
@@ -44,7 +43,10 @@ export function LoginPage() {
     meta: { silent: true },
     onError: (error) => {
       rate.track(error);
-      if (ApiError.is(error, "invalid_credentials")) setPassword("");
+      if (ApiError.is(error, "invalid_credentials")) {
+        setPassword("");
+        setSubmitted(false);
+      }
     },
     onSuccess: async (session) => {
       await applySession(session);
@@ -85,14 +87,9 @@ export function LoginPage() {
       </FormAlert>
     ) : ApiError.is(error, "rate_limited") ? (
       <FormAlert ref={alertRef} title="Too many sign-in attempts">
-        {rate.limited ? (
-          <>
-            For your security, please wait <RetryTimer seconds={rate.waiting} /> before trying
-            again.
-          </>
-        ) : (
-          "You can try again now."
-        )}
+        {rate.limited
+          ? "For your security, sign-in is paused for a moment. The button shows when you can try again."
+          : "You can try again now."}
       </FormAlert>
     ) : (
       <FormAlert ref={alertRef} title={describeError(error).title}>

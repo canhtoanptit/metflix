@@ -2,7 +2,7 @@
 
 A Netflix-class streaming product built as a spike. One codebase, two required deployment modes: Kubernetes (Helm, kind locally) and Cloudflare serverless.
 
-**Read `docs/BLUEPRINT.md` before doing anything.** It defines the architecture, the API surface, directory ownership, the UX standard and the rules for working in parallel with other contributors. Then read `docs/FOUNDATION.md`: workspace commands, the route table and typed client, the ports and their contract suites, and the code conventions.
+**Read `docs/BLUEPRINT.md` before doing anything.** It defines the architecture, the API surface, directory ownership, the UX standard and the rules for working in parallel with other contributors. Then read `docs/FOUNDATION.md`: workspace commands, the route table and typed client, the ports and their contract suites, and the code conventions. `README.md` shows how to run and verify each mode.
 
 Essentials:
 

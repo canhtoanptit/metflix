@@ -27,7 +27,7 @@ beforeAll(async () => {
     WEBFLIX_MEDIA_DIR: "none",
     WEBFLIX_LOG_LEVEL: "error",
   });
-  runtime = createRuntime(config, "test");
+  runtime = createRuntime(config, "api");
   await migrateToLatest(runtime.infra.database);
   await runtime.services.seeder.seed({
     catalog: FIXTURE_CATALOG,
@@ -190,7 +190,7 @@ describe("live catalog (@webflix/catalog)", () => {
       WEBFLIX_LOG_LEVEL: "error",
       WEBFLIX_PASSWORD_HASHER: "pbkdf2",
     });
-    const live = createRuntime(config, "test-live");
+    const live = createRuntime(config, "api");
     try {
       await migrateToLatest(live.infra.database);
       const input = await loadSeedInput(config);

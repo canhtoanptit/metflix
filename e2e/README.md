@@ -23,6 +23,9 @@ Start a mode, then point the suite at the origin people load:
 Options (environment):
 
 - `E2E_BROWSERS=chromium` limits the browsers (default `chromium,firefox,webkit`).
+- `E2E_WORKERS=2` sets the number of workers (default 4; see [Host guard](#host-guard)).
+- `E2E_VIDEO=1` keeps a video of each failing test. Off by default: use it while a failure is
+  being investigated, not for gate runs.
 - `E2E_CPU_THROTTLE=4` slows every Chromium page 4x (CDP `Emulation.setCPUThrottlingRate`).
   `make e2e-throttled TARGET=...` is the full Chromium suite at 4x.
 - `E2E_STRICT_RATE_LIMITS=1` enables the sign-in lockout spec. It exhausts this address's
@@ -31,6 +34,52 @@ Options (environment):
 
 Browsers: `pnpm --filter @webflix/e2e e2e:install` (part of `make setup`) installs Chromium,
 Firefox and WebKit for the pinned Playwright.
+
+### Host guard
+
+On 2026-11-22 a full run on the owner's Mac (48 GB, 18 cores) ran the host out of memory: Playwright
+at its default nine workers recorded a video and a trace of every test, next to the Docker VM, the
+Cloudflare runtime and other work, on a host already 27 GB into swap. The window server aborted and
+the owner's session ended with every app in it. Two things now keep a run from doing that:
+
+**Limits in the configs** (`host-limits.ts`, both suites): 4 workers unless `E2E_WORKERS` says
+otherwise, no video unless `E2E_VIDEO=1`, and traces only kept for failures
+(`retain-on-failure`). WebKit's traces take no screenshots, so WebKit does no continuous capture of
+its window; a failing WebKit test still gets its one screenshot.
+
+**`scripts/host-guard.sh <command...>`** runs a command and stops it, with every process it started,
+when the host runs short. `make e2e`, `make e2e-throttled`, `make verify`, `make e2e-mock` and
+`make screenshots` run through it; prefix anything else heavy with it (a direct
+`pnpm exec playwright test`, a redeploy, a reproduction loop).
+
+| Limit | Default | Variable |
+| --- | --- | --- |
+| Swap in use | 6000 MB | `HOST_GUARD_SWAP_MAX_MB` |
+| 1-minute load average | 45 | `HOST_GUARD_LOAD_MAX` |
+| Kernel graphics surfaces (`ioclasscount IOSurface`, about 190 idle) | 3000 | `HOST_GUARD_SURFACES_MAX` |
+
+- It samples every `HOST_GUARD_INTERVAL_SEC` (5) seconds. `HOST_GUARD_STRIKES` (3) samples in a row
+  over any limit (15 s) stop the command: SIGTERM to its whole process tree, then SIGKILL after
+  `HOST_GUARD_GRACE_SEC` (10) s. A host already over a limit does not get the command started.
+- **Exit code 99 means the guard stopped the command, or would not start it.** The reason is on
+  stderr. It is not a test result: stop, look at what is using the machine, and do not start
+  another run to see whether it happens again. Any other exit code is the command's own.
+- `HOST_GUARD_LOG=<file>` appends one line per sample (swap, load, surfaces and the compressor's
+  size); `scripts/host-guard.sh --probe` prints one sample. At the end the guard prints the peak
+  swap, the peak load and the surface count before and after.
+- `HOST_GUARD=off` runs the command unguarded. Where the probes do not exist (Linux, most CI) the
+  guard is a no-op.
+- Ctrl-C reaches the command directly; SIGTERM to the guard is passed to the whole tree.
+- `pnpm test` (`scripts/check-host-guard.ts`) proves it with a fake probe: it refuses to start
+  over each limit, stops a running command and its detached and SIGTERM-ignoring children, honours
+  the variables, reads real values on a Mac, and sits in front of each make target above.
+
+**WebKit does not run while the screen is locked.** On a locked Mac, Playwright's WebKit loses
+pointer input (below), and it is the suspect for the kernel memory growth of that night (unproven).
+A run that includes WebKit refuses to start when `ioreg` reports `CGSSessionScreenIsLocked`; run
+`E2E_BROWSERS=chromium,firefox` and report WebKit as not run. Check before each run, and again
+after: a screen that locks mid-run voids that run's WebKit results. Never wake the display, unlock,
+or keep the machine awake for a run.
 
 ### Verify: the browser suite, then the conformance suite
 
@@ -53,7 +102,11 @@ its own, and its rate-limit checks measure the deployment, not what the browser 
 The two suites never run at the same time.
 
 `SMOKE_BASE_URL` defaults to `BASE_URL`, except `TARGET=dev`, where the API has its own origin
-(:4000). `SMOKE_ARGS` is passed through.
+(:4000). `SMOKE_ARGS` is passed through. `make verify … VERIFY_DRY_RUN=1` prints the two origins
+and runs nothing. `scripts/check-verify-urls.ts` (the package's `pnpm test`) asserts them for
+every target under bash and zsh. Make resolves the origins: in one shell command, bash expands a
+later prefix assignment with an earlier one (except when the line is a lone command), so a recipe
+that let the shell resolve them sent the dev conformance suite to the web port.
 
 ## Isolation model
 
@@ -127,8 +180,20 @@ browse spec signed in to the demo account per test.
 | Engine | Specs | Playback path | Notes |
 | --- | --- | --- | --- |
 | Chromium | everything | hls.js over MediaSource; native HLS when MediaSource is withheld | The full suite, the throttled run, axe. |
-| Firefox | `cross-browser.spec.ts` | hls.js over MediaSource | Landing, sign-in, browse, overlay, playback with real decoded frames. Firefox has no native HLS, so that spec skips with the reason. |
-| WebKit | `cross-browser.spec.ts` | hls.js over MediaSource; native HLS when MediaSource is withheld | Native HLS is what Safari on iPhone uses: the spec removes MediaSource before the app starts, and the player plays the playlist natively (H.264/AAC fMP4 decodes in Playwright's WebKit on macOS). |
+| Firefox | `*cross-browser.spec.ts`, `ops-docs.spec.ts` | hls.js over MediaSource | Landing, sign-in, browse, overlay, playback with real decoded frames (`cross-browser.spec.ts`); the landing teaser, sign-up's profile step, the profile editor's Save bar and toasts (`member-cross-browser.spec.ts`); the signed-out overlay and the post-play screen (`watch-cross-browser.spec.ts`). Firefox has no native HLS, so that spec skips with the reason. |
+| WebKit | `*cross-browser.spec.ts`, `ops-docs.spec.ts` | hls.js over MediaSource; native HLS when MediaSource is withheld | Native HLS is what Safari on iPhone uses: the spec removes MediaSource before the app starts, and the player plays the playlist natively (H.264/AAC fMP4 decodes in Playwright's WebKit on macOS). |
+
+`ops-docs.spec.ts` (the API reference renders under its Content-Security-Policy, with no
+violation) runs in every engine, because engines enforce policies differently.
+
+**Host condition: Playwright's WebKit needs an unlocked, awake display on macOS.** While the
+Mac's screen is locked and its display asleep, WebKit discards the coordinates of every
+synthesized mouse event: all of them land on one constant point outside the page, no
+`pointermove` fires, and clicks fail with "`<html>` intercepts pointer events". Taps, keyboard
+and URL-driven specs are unaffected, and so are Chromium and Firefox. A product-independent
+repro is in the QA notes (a blank page; moves to three points arrive at one). Run WebKit only
+with the owner's session unlocked (the config refuses otherwise, see
+[Host guard](#host-guard)), and report it as not run, not as passed, when it is locked.
 
 What this cannot verify: real Safari and iOS. Playwright's WebKit is not Safari, and has no iOS
 fullscreen, autoplay or ManagedMediaSource-only behaviour. Hardware-decoded output and
@@ -144,7 +209,9 @@ hls.js path like the other desktop engines.
 - Never hard-code a title id, an asset, a duration or which title has a clip.
 - Assert on the destination screen, not on the URL alone. The URL changes as navigation starts,
   while the previous screen (and its fields) is still on screen.
-- Run it a few times in parallel before you commit
-  (`--repeat-each 5 --workers 8`), and once with `E2E_CPU_THROTTLE=4`.
+- Run it a few times in parallel before you commit, through the guard and with at most 4 workers
+  (`scripts/host-guard.sh pnpm exec playwright test <spec> --repeat-each 5`), and once with
+  `E2E_CPU_THROTTLE=4`.
 
-Output: `test-results/` (traces, videos and screenshots of failures) and `playwright-report/`.
+Output: `test-results/` (traces and screenshots of failures; videos with `E2E_VIDEO=1`) and
+`playwright-report/`.

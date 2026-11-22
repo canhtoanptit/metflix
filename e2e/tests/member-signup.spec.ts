@@ -109,12 +109,25 @@ test("sign-up end to end: validation, declined cards, a refresh mid-flow, profil
   await expect(page.getByRole("heading", { name: "Who's watching?" })).toBeFocused();
   await page.getByLabel("Your name").fill("Sam");
   await page.getByLabel("Profile 2 name (optional)").fill("Pip");
-  await page.getByRole("checkbox", { name: "Kids profile" }).first().check();
+  // Each row has its own Kids control, always visible.
+  const kids = page.getByRole("checkbox", { name: "Profile 2 is a kids profile" });
+  await expect(page.getByRole("checkbox", { name: /is a kids profile$/ })).toHaveCount(4);
+  await kids.check();
+  // Pictures are chosen here, not assigned: pick the last one offered for Pip.
+  await page.getByRole("button", { name: "Choose a picture for Pip" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose a profile picture" });
+  const choice = picker.getByRole("radio").last();
+  const chosenName = (await choice.getAttribute("aria-label")) ?? "";
+  await choice.click();
+  await expectAccessible(page);
+  await picker.getByRole("button", { name: "Use this picture" }).click();
+  await expect(picker).toBeHidden();
   await expectAccessible(page);
   await page.getByRole("button", { name: "Create 2 profiles" }).click();
   await expect(page).toHaveURL(/\/browse/);
 
-  // The account really exists with both profiles, the second one a kids profile.
+  // The account really exists with both profiles, the second one a kids profile with the
+  // picture chosen for it; the brand-new account was never asked for its password.
   const session = await (await page.context().request.get("/api/v1/session")).json();
   expect(session.plan.id).toBe("basic");
   expect(session.activeProfile.name).toBe("Sam");
@@ -127,6 +140,8 @@ test("sign-up end to end: validation, declined cards, a refresh mid-flow, profil
     ["Sam", false],
     ["Pip", true],
   ]);
+  const pip = session.profiles.find((profile: { name: string }) => profile.name === "Pip");
+  expect(pip.avatar.name).toBe(chosenName);
 
   // Back from the app never reopens the finished sign-up steps.
   await page.goBack();

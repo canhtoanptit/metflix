@@ -3,6 +3,7 @@ import { Button, cx, sliderImageSizes, TitleTileSkeleton, useInView } from "@web
 import { type PointerEvent, useEffect, useRef } from "react";
 import { TitleTileLink } from "../../../app/links.ts";
 import { titleOverlayLinkProps } from "../../../app/overlay/titleOverlay.ts";
+import { preparePreview } from "../preview/prepare.ts";
 import { previewId, requestPreview } from "../preview/request.ts";
 import { previewStore } from "../preview/store.ts";
 import { durationMs } from "./motion.ts";
@@ -81,6 +82,7 @@ export function TitleGrid({
   const onEnter = (event: PointerEvent<HTMLLIElement>, card: TitleCard, index: number) => {
     if (event.pointerType !== "mouse") return;
     const cell = event.currentTarget;
+    preparePreview(card, cell.querySelector("a") ?? cell);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       timer.current = null;

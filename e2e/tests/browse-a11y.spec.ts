@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
+import { createAccount } from "./api.ts";
 import { firstCard, hideDevChrome, waitForAnimations } from "./browse-support.ts";
 import { expect, test } from "./fixtures.ts";
 
@@ -74,4 +75,52 @@ test("the hover preview has no WCAG 2.2 AA violations", async ({ page }) => {
   await expect(page.getByTestId("hover-preview")).toBeVisible();
   await waitForAnimations(page);
   expect(await axe(page)).toEqual([]);
+});
+
+test.describe("phones", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+
+  test("the detail overlay scrolled under its solid bar has no WCAG 2.2 AA violations", async ({
+    page,
+  }) => {
+    await hideDevChrome(page);
+    await page.goto("/browse");
+    const trending = page.getByRole("region", { name: "Trending Now" });
+    await trending.scrollIntoViewIfNeeded();
+    await firstCard(trending).tap();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    // The details are in (the page is long enough to scroll), then scroll under the bar.
+    await expect(page.getByRole("heading", { name: /^About / })).toBeAttached();
+    await page.getByTestId("title-overlay").evaluate((overlay) => overlay.scrollTo({ top: 600 }));
+    await expect(page.getByTestId("detail-phone-bar")).toHaveAttribute("data-solid", "true");
+    await waitForAnimations(page);
+    expect(await axe(page)).toEqual([]);
+  });
+});
+
+test.describe("phones, on a fresh account", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, demo: null });
+
+  test("the notifications sheet has no WCAG 2.2 AA violations", async ({ page }) => {
+    await createAccount(page.context().request, { tag: "a11y-sheet" });
+    await hideDevChrome(page);
+    await page.goto("/browse");
+    await page.getByRole("button", { name: /^Notifications/ }).tap();
+    await expect(page.getByRole("dialog", { name: "Notifications" })).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await waitForAnimations(page);
+    expect(await axe(page)).toEqual([]);
+  });
+});
+
+test.describe("the demo Kids profile", () => {
+  test.use({ demo: "Kids", viewport: { width: 1440, height: 900 } });
+
+  test("the Kids home has no WCAG 2.2 AA violations", async ({ page }) => {
+    await hideDevChrome(page);
+    await page.goto("/browse");
+    await expect(page.getByTestId("kids-greeting")).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    expect(await axe(page)).toEqual([]);
+  });
 });

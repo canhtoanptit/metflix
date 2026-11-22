@@ -35,9 +35,10 @@ const DEVICE_ICONS: Record<DeviceSession["deviceType"], IconComponent> = {
 };
 
 /**
- * Signed-in devices. Signing out another device ends its session and its streams right away;
- * signing out this one goes through the normal sign-out. "Sign out of all devices" includes
- * this one. The shared demo account can only sign out this device.
+ * Signed-in devices. Signing out another device ends its session at once and frees its stream;
+ * a player there stops at its next heartbeat, so within about half a minute (the copy says so,
+ * no more). Signing out this one goes through the normal sign-out. "Sign out of all devices"
+ * includes this one. The shared demo account can only sign out this device.
  */
 export function AccountDevicesPage() {
   const queryClient = useQueryClient();
@@ -66,7 +67,7 @@ export function AccountDevicesPage() {
     },
     onSuccess: (_data, device) => {
       toast.success(`${device.label} was signed out`, {
-        description: "Anything playing there has stopped.",
+        description: "Anything playing there stops within about half a minute.",
       });
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: qk.account.devices() }),
@@ -95,7 +96,7 @@ export function AccountDevicesPage() {
         description={
           demo
             ? "Browsers and devices signed in to the demo account. Other devices can't be signed out from the demo account."
-            : "Browsers and devices signed in to your account. Sign out any you don't recognise, then change your password."
+            : "Browsers and devices signed in to your account. Sign out any you don't recognize, then change your password."
         }
       />
       <AccountSection title="Signed-in devices">
@@ -172,7 +173,7 @@ export function AccountDevicesPage() {
       {demo ? null : (
         <AccountSection
           title="Sign out everywhere"
-          description="Signs out every device, including this one, and stops anything playing. Use it if you've shared your password or lost a device."
+          description="Signs out every device, including this one. Anything playing on another device stops within about half a minute. Use it if you've shared your password or lost a device."
         >
           <div>
             <Button variant="outline" icon={LogOutIcon} onClick={() => setEverywhere(true)}>
@@ -188,7 +189,7 @@ export function AccountDevicesPage() {
           if (!open) setRevoking(null);
         }}
         title={`Sign out ${revoking?.label ?? "this device"}?`}
-        description="It will need your email and password to get back in. Anything playing on it stops now."
+        description="It will need your email and password to get back in. Anything playing on it stops within about half a minute."
         confirmLabel="Sign out device"
         onConfirm={() => {
           if (revoking) revoke.mutate(revoking);
@@ -200,8 +201,9 @@ export function AccountDevicesPage() {
         title="Sign out of all devices?"
         description={
           <>
-            Every device signed in to this account, including this one, will be signed out, and
-            anything playing will stop. You'll need your password to sign back in.
+            Every device signed in to this account, including this one, will be signed out. Anything
+            playing on another device stops within about half a minute. You'll need your password to
+            sign back in.
             {signOutAll.isError ? (
               <span className="mt-3 block text-danger" role="alert">
                 {describeMemberError(signOutAll.error).description}

@@ -6,6 +6,7 @@ import {
   Button,
   CreditCardIcon,
   DevicesIcon,
+  ErrorReference,
   IconButton,
   type IconComponent,
   LockIcon,
@@ -56,6 +57,8 @@ interface Copy {
   secondary?: ReactNode;
   detail?: ReactNode;
   footnote?: ReactNode;
+  /** Support reference, kept behind a "Details" disclosure. */
+  reference?: string | null;
 }
 
 /**
@@ -144,7 +147,7 @@ export function WatchStatus(props: WatchStatusProps) {
       copy = {
         icon: LogOutIcon,
         title: "You've been signed out",
-        body: "This device was signed out of your account, for example from Devices on another device, or your sign-in expired. Sign in again to keep watching.",
+        body: "This device was signed out of your account, either from another device or because the sign-in expired. Sign in again to keep watching.",
         primary: (
           <Button variant="accent" size="lg" onClick={props.onSignedOut}>
             Sign in again
@@ -234,23 +237,21 @@ export function WatchStatus(props: WatchStatusProps) {
         body: described.description,
         primary: retryButton("Try again"),
         secondary: backButton,
-        footnote: described.reference ? `Reference: ${described.reference}` : undefined,
+        reference: described.reference,
       };
       break;
     }
   }
 
-  // Announce the new situation and start keyboard users on it.
+  // Announce the new situation and start keyboard users on it (in the player, the blocking
+  // layer focuses the primary action itself).
   useEffect(() => {
     if (props.variant === "page") headingRef.current?.focus({ preventScroll: true });
   }, [props.variant]);
 
   const Heading = props.variant === "page" ? "h1" : "h2";
   const content = (
-    <div
-      className="flex w-full max-w-dialog-md flex-col items-center gap-5 text-center"
-      data-testid={`watch-status-${block.kind}`}
-    >
+    <div className="flex w-full max-w-dialog-md flex-col items-center gap-5 text-center">
       <span className="grid size-16 place-items-center rounded-full bg-surface-3/80 text-fg">
         <copy.icon size="xl" />
       </span>
@@ -270,35 +271,58 @@ export function WatchStatus(props: WatchStatusProps) {
         {copy.secondary}
       </div>
       {copy.footnote ? <p className="type-body-sm text-fg-subtle">{copy.footnote}</p> : null}
+      {copy.reference ? <ErrorReference reference={copy.reference} /> : null}
     </div>
   );
 
-  if (props.variant === "overlay") return content;
+  // The same full-viewport composition on its own page and inside the player's blocking layer
+  // (which fills the whole player, centres and scrolls its content, and lets an absolutely
+  // positioned child paint full-bleed behind it): the title's backdrop, dimmed, behind the
+  // message, with Back in the top corner.
+  const backdrop = title ? (
+    <div aria-hidden className="absolute inset-0 -z-10 overflow-hidden bg-black">
+      <ResponsiveImage
+        image={title.images.backdrop}
+        alt=""
+        fill
+        sizes="100vw"
+        className="absolute inset-0 opacity-30"
+      />
+      <div className="absolute inset-0 bg-canvas/60" />
+      <div className="absolute inset-0 scrim-bottom" />
+    </div>
+  ) : (
+    <div aria-hidden className="absolute inset-0 -z-10 bg-canvas" />
+  );
+  const back = (
+    <IconButton
+      label="Back to browse"
+      icon={ArrowLeftIcon}
+      variant="glass"
+      size="lg"
+      onClick={onBack}
+    />
+  );
+
+  const testId = `watch-status-${block.kind}`;
+  if (props.variant === "overlay") {
+    // Children of the player's layer. Back comes after the message in the DOM (it sits in the
+    // top corner): the layer focuses the first control, which must be the primary action.
+    return (
+      <>
+        {backdrop}
+        <div className="flex w-full justify-center py-nav" data-testid={testId}>
+          {content}
+        </div>
+        <div className="absolute start-0 top-0 flex h-nav items-center px-gutter">{back}</div>
+      </>
+    );
+  }
 
   return (
-    <div className="relative isolate flex min-h-dvh flex-col bg-black">
-      {title ? (
-        <div aria-hidden className="absolute inset-0 -z-10 overflow-hidden">
-          <ResponsiveImage
-            image={title.images.backdrop}
-            alt=""
-            fill
-            sizes="100vw"
-            className="absolute inset-0 opacity-30"
-          />
-          <div className="absolute inset-0 bg-canvas/60" />
-          <div className="absolute inset-0 scrim-bottom" />
-        </div>
-      ) : null}
-      <header className="flex h-nav items-center px-gutter">
-        <IconButton
-          label="Back to browse"
-          icon={ArrowLeftIcon}
-          variant="glass"
-          size="lg"
-          onClick={onBack}
-        />
-      </header>
+    <div className="relative isolate flex min-h-dvh flex-col bg-black" data-testid={testId}>
+      {backdrop}
+      <header className="flex h-nav shrink-0 items-center px-gutter">{back}</header>
       <main id="main" className="flex flex-1 items-center justify-center px-gutter pb-nav">
         {content}
       </main>

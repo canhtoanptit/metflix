@@ -10,6 +10,7 @@ import {
   Avatar,
   Button,
   Checkbox,
+  EditIcon,
   ErrorState,
   Spinner,
   TextField,
@@ -19,31 +20,40 @@ import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { useApplySession } from "../../../app/session/session.ts";
+import { AvatarPicker } from "../profiles/AvatarPicker.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
 import { validateProfileName } from "../shared/validation.ts";
 import { StepBody, StepHeading } from "./SignupLayout.tsx";
 
-interface Row {
+export interface Row {
   name: string;
   isKids: boolean;
+  /** A picture the member chose; otherwise one is picked for the row. */
+  avatarId: string | null;
   /** Set once the profile exists, so a retry after a partial failure never duplicates it. */
   createdId: string | null;
 }
 
-const EMPTY_ROW: Row = { name: "", isKids: false, createdId: null };
+const EMPTY_ROW: Row = { name: "", isKids: false, avatarId: null, createdId: null };
 
-/** Give each row a different avatar: grown-ups from the first group, kids from the next. */
+/**
+ * One picture per row, all different: the member's own choices first, then grown-ups get one
+ * from the first group and kids from the next.
+ */
 export function pickAvatars(
   groups: ReadonlyArray<{ avatars: AvatarDto[] }>,
-  rows: Row[],
+  rows: ReadonlyArray<Pick<Row, "isKids" | "avatarId">>,
 ): AvatarDto[] {
   const all = groups.flatMap((group) => group.avatars);
   const adults = groups[0]?.avatars ?? all;
   const kids = groups[1]?.avatars ?? all;
-  const used = new Set<string>();
+  const chosen = rows.map((row) => all.find((avatar) => avatar.id === row.avatarId) ?? null);
+  const used = new Set(chosen.flatMap((avatar) => (avatar ? [avatar.id] : [])));
   return rows.map((row, index) => {
+    const own = chosen[index];
+    if (own) return own;
     const pool = row.isKids ? kids : adults;
     const pick =
       pool.find((avatar, position) => position >= index % pool.length && !used.has(avatar.id)) ??
@@ -79,7 +89,10 @@ export function ProfileStep() {
   const filled = rows.filter((row, index) => index === 0 || row.name.trim().length > 0);
   const errorAt = (index: number): string | null => {
     const row = rows[index];
-    if (!row || (index > 0 && row.name.trim() === "")) return null;
+    if (!row) return null;
+    if (index > 0 && row.name.trim() === "") {
+      return row.isKids ? "Add a name for this kids profile, or uncheck Kids profile." : null;
+    }
     const others = rows.filter((_, other) => other < index).map((other) => other.name);
     return validateProfileName(row.name, others);
   };
@@ -145,6 +158,7 @@ export function ProfileStep() {
     );
 
   const picks = avatars.data ? pickAvatars(avatars.data.groups, rows) : [];
+  const [picking, setPicking] = useState<number | null>(null);
 
   return (
     <StepBody>
@@ -178,16 +192,34 @@ export function ProfileStep() {
             {rows.map((row, index) => {
               const error = checked ? errorAt(index) : null;
               const avatar = picks[index];
+              const locked = row.createdId !== null;
               return (
                 <li key={index} className="flex items-start gap-3 sm:gap-4">
-                  <span className="size-14 shrink-0 text-xl">
+                  <button
+                    type="button"
+                    disabled={locked}
+                    onClick={() => setPicking(index)}
+                    aria-label={
+                      row.name.trim()
+                        ? `Choose a picture for ${row.name.trim()}`
+                        : index === 0
+                          ? "Choose your picture"
+                          : `Choose a picture for profile ${index + 1}`
+                    }
+                    className="group focus-ring relative size-14 shrink-0 rounded-avatar text-xl disabled:cursor-default"
+                  >
                     <Avatar
                       src={avatar?.imageUrl}
                       name={row.name || (index === 0 ? "You" : "Profile")}
                       size="fill"
                       decorative
                     />
-                  </span>
+                    {locked ? null : (
+                      <span className="absolute -end-1.5 -bottom-1.5 grid size-6 place-items-center rounded-full border-2 border-canvas bg-fg text-fg-inverse shadow-sm transition-transform duration-fast group-hover:scale-110">
+                        <EditIcon size="xs" />
+                      </span>
+                    )}
+                  </button>
                   <div className="flex min-w-0 flex-1 flex-col gap-2.5">
                     <TextField
                       ref={(node) => {
@@ -199,15 +231,16 @@ export function ProfileStep() {
                       autoCapitalize="words"
                       maxLength={30}
                       value={row.name}
-                      disabled={row.createdId !== null}
+                      disabled={locked}
                       onChange={(event) => update(index, { name: event.target.value })}
                       error={error}
                     />
-                    {index > 0 && (row.name.trim() || row.isKids) ? (
+                    {index > 0 ? (
                       <Checkbox
                         label="Kids profile"
+                        aria-label={`Profile ${index + 1} is a kids profile`}
                         checked={row.isKids}
-                        disabled={row.createdId !== null}
+                        disabled={locked}
                         onCheckedChange={(isKids) => update(index, { isKids })}
                       />
                     ) : null}
@@ -227,9 +260,20 @@ export function ProfileStep() {
             {filled.length > 1 ? `Create ${filled.length} profiles` : "Start watching"}
           </Button>
           <p className="type-body-sm text-fg-subtle">
-            Kids profiles only show titles rated 7+ and under. You can change pictures, add a PIN
-            lock or set maturity ratings for any profile later.
+            Kids profiles show only titles rated 7+ and under. Select a picture to change it. PIN
+            locks and maturity ratings can be set for any profile later, in Manage profiles.
           </p>
+          <AvatarPicker
+            open={picking !== null}
+            onOpenChange={(open) => {
+              if (!open) setPicking(null);
+            }}
+            current={picking !== null ? (picks[picking] ?? null) : null}
+            name={picking !== null ? (rows[picking]?.name ?? "") : ""}
+            onChoose={(chosen) => {
+              if (picking !== null) update(picking, { avatarId: chosen.id });
+            }}
+          />
         </form>
       )}
     </StepBody>

@@ -14,9 +14,19 @@ import {
   VolumeHighIcon,
   VolumeMuteIcon,
 } from "@webflix/ui";
-import { lazy, type Ref, type RefObject, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type Ref,
+  type RefObject,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { type ClipHandoff, sameClip } from "../common/clipHandoff.ts";
 import { episodeCode } from "../common/format.ts";
-import { usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
+import { clipHasAudio, usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
 import { TitleTreatment } from "../common/TitleTreatment.tsx";
 import { playLabel, watchLink } from "../common/watch.ts";
 import { MyListButton } from "../library/MyListButton.tsx";
@@ -41,13 +51,17 @@ export interface DetailHeroProps {
   pictureRef?: Ref<HTMLDivElement>;
   /** The decoded image that was clicked, painted first (no fade) for the shared-element flight. */
   originImage?: string | null;
+  /** The billboard's clip of this title, handed over by "More info": continue it from there. */
+  handoff?: ClipHandoff | null;
   phone: boolean;
 }
 
 /**
  * Picture first: the card art (instant, it is what the overlay grew from), then the backdrop
- * with the title logo, then the muted preview clip. Actions sit on the picture from tablet up
- * and under it on phones.
+ * with the title logo, then the muted preview clip (footage or motion). Opened from the
+ * billboard of the same title, it flies out as the billboard's current frame and the clip carries
+ * on from that position, without the usual pause. Actions sit on the picture from tablet up and
+ * under it on phones. The name here is visual: the dialog's title is its one heading.
  */
 export function DetailHero({
   title,
@@ -56,26 +70,34 @@ export function DetailHero({
   playRef,
   pictureRef,
   originImage = null,
+  handoff = null,
   phone,
 }: DetailHeroProps) {
   const card = title ?? seed;
   const previewsEnabled = usePreviewsEnabled();
   const [muted, setMuted] = usePreviewMuted();
   const [backdropLoaded, setBackdropLoaded] = useState(false);
-  const [armed, setArmed] = useState(false);
   const [phase, setPhase] = useState<"still" | "playing" | "ended">("still");
   const video = useRef<PreviewPlayerHandle>(null);
   const clip = previewsEnabled && !phone ? (card?.preview ?? null) : null;
+  // Read once: the hand-over is for this opening (the details may not have arrived yet).
+  const [continued] = useState(() => (handoff && previewsEnabled && !phone ? handoff : null));
+  const continues = !!continued && (!clip || sameClip(clip.url, continued.src));
+  const clipSrc = continues && continued ? continued.src : (clip?.url ?? null);
+  const sound = continues && continued ? continued.hasAudio : clipHasAudio(clip);
+  // A continued clip loads during the flight and plays as it lands; otherwise it waits a beat.
+  const [armed, setArmed] = useState(continues);
+  const [frameShown, setFrameShown] = useState(true);
 
   useEffect(() => {
-    if (!entered || !clip) return;
+    if (!entered || !clipSrc || armed) return;
     const timer = setTimeout(() => setArmed(true), DETAIL_VIDEO_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [entered, clip]);
+  }, [entered, clipSrc, armed]);
 
   // The card art carries its own title treatment; draw ours once the clean backdrop or the clip
   // is showing (and always when there is nothing cached to draw).
-  const showTreatment = backdropLoaded || phase !== "still" || (!seed && !originImage);
+  const showTreatment = backdropLoaded || phase !== "still" || continues || (!seed && !originImage);
 
   return (
     <div className="relative">
@@ -115,17 +137,27 @@ export function DetailHero({
             onLoad={() => setBackdropLoaded(true)}
           />
         ) : null}
-        {armed && clip ? (
+        {continues && continued?.frame && frameShown ? (
+          <HandoffFrame frame={continued.frame} />
+        ) : null}
+        {armed && clipSrc ? (
           <Suspense fallback={null}>
             <PreviewVideo
               handle={video}
-              src={clip.url}
+              src={clipSrc}
+              startPositionSec={continues && continued ? continued.positionSec : 0}
               active={entered}
               muted={muted}
               onMutedChange={setMuted}
               onFirstFrame={() => setPhase("playing")}
-              onEnded={() => setPhase("ended")}
-              onError={() => setPhase("still")}
+              onEnded={() => {
+                setPhase("ended");
+                setFrameShown(false);
+              }}
+              onError={() => {
+                setPhase("still");
+                setFrameShown(false);
+              }}
               fade="--duration-cinematic"
             />
           </Suspense>
@@ -149,7 +181,8 @@ export function DetailHero({
               <TitleTreatment
                 name={card.name}
                 logo={card.images.logo}
-                as="h2"
+                as="p"
+                aria-hidden
                 sizes="22rem"
                 logoClassName="block max-h-32 w-80 max-w-[60vw] md:w-96"
                 textClassName="type-display-md max-w-[16ch] line-clamp-2"
@@ -169,7 +202,7 @@ export function DetailHero({
                   <Skeleton radius="full" className="size-12" />
                 </>
               )}
-              {phase !== "still" ? (
+              {phase === "ended" || (phase === "playing" && sound) ? (
                 <IconButton
                   label={
                     phase === "ended"
@@ -186,6 +219,9 @@ export function DetailHero({
                   onClick={() => {
                     if (phase === "ended") {
                       video.current?.restart();
+                      // A continued clip "starts" where the billboard was: replay from the top.
+                      const media = video.current?.media;
+                      if (media) media.currentTime = 0;
                       void video.current?.play().catch(() => {});
                       setPhase("playing");
                     } else {
@@ -201,9 +237,10 @@ export function DetailHero({
 
       {phone ? (
         <div className="flex flex-col gap-4 px-5 pt-1">
-          <h2 className="type-title-lg text-fg">
+          {/* Visual: the dialog's title (one h2) already names the title. */}
+          <p aria-hidden className="type-title-lg text-fg">
             {card?.name ?? <Skeleton radius="sm" className="h-7 w-48" />}
-          </h2>
+          </p>
           <PlayButton title={title} playRef={playRef} size="lg" fullWidth />
           {title ? (
             <div className="flex items-start gap-4">
@@ -224,6 +261,19 @@ export function DetailHero({
       ) : null}
     </div>
   );
+}
+
+/** The billboard frame that was on screen, shown until the continued clip presents its own. */
+function HandoffFrame({ frame }: { frame: HTMLCanvasElement }) {
+  const attach = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node) return;
+      frame.className = "absolute inset-0 size-full object-cover";
+      node.replaceChildren(frame);
+    },
+    [frame],
+  );
+  return <div ref={attach} aria-hidden data-handoff-frame="" className="absolute inset-0" />;
 }
 
 function PlayButton({

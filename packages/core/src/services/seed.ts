@@ -35,8 +35,10 @@ import { BILLING_PERIOD_MS, effectiveSubscription } from "./subscriptions.ts";
 /**
  * Bump when the way seeds are turned into rows changes, so `seed` re-applies.
  * 3: assets store their nominal height; demo progress is measured on the playable stream.
+ * 4: runtimes of packaged titles and episodes are their media's playable duration; previews say
+ *    what they are (`kind`, `hasAudio`).
  */
-const SEED_FORMAT_VERSION = 3;
+const SEED_FORMAT_VERSION = 4;
 export const SEED_HASH_KEY = "seed.hash";
 /** The demo account's card on file (expiry: three years after seeding). */
 const DEMO_CARD = { brand: "visa", last4: "4242", expMonth: 12 } as const;
@@ -192,6 +194,12 @@ export function buildCatalogWrite(
     videoAssetRecord(asset, packaged.get(asset.id), fallback(asset)),
   );
   const assets = new Map(videoAssets.map((asset) => [asset.id, asset]));
+  // One base for every duration of packaged media (cards, detail, episodes, progress, playback):
+  // the playable stream's. Catalogue runtimes are fictional; they stay for external fallback.
+  const playableRuntime = (assetId: string | null, catalogueSec: number) => {
+    const media = assetId ? packaged.get(assetId) : undefined;
+    return media ? Math.max(1, Math.round(media.durationSec)) : catalogueSec;
+  };
   const playable = (assetId: string) => {
     const kind = assets.get(assetId)?.kind;
     return kind === "packaged" || kind === "external";
@@ -255,7 +263,7 @@ export function buildCatalogWrite(
             seq,
             name: episode.name,
             synopsis: episode.synopsis,
-            runtimeSec: episode.runtimeSec,
+            runtimeSec: playableRuntime(episode.videoAssetId, episode.runtimeSec),
             videoAssetId: episode.videoAssetId,
             still: still ? artworkToImageSet(still) : null,
             isPlayable: playable(episode.videoAssetId),
@@ -297,7 +305,8 @@ export function buildCatalogWrite(
       isOriginal: title.isOriginal,
       addedAt: now - title.addedDaysAgo * DAY_MS,
       popularity: title.popularity,
-      runtimeSec: title.type === "movie" ? title.runtimeSec : null,
+      runtimeSec:
+        title.type === "movie" ? playableRuntime(title.videoAssetId, title.runtimeSec) : null,
       seasonCount: title.type === "series" ? title.seasons.length : null,
       videoAssetId: title.type === "movie" ? title.videoAssetId : null,
       attribution: license
@@ -317,6 +326,9 @@ export function buildCatalogWrite(
             durationSec: previewAsset.preview.durationSec,
             width: previewAsset.preview.width,
             height: previewAsset.preview.height,
+            // A manifest that does not say: footage, with audio.
+            kind: previewAsset.preview.kind ?? "footage",
+            hasAudio: previewAsset.preview.hasAudio ?? true,
           }
         : null,
       isPlayable: assetIds.some(playable),

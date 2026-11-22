@@ -4,7 +4,13 @@
  * keyed by its inputs, so a re-run with nothing changed does no ffmpeg work at all.
  */
 import { basename, join } from "node:path";
-import type { CatalogSeed, MediaProfile, PackagedVideoAsset } from "@webflix/contracts";
+import {
+  blobKeys,
+  type CatalogSeed,
+  type MediaProfile,
+  type PackagedVideoAsset,
+  type PreviewKind,
+} from "@webflix/contracts";
 import { ensureImage, ffprobe, type ProbeResult } from "../docker.ts";
 import { artMasterPath, DOWNLOADS_DIR, mediaCacheDir, TOOL_ROOT, workDir } from "../paths.ts";
 import { PROFILES } from "../profiles.ts";
@@ -16,6 +22,7 @@ import { mapPool } from "../util/pool.ts";
 import { cachedStep, stampPath } from "../util/stamp.ts";
 import { packageVideo, type SubtitleSource, type VideoJob, type VideoSource } from "./package.ts";
 import { type FilmFacts, markersFor, planAssets, previewWindow, profileWindow } from "./plan.ts";
+import { audible, digitallySilent, measureAudio } from "./preview-check.ts";
 
 interface ResolvedSource {
   source: VideoSource;
@@ -71,24 +78,70 @@ async function resolveSubtitles(
   return out;
 }
 
+/**
+ * What a preview declares (`kind`, `hasAudio`). Motion art is rendered without an audio track;
+ * a footage clip's `hasAudio` is measured from its decoded audio (cached per preview file),
+ * never inferred from the presence of a track. Metadata, so it sits outside the encode cache.
+ */
+async function previewFacts(
+  job: VideoJob,
+  out: string,
+  work: string,
+): Promise<{ kind: PreviewKind; hasAudio: boolean }> {
+  if (job.source.kind === "artwork") return { kind: "motion", hasAudio: false };
+  const path = join(out, blobKeys.preview(job.assetId));
+  const sha = await sha256File(path);
+  const { value } = await cachedStep(
+    stampPath(work, "preview-audio", job.assetId),
+    sha,
+    async () => ({ value: await measureAudio(path), outputs: [] }),
+  );
+  if (!audible(value) && !digitallySilent(value)) {
+    throw new Error(
+      `${job.assetId}: preview audio is near-silent but not silent (peak ${value.peakDb} dBFS); strip the track or pick another excerpt`,
+    );
+  }
+  return { kind: "footage", hasAudio: audible(value) };
+}
+
 export interface VideoStageOptions {
   /** Only package these asset ids (development). */
   only?: readonly string[];
 }
 
-export async function runVideoStage(
+export interface PreparedJob {
+  seed: CatalogSeed["videoAssets"][number];
+  job: VideoJob;
+  /** The cache key for this job under the given code fingerprint. */
+  keyFor: (code: string) => string;
+  /** Which code fingerprint applies (motion art also depends on its recipe). */
+  code: "footage" | "motion";
+}
+
+/** Code that shapes the packaged bytes, per kind of job. */
+export async function codeFingerprints(): Promise<{ footage: string; motion: string }> {
+  // plan.ts only decides windows, which are part of each job, and markers, which are metadata
+  // applied after the cache. Footage does not depend on the motion-art recipe, so a new recipe
+  // re-renders only the motion-art clips.
+  const footageFiles = ["package.ts", "hls.ts", "subtitles.ts"];
+  const codeFor = (files: string[]) =>
+    fingerprintFiles(files.map((file) => join(TOOL_ROOT, "src", "video", file)));
+  return {
+    footage: await codeFor(footageFiles),
+    // (preview-check.ts only checks the result; validate-manifest checks every clip again.)
+    motion: await codeFor([...footageFiles, "motion.ts"]),
+  };
+}
+
+/** Resolve sources and build every packaging job of a profile, with its cache key. */
+export async function prepareVideoJobs(
   catalog: CatalogSeed,
   films: ReadonlyMap<string, FilmFacts & { key: string }>,
   profile: MediaProfile,
   options: VideoStageOptions = {},
-): Promise<PackagedVideoAsset[]> {
+): Promise<PreparedJob[]> {
   const config = PROFILES[profile];
   const image = await ensureImage();
-  // Code that shapes the packaged bytes. (plan.ts only decides windows, which are part of each
-  // job, and markers, which are metadata applied after the cache.)
-  const code = await fingerprintFiles(
-    ["package.ts", "hls.ts", "subtitles.ts"].map((file) => join(TOOL_ROOT, "src", "video", file)),
-  );
   const planned = planAssets(catalog).filter(
     (asset) => !options.only || options.only.includes(asset.seed.id),
   );
@@ -108,11 +161,7 @@ export async function runVideoStage(
     sources.set(source.url, { source: { kind: "file", ...file }, subtitles });
   }
 
-  const out = mediaCacheDir(profile);
-  const work = workDir(profile);
-  let packaged = 0;
-  const started = Date.now();
-  const results = await mapPool(planned, config.jobs, async (asset) => {
+  return mapPool(planned, 8, async (asset) => {
     const seed = asset.seed;
     const download = seed.source.kind === "download" ? seed.source : null;
     const resolved = download ? sources.get(download.url) : null;
@@ -155,45 +204,71 @@ export async function runVideoStage(
       subtitles: asset.role === "preview" ? [] : (resolved?.subtitles ?? []),
       markers: markersFor(asset, window, film),
     };
-    // Keyed by what shapes the bytes only: markers and labels are metadata, applied below.
-    const key = hashJson({
-      job: {
-        assetId: job.assetId,
-        role: job.role,
-        ladder: job.ladder,
-        source:
-          source.kind === "file"
-            ? { sha256: source.sha256 }
-            : source.kind === "artwork"
-              ? { kind: "artwork", sha256: source.sha256, seed: source.seed }
-              : source,
-        window: job.window,
-        preview: job.preview,
-        subtitles: job.subtitles.map((subtitle) => subtitle.language),
-      },
-      encode: {
-        preset: config.preset,
-        segmentSec: config.segmentSec,
-        audioKbps: config.audioKbps,
-        preview: config.preview,
-        trickPlay: config.trickPlay,
-      },
-      image,
-      code,
-    });
+    // Keyed by what shapes the bytes only: markers and labels are metadata, applied after.
+    const keyFor = (code: string) =>
+      hashJson({
+        job: {
+          assetId: job.assetId,
+          role: job.role,
+          ladder: job.ladder,
+          source:
+            source.kind === "file"
+              ? { sha256: source.sha256 }
+              : source.kind === "artwork"
+                ? { kind: "artwork", sha256: source.sha256, seed: source.seed }
+                : source,
+          window: job.window,
+          preview: job.preview,
+          subtitles: job.subtitles.map((subtitle) => subtitle.language),
+        },
+        encode: {
+          preset: config.preset,
+          segmentSec: config.segmentSec,
+          audioKbps: config.audioKbps,
+          preview: config.preview,
+          trickPlay: config.trickPlay,
+        },
+        image,
+        code,
+      });
+    return { seed, job, keyFor, code: source.kind === "artwork" ? "motion" : "footage" };
+  });
+}
+
+export async function runVideoStage(
+  catalog: CatalogSeed,
+  films: ReadonlyMap<string, FilmFacts & { key: string }>,
+  profile: MediaProfile,
+  options: VideoStageOptions = {},
+): Promise<PackagedVideoAsset[]> {
+  const config = PROFILES[profile];
+  const codes = await codeFingerprints();
+  const prepared = await prepareVideoJobs(catalog, films, profile, options);
+  const out = mediaCacheDir(profile);
+  const work = workDir(profile);
+  let packaged = 0;
+  const started = Date.now();
+  const results = await mapPool(prepared, config.jobs, async ({ seed, job, keyFor, code }) => {
+    const key = keyFor(codes[code]);
     const step = await cachedStep(stampPath(work, "video", seed.id), key, async () => {
       const result = await packageVideo(job, config, { out, work: join(work, "video", seed.id) });
       // A synthetic stand-in (failed download, or art not rendered yet) is not cached: the
       // next run retries.
-      const provisional = source.kind === "synthetic";
+      const provisional = job.source.kind === "synthetic";
       return { value: result.asset, outputs: result.outputs, provisional };
     });
     const { cached } = step;
-    const value = { ...step.value, markers: job.markers };
+    const value: PackagedVideoAsset = {
+      ...step.value,
+      markers: job.markers,
+      preview: step.value.preview
+        ? { ...step.value.preview, ...(await previewFacts(job, out, work)) }
+        : null,
+    };
     if (!cached) {
       packaged += 1;
       log.info(
-        `packaged ${seed.id} (${job.role}, ${window.durationSec.toFixed(0)} s${source.kind === "synthetic" ? ", synthetic" : ""})`,
+        `packaged ${seed.id} (${job.role}, ${job.window.durationSec.toFixed(0)} s${job.source.kind === "synthetic" ? ", synthetic" : ""})`,
       );
     }
     return value;

@@ -32,6 +32,8 @@ export interface PlayerLabels {
   quality: string;
   qualityAuto: string;
   qualityAutoCurrent: (label: string) => string;
+  /** Quality menu note when the title, not the plan, tops out lower: "Best available for this title: HD". */
+  qualityTitleLimit: (label: string) => string;
   episodes: string;
   season: string;
   seasonOption: (seasonNumber: number, name: string) => string;
@@ -99,6 +101,7 @@ export const DEFAULT_LABELS: PlayerLabels = {
   quality: "Quality",
   qualityAuto: "Auto",
   qualityAutoCurrent: (label) => `Auto (${label})`,
+  qualityTitleLimit: (label) => `Best available for this title: ${label}`,
   episodes: "Episodes",
   season: "Season",
   seasonOption: (n, name) => (name ? name : `Season ${n}`),

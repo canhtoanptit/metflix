@@ -1,6 +1,7 @@
 /**
- * The player's icon set: 24×24 grid, 2 px rounded strokes, solid glyphs for transport
- * (play, pause, next) so they carry visual weight. Decorative: buttons carry the labels.
+ * The player's icon set: 24×24 grid, 2.5-unit rounded strokes, solid glyphs for transport
+ * (play, pause, next, the ±10 arrowheads, skip) so they carry visual weight over video.
+ * Decorative: buttons carry the labels.
  */
 import type { ReactNode } from "react";
 
@@ -13,7 +14,7 @@ function Svg({ children, className }: { children: ReactNode; className?: string 
       focusable="false"
       fill="none"
       stroke="currentColor"
-      strokeWidth={2}
+      strokeWidth={2.5}
       strokeLinecap="round"
       strokeLinejoin="round"
     >
@@ -67,11 +68,11 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M4 3.5v4h4" />
     </>
   ),
-  // ±10: an open circle (r 8.5 around 12,13) with the chevron at 12 o'clock, "10" centred.
+  // ±10: an open circle (r 8.5 around 12,13) with a solid arrowhead at 12 o'clock, "10" centred.
   back10: (
     <>
       <path d="M12 4.5A8.5 8.5 0 1 1 4.64 8.75" />
-      <path d="M14.6 2 12 4.5l2.6 2.5" />
+      <path d="M14.4 1.4 10.6 4.5l3.8 3.1Z" fill="currentColor" strokeWidth={1.5} />
       <text
         x="12"
         y="16.1"
@@ -90,7 +91,7 @@ const PATHS: Record<IconName, ReactNode> = {
   forward10: (
     <>
       <path d="M12 4.5A8.5 8.5 0 1 0 19.36 8.75" />
-      <path d="M9.4 2 12 4.5 9.4 7" />
+      <path d="M9.6 1.4 13.4 4.5 9.6 7.6Z" fill="currentColor" strokeWidth={1.5} />
       <text
         x="12"
         y="16.1"
@@ -127,8 +128,8 @@ const PATHS: Record<IconName, ReactNode> = {
   ),
   subtitles: (
     <>
-      <path d="M4.5 4.5h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10l-4.5 3.2V17.5h-1a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
-      <path d="M7 10h4M13.5 10H17M7 13.5h7M16.5 13.5H17" />
+      <rect x="2.5" y="4.5" width="19" height="15" rx="2.5" />
+      <path d="M6.5 10.5h4M14 10.5h3.5M6.5 14.5h7M17 14.5h.5" />
     </>
   ),
   speed: (
@@ -139,12 +140,13 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 5v1.4M5.6 8 6.7 9M18.4 8l-1.1 1" />
     </>
   ),
+  // Three sliders with solid knobs; the tracks stop short of each knob.
   quality: (
     <>
-      <path d="M4 7h9M17 7h3M4 17h3M11 17h9M4 12h3M11 12h9" />
-      <circle cx="15" cy="7" r="2" />
-      <circle cx="9" cy="17" r="2" />
-      <circle cx="9" cy="12" r="2" />
+      <path d="M3.5 5.5h8M18.5 5.5h2M10.5 12h10M3.5 18.5h5M15.5 18.5h5" />
+      <circle cx="15" cy="5.5" r="2.4" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="12" r="2.4" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="18.5" r="2.4" fill="currentColor" stroke="none" />
     </>
   ),
   episodes: (
@@ -187,8 +189,8 @@ const PATHS: Record<IconName, ReactNode> = {
   close: <path d="M6 6l12 12M18 6 6 18" />,
   skip: (
     <>
-      <path d="M4 6.2v11.6l7-5.8-7-5.8Z" fill="currentColor" />
-      <path d="M12 6.2v11.6l7-5.8-7-5.8Z" fill="currentColor" />
+      <path d="M4 6.8v10.4l6.2-5.2L4 6.8Z" fill="currentColor" strokeWidth={1.5} />
+      <path d="M12.5 6.8v10.4l6.2-5.2-6.2-5.2Z" fill="currentColor" strokeWidth={1.5} />
     </>
   ),
   alert: (

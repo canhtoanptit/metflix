@@ -62,6 +62,12 @@ export const TITLE_BADGES = ["new", "new-episodes", "top-10", "leaving-soon"] as
  * Continue Watching or the ranked row. Chosen by the server (docs/RECOMMENDATIONS.md, Badges).
  */
 export const TOP_10_BADGES_PER_LIST = 2;
+/**
+ * Badges of any kind one list of cards carries at most (a row, a genre page, search results):
+ * a badge is the exception. The Top 10 row and Continue Watching follow their own, stricter
+ * rules (docs/RECOMMENDATIONS.md, Badges).
+ */
+export const BADGES_PER_LIST = 2;
 
 // --- Browse -----------------------------------------------------------------------------------
 export const BROWSE_VIEWS = ["home", "series", "movies", "new-popular"] as const;
@@ -90,10 +96,21 @@ export const ROW_KINDS = [
 export const ROW_LAYOUTS = ["standard", "tall", "ranked", "continue"] as const;
 export type RowLayout = (typeof ROW_LAYOUTS)[number];
 export const GENRE_SORTS = ["suggested", "newest", "oldest", "a-z", "z-a"] as const;
+/** Characters of a query that are searched; a longer query is cut there (between code points). */
 export const SEARCH_QUERY_MAX_LENGTH = 100;
+/** Longest query accepted at all (`validation_failed` beyond): what a search field never sends. */
+export const SEARCH_QUERY_INPUT_MAX_LENGTH = 2000;
 
 // --- Library ----------------------------------------------------------------------------------
 export const NOTIFICATION_KINDS = ["new-arrival", "new-episodes", "coming-soon", "top-10"] as const;
+
+// --- Previews ---------------------------------------------------------------------------------
+/**
+ * What a preview clip is: `footage` (a cut of the title itself) or `motion` (motion art rendered
+ * from the title's key art, no footage).
+ */
+export const PREVIEW_KINDS = ["footage", "motion"] as const;
+export type PreviewKind = (typeof PREVIEW_KINDS)[number];
 
 // --- Playback ---------------------------------------------------------------------------------
 export const TEXT_TRACK_KINDS = ["subtitles", "captions"] as const;

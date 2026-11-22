@@ -153,9 +153,18 @@ body,
   font-size: 12px;
 }
 
-/* Host-provided blocking overlay ("too many screens"). */
+/* Host-provided blocking overlay ("too many screens"): the host sizes its own content. */
 .pg-blocking {
+  max-width: 560px;
   text-align: center;
+}
+
+/* A full-bleed background behind the content, as the README describes. */
+.pg-blocking__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(120% 80% at 50% 0%, rgb(255 45 85 / 0.16), transparent 60%);
 }
 
 .pg-blocking h2 {

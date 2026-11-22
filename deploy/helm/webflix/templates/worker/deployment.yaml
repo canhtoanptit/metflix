@@ -39,7 +39,7 @@ spec:
       priorityClassName: {{ . }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "webflix.appPodSecurityContext" . | nindent 8 }}
       # On SIGTERM the consumer stops reading and lets in-flight jobs settle (20 s at most);
       # anything still unsettled is reclaimed by another consumer, never lost. Each pod is a
       # consumer in the Valkey group, named after the pod (its hostname).

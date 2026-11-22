@@ -4,9 +4,9 @@ export type MaturityLevel = (typeof MATURITY_LEVELS)[number];
 
 export const MATURITY_COPY: Record<MaturityLevel, { label: string; description: string }> = {
   ALL: { label: "All ages", description: "Only titles suitable for everyone." },
-  "7+": { label: "7+ · Older kids", description: "Titles rated 7+ and below." },
-  "13+": { label: "13+ · Teens", description: "Titles rated 13+ and below." },
-  "16+": { label: "16+ · Older teens", description: "Titles rated 16+ and below." },
+  "7+": { label: "7+ · Older kids", description: "Titles rated 7+ and under." },
+  "13+": { label: "13+ · Teens", description: "Titles rated 13+ and under." },
+  "16+": { label: "16+ · Older teens", description: "Titles rated 16+ and under." },
   "18+": { label: "18+ · Adults", description: "Every title, including mature content." },
 };
 

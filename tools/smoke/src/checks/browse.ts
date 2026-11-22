@@ -1,9 +1,12 @@
 import {
+  BADGES_PER_LIST,
   BROWSE_VIEWS,
   GENRE_SORTS,
   type GenreSort,
   nominalVideoHeight,
   type Row,
+  SEARCH_QUERY_INPUT_MAX_LENGTH,
+  SEARCH_QUERY_MAX_LENGTH,
   SHOWCASE_MATURITY_CEILING,
   SHOWCASE_SIZE,
   Showcase,
@@ -487,10 +490,21 @@ export const browseChecks: CheckDefinition[] = [
       equal(nothing.results.length, 0, "results for gibberish");
       equal(nothing.suggestions.length, 0, "suggestions for gibberish");
       equal(nothing.nextCursor, null, "nextCursor for gibberish");
+      // A long query is searched in its first characters (never an error); only what no
+      // search field sends is refused.
+      const long = await succeeds(
+        () => viewer.agent.api.search({ query: { q: `${"a".repeat(150)}` } }),
+        "a 150-character query",
+      );
+      check(long.query.length <= SEARCH_QUERY_MAX_LENGTH, "the searched query was not cut", {
+        observed: `${long.query.length} characters`,
+      });
       problem(
-        await viewer.agent.fetch(`${API}/search?q=${"a".repeat(101)}`),
+        await viewer.agent.fetch(
+          `${API}/search?q=${"a".repeat(SEARCH_QUERY_INPUT_MAX_LENGTH + 1)}`,
+        ),
         "validation_failed",
-        "101-character query",
+        `a ${SEARCH_QUERY_INPUT_MAX_LENGTH + 1}-character query`,
       );
       problem(
         await viewer.agent.fetch(`${API}/search?q=%20%20`),
@@ -608,7 +622,7 @@ export const browseChecks: CheckDefinition[] = [
     id: "browse.badges",
     area: "browse",
     title:
-      "Top 10 badges follow each view's Top 10 row: none in Continue Watching or the ranked row, at most two per row",
+      'Badges are the exception: none on the Top 10 row, only "new episodes" in Continue Watching, no "new" on a played title or in New Releases, at most two per row, Top 10 badges matching each view\'s Top 10',
     async run(ctx: CheckContext) {
       const viewer = await ctx.env.isolatedViewer("badges");
       // Put today's number one in Continue Watching first: a chart-topper the member is watching.
@@ -631,12 +645,28 @@ export const browseChecks: CheckDefinition[] = [
         for (const row of rows) {
           const cards = cardsOfRow(row);
           const badged = cards.filter((card) => card.badge === "top-10");
-          if ((row.layout === "continue" || row.layout === "ranked") && badged.length > 0) {
-            offenders.push(`${row.id}: ${badged.length} Top 10 badges (none allowed)`);
-          } else if (badged.length > TOP_10_BADGES_PER_LIST) {
+          const any = cards.filter((card) => card.badge !== null);
+          if (row.layout === "ranked" && any.length > 0) {
+            offenders.push(`${row.id}: ${any.length} badges on the Top 10 row (none allowed)`);
+          }
+          if (row.layout === "continue" && any.some((card) => card.badge !== "new-episodes")) {
+            offenders.push(`${row.id}: a badge other than "new episodes" in Continue Watching`);
+          }
+          if (row.kind === "new-releases" && any.some((card) => card.badge === "new")) {
+            offenders.push(`${row.id}: "new" in New Releases`);
+          }
+          if (any.length > BADGES_PER_LIST) {
+            offenders.push(`${row.id}: ${any.length} badges (at most ${BADGES_PER_LIST})`);
+          }
+          if (badged.length > TOP_10_BADGES_PER_LIST) {
             offenders.push(
               `${row.id}: ${badged.length} Top 10 badges (at most ${TOP_10_BADGES_PER_LIST})`,
             );
+          }
+          for (const card of cards) {
+            if (card.id === leader.id && card.badge === "new") {
+              offenders.push(`${row.id}: "new" on ${card.id}, which this profile has played`);
+            }
           }
           if (ranks.size === 0) continue;
           for (const card of cards) {
@@ -660,7 +690,15 @@ export const browseChecks: CheckDefinition[] = [
       );
       const watching = list.items.find((item) => item.title.id === leader.id);
       check(watching, `${leader.id} is not in Continue Watching after watching it`);
-      check(watching.title.badge !== "top-10", "a Continue Watching item carries the Top 10 badge");
+      check(
+        watching.title.badge === null || watching.title.badge === "new-episodes",
+        `a Continue Watching item carries the "${watching.title.badge}" badge`,
+      );
+      const detail = await succeeds(
+        () => viewer.agent.api.getTitle({ params: { id: leader.id } }),
+        "the played title's detail",
+      );
+      check(detail.badge !== "new", "a title this profile has played still says it is new");
       equal(watching.title.top10Rank, 1, "the item still states its rank (for previews)");
     },
   },

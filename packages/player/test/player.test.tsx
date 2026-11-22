@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { makePlaybackSession } from "@webflix/contracts/fixtures";
+import { makeImageSet, makePlaybackSession } from "@webflix/contracts/fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EngineEvents } from "../src/engine/types.ts";
 
@@ -78,6 +78,23 @@ const settle = () =>
     for (let i = 0; i < 5; i++) await Promise.resolve();
   });
 
+/** Move the jsdom playhead (it has no playback of its own) and tell the player. */
+function playhead(video: HTMLVideoElement, seconds: number, duration = 2700) {
+  Object.defineProperty(video, "duration", { configurable: true, get: () => duration });
+  Object.defineProperty(video, "currentTime", {
+    configurable: true,
+    get: () => seconds,
+    set: () => {},
+  });
+  act(() => {
+    video.dispatchEvent(new Event("durationchange"));
+    video.dispatchEvent(new Event("timeupdate"));
+  });
+}
+
+const liveRegion = (container: HTMLElement) =>
+  container.querySelector("[aria-live='polite']")?.textContent ?? "";
+
 function renderPlayer(props: Partial<Parameters<typeof Player>[0]> = {}) {
   const session = makePlaybackSession();
   const handlers = {
@@ -126,7 +143,7 @@ describe("<Player>", () => {
       "Forward 10 seconds",
       "Mute",
       "Episodes",
-      "Audio & Subtitles",
+      "Subtitles",
       "Playback speed",
       "Next Episode",
     ]) {
@@ -145,11 +162,11 @@ describe("<Player>", () => {
     expect(screen.getByRole("button", { name: "Play" })).toBeTruthy();
   });
 
-  it("opens the audio & subtitles menu with checked items", async () => {
+  it("opens the subtitles menu with checked items", async () => {
     renderPlayer();
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Audio & Subtitles" }));
-    const menu = screen.getByRole("menu", { name: "Audio & Subtitles" });
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    const menu = screen.getByRole("menu", { name: "Subtitles" });
     const off = within(menu).getByRole("menuitemradio", { name: "Off" });
     expect(off.getAttribute("aria-checked")).toBe("true");
     fireEvent.click(within(menu).getByRole("menuitemradio", { name: "English" }));
@@ -158,6 +175,143 @@ describe("<Player>", () => {
     ).toBe("true");
     fireEvent.keyDown(menu, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("offers audio only when there is a choice of tracks", async () => {
+    renderPlayer();
+    await settle();
+    act(() => engines[0]?.events.audioTracks([{ id: 0, language: "en", name: "English" }], 0));
+    expect(screen.queryByRole("button", { name: "Audio & Subtitles" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    expect(within(screen.getByRole("menu")).queryByRole("group", { name: "Audio" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    act(() =>
+      engines[0]?.events.audioTracks(
+        [
+          { id: 0, language: "en", name: "English" },
+          { id: 1, language: "es", name: "Español" },
+        ],
+        0,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Audio & Subtitles" }));
+    const menu = screen.getByRole("menu", { name: "Audio & Subtitles" });
+    expect(within(menu).getByRole("group", { name: "Audio" })).toBeTruthy();
+  });
+
+  it("lists quality classes, never bitrates or pixel heights", async () => {
+    renderPlayer({
+      session: makePlaybackSession({ maxVideoHeight: 2160, bestVideoQuality: "full-hd" }),
+    });
+    await settle();
+    act(() =>
+      engines[0]?.events.levels(
+        [
+          { id: 0, width: 640, height: 360, bitrate: 700_000 },
+          { id: 1, width: 854, height: 480, bitrate: 1_200_000 },
+          { id: 2, width: 1280, height: 720, bitrate: 3_000_000 },
+          { id: 3, width: 1280, height: 720, bitrate: 2_000_000 },
+          { id: 4, width: 1920, height: 1080, bitrate: 5_000_000 },
+        ],
+        true,
+      ),
+    );
+    act(() => engines[0]?.events.levelSwitched(2));
+    fireEvent.click(screen.getByRole("button", { name: "Quality" }));
+    const menu = screen.getByRole("menu", { name: "Quality" });
+    const items = within(menu).getAllByRole("menuitemradio");
+    expect(items.map((item) => item.textContent)).toEqual(["AutoHD", "Full HD", "HD", "SD"]);
+    expect(menu.textContent).not.toMatch(/\d+p|bps/);
+    // A 4K plan on a Full HD title: said once, as the menu's description.
+    const note = document.getElementById(menu.getAttribute("aria-describedby") ?? "");
+    expect(note?.textContent).toBe("Best available for this title: Full HD");
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "HD" }));
+    expect(
+      within(menu).getByRole("menuitemradio", { name: "HD" }).getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("hides the quality menu when the ladder is a single class", async () => {
+    renderPlayer();
+    await settle();
+    act(() =>
+      engines[0]?.events.levels(
+        [
+          { id: 0, width: 1280, height: 720, bitrate: 2_000_000 },
+          { id: 1, width: 1280, height: 720, bitrate: 3_000_000 },
+        ],
+        true,
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Quality" })).toBeNull();
+  });
+
+  it("shows the playing rendition in the stats overlay (Shift+D)", async () => {
+    renderPlayer();
+    await settle();
+    act(() =>
+      engines[0]?.events.levels([{ id: 0, width: 1280, height: 720, bitrate: 3_000_000 }], true),
+    );
+    act(() => engines[0]?.events.levelSwitched(0));
+    fireEvent.keyDown(document.body, { key: "D", shiftKey: true });
+    expect(screen.getByLabelText("Playback stats").textContent).toMatch(
+      /1280×720 · HD · 3(\.0)? Mbps/,
+    );
+    fireEvent.keyDown(document.body, { key: "D", shiftKey: true });
+    expect(screen.queryByLabelText("Playback stats")).toBeNull();
+  });
+
+  it("lays out the end screen with the host slot and fades the backdrop in at the end", async () => {
+    const backdrop = makeImageSet();
+    const { container } = renderPlayer({
+      session: makePlaybackSession({ nextEpisode: null }),
+      endScreenBackdrop: backdrop,
+      renderEndScreen: ({ phase }) => <p>More like this ({phase})</p>,
+    });
+    await settle();
+    const video = container.querySelector("video") as HTMLVideoElement;
+    playhead(video, 2620);
+    const end = screen.getByRole("region", { name: "Night Shift at Kestrel Bay" });
+    expect(container.querySelector(".wfp-root")?.getAttribute("data-endscreen")).toBe("credits");
+    expect(end.querySelector(".wfp-endscreen__slot")?.textContent).toBe("More like this (credits)");
+    const still = end.querySelector(".wfp-endscreen__still") as HTMLElement;
+    // Loaded during the credits (the video still plays in the frame), shown only at the end.
+    expect(still.hasAttribute("data-visible")).toBe(false);
+    expect(still.querySelector("source")?.getAttribute("type")).toBe("image/avif");
+    expect(still.querySelector("img")?.getAttribute("src")).toContain(".webp");
+    expect(within(end).getByRole("button", { name: "Watch Credits" })).toBeTruthy();
+    act(() => {
+      video.dispatchEvent(new Event("ended"));
+    });
+    expect(still.hasAttribute("data-visible")).toBe(true);
+    expect(within(end).getByRole("button", { name: "Replay" })).toBeTruthy();
+    expect(end.querySelector(".wfp-endscreen__slot")?.textContent).toBe("More like this (ended)");
+  });
+
+  it("announces a skip offer once and clears it when the end screen takes over", async () => {
+    const { container } = renderPlayer({ session: makePlaybackSession({ nextEpisode: null }) });
+    await settle();
+    const video = container.querySelector("video") as HTMLVideoElement;
+    playhead(video, 40);
+    expect(screen.getByRole("button", { name: "Skip Intro" })).toBeTruthy();
+    expect(liveRegion(container)).toBe("Skip Intro available. Press S.");
+    playhead(video, 2620);
+    expect(screen.queryByRole("button", { name: "Skip Intro" })).toBeNull();
+    expect(liveRegion(container)).toBe("");
+  });
+
+  it("never announces a skip offer hidden behind an open menu", async () => {
+    const { container } = renderPlayer();
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Playback speed" }));
+    const video = container.querySelector("video") as HTMLVideoElement;
+    playhead(video, 40);
+    expect(screen.queryByRole("button", { name: "Skip Intro" })).toBeNull();
+    expect(liveRegion(container)).toBe("");
+    // Closing the menu shows the offer, and only then is it announced.
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Skip Intro" })).toBeTruthy();
+    expect(liveRegion(container)).toBe("Skip Intro available. Press S.");
   });
 
   it("loads episodes lazily and reports the selection", async () => {
@@ -203,6 +357,57 @@ describe("<Player>", () => {
       expect.objectContaining({ id: "e-fixture-2" }),
     );
     expect(screen.queryByRole("dialog", { name: "Episodes" })).toBeNull();
+  });
+
+  it("says what is left of started episodes, with a bar from the same numbers", async () => {
+    const episode = (n: number, extra: Record<string, unknown>) => ({
+      id: `e-fixture-${n}`,
+      seasonNumber: 1,
+      number: n,
+      name: `Chapter ${n}`,
+      synopsis: "…",
+      runtimeSec: 2640,
+      still: null,
+      isPlayable: true,
+      progress: null,
+      ...extra,
+    });
+    const progress = (positionSec: number, durationSec: number, completed = false) => ({
+      positionSec,
+      durationSec,
+      completed,
+      updatedAt: "2026-01-15T18:00:00.000Z",
+    });
+    const { container } = renderPlayer({
+      episodes: {
+        seasons: [{ number: 1, name: "Season 1", episodeCount: 4 }],
+        loadEpisodes: async () => [
+          // The playing episode follows the live position, not the stored progress.
+          episode(1, { progress: progress(60, 2700) }),
+          episode(2, { progress: progress(300, 1020) }),
+          episode(3, { progress: progress(2500, 2640, true) }),
+          episode(4, {}),
+        ],
+      },
+    });
+    await settle();
+    playhead(container.querySelector("video") as HTMLVideoElement, 2100);
+    fireEvent.click(screen.getByRole("button", { name: "Episodes" }));
+    await settle();
+    const rows = within(screen.getByRole("dialog", { name: "Episodes" })).getAllByRole("button", {
+      name: /Chapter/,
+    });
+    const visible = (row: HTMLElement) =>
+      row.querySelector(".wfp-episode__runtime [aria-hidden='true']")?.textContent;
+    const bar = (row: HTMLElement) => {
+      const fill = row.querySelector<HTMLElement>(".wfp-episode__progress > span");
+      return fill ? Number(/scaleX\(([\d.]+)\)/.exec(fill.style.transform)?.[1]).toFixed(3) : null;
+    };
+    // Completed reads "Finished" under a full bar (the shared wording), even stopped at 2500 s.
+    expect(rows.map(visible)).toEqual(["10m left", "12m left", "Finished", "44m"]);
+    // 2100 / 2700 live, 300 / 1020 stored, completed, unwatched.
+    expect(rows.map(bar)).toEqual(["0.778", "0.294", "1.000", null]);
+    expect(rows[1]?.textContent).toContain("12 minutes left");
   });
 
   it("shows a fatal error with retry and reports it", async () => {

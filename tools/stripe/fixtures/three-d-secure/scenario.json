@@ -1,0 +1,634 @@
+{
+  "name": "three-d-secure",
+  "title": "3-D Secure on first payment and on an off-session renewal",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [
+    "incomplete subscription expires 23 hours after creation (incomplete_expired, invoice void)"
+  ],
+  "started_at": "2026-11-21T18:38:58.049Z",
+  "duration_ms": 106994,
+  "steps": [
+    {
+      "name": "first payment needs a challenge; member switches card",
+      "ms": 5260
+    },
+    {
+      "name": "first payment challenge abandoned",
+      "ms": 2809
+    },
+    {
+      "name": "trial with a card that always needs authentication",
+      "ms": 2286
+    },
+    {
+      "name": "abandoned first payment expires after 23 hours",
+      "ms": 301
+    },
+    {
+      "name": "off-session renewal needs authentication",
+      "ms": 96070
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "key": "confirm with 4000 0027 6000 3184",
+      "value": {
+        "status": "requires_action",
+        "next_action": "redirect_to_url",
+        "redirect_host": "hooks.stripe.com"
+      }
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "key": "subscription while the challenge is pending",
+      "value": "incomplete",
+      "expected": "incomplete",
+      "ok": true
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "key": "second confirm",
+      "value": "succeeded",
+      "expected": "succeeded",
+      "ok": true
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "key": "after switching card: customer.subscription.updated with status active received",
+      "value": true
+    },
+    {
+      "step": "first payment challenge abandoned",
+      "key": "confirm",
+      "value": {
+        "status": "requires_action",
+        "next_action": "redirect_to_url",
+        "redirect_host": "hooks.stripe.com"
+      }
+    },
+    {
+      "step": "abandoned first payment expires after 23 hours",
+      "key": "abandoned subscription before expiry",
+      "value": {
+        "status": "incomplete",
+        "invoice": "open"
+      }
+    },
+    {
+      "step": "abandoned first payment expires after 23 hours",
+      "key": "SKIPPED (needs a test clock): incomplete subscription expires 23 hours after creation (incomplete_expired, invoice void)",
+      "value": "skipped"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "real time: first renewal invoice drafted",
+      "value": {
+        "seconds_after_trial_end": 47,
+        "status": "draft",
+        "total": 799
+      }
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "after early finalization",
+      "value": {
+        "status": "open",
+        "attempt_count": 0,
+        "next_payment_attempt_in_minutes": 60
+      }
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "first renewal attempt failed",
+      "value": {
+        "status": 402,
+        "type": "StripeCardError",
+        "code": "invoice_payment_intent_requires_action"
+      }
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "renewal invoice that needs action",
+      "value": {
+        "status": "open",
+        "attempt_count": 0,
+        "next_payment_attempt": null
+      }
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "subscription while authentication is required",
+      "value": {
+        "status": "past_due",
+        "cancel_at_period_end": false,
+        "cancel_at": null,
+        "canceled_at": null,
+        "ended_at": null,
+        "trial_end": 1795286387,
+        "current_period_end": 1797878387,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "its PaymentIntent",
+      "value": {
+        "status": "requires_action",
+        "last_error": null
+      }
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "off-session recovery: customer.subscription.updated with status active received",
+      "value": true
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "key": "subscription after the on-session payment",
+      "value": "active",
+      "expected": "active",
+      "ok": true
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 21,
+    "secret_key": 17,
+    "publishable_key": 4,
+    "by_method": {
+      "GET": 8,
+      "POST": 13
+    },
+    "by_status": {
+      "200": 20,
+      "402": 1
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 16155
+  },
+  "events": {
+    "deliveries": 61,
+    "distinct": 61,
+    "types": {
+      "customer.created": 3,
+      "payment_intent.created": 3,
+      "invoice.finalized": 4,
+      "invoice.created": 4,
+      "customer.updated": 8,
+      "customer.subscription.created": 3,
+      "payment_intent.requires_action": 3,
+      "invoice.payment_failed": 3,
+      "invoice.payment_action_required": 3,
+      "invoice.updated": 6,
+      "invoice_payment.paid": 2,
+      "charge.succeeded": 2,
+      "invoice.paid": 3,
+      "payment_method.attached": 2,
+      "customer.subscription.updated": 4,
+      "payment_intent.succeeded": 2,
+      "invoice.payment_succeeded": 3,
+      "setup_intent.created": 1,
+      "setup_intent.requires_action": 1,
+      "payment_intent.payment_failed": 1
+    },
+    "inversions_vs_created": [
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001Q",
+          "type": "payment_intent.succeeded",
+          "created": 1795286342
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001R",
+          "type": "customer.subscription.updated",
+          "created": 1795286343
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001S",
+          "type": "invoice.updated",
+          "created": 1795286342
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001R",
+          "type": "customer.subscription.updated",
+          "created": 1795286343
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001T",
+          "type": "invoice.payment_succeeded",
+          "created": 1795286342
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001R",
+          "type": "customer.subscription.updated",
+          "created": 1795286343
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001Q",
+          "type": "payment_intent.succeeded",
+          "created": 1795286342
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001U",
+          "type": "customer.updated",
+          "created": 1795286343
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001S",
+          "type": "invoice.updated",
+          "created": 1795286342
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001U",
+          "type": "customer.updated",
+          "created": 1795286343
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001T",
+          "type": "invoice.payment_succeeded",
+          "created": 1795286342
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001U",
+          "type": "customer.updated",
+          "created": 1795286343
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001V",
+          "type": "customer.updated",
+          "created": 1795286344
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001W",
+          "type": "invoice.created",
+          "created": 1795286345
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001V",
+          "type": "customer.updated",
+          "created": 1795286344
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001X",
+          "type": "invoice.finalized",
+          "created": 1795286345
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001Y",
+          "type": "payment_intent.requires_action",
+          "created": 1795286345
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001Z",
+          "type": "invoice.updated",
+          "created": 1795286346
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001Y",
+          "type": "payment_intent.requires_action",
+          "created": 1795286345
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001a",
+          "type": "customer.updated",
+          "created": 1795286346
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001b",
+          "type": "invoice.paid",
+          "created": 1795286443
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001c",
+          "type": "customer.subscription.updated",
+          "created": 1795286444
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001d",
+          "type": "invoice.payment_succeeded",
+          "created": 1795286443
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001c",
+          "type": "customer.subscription.updated",
+          "created": 1795286444
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001e",
+          "type": "invoice.updated",
+          "created": 1795286443
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001c",
+          "type": "customer.subscription.updated",
+          "created": 1795286444
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001b",
+          "type": "invoice.paid",
+          "created": 1795286443
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001f",
+          "type": "customer.updated",
+          "created": 1795286444
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001d",
+          "type": "invoice.payment_succeeded",
+          "created": 1795286443
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001f",
+          "type": "customer.updated",
+          "created": 1795286444
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000001e",
+          "type": "invoice.updated",
+          "created": 1795286443
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000001f",
+          "type": "customer.updated",
+          "created": 1795286444
+        }
+      }
+    ]
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 265,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000l"
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 345,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-c4f319e8-325e-4a9c-a0bd-7e6088364525",
+      "replayed": false,
+      "request_id": "req_WFX0000000000m"
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1127,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-874a958a-6086-4d08-8435-cf1a88701378",
+      "replayed": false,
+      "request_id": "req_WFX0000000000n"
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000004/confirm",
+      "status": 200,
+      "ms": 923,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000o"
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000004?expand[0]=latest_invoice.confirmation_secret",
+      "status": 200,
+      "ms": 293,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000p"
+    },
+    {
+      "step": "first payment needs a challenge; member switches card",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000004/confirm",
+      "status": 200,
+      "ms": 2082,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000q"
+    },
+    {
+      "step": "first payment challenge abandoned",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 352,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-0669ccd7-d967-45d6-93a4-31655731b9f5",
+      "replayed": false,
+      "request_id": "req_WFX0000000000r"
+    },
+    {
+      "step": "first payment challenge abandoned",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1078,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-a05b1956-9507-46f9-9c6e-7505c7fc5998",
+      "replayed": false,
+      "request_id": "req_WFX0000000000s"
+    },
+    {
+      "step": "first payment challenge abandoned",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000005/confirm",
+      "status": 200,
+      "ms": 1377,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000t"
+    },
+    {
+      "step": "trial with a card that always needs authentication",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 352,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-a2f6d7fa-e388-4007-a868-1cd13d6a8552",
+      "replayed": false,
+      "request_id": "req_WFX0000000000u"
+    },
+    {
+      "step": "trial with a card that always needs authentication",
+      "method": "POST",
+      "path": "/v1/payment_methods/pm_card_WFX0000000000000000002/attach",
+      "status": 200,
+      "ms": 587,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-618ba73f-330f-4a2d-8f38-325013ec733f",
+      "replayed": false,
+      "request_id": "req_WFX0000000000v"
+    },
+    {
+      "step": "trial with a card that always needs authentication",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1345,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-7dbb29e4-e280-45fa-9c03-06a198e76515",
+      "replayed": false,
+      "request_id": "req_WFX0000000000w"
+    },
+    {
+      "step": "abandoned first payment expires after 23 hours",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000005?expand[0]=latest_invoice",
+      "status": 200,
+      "ms": 301,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000x"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000007/finalize",
+      "status": 200,
+      "ms": 986,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-6dd49c94-b6d0-44a4-a99f-b60248ac1239",
+      "replayed": false,
+      "request_id": "req_WFX0000000000y"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000007/pay",
+      "status": 402,
+      "ms": 1372,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-56315e98-f7a0-4bcb-8cf9-9f1aee1b4e87",
+      "replayed": false,
+      "request_id": "req_WFX0000000000z"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX000000000000000000007",
+      "status": 200,
+      "ms": 305,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000010"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000006",
+      "status": 200,
+      "ms": 274,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000011"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX000000000000000000007?expand[0]=confirmation_secret",
+      "status": 200,
+      "ms": 301,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000012"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "GET",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000006",
+      "status": 200,
+      "ms": 301,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000013"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000006/confirm",
+      "status": 200,
+      "ms": 1916,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000014"
+    },
+    {
+      "step": "off-session renewal needs authentication",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000006",
+      "status": 200,
+      "ms": 273,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000015"
+    }
+  ]
+}

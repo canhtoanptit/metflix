@@ -4,6 +4,7 @@
  */
 import type {
   Episode,
+  ImageSet,
   NextEpisode,
   PlaybackSession,
   PlaybackState,
@@ -114,10 +115,17 @@ export interface PlayerProps {
   /** Feeds the episodes panel; omit for movies (the Episodes button is hidden). */
   episodes?: EpisodesSource | null;
   /**
-   * End screen for the last episode or a movie (e.g. "More like this"): rendered beside the
-   * shrunken picture from the credits marker, and after the end.
+   * End screen for the last episode or a movie (e.g. "More like this"): rendered in the end
+   * screen's slot (the right-hand column, or below the picture in portrait) from the credits
+   * marker, and after the end. The slot scrolls; see README "End screen".
    */
   renderEndScreen?: (context: EndScreenContext) => ReactNode;
+  /**
+   * Still shown in the shrunken picture's frame once playback has ended (the title's backdrop
+   * or the episode's still), cross-fading over the last frame. During the credits the video
+   * keeps playing there. Without it the last frame stays.
+   */
+  endScreenBackdrop?: ImageSet | null;
   /**
    * Host overlay that blocks playback (e.g. "Playback stopped: this account is playing on too
    * many screens"). While set, playback pauses, controls and shortcuts are disabled and focus

@@ -3,11 +3,25 @@
  * advisory, Skip Intro / Recap, the next-episode card, the end screen, the paused-state
  * overlay, and the autoplay / error / host-blocking layers.
  */
-import { imageUrl, pickImageWidth } from "@webflix/contracts";
-import { type ReactNode, useEffect, useId, useLayoutEffect, useRef } from "react";
+import {
+  type ImageFormat,
+  type ImageSet,
+  imageSrcSet,
+  imageUrl,
+  pickImageWidth,
+} from "@webflix/contracts";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { CueNode } from "../core/cue-text.ts";
-import { formatEpisodeCode } from "../core/format.ts";
-import { isBuffering, type RenderedCue, selectMomentsView } from "../core/state.ts";
+import { formatBitrate, formatEpisodeCode, formatPlaybackTime } from "../core/format.ts";
+import {
+  bufferedEndAt,
+  isBuffering,
+  pausedOverlayVisible,
+  type RenderedCue,
+  selectMomentsView,
+  selectOffers,
+} from "../core/state.ts";
+import { qualityBadge } from "../core/tracks.ts";
 import type { EndScreenContext } from "../types.ts";
 import { shallowEqual, usePlayer, usePlayerState } from "./context.ts";
 import { Icon } from "./icons.tsx";
@@ -154,12 +168,91 @@ export function FeedbackLayer() {
   }
 }
 
+/** Announcements leave the live region after this, so none is found later by browsing. */
+const ANNOUNCEMENT_TTL_MS = 7000;
+
 export function LiveRegion() {
-  const announcement = usePlayerState((s) => s.announcement);
+  const { announcement, takeover } = usePlayerState(
+    (s) => ({
+      announcement: s.announcement,
+      // Layers that replace the picture: what was said before them no longer applies.
+      takeover: s.blocked
+        ? "blocked"
+        : s.phase === "error"
+          ? "error"
+          : (selectMomentsView(s)?.endScreen ?? null),
+    }),
+    shallowEqual,
+  );
+  // Announcements up to this nonce are stale (expired, or said before the takeover).
+  const [staleUpTo, setStaleUpTo] = useState(0);
+  const [lastTakeover, setLastTakeover] = useState(takeover);
+  if (takeover !== lastTakeover) {
+    setLastTakeover(takeover);
+    if (takeover && announcement) setStaleUpTo(announcement.nonce);
+  }
+  useEffect(() => {
+    if (!announcement) return;
+    const timer = setTimeout(() => setStaleUpTo(announcement.nonce), ANNOUNCEMENT_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [announcement]);
+  const current = announcement && announcement.nonce > staleUpTo ? announcement : null;
   return (
     <div className="wfp-sr-only" aria-live="polite" aria-atomic="true">
-      {announcement ? <span key={announcement.nonce}>{announcement.text}</span> : null}
+      {current ? <span key={current.nonce}>{current.text}</span> : null}
     </div>
+  );
+}
+
+/**
+ * Diagnostics (Shift+D): the rendition actually playing, which the quality menu deliberately
+ * doesn't show, plus buffer and frame health. Sampled once a second while open.
+ */
+export function StatsOverlay() {
+  const { controller, session, rootRef } = usePlayer();
+  const visible = usePlayerState((s) => s.statsVisible);
+  const [, setSample] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setInterval(() => setSample((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [visible]);
+  if (!visible) return null;
+  const s = controller.state;
+  const media = controller.mediaElement;
+  const level = s.qualityLevels.find((candidate) => candidate.id === s.activeQualityId);
+  const frames = media?.getVideoPlaybackQuality?.();
+  const root = rootRef.current;
+  const ratio = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+  const rows: [string, string][] = [
+    ["Engine", s.engine ?? "—"],
+    [
+      "Rendition",
+      level
+        ? `${level.width}×${level.height} · ${qualityBadge(level)} · ${formatBitrate(level.bitrate)}`
+        : media?.videoWidth
+          ? `${media.videoWidth}×${media.videoHeight}`
+          : "—",
+    ],
+    ["Quality", s.qualityMode === "auto" ? "Auto" : "Fixed"],
+    ["Plan cap", `${session.maxVideoHeight} lines`],
+    [
+      "Buffer",
+      `${Math.max(0, bufferedEndAt(s.buffered, s.currentTime) - s.currentTime).toFixed(1)} s`,
+    ],
+    ["Frames", frames ? `${frames.droppedVideoFrames} dropped of ${frames.totalVideoFrames}` : "—"],
+    ["Position", `${formatPlaybackTime(s.currentTime)} / ${formatPlaybackTime(s.duration)}`],
+    ["Viewport", root ? `${root.clientWidth}×${root.clientHeight} @${ratio}x` : "—"],
+  ];
+  return (
+    <dl className="wfp-stats" aria-label="Playback stats">
+      {rows.map(([name, value]) => (
+        <div key={name} className="wfp-stats__row">
+          <dt>{name}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -184,15 +277,24 @@ export function Advisory() {
 
 export function SkipButton() {
   const { controller, labels, focusRoot } = usePlayer();
-  const skip = usePlayerState((s) => {
-    const view = selectMomentsView(s);
-    return view?.skip && !s.blocked ? `${view.skip.kind}:${view.skip.startSec}` : null;
-  });
+  // `skip`: the offer on screen (overlay precedence may hide it); `inWindow`: the skip window
+  // the playhead is in, shown or not.
+  const { skip, inWindow } = usePlayerState((s) => {
+    const key = (offer: { kind: string; startSec: number } | null | undefined) =>
+      offer ? `${offer.kind}:${offer.startSec}` : null;
+    return { skip: key(selectOffers(s).skip), inWindow: key(selectMomentsView(s)?.skip) };
+  }, shallowEqual);
   const kind = skip?.split(":")[0] as "intro" | "recap" | undefined;
   const label = kind === "recap" ? labels.skipRecap : labels.skipIntro;
+  // Said when the offer first shows; hidden and shown again inside the same window, it stays
+  // quiet. Leaving the window (or seeking back into it later) starts over.
+  const announced = useRef<string | null>(null);
   useEffect(() => {
-    if (skip) controller.announce(labels.skipAvailable(label));
-  }, [skip, controller, labels, label]);
+    if (inWindow === null) announced.current = null;
+    if (!skip || announced.current === skip) return;
+    announced.current = skip;
+    controller.announce(labels.skipAvailable(label));
+  }, [skip, inWindow, controller, labels, label]);
   if (!skip) return null;
   return (
     <button
@@ -231,8 +333,7 @@ function CountdownRing({ progress }: { progress: number }) {
 export function NextEpisodeCard() {
   const { controller, labels, session, focusRoot, layout } = usePlayer();
   const view = usePlayerState((s) => {
-    const moments = selectMomentsView(s);
-    const nextUp = s.blocked ? null : (moments?.nextUp ?? null);
+    const nextUp = selectOffers(s).nextUp;
     return {
       mode: nextUp?.mode ?? null,
       remainingSec: nextUp?.mode === "countdown" ? Math.ceil(nextUp.remainingMs / 1000) : null,
@@ -326,12 +427,47 @@ export function NextEpisodeCard() {
   );
 }
 
+/** The format every browser decodes: the `<img>` fallback under the `<source>`s. */
+function fallbackFormat(image: ImageSet): ImageFormat {
+  return image.formats.includes("webp") ? "webp" : (image.formats[0] ?? "webp");
+}
+
+/** The host's still in the shrunken picture's frame, faded in once playback has ended. */
+function EndScreenStill({ image, visible }: { image: ImageSet; visible: boolean }) {
+  const fallback = fallbackFormat(image);
+  const sizes = "(max-aspect-ratio: 1/1) 100vw, 32vw";
+  return (
+    <picture className="wfp-endscreen__still" data-visible={visible ? "" : undefined}>
+      {image.formats
+        .filter((format) => format !== fallback)
+        .map((format) => (
+          <source
+            key={format}
+            type={`image/${format}`}
+            srcSet={imageSrcSet(image, format)}
+            sizes={sizes}
+          />
+        ))}
+      <img
+        src={imageUrl(image, pickImageWidth(image, 640, 2), fallback)}
+        srcSet={imageSrcSet(image, fallback)}
+        sizes={sizes}
+        alt=""
+        decoding="async"
+        style={{ backgroundColor: image.dominantColor }}
+      />
+    </picture>
+  );
+}
+
 export function EndScreen({
   phase,
   render,
+  backdrop,
 }: {
   phase: "credits" | "ended";
   render: ((context: EndScreenContext) => ReactNode) | undefined;
+  backdrop: ImageSet | null;
 }) {
   const { controller, labels, session, onBack, hasBack, focusRoot } = usePlayer();
   const context: EndScreenContext = {
@@ -344,39 +480,49 @@ export function EndScreen({
     back: onBack,
   };
   return (
-    <section className="wfp-endscreen" aria-label={session.display.titleName}>
-      <div className="wfp-endscreen__info">
-        <h2 className="wfp-endscreen__title">{session.display.titleName}</h2>
-        {session.display.episode ? (
-          <p className="wfp-endscreen__episode">
-            {formatEpisodeCode(
-              session.display.episode.seasonNumber,
-              session.display.episode.number,
-            )}{" "}
-            {session.display.episode.name}
-          </p>
-        ) : null}
-        <div className="wfp-endscreen__actions">
-          {phase === "ended" ? (
-            <button
-              type="button"
-              className="wfp-pill wfp-pill--primary"
-              onClick={() => controller.replay()}
-            >
-              <Icon name="replay" />
-              {labels.replay}
-            </button>
-          ) : (
-            <button type="button" className="wfp-pill" onClick={context.watchCredits}>
-              {labels.watchCredits}
-            </button>
-          )}
-          {hasBack ? (
-            <button type="button" className="wfp-pill" onClick={onBack}>
-              <Icon name="back" />
-              {labels.back}
-            </button>
+    <section
+      className="wfp-endscreen"
+      data-slot={render ? "" : undefined}
+      aria-label={session.display.titleName}
+    >
+      <div className="wfp-endscreen__lead">
+        {/* The shrunken video lines up with this box; the still covers it after the end. */}
+        <div className="wfp-endscreen__frame" aria-hidden="true">
+          {backdrop ? <EndScreenStill image={backdrop} visible={phase === "ended"} /> : null}
+        </div>
+        <div className="wfp-endscreen__info">
+          <h2 className="wfp-endscreen__title">{session.display.titleName}</h2>
+          {session.display.episode ? (
+            <p className="wfp-endscreen__episode">
+              {formatEpisodeCode(
+                session.display.episode.seasonNumber,
+                session.display.episode.number,
+              )}{" "}
+              {session.display.episode.name}
+            </p>
           ) : null}
+          <div className="wfp-endscreen__actions">
+            {phase === "ended" ? (
+              <button
+                type="button"
+                className="wfp-pill wfp-pill--primary"
+                onClick={() => controller.replay()}
+              >
+                <Icon name="replay" />
+                {labels.replay}
+              </button>
+            ) : (
+              <button type="button" className="wfp-pill" onClick={context.watchCredits}>
+                {labels.watchCredits}
+              </button>
+            )}
+            {hasBack ? (
+              <button type="button" className="wfp-pill" onClick={onBack}>
+                <Icon name="back" />
+                {labels.back}
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
       {render ? <div className="wfp-endscreen__slot">{render(context)}</div> : null}
@@ -386,16 +532,7 @@ export function EndScreen({
 
 export function PausedOverlay({ synopsis }: { synopsis: string | null }) {
   const { session, labels } = usePlayer();
-  const visible = usePlayerState(
-    (s) =>
-      s.pausedIdle &&
-      s.phase === "paused" &&
-      !s.blocked &&
-      !s.autoplayBlocked &&
-      s.menu === null &&
-      s.panel === null &&
-      (selectMomentsView(s)?.endScreen ?? null) === null,
-  );
+  const visible = usePlayerState(pausedOverlayVisible);
   const { titleName, episode, logo } = session.display;
   return (
     <div className="wfp-paused" data-visible={visible ? "" : undefined} aria-hidden="true">

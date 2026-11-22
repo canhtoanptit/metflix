@@ -38,13 +38,26 @@ config:
   schedulerIntervalSec: 300
   # Prefix of every key in Valkey (lets environments share one Valkey).
   valkeyKeyPrefix: "webflix:"
+  # PostgreSQL budgets per role, in milliseconds (docs/BACKEND.md §6). Each process uses its
+  # role's: the API `request` (statement 5000 on the server / query 7000 on the client), the
+  # worker `background` (60000 / 65000), migrate and seed `maintenance` (600000 / 605000). The
+  # client-side `queryMs` fires only when the server cannot answer (a partition, a lost host):
+  # it must exceed `statementMs`, or both be 0 (none). Empty keeps the role's defaults.
+  databaseTimeouts:
+    request: {}
+    background: {}
+    maintenance: {}
+  # TCP keepalive on database connections: first probe after this many ms idle (0: off).
+  # Empty: 10000. Interval and count are the pods' (tcpKeepalive below).
+  databaseKeepAliveMs: null
   # Extra environment variables for the API, worker and jobs (name: value).
   extraEnv: {}
 
 # Secrets the application needs besides the data stores' credentials.
 secrets:
   # Name of an existing Secret providing WEBFLIX_MEDIA_TOKEN_KEYS ("id:secret[,id:secret]",
-  # secret >= 32 characters; the first signs, all verify: rotate by prepending a new key).
+  # secret >= 32 characters; the first signs, all verify: rotate in two phases, see
+  # docs/KUBERNETES.md §5).
   # Empty: the chart generates one key on first install and keeps it across upgrades.
   # Rotate in two phases (docs/KUBERNETES.md §5): add the new key as verify-only, roll; then
   # promote it to first, roll; retire the old one after the token lifetime.
@@ -383,6 +396,14 @@ serviceAccount:
   annotations: {}
 
 # Applied to every first-party pod.
+# TCP keepalive probes in the API, worker and Job pods (namespaced "safe" sysctls, allowed by
+# Pod Security `restricted` since Kubernetes 1.29; this chart needs 1.31). With the database
+# clients' 10 s keepalive, a dead idle connection is noticed after 10 + 3 × 10 = 40 s instead of
+# Linux's 10 + 9 × 75 s ≈ 11 min. Set to null where a policy engine forbids pod sysctls.
+tcpKeepalive:
+  intervalSec: 10
+  probes: 3
+
 podSecurityContext:
   runAsNonRoot: true
   seccompProfile:

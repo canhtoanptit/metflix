@@ -435,29 +435,27 @@ export const libraryChecks: CheckDefinition[] = [
   {
     id: "library.notifications",
     area: "library",
-    title: "Notifications list new arrivals with an unread count; marking read is per profile",
+    title:
+      "A new profile opens with no notification backlog: at most three earlier arrivals, already read; read state stays consistent",
     async run(ctx: CheckContext) {
       const viewer = await ctx.env.isolatedViewer("notify");
       const api = viewer.agent.api;
       const list = await succeeds(() => api.listNotifications(), "GET /notifications");
-      if (list.items.length === 0)
-        ctx.skip("no notifications for a new profile (no arrivals in the last 30 days)");
-      equal(
-        list.unreadCount,
-        list.items.filter((item) => item.readAt === null).length,
-        "unreadCount",
-      );
-      const unread = list.items.find((item) => item.readAt === null);
-      check(unread, "a new profile has no unread notification");
-      await succeeds(
-        () => api.markNotificationsRead({ body: { ids: [unread.id] } }),
-        "POST /notifications/read {ids}",
-      );
-      const one = await succeeds(() => api.listNotifications(), "GET /notifications");
-      equal(one.unreadCount, list.unreadCount - 1, "unreadCount after reading one");
+      equal(list.unreadCount, 0, "unreadCount of a new profile");
+      check(list.items.length <= 3, "a new profile opens with a backlog", {
+        expected: "at most 3 earlier arrivals",
+        observed: `${list.items.length} items`,
+      });
       check(
-        one.items.find((item) => item.id === unread.id)?.readAt,
-        "the read notification has no readAt",
+        list.items.every((item) => item.readAt !== null),
+        "an arrival from before the profile existed is unread",
+        { observed: JSON.stringify(list.items.map((item) => item.readAt)) },
+      );
+      const sorted = [...list.items].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      equal(
+        list.items.map((item) => item.id).join(","),
+        sorted.map((item) => item.id).join(","),
+        "notifications newest first",
       );
       await succeeds(
         () => api.markNotificationsRead({ body: {} }),
@@ -465,6 +463,7 @@ export const libraryChecks: CheckDefinition[] = [
       );
       const all = await succeeds(() => api.listNotifications(), "GET /notifications");
       equal(all.unreadCount, 0, "unreadCount after reading all");
+      equal(all.items.length, list.items.length, "items after reading all");
       problem(
         await viewer.agent.fetch(`${API}/notifications/read`, {
           method: "POST",
@@ -474,15 +473,7 @@ export const libraryChecks: CheckDefinition[] = [
         "validation_failed",
         "an empty ids list",
       );
-      const other = await ctx.env.isolatedViewer("notify-other");
-      const theirs = await succeeds(
-        () => other.agent.api.listNotifications(),
-        "another profile's notifications",
-      );
-      check(
-        theirs.unreadCount > 0,
-        "reading on one profile marked another profile's notifications read",
-      );
+      ctx.note(`${list.items.length} earlier arrivals shown, none unread`);
     },
   },
 ];

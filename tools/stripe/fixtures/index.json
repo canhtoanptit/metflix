@@ -1,0 +1,160 @@
+{
+  "generated_by": "make stripe-proof (tools/stripe/proof/run.ts)",
+  "runId": "rmwqr4nao",
+  "startedAt": "2026-11-21T18:38:51.888Z",
+  "finishedAt": "2026-11-21T18:43:41.391Z",
+  "accountId": "acct_WFX0000000000001",
+  "apiVersion": "2026-11-18.endive",
+  "eventApiVersion": "2026-11-18.endive",
+  "stripeNode": "23.2.0",
+  "stripeCli": "1.55.14",
+  "concurrency": 4,
+  "timeMode": "real-time",
+  "timeModeReason": "this key may not create test clocks (403: a claimable sandbox key has limited permissions; a claimed sandbox's full test key can). Clock-only checks are recorded as skipped",
+  "scenarios": [
+    {
+      "name": "catalogue",
+      "title": "Catalogue sync by lookup key, two currencies",
+      "ok": true,
+      "skipped": 0,
+      "duration_ms": 3439,
+      "api_calls": 14,
+      "deliveries": 5,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "trial-converts",
+      "title": "Trial with the card collected up front converts to paid",
+      "ok": true,
+      "skipped": 0,
+      "duration_ms": 67549,
+      "api_calls": 9,
+      "deliveries": 22,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "renewal-recovers",
+      "title": "Renewal declines, Stripe retries, card replaced, invoice paid",
+      "ok": true,
+      "skipped": 1,
+      "duration_ms": 84250,
+      "api_calls": 15,
+      "deliveries": 37,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "retries-exhausted",
+      "title": "Renewal left unpaid until Stripe stops retrying",
+      "ok": true,
+      "skipped": 1,
+      "duration_ms": 72370,
+      "api_calls": 8,
+      "deliveries": 23,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "three-d-secure",
+      "title": "3-D Secure on first payment and on an off-session renewal",
+      "ok": true,
+      "skipped": 1,
+      "duration_ms": 106994,
+      "api_calls": 21,
+      "deliveries": 61,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "plan-change",
+      "title": "Upgrade and downgrade against their proration previews",
+      "ok": true,
+      "skipped": 1,
+      "duration_ms": 10720,
+      "api_calls": 11,
+      "deliveries": 33,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "cancel-refund",
+      "title": "Cancel at period end, resume, cancel now, refunds, cancelled trial",
+      "ok": true,
+      "skipped": 0,
+      "duration_ms": 112725,
+      "api_calls": 25,
+      "deliveries": 59,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "promotion-codes",
+      "title": "Promotion code redemption limit and expiry",
+      "ok": true,
+      "skipped": 1,
+      "duration_ms": 67640,
+      "api_calls": 13,
+      "deliveries": 22,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "trial-once",
+      "title": "One trial per customer and per card fingerprint",
+      "ok": true,
+      "skipped": 0,
+      "duration_ms": 12231,
+      "api_calls": 16,
+      "deliveries": 46,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "idempotency",
+      "title": "Idempotency keys: replay, conflict, failure, concurrency",
+      "ok": true,
+      "skipped": 0,
+      "duration_ms": 3383,
+      "api_calls": 9,
+      "deliveries": 6,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    },
+    {
+      "name": "delivery-anomalies",
+      "title": "Webhook duplicates, reordering, failure and outage",
+      "ok": true,
+      "skipped": 0,
+      "duration_ms": 88135,
+      "api_calls": 6,
+      "deliveries": 9,
+      "clock_advances": 0,
+      "clock_advance_ms": []
+    }
+  ],
+  "setup_calls": {
+    "total": 1,
+    "secret_key": 1,
+    "publishable_key": 0,
+    "by_method": {
+      "POST": 1
+    },
+    "by_status": {
+      "403": 1
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 384
+  },
+  "deliveries_total": 323,
+  "unattributed": [],
+  "ambiguous": 0,
+  "scrubbed": {
+    "ids": 692,
+    "emails": 20,
+    "fingerprints": 5
+  }
+}

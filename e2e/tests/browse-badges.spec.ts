@@ -88,3 +88,92 @@ test("the quality badge is the lower of the title's best quality and the plan's 
   }
   expect(packaged ?? external, "no title on the home page to check").toBeTruthy();
 });
+
+/**
+ * Card corners, worst case on every card: the browse answer is rewritten so each card is an
+ * Original carrying a badge (each kind in turn), in every row layout, at phone, tablet, desktop
+ * and wide widths. The Originals mark keeps its corner; a ribbon stays on one line in the other
+ * corner (one short word on narrow cards), and never reaches the mark.
+ */
+test.describe("ribbons keep to their corner", () => {
+  test.use({ demo: "Alex" });
+  const BADGES = ["new", "top-10", "leaving-soon", "new-episodes"] as const;
+
+  for (const width of [390, 834, 1440, 1920]) {
+    test(`at ${width}px, in every row layout`, async ({ page }) => {
+      await page.setViewportSize({ width, height: width < 600 ? 844 : 1000 });
+      await page.route(/\/api\/v1\/browse(\?|$)/, async (route) => {
+        const response = await route.fetch();
+        const body = (await response.json()) as {
+          rows: Array<{ items: Array<Record<string, unknown>> }>;
+        };
+        const decorate = (card: Record<string, unknown>, index: number) => ({
+          ...card,
+          isOriginal: true,
+          badge: BADGES[index % BADGES.length],
+        });
+        for (const slider of body.rows) {
+          slider.items = slider.items.map((item, index) =>
+            "title" in item
+              ? { ...item, title: decorate(item.title as Record<string, unknown>, index) }
+              : decorate(item, index),
+          );
+        }
+        await route.fulfill({ response, json: body });
+      });
+      await page.goto("/browse");
+      await expect(page.locator("section.wf-slider").first()).toBeVisible();
+      const layouts = new Set<string>();
+      for (const layout of ["continue", "ranked", "standard", "tall"]) {
+        const slider = page.locator(`section.wf-slider[data-layout='${layout}']`).first();
+        if ((await slider.count()) === 0) continue;
+        await slider.scrollIntoViewIfNeeded();
+        await expect(slider.locator("li:not([inert]) .wf-mark").first()).toBeVisible();
+        layouts.add(layout);
+        const problems = await slider.evaluate((section) => {
+          const found: string[] = [];
+          for (const mark of section.querySelectorAll("li:not([inert]) .wf-mark")) {
+            const card = mark.closest("a");
+            if (!card) continue;
+            const m = mark.getBoundingClientRect();
+            const frame = mark.parentElement?.getBoundingClientRect();
+            for (const badge of card.querySelectorAll<HTMLElement>(
+              "[data-ribbon], [role=img][aria-label='Top 10']",
+            )) {
+              const b = badge.getBoundingClientRect();
+              const name = badge.textContent?.trim() ?? "";
+              if (
+                !(b.right <= m.left || b.left >= m.right || b.bottom <= m.top || b.top >= m.bottom)
+              )
+                found.push(`${name} overlaps the mark`);
+              if (frame && b.left - frame.left < frame.width / 3)
+                found.push(`${name} reaches across the card`);
+              const size = Number.parseFloat(getComputedStyle(badge).fontSize);
+              if (badge.hasAttribute("data-ribbon") && b.height > size * 2.2)
+                found.push(`${name} wraps`);
+              if (badge.hasAttribute("data-ribbon") && badge.scrollWidth > badge.clientWidth + 1)
+                found.push(`${name} is cut off`);
+            }
+          }
+          return found;
+        });
+        expect(problems, `${layout} row at ${width}px`).toEqual([]);
+        if (width < 600) {
+          // Phones: one short word.
+          const words = await slider
+            .locator("li:not([inert]) [data-ribbon]")
+            .evaluateAll((ribbons) =>
+              ribbons.map((ribbon) =>
+                // biome-ignore lint/performance/useDomNodeTextContent: the rendered word only (a container query hides the other label).
+                (ribbon as HTMLElement).innerText.trim(),
+              ),
+            );
+          for (const word of words) expect(word).toMatch(/^[A-Z]+$/);
+        }
+      }
+      expect([...layouts]).toEqual(expect.arrayContaining(["continue", "ranked", "standard"]));
+      // Later batches of rows may still be on their way: let them through untouched.
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+    });
+  }
+});

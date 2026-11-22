@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/catalog-snapshot/1",
+  "title": "Catalogue snapshot for the recommendation pipeline",
+  "description": "What the catalogue export job writes to the object store (`catalog/v={catalogVersion}/snapshot.json`, then the pointer `catalog/current.json`). Produced today by services/recs/scripts/export-catalog.ts from @webflix/catalog. Only what the pipeline needs: no artwork, no media.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "catalogVersion",
+    "seedVersion",
+    "anchor",
+    "maturityLevels",
+    "genres",
+    "people",
+    "titles"
+  ],
+  "properties": {
+    "format": { "const": "webflix.catalog-snapshot" },
+    "formatVersion": { "const": 1 },
+    "catalogVersion": {
+      "description": "First 16 hex characters of the SHA-256 of the canonical JSON of every other field.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "seedVersion": { "type": "integer" },
+    "anchor": {
+      "description": "The instant the seed's relative times (`addedDaysAgo`) were resolved against, as the seeder does with its clock.",
+      "$ref": "#/$defs/timestamp"
+    },
+    "maturityLevels": {
+      "description": "Maturity levels in ascending order (ALL < 7+ < 13+ < 16+ < 18+).",
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "genres": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "slug", "name", "position"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "slug": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "position": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "people": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "titles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "type",
+          "name",
+          "tagline",
+          "synopsis",
+          "releaseYear",
+          "maturity",
+          "genreIds",
+          "moods",
+          "isOriginal",
+          "addedAt",
+          "popularity",
+          "runtimeSec",
+          "episodes",
+          "credits"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "enum": ["movie", "series"] },
+          "name": { "type": "string", "minLength": 1 },
+          "tagline": { "type": ["string", "null"] },
+          "synopsis": { "type": "string", "minLength": 1 },
+          "releaseYear": { "type": "integer" },
+          "maturity": { "type": "string", "minLength": 1 },
+          "genreIds": {
+            "description": "Most relevant first.",
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "moods": { "type": "array", "items": { "type": "string" } },
+          "isOriginal": { "type": "boolean" },
+          "addedAt": { "$ref": "#/$defs/timestamp" },
+          "popularity": { "type": "number", "minimum": 0, "maximum": 100 },
+          "runtimeSec": {
+            "description": "Movies: running time. Series: null (see episodes).",
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "episodes": {
+            "description": "Series only, in viewing order (`seq` is 1-based across seasons). Empty for movies.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "seasonNumber", "number", "seq", "runtimeSec"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "seasonNumber": { "type": "integer", "minimum": 1 },
+                "number": { "type": "integer", "minimum": 1 },
+                "seq": { "type": "integer", "minimum": 1 },
+                "runtimeSec": { "type": "integer", "minimum": 1 }
+              }
+            }
+          },
+          "credits": {
+            "description": "Billing order within each role is `position` (0-based).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["personId", "role", "position"],
+              "properties": {
+                "personId": { "type": "string", "minLength": 1 },
+                "role": { "enum": ["cast", "director", "creator", "writer"] },
+                "position": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

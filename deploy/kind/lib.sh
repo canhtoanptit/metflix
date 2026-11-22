@@ -85,6 +85,39 @@ require_tool() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is not installed. $2"
 }
 
+# Helm 4.0.1 or later. Releases are applied server-side (--server-side, --force-conflicts) and
+# waited on with --wait=watcher, none of which Helm 3 has (checked on 3.18.6 and 3.19.0);
+# 4.0.0 upgrades fine but renders this chart offline (`helm template`) against Kubernetes 1.20,
+# below its kubeVersion, which 4.0.1 fixed (checked on every 4.0.x).
+HELM_MIN_VERSION=4.0.1
+helm_version() { helm version --template '{{.Version}}' 2>/dev/null | sed -e 's/^v//' -e 's/[+-].*//'; }
+version_at_least() { # <version> <minimum>, dotted numbers
+  local IFS=. i
+  local have=() need=()
+  read -r -a have <<<"$1"
+  read -r -a need <<<"$2"
+  for i in 0 1 2; do
+    case "${have[$i]:-0}" in *[!0-9]* | "") return 1 ;; esac
+    [ "${have[$i]:-0}" -gt "${need[$i]:-0}" ] && return 0
+    [ "${have[$i]:-0}" -lt "${need[$i]:-0}" ] && return 1
+  done
+  return 0
+}
+require_helm() {
+  local version
+  version="$(helm_version)"
+  version_at_least "$version" "$HELM_MIN_VERSION" \
+    || fail "Helm >= $HELM_MIN_VERSION is required, found ${version:-none}: releases are applied server-side (--force-conflicts) and waited on with --wait=watcher, which Helm 3 lacks. Install: https://helm.sh/docs/intro/install/"
+}
+# One line for make doctor.
+helm_doctor() {
+  local version
+  version="$(helm_version)"
+  if [ -z "$version" ]; then echo "helm: not installed (Kubernetes mode needs >= $HELM_MIN_VERSION)"
+  elif version_at_least "$version" "$HELM_MIN_VERSION"; then echo "helm v$version (>= $HELM_MIN_VERSION: ok)"
+  else echo "helm v$version: too old, Kubernetes mode needs >= $HELM_MIN_VERSION"; fi
+}
+
 cluster_exists() { kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; }
 
 # Diagnostics for a failed rollout: what is not ready, and why.
@@ -179,6 +212,7 @@ deployed_revision() { hc -n "$NAMESPACE" status "$RELEASE" -o yaml | awk '/^vers
 # flags; `rollback <revision>`. Both refuse (with the fields and managers) rather than overwrite
 # changes made outside the release, and wait for the rollout and the Jobs.
 release_change() {
+  require_helm
   local action="$1" values manifest conflicts
   shift
   manifest="$(mktemp -t webflix-manifest.XXXXXX)"

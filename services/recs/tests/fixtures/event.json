@@ -1,0 +1,35 @@
+{
+  "eventId": "0199a2b4-6f00-7a1b-8c2d-3e4f5a6b7c8d",
+  "type": "playback.start",
+  "version": 1,
+  "source": "server",
+  "occurredAt": "2026-10-01T05:12:03.120Z",
+  "receivedAt": "2026-10-01T05:12:03.244Z",
+  "deviceId": null,
+  "sessionSeq": null,
+  "app": { "platform": "server", "version": "2.0.0" },
+  "context": {
+    "surface": "player",
+    "rowId": null,
+    "rowRank": null,
+    "rank": null,
+    "experiments": { "recs-learned-vs-rules": "treatment" },
+    "policy": null
+  },
+  "subject": {
+    "account": "Hq3vB0bS9xK1mT2nY7aWcQ",
+    "profile": "pL4sD8fG2hJ6kZ1xC5vB9n",
+    "plan": "standard",
+    "country": "GB",
+    "restricted": false,
+    "consent": { "analytics": true, "personalisation": true }
+  },
+  "payload": {
+    "playbackSessionId": "pb0123456789abcdef",
+    "titleId": "t-sintel",
+    "episodeId": null,
+    "positionSec": 0,
+    "durationSec": 888,
+    "watchedSec": 0
+  }
+}

@@ -151,6 +151,52 @@ describe("PlayerController", () => {
     await flush();
     controller.pause("pointer");
     expect(vi.mocked(host.onProgress).mock.calls.length).toBe(calls);
+    // Throttled, not dropped: the pause is reported once the window ends.
+    vi.advanceTimersByTime(2000);
+    expect(vi.mocked(host.onProgress).mock.calls.length).toBe(calls + 1);
+    expect(host.onProgress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: "pause", state: "paused" }),
+    );
+  });
+
+  it("a pause right after a seek report still reaches the host, with the state of that moment", async () => {
+    // Seen in the gate: the seek report for `?t=40` went out, the member paused 5 ms later, and
+    // the pause was never reported (the server thought the stream played on).
+    await start();
+    media.setTime(40);
+    media.emit("seeking");
+    media.emit("seeked");
+    vi.advanceTimersByTime(1200);
+    expect(host.onProgress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: "seek", state: "playing", positionSec: 40 }),
+    );
+    const calls = vi.mocked(host.onProgress).mock.calls.length;
+    vi.advanceTimersByTime(5);
+    controller.pause("keyboard");
+    media.setTime(40.2);
+    expect(vi.mocked(host.onProgress).mock.calls.length).toBe(calls);
+    vi.advanceTimersByTime(2000);
+    expect(vi.mocked(host.onProgress).mock.calls.length).toBe(calls + 1);
+    expect(host.onProgress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: "pause", state: "paused", positionSec: 40.2 }),
+    );
+  });
+
+  it("a report still waiting for its window is superseded by the session's last word", async () => {
+    await start();
+    controller.pause("pointer");
+    void controller.play("pointer");
+    await flush();
+    controller.pause("pointer");
+    const calls = vi.mocked(host.onProgress).mock.calls.length;
+    controller.load(request("ep2"));
+    expect(host.onProgress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "ep1", reason: "unload" }),
+    );
+    await flush();
+    vi.advanceTimersByTime(2000);
+    // Only the unload: nothing more for ep1, and nothing stale reported for ep2.
+    expect(vi.mocked(host.onProgress).mock.calls.length).toBe(calls + 1);
   });
 
   it("swaps sources in place: final report for the old session, fresh engine, state reset", async () => {

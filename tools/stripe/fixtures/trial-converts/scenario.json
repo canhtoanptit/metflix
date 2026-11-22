@@ -1,0 +1,281 @@
+{
+  "name": "trial-converts",
+  "title": "Trial with the card collected up front converts to paid",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [],
+  "started_at": "2026-11-21T18:38:58.048Z",
+  "duration_ms": 67549,
+  "steps": [
+    {
+      "name": "subscribe with a trial",
+      "ms": 5781
+    },
+    {
+      "name": "Stripe warns that the trial ends soon",
+      "ms": 44003
+    },
+    {
+      "name": "trial ends and converts",
+      "ms": 17134
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "subscribe with a trial",
+      "key": "status at creation",
+      "value": "trialing",
+      "expected": "trialing",
+      "ok": true
+    },
+    {
+      "step": "subscribe with a trial",
+      "key": "pending_setup_intent at creation",
+      "value": "present"
+    },
+    {
+      "step": "subscribe with a trial",
+      "key": "latest_invoice at creation (the zero trial invoice)",
+      "value": {
+        "total": 0,
+        "status": "paid"
+      }
+    },
+    {
+      "step": "subscribe with a trial",
+      "key": "default_payment_method saved on the subscription",
+      "value": true,
+      "expected": true,
+      "ok": true
+    },
+    {
+      "step": "subscribe with a trial",
+      "key": "subscription after card collected",
+      "value": {
+        "status": "trialing",
+        "cancel_at_period_end": false,
+        "cancel_at": null,
+        "canceled_at": null,
+        "ended_at": null,
+        "trial_end": 1795286378,
+        "current_period_end": 1795286378,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    },
+    {
+      "step": "Stripe warns that the trial ends soon",
+      "key": "trial_will_end",
+      "value": {
+        "received": false,
+        "seconds_before_trial_end": null,
+        "mode": "real-time"
+      }
+    },
+    {
+      "step": "trial ends and converts",
+      "key": "real time: first renewal invoice drafted",
+      "value": {
+        "seconds_after_trial_end": 23,
+        "status": "draft",
+        "total": 799
+      }
+    },
+    {
+      "step": "trial ends and converts",
+      "key": "after early finalization",
+      "value": {
+        "status": "open",
+        "attempt_count": 0,
+        "next_payment_attempt_in_minutes": 60
+      }
+    },
+    {
+      "step": "trial ends and converts",
+      "key": "first renewal invoice",
+      "value": {
+        "billing_reason": "subscription_cycle",
+        "amount_paid": 799,
+        "currency": "usd",
+        "status": "paid"
+      }
+    },
+    {
+      "step": "trial ends and converts",
+      "key": "first renewal invoice paid",
+      "value": "paid",
+      "expected": "paid",
+      "ok": true
+    },
+    {
+      "step": "trial ends and converts",
+      "key": "status after conversion",
+      "value": "active",
+      "expected": "active",
+      "ok": true
+    },
+    {
+      "step": "trial ends and converts",
+      "key": "subscription after conversion",
+      "value": {
+        "status": "active",
+        "cancel_at_period_end": false,
+        "cancel_at": null,
+        "canceled_at": null,
+        "ended_at": null,
+        "trial_end": 1795286378,
+        "current_period_end": 1797878378,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 9,
+    "secret_key": 8,
+    "publishable_key": 1,
+    "by_method": {
+      "GET": 4,
+      "POST": 5
+    },
+    "by_status": {
+      "200": 9
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 7146
+  },
+  "events": {
+    "deliveries": 22,
+    "distinct": 22,
+    "types": {
+      "customer.created": 1,
+      "setup_intent.created": 1,
+      "invoice.finalized": 2,
+      "invoice.paid": 2,
+      "customer.updated": 1,
+      "customer.subscription.created": 1,
+      "invoice.created": 2,
+      "invoice.payment_succeeded": 2,
+      "payment_method.attached": 1,
+      "setup_intent.succeeded": 1,
+      "customer.subscription.updated": 2,
+      "payment_intent.created": 1,
+      "invoice.updated": 2,
+      "invoice_payment.paid": 1,
+      "payment_intent.succeeded": 1,
+      "charge.succeeded": 1
+    },
+    "inversions_vs_created": []
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 279,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000F"
+    },
+    {
+      "step": "setup",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 350,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-447eeeb0-a3c8-46a4-81f6-601d35a9f97e",
+      "replayed": false,
+      "request_id": "req_WFX0000000000G"
+    },
+    {
+      "step": "subscribe with a trial",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1142,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-b0424fd0-4f5c-418a-b182-73763d6311c7",
+      "replayed": false,
+      "request_id": "req_WFX0000000000H"
+    },
+    {
+      "step": "subscribe with a trial",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000001/confirm",
+      "status": 200,
+      "ms": 1136,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000I"
+    },
+    {
+      "step": "subscribe with a trial",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000001",
+      "status": 200,
+      "ms": 260,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000J"
+    },
+    {
+      "step": "trial ends and converts",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000001/finalize",
+      "status": 200,
+      "ms": 1242,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-d6e7d432-1838-466a-872d-4cc635430371",
+      "replayed": false,
+      "request_id": "req_WFX0000000000K"
+    },
+    {
+      "step": "trial ends and converts",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000001/pay",
+      "status": 200,
+      "ms": 2176,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-1d90e02a-e93d-4710-a9d1-247dbc49dcf3",
+      "replayed": false,
+      "request_id": "req_WFX0000000000L"
+    },
+    {
+      "step": "trial ends and converts",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX000000000000000000001",
+      "status": 200,
+      "ms": 287,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000M"
+    },
+    {
+      "step": "trial ends and converts",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000001",
+      "status": 200,
+      "ms": 274,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000N"
+    }
+  ]
+}

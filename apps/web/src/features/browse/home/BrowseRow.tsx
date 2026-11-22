@@ -1,12 +1,14 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { BrowseView, Row, RowLink } from "@webflix/contracts";
 import { RowSlider, type RowSliderHoverEvent } from "@webflix/ui";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type PointerEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { RowExploreLink, TitleTileLink } from "../../../app/links.ts";
 import { titleOverlayLinkProps } from "../../../app/overlay/titleOverlay.ts";
 import { queries } from "../../../app/query/queries.ts";
-import { mergeRow, previewId, type RowItem, requestPreview } from "../preview/request.ts";
+import { preparePreview } from "../preview/prepare.ts";
+import { cardOf, mergeRow, previewId, type RowItem, requestPreview } from "../preview/request.ts";
 import { previewStore } from "../preview/store.ts";
+import { useWarmRow } from "./useWarmRow.ts";
 
 const VIEW_PATHS: Record<
   BrowseView,
@@ -57,6 +59,9 @@ export function BrowseRow({
   });
   const merged = useMemo(() => mergeRow(row, more.data?.pages ?? []), [row, more.data]);
   const scope = `row:${row.id}`;
+  // Off-page cards load their artwork once the row is seen (or an arrow is reached for).
+  const warm = useWarmRow(rowDomId(row.id));
+  const loading = warm ? ("eager" as const) : undefined;
 
   const hasMore =
     row.nextCursor === null
@@ -92,6 +97,10 @@ export function BrowseRow({
     [scope],
   );
   const onPageChange = useCallback(() => previewStore.closeScope(scope), [scope]);
+  // The hover-intent timer starts now: fetch what the preview will paint on its first frame.
+  const prepare = (item: RowItem) => (event: PointerEvent<HTMLAnchorElement>) => {
+    if (event.pointerType === "mouse") preparePreview(cardOf(item), event.currentTarget);
+  };
 
   if (merged.items.length === 0) return null;
 
@@ -121,6 +130,8 @@ export function BrowseRow({
               title={item}
               layout={merged.layout}
               priority={priority}
+              loading={loading}
+              onPointerEnter={prepare(item)}
               {...titleOverlayLinkProps(item.id)}
               {...focusProps}
             />
@@ -139,6 +150,8 @@ export function BrowseRow({
               layout="ranked"
               rank={item.rank}
               priority={priority}
+              loading={loading}
+              onPointerEnter={prepare(item)}
               {...titleOverlayLinkProps(item.title.id)}
               {...focusProps}
             />
@@ -158,6 +171,8 @@ export function BrowseRow({
               progress={item.progress}
               episode={item.episode}
               priority={priority}
+              loading={loading}
+              onPointerEnter={prepare(item)}
               {...titleOverlayLinkProps(item.title.id)}
               {...focusProps}
             />

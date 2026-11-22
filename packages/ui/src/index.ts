@@ -23,6 +23,7 @@ export {
   MaturityBadge,
   QualityBadge,
   TITLE_BADGE_LABELS,
+  TITLE_BADGE_SHORT_LABELS,
   TitleBadge,
   Top10Badge,
 } from "./components/Badge.tsx";
@@ -98,7 +99,7 @@ export { Skeleton, SkeletonText } from "./components/Skeleton.tsx";
 export type { SpinnerProps } from "./components/Spinner.tsx";
 export { Spinner } from "./components/Spinner.tsx";
 export type { EmptyStateProps, ErrorStateProps } from "./components/States.tsx";
-export { EmptyState, ErrorState } from "./components/States.tsx";
+export { EmptyState, ErrorReference, ErrorState } from "./components/States.tsx";
 export type { SwitchProps } from "./components/Switch.tsx";
 export { Switch } from "./components/Switch.tsx";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/Tabs.tsx";

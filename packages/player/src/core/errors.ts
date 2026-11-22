@@ -50,12 +50,23 @@ export const MAX_MEDIA_RECOVERIES = 2;
 export const MAX_STALL_NUDGES = 3;
 /** Buffered ahead of a stuck playhead that makes it a stuck pipeline rather than starvation. */
 export const STALLED_WITH_DATA_SEC = 1;
+/** A playhead stuck this close to the end of a title has nothing left worth waiting for. */
+export const END_OF_STREAM_SLACK_SEC = 0.5;
+
+/** Where the media element is when hls.js reports an error. */
+export interface Playhead {
+  positionSec: number;
+  /** `Infinity` (or NaN before metadata) for live streams: they never end. */
+  durationSec: number;
+}
 
 export type RecoveryAction =
   | { action: "ignore" }
   | { action: "retry-network"; delayMs: number }
   /** Seek a hair forward: flushes a decoding pipeline that stopped with data buffered. */
   | { action: "nudge" }
+  /** End the stream: playback stalled just short of the end and would never reach it. */
+  | { action: "finish" }
   | { action: "recover-media"; swapAudioCodec: boolean }
   | { action: "fatal"; code: PlayerErrorCode; httpStatus: number | null };
 
@@ -73,7 +84,11 @@ export function retryDelayMs(attempt: number): number {
   return 1000 * 2 ** Math.max(0, attempt);
 }
 
-export function classifyHlsError(error: HlsErrorLike, budget: RecoveryBudget): RecoveryAction {
+export function classifyHlsError(
+  error: HlsErrorLike,
+  budget: RecoveryBudget,
+  playhead: Playhead | null = null,
+): RecoveryAction {
   const status = httpStatusOf(error);
   // Expired or revoked tokens never heal by retrying: surface immediately so the host can
   // create a new session even if hls.js would have treated the failure as non-fatal.
@@ -81,6 +96,10 @@ export function classifyHlsError(error: HlsErrorLike, budget: RecoveryBudget): R
     return { action: "fatal", code: "forbidden", httpStatus: status };
   }
   if (!error.fatal) {
+    // hls.js ends the MediaSource once the last fragments are appended; after a seek near the end
+    // under load it sometimes never does, and the element waits forever a few frames short of
+    // the end: no `ended`, so no end screen, only a spinner. Nothing is left to wait for.
+    if (error.details === "bufferStalledError" && nearEnd(playhead)) return { action: "finish" };
     // hls.js reports a stuck playhead once per stall, and nudges it only across buffer holes.
     // Stuck inside one buffered range with seconds of data ahead (Firefox and WebKit, right
     // after the start-gap seek) nothing else would ever move it: the member sees a frozen frame.
@@ -112,6 +131,13 @@ export function classifyHlsError(error: HlsErrorLike, budget: RecoveryBudget): R
   }
   if (error.type === "muxError") return { action: "fatal", code: "media", httpStatus: null };
   return { action: "fatal", code: "unknown", httpStatus: status };
+}
+
+function nearEnd(playhead: Playhead | null): boolean {
+  if (!playhead || !Number.isFinite(playhead.durationSec) || playhead.durationSec <= 0) {
+    return false;
+  }
+  return playhead.durationSec - playhead.positionSec <= END_OF_STREAM_SLACK_SEC;
 }
 
 /** `HTMLMediaElement.error.code` → player error code (null: not an error worth surfacing). */

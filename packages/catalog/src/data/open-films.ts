@@ -52,16 +52,16 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     ),
     externalHlsUrl: null,
     medium: "animation",
-    // Opening credits over the snow, the SINTEL title card after the prologue, end credits.
+    // Opening credits over the snow, the SINTEL title shot after the prologue, end credits.
     textSpans: [
-      [0, 25],
-      [88, 101],
-      [743, 888],
+      [0, 22.75],
+      [88, 101.25],
+      [747.25, 888],
     ],
-    intro: [1, 25],
-    creditsStartSec: 743,
+    intro: [3, 23],
+    creditsStartSec: 747,
     chapters: [
-      [101, 262],
+      [103, 262],
       [242, 430],
       [410, 600],
       [580, 743],
@@ -109,13 +109,13 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     medium: "animation",
     // Title card, then end credits (the flying-squirrel epilogue after them is text-free).
     textSpans: [
-      [0, 4],
-      [492, 617],
+      [0, 4.125],
+      [494.5, 617.625],
     ],
     intro: null,
-    creditsStartSec: 492,
+    creditsStartSec: 494,
     chapters: [
-      [4, 170],
+      [6, 170],
       [150, 330],
       [310, 492],
     ],
@@ -178,16 +178,28 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     // "the Mango Open Movie project", the film-fund card, "40 YEARS LATER", the title card,
     // end credits. (On-screen UI in the lab scenes is part of the story, not a title.)
     textSpans: [
-      [0, 8],
-      [17, 23],
-      [41, 45],
-      [62, 68],
-      [587, 710],
+      [0, 7.875],
+      [18.375, 22.375],
+      [42.125, 45.625],
+      [64.5, 69.875],
+      [588, 707.875],
+    ],
+    // Holographic interface words (PLAYBACK, MEMORY OVERWRITE, ERROR, floating captions).
+    screenText: [
+      [53, 57],
+      [295, 299],
+      [312, 315],
+      [322, 324],
+      [353, 356],
+      [370, 372],
+      [376, 383],
+      [404, 409],
+      [538, 539],
     ],
     intro: [1, 23],
-    creditsStartSec: 587,
+    creditsStartSec: 588,
     chapters: [
-      [68, 200],
+      [71, 200],
       [180, 330],
       [310, 460],
       [440, 587],
@@ -211,6 +223,9 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
       [500, 530],
       [530, 560],
       [555, 585],
+      // The memory-overwrite console, ending before the floating dialogue captions at 312 s
+      // (a curated preview, see footage.ts).
+      [281, 311],
     ],
     maturity: "13+",
     standsInFor: ["sci-fi", "action-adventure", "thriller", "crime"],
@@ -238,13 +253,13 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     externalHlsUrl: null,
     medium: "animation",
     textSpans: [
-      [0, 19],
-      [564, 658],
+      [0, 18.625],
+      [565.875, 658],
     ],
     intro: [1, 19],
-    creditsStartSec: 564,
+    creditsStartSec: 565,
     chapters: [
-      [19, 175],
+      [20, 175],
       [155, 350],
       [330, 564],
     ],
@@ -300,14 +315,14 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     // Studio cards on black, the "cosmos laundromat" title over the island, "to be
     // continued..." and the end credits.
     textSpans: [
-      [0, 17],
-      [48, 57],
-      [601, 730],
+      [0, 16.25],
+      [51.375, 58.25],
+      [604.125, 730],
     ],
-    intro: [1, 17],
-    creditsStartSec: 601,
+    intro: [5, 17],
+    creditsStartSec: 604,
     chapters: [
-      [57, 200],
+      [60, 200],
       [180, 340],
       [320, 470],
       [450, 601],
@@ -354,13 +369,13 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     medium: "animation",
     // "Blender Animation Studio presents" after the icicle prologue; the title closes the film.
     textSpans: [
-      [17, 23],
-      [416, 464],
+      [17.5, 22.625],
+      [417.875, 464],
     ],
     intro: null,
-    creditsStartSec: 416,
+    creditsStartSec: 417,
     chapters: [
-      [23, 230],
+      [24, 230],
       [210, 416],
     ],
     highlights: [
@@ -415,11 +430,11 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     medium: "animation",
     // Blender logo and "Blender Studio presents"; the title card opens the end credits.
     textSpans: [
-      [0, 11],
-      [553, 630],
+      [0, 9.25],
+      [554.25, 630],
     ],
     intro: null,
-    creditsStartSec: 553,
+    creditsStartSec: 554,
     chapters: [
       [11, 190],
       [170, 370],
@@ -462,13 +477,14 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     subtitles: [],
     externalHlsUrl: null,
     medium: "animation",
+    // Studio card and title; black from 161 s, then the credits.
     textSpans: [
-      [0, 6],
-      [161, 185],
+      [0, 6.75],
+      [163, 185],
     ],
     intro: null,
-    creditsStartSec: 161,
-    chapters: [[6, 161]],
+    creditsStartSec: 163,
+    chapters: [[8, 161]],
     highlights: [
       [6, 36],
       [36, 66],
@@ -498,12 +514,12 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     externalHlsUrl: null,
     medium: "animation",
     textSpans: [
-      [0, 4],
-      [187, 263],
+      [0, 3.375],
+      [188.75, 263],
     ],
     intro: null,
-    creditsStartSec: 187,
-    chapters: [[4, 187]],
+    creditsStartSec: 188,
+    chapters: [[5, 187]],
     highlights: [
       [8, 38],
       [40, 70],
@@ -535,12 +551,12 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     medium: "animation",
     // Blender logo and title; "The End" opens the making-of credits.
     textSpans: [
-      [0, 6],
-      [182, 238],
+      [0, 7],
+      [182.625, 238],
     ],
     intro: null,
     creditsStartSec: 182,
-    chapters: [[6, 182]],
+    chapters: [[8, 181]],
     highlights: [
       [6, 36],
       [36, 66],
@@ -572,13 +588,15 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     subtitles: [],
     externalHlsUrl: null,
     medium: "animation",
+    // Title; credits over the plain; the last card after a short text-free epilogue.
     textSpans: [
-      [0, 6],
-      [74, 90],
+      [0, 6.625],
+      [76.125, 81.125],
+      [88, 90],
     ],
     intro: null,
-    creditsStartSec: 74,
-    chapters: [[6, 74]],
+    creditsStartSec: 76,
+    chapters: [[8, 75]],
     highlights: [
       [6, 36],
       [36, 66],
@@ -604,13 +622,16 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     subtitles: [],
     externalHlsUrl: null,
     medium: "animation",
+    // Title (with a faded "Caminandes" that lingers to 10 s), credits over the epilogue's
+    // first shot, the licence card at the very end.
     textSpans: [
-      [0, 9],
-      [119, 128],
+      [0, 10],
+      [119.125, 129.25],
+      [142.625, 146],
     ],
     intro: null,
     creditsStartSec: 119,
-    chapters: [[9, 119]],
+    chapters: [[11, 118]],
     highlights: [
       [6, 36],
       [36, 66],
@@ -639,12 +660,12 @@ export const OPEN_FILMS: readonly OpenFilm[] = [
     externalHlsUrl: null,
     medium: "animation",
     textSpans: [
-      [0, 6],
-      [139, 150],
+      [0, 5.625],
+      [139.5, 150],
     ],
     intro: null,
     creditsStartSec: 139,
-    chapters: [[6, 135]],
+    chapters: [[7, 135]],
     highlights: [
       [5, 35],
       [33, 63],

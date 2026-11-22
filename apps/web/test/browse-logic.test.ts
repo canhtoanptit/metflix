@@ -6,18 +6,25 @@ import type {
   Row,
   TitleCard,
 } from "@webflix/contracts";
+import { formatTimeLeft, progressFraction } from "@webflix/contracts";
 import { makeRow, makeTitleCard, resetFixtures } from "@webflix/contracts/fixtures";
 import { beforeEach, describe, expect, it } from "vitest";
 import { qk } from "../src/app/query/keys.ts";
 import {
+  offerClipHandoff,
+  sameClip,
+  takeClipHandoff,
+} from "../src/features/browse/common/clipHandoff.ts";
+import {
   formatLength,
-  formatProgress,
   formatRuntime,
+  formatRuntimeLong,
   qualityLabel,
   rankLabel,
   relativeTime,
   top10RankLabel,
 } from "../src/features/browse/common/format.ts";
+import { clipHasAudio, hoverClip } from "../src/features/browse/common/previews.ts";
 import { watchLink } from "../src/features/browse/common/watch.ts";
 import {
   findCachedCard,
@@ -26,6 +33,13 @@ import {
 } from "../src/features/browse/library/cache.ts";
 import { previewGeometry } from "../src/features/browse/preview/geometry.ts";
 import { cardOf, mergeRow } from "../src/features/browse/preview/request.ts";
+import {
+  capSearchText,
+  cleanPastedText,
+  codePointLength,
+  insertWithinLimit,
+  searchQueryOf,
+} from "../src/features/browse/search/query.ts";
 
 beforeEach(() => resetFixtures());
 
@@ -35,6 +49,11 @@ describe("format", () => {
     expect(formatRuntime(47 * 60)).toBe("47m");
     expect(formatRuntime(112 * 60)).toBe("1h 52m");
     expect(formatRuntime(120 * 60)).toBe("2h");
+    // Short (fast-profile) durations keep their seconds below two minutes: never "1m" for 89 s.
+    expect(formatRuntime(89)).toBe("1m 29s");
+    expect(formatRuntime(60)).toBe("1m");
+    expect(formatRuntimeLong(89)).toBe("1 minute 29 seconds");
+    expect(formatRuntimeLong(112 * 60)).toBe("1 hour 52 minutes");
   });
 
   it("shows runtime for movies and seasons for series", () => {
@@ -43,8 +62,12 @@ describe("format", () => {
     expect(formatLength({ type: "series", runtimeSec: null, seasonCount: 3 })).toBe("3 Seasons");
   });
 
-  it("formats progress as watched of total minutes", () => {
-    expect(formatProgress({ positionSec: 22 * 60, durationSec: 53 * 60 })).toBe("22 of 53m");
+  it("words progress as time left, from the same numbers as the bar (shared formatter)", () => {
+    const progress = { positionSec: 22 * 60, durationSec: 53 * 60 };
+    expect(formatTimeLeft(progress)).toBe("31m left");
+    expect(progressFraction(progress)).toBeCloseTo(22 / 53);
+    // Nearly finished never reads as finished, or as the whole title.
+    expect(formatTimeLeft({ positionSec: 52 * 60 + 20, durationSec: 53 * 60 })).toBe("40s left");
   });
 
   it("turns ranked row titles into a rank label", () => {
@@ -258,5 +281,78 @@ describe("row pages", () => {
     expect(merged.items).toHaveLength(first.items.length + 1);
     expect(merged.nextCursor).toBeNull();
     expect(cardOf(merged.items.at(-1) as TitleCard).id).toBe(extra.id);
+  });
+});
+
+describe("search text", () => {
+  it("caps at the server's limit in code points, between whole characters", () => {
+    expect(codePointLength(capSearchText("a".repeat(250)))).toBe(100);
+    const family = "👨‍👩‍👧‍👦"; // seven code points, one character
+    const capped = capSearchText(`${"x".repeat(96)}${family}`);
+    // The family does not fit in the last four code points: it is left out, not cut apart.
+    expect(capped).toBe("x".repeat(96));
+    expect(capSearchText(`${"x".repeat(97)}🇬🇧`)).toBe(`${"x".repeat(97)}🇬🇧`);
+    expect(capSearchText(`${"x".repeat(99)}e\u0301`)).toBe("x".repeat(99));
+    expect(capSearchText("שלום עולם ".repeat(20))).toBe("שלום עולם ".repeat(10));
+    // Never a lone surrogate half.
+    expect(capSearchText("🐉".repeat(150))).toBe("🐉".repeat(100));
+  });
+
+  it("pastes as one line, shortened to fit around what is already there", () => {
+    expect(cleanPastedText("sintel\n\tdragon\r\n moon")).toBe("sintel dragon moon");
+    const pasted = insertWithinLimit("ab", "x".repeat(200), 1, 1);
+    expect(pasted.value).toBe(`a${"x".repeat(98)}b`);
+    expect(pasted.caret).toBe(99);
+    expect(insertWithinLimit("hello", "y", 0, 5)).toEqual({ value: "y", caret: 1 });
+  });
+
+  it("reads a query from a link as it will be searched", () => {
+    expect(searchQueryOf("  moon  ")).toBe("moon");
+    expect(searchQueryOf("moon ".repeat(500))).toBe("moon ".repeat(20).trim());
+    expect(searchQueryOf(undefined)).toBe("");
+  });
+});
+
+describe("preview clips", () => {
+  const clip = { url: "/cdn/previews/a.mp4", durationSec: 16, width: 960, height: 540 };
+
+  it("plays footage in cards; motion previews keep the still there", () => {
+    expect(hoverClip(clip)).toBe(clip);
+    expect(hoverClip({ ...clip, kind: "footage" as const })).not.toBeNull();
+    expect(hoverClip({ ...clip, kind: "motion" as const })).toBeNull();
+    expect(hoverClip(null)).toBeNull();
+  });
+
+  it("offers sound only for a clip with sound (absent means it has)", () => {
+    expect(clipHasAudio(clip)).toBe(true);
+    expect(clipHasAudio({ ...clip, hasAudio: true })).toBe(true);
+    expect(clipHasAudio({ ...clip, hasAudio: false })).toBe(false);
+    expect(clipHasAudio(null)).toBe(false);
+  });
+});
+
+describe("billboard clip hand-over", () => {
+  it("is taken once, by the same title", () => {
+    expect(takeClipHandoff("t-a")).toBeNull();
+    const video = {
+      readyState: 4,
+      ended: false,
+      currentSrc: `${window.location.origin}/cdn/previews/a.mp4`,
+      currentTime: 5.2,
+      videoWidth: 0,
+      videoHeight: 0,
+    } as unknown as HTMLVideoElement;
+    offerClipHandoff("t-a", video, false);
+    expect(takeClipHandoff("t-b")).toBeNull(); // another title: and the offer is spent
+    offerClipHandoff("t-a", video, false);
+    expect(takeClipHandoff("t-a")).toMatchObject({ positionSec: 5.2, hasAudio: false });
+    expect(takeClipHandoff("t-a")).toBeNull();
+    // Nothing on screen yet (no frame): nothing to hand over.
+    offerClipHandoff("t-a", { ...video, readyState: 1 } as unknown as HTMLVideoElement, true);
+    expect(takeClipHandoff("t-a")).toBeNull();
+    expect(sameClip("/cdn/previews/a.mp4", `${window.location.origin}/cdn/previews/a.mp4`)).toBe(
+      true,
+    );
+    expect(sameClip("/cdn/previews/a.mp4", "/cdn/previews/b.mp4")).toBe(false);
   });
 });

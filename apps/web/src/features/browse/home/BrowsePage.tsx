@@ -2,6 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { BrowseView, Row } from "@webflix/contracts";
 import {
+  Avatar,
   Button,
   CloseIcon,
   cx,
@@ -47,6 +48,7 @@ function BrowseScreen({ view }: { view: BrowseView }) {
   const rows = useMemo(() => pages?.flatMap((page) => page.rows) ?? [], [pages]);
   const hasHero = view !== "new-popular" && (billboard !== null || browse.isPending);
   const typed = view === "series" || view === "movies";
+  const kidsHome = profile.isKids && view === "home";
 
   if (browse.isError && !browse.data) {
     const error = describeError(browse.error);
@@ -69,7 +71,16 @@ function BrowseScreen({ view }: { view: BrowseView }) {
   }
 
   return (
-    <main id="main" className="relative pb-8" aria-busy={browse.isPending || undefined}>
+    <main
+      id="main"
+      data-kids={profile.isKids || undefined}
+      className={cx(
+        "relative pb-8",
+        // Kids: friendlier, rounder cards (the card radius token mapped to a larger one).
+        profile.isKids && "[--radius-card:var(--radius-xl)]",
+      )}
+      aria-busy={browse.isPending || undefined}
+    >
       {phone && view !== "new-popular" ? (
         <div className="pt-nav">
           <CategoryBar view={view} />
@@ -106,6 +117,7 @@ function BrowseScreen({ view }: { view: BrowseView }) {
           hasHero && !phone ? "-mt-[6vw]" : phone && hasHero ? "mt-8" : null,
         )}
       >
+        {kidsHome && !browse.isPending ? <KidsGreeting /> : null}
         {browse.isPending ? (
           FIRST_LOAD_LAYOUTS.map((layout, index) => (
             <RowSliderSkeleton key={index} layout={layout} />
@@ -130,6 +142,23 @@ function BrowseScreen({ view }: { view: BrowseView }) {
         {browse.data ? <MoreRows query={browse} /> : null}
       </div>
     </main>
+  );
+}
+
+/**
+ * The Kids home greets its viewer by name, with their picture: a child recognises "their" page,
+ * and a grown-up sees whose profile is on.
+ */
+function KidsGreeting() {
+  const profile = useBrowseProfile();
+  return (
+    <div data-testid="kids-greeting" className="flex items-center gap-3 px-gutter sm:gap-4">
+      <Avatar src={profile.avatar.imageUrl} name={profile.name} size="md" decorative />
+      <p className="flex flex-col">
+        <span className="type-title-lg text-fg">Hi, {profile.name}!</span>
+        <span className="type-body-sm text-fg-muted">Shows and films picked for you</span>
+      </p>
+    </div>
   );
 }
 

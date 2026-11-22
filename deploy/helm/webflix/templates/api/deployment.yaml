@@ -42,7 +42,7 @@ spec:
       priorityClassName: {{ . }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "webflix.appPodSecurityContext" . | nindent 8 }}
       # Shutdown: readiness fails at once, serving continues for shutdownDelaySec while the
       # gateway drops the endpoint, then in-flight requests drain (docs/BACKEND.md §5).
       terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}

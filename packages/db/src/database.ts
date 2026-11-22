@@ -145,7 +145,22 @@ const UNREACHABLE_CODES = new Set([
  * by another process past the busy timeout), D1's transient ones (as Cloudflare documents them).
  */
 const UNREACHABLE_MESSAGES =
-  /Connection terminated|timeout exceeded when trying to connect|Client has encountered a connection error|unable to open database file|database is locked|Network connection lost|D1 DB is overloaded|Cannot resolve D1 DB due to transient issue|storage caused object to be reset/i;
+  /Connection terminated|timeout exceeded when trying to connect|Client has encountered a connection error|Query read timeout|unable to open database file|database is locked|Network connection lost|D1 DB is overloaded|Cannot resolve D1 DB due to transient issue|storage caused object to be reset/i;
+
+/**
+ * The connection was lost after COMMIT went out and before its answer came back: the server
+ * may have committed the transaction, or not. Nothing can tell from this side; the caller is
+ * told so (the request answers 503 with a detail that says the change may have been saved).
+ */
+export class CommitOutcomeUnknownError extends Error {
+  override readonly name = "CommitOutcomeUnknownError";
+
+  constructor(cause: unknown) {
+    super("The connection was lost while committing: the transaction may or may not be applied", {
+      cause,
+    });
+  }
+}
 
 /**
  * True when `error` (or its cause chain) means the database cannot be reached right now: a
@@ -174,12 +189,14 @@ export function isDatabaseUnavailable(error: unknown): boolean {
 
 /** The database cannot be reached: `service_unavailable` (503, `Retry-After`), else rethrow. */
 function unavailableOr(error: unknown): unknown {
-  return isDatabaseUnavailable(error)
-    ? new AppError("service_unavailable", {
-        detail: "The database cannot be reached right now. Try again in a moment.",
-        cause: error,
-      })
-    : error;
+  if (!isDatabaseUnavailable(error)) return error;
+  return new AppError("service_unavailable", {
+    detail:
+      error instanceof CommitOutcomeUnknownError
+        ? "The database stopped answering while saving this change: it may or may not have been saved. Check before trying again."
+        : "The database cannot be reached right now. Try again in a moment.",
+    cause: error,
+  });
 }
 
 /**

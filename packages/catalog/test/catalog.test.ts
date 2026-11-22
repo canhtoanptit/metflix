@@ -1,15 +1,21 @@
 import { DEMO_ACCOUNT_EMAIL, MATURITY_LEVELS } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
+import { ART_DIRECTION } from "../src/data/art.ts";
 import {
   CURATED_PREVIEWS,
   catalog,
   defineCatalog,
   defineDemoAccount,
   demoAccount,
+  featureCut,
+  footagePreviewAsset,
+  frameShowsText,
   MOTION_ART_PREVIEW_SEC,
   mediumOfGenres,
+  motionArtAsset,
   openFilms,
   showsSourceText,
+  TEXT_MARGIN_SEC,
 } from "../src/index.ts";
 
 const episodes = catalog.titles.flatMap((title) =>
@@ -107,9 +113,10 @@ describe("dataset", () => {
     for (const asset of catalog.videoAssets) {
       if (asset.source.kind === "synthetic") {
         // Motion art rendered from exactly one title's key art.
-        expect(asset.id, asset.id).toMatch(/^v-art-/);
+        expect(asset.id, asset.id).toMatch(/^v-art-.+-[0-9a-z]{7}$/);
         expect(asset.source.durationSec).toBe(MOTION_ART_PREVIEW_SEC);
-        expect(previewers.get(asset.id), asset.id).toBe(`t-${asset.id.slice("v-art-".length)}`);
+        const title = previewers.get(asset.id) ?? "";
+        expect(asset.id, title).toBe(motionArtAsset(title, ART_DIRECTION[title]));
         continue;
       }
       const film = films.get(asset.source.url);
@@ -193,7 +200,7 @@ describe("dataset", () => {
           );
           classes.curated += 1;
         } else {
-          expect(preview, title.id).toBe(`v-art-${title.id.slice(2)}`);
+          expect(preview, title.id).toBe(motionArtAsset(title.id, ART_DIRECTION[title.id]));
           classes.art += 1;
         }
       }
@@ -223,6 +230,27 @@ describe("dataset", () => {
       }
     });
 
+    it("no preview opens on, or comes near, a burned-in card, real films' own previews included", () => {
+      for (const title of catalog.titles) {
+        const preview = title.previewAssetId ?? "";
+        const film = filmOf(preview);
+        if (film) expect(showsSourceText(film, windowOf(preview, film)), title.id).toBe(false);
+      }
+    });
+
+    it("cuts, chapters and excerpts are whole seconds, so packaging cannot round into a card", () => {
+      for (const asset of catalog.videoAssets) {
+        if (asset.source.kind !== "download") continue;
+        expect(Number.isInteger(asset.source.startSec ?? 0), asset.id).toBe(true);
+        expect(Number.isInteger(asset.source.durationSec ?? 0), asset.id).toBe(true);
+      }
+      for (const film of openFilms) {
+        const [start, end] = featureCut(film);
+        expect(showsSourceText(film, [start, end]), `${film.key} cut`).toBe(false);
+        expect(Number.isInteger(start) && Number.isInteger(end), `${film.key} cut`).toBe(true);
+      }
+    });
+
     it("chapters are text-free and each later one opens with the end of the one before", () => {
       for (const film of openFilms) {
         film.chapters.forEach((chapter, index) => {
@@ -233,6 +261,83 @@ describe("dataset", () => {
         });
       }
     });
+  });
+
+  it("measures text spans in order, inside each film, with the margin clear of every chapter", () => {
+    expect(TEXT_MARGIN_SEC).toBeGreaterThanOrEqual(1);
+    for (const film of openFilms) {
+      let previous = -1;
+      for (const [start, end] of film.textSpans) {
+        expect(start, film.key).toBeGreaterThan(previous);
+        expect(end, film.key).toBeGreaterThan(start);
+        expect(end, film.key).toBeLessThanOrEqual(film.durationSec);
+        previous = end;
+      }
+      for (const [start, end] of [...film.chapters, featureCut(film)]) {
+        expect(end, `${film.key} [${start}, ${end}] ends before the credits`).toBeLessThan(
+          film.creditsStartSec,
+        );
+        for (const [textStart, textEnd] of film.textSpans) {
+          const gap = Math.max(textStart - end, start - textEnd);
+          expect(gap, `${film.key} chapter [${start}, ${end}]`).toBeGreaterThanOrEqual(
+            TEXT_MARGIN_SEC,
+          );
+        }
+      }
+    }
+  });
+
+  it("cuts the real films' key art from text-free frames (the logo is laid over them)", () => {
+    const filmOfTitle = new Map(
+      catalog.titles.flatMap((title) => {
+        const id = title.type === "movie" ? title.videoAssetId : null;
+        const source = catalog.videoAssets.find((entry) => entry.id === id)?.source;
+        const film =
+          source?.kind === "download"
+            ? openFilms.find((entry) => entry.source.url === source.url)
+            : undefined;
+        return film ? [[title.id, film] as const] : [];
+      }),
+    );
+    for (const [titleId, art] of Object.entries(ART_DIRECTION)) {
+      const frames = art.frames as { key: number; poster: number; asset?: string } | undefined;
+      if (!frames) continue;
+      const film = frames.asset
+        ? openFilms.find((entry) => `v-${entry.key}` === frames.asset)
+        : filmOfTitle.get(titleId);
+      expect(film, titleId).toBeDefined();
+      if (!film) continue;
+      expect(frameShowsText(film, frames.key), `${titleId} key frame`).toBe(false);
+      expect(frameShowsText(film, frames.poster), `${titleId} poster frame`).toBe(false);
+    }
+  });
+
+  it("derives every preview id from what defines its content (published previews are immutable)", () => {
+    const films = new Map(openFilms.map((film) => [film.source.url, film]));
+    for (const asset of catalog.videoAssets) {
+      if (!/-pv\d/.test(asset.id) || asset.source.kind !== "download") continue;
+      const film = films.get(asset.source.url);
+      const start = asset.source.startSec ?? 0;
+      const window = [start, start + (asset.source.durationSec ?? 0)] as const;
+      expect(film && footagePreviewAsset(film, window), asset.id).toBe(asset.id);
+    }
+    const [film] = openFilms;
+    if (!film) return;
+    expect(footagePreviewAsset(film, [10, 40])).not.toBe(footagePreviewAsset(film, [11, 41]));
+    expect(footagePreviewAsset(film, [10, 40])).toBe(footagePreviewAsset(film, [10, 40]));
+    expect(
+      footagePreviewAsset(
+        { ...film, source: { ...film.source, url: "https://example.org/b.mp4" } },
+        [10, 40],
+      ),
+    ).not.toBe(footagePreviewAsset(film, [10, 40]));
+  });
+
+  it("gives motion art a new id whenever the recipe's input, the art direction, changes", () => {
+    expect(motionArtAsset("t-x", { grade: "warm" })).not.toBe(
+      motionArtAsset("t-x", { grade: "cold" }),
+    );
+    expect(motionArtAsset("t-x", undefined)).toBe(motionArtAsset("t-x", undefined));
   });
 
   it("gives every episode its own name and synopsis", () => {

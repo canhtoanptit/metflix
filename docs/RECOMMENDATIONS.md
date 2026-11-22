@@ -142,26 +142,27 @@ Details:
 ### Badges
 
 Each card carries at most one status badge, chosen by the server for the surface the card is
-on (`Personalization.cardSurface`); clients draw what they are given.
+on (`Personalization.cardSurface`); clients draw what they are given. A badge is the exception:
+on the seeded demo profile's first home page 11 of 88 cards carry one (it was 41, 47 %), on a
+new profile's 9 of 109 (it was 41, 38 %).
 
-- **Priority**: `leaving-soon` (reserved: the catalog has no availability windows, so it is
-  never produced today), then `new-episodes` (a series added in the last 14 days with more than
-  one season), then `top-10`, then `new` (added in the last 14 days). A badge about the
-  member's next action or a change in the title beats a popularity label; popularity beats
-  "recently added", which is the weakest signal.
+- **What each badge means.** `new` ("Recently added"): the title arrived in the last 14 days and
+  this profile has played none of it. `new-episodes`: a series this profile has watched, added in
+  the last 14 days with more than one season (the catalog dates seasons, not episodes, so its
+  latest season is what is new), with an episode of that season beyond the furthest the profile
+  has watched. `top-10`: the title is in the Top 10 list of the page's view. `leaving-soon` is
+  reserved (the catalog has no availability windows).
+- **Priority**: `new-episodes`, then `top-10`, then `new`. A badge about the member's next action
+  beats a popularity label; popularity beats "recently added", the weakest signal.
+- **Per surface.** The Top 10 row: none, the numeral is the badge. Continue Watching: only "new
+  episodes". New Releases: no "new" (the row says it). Every list (a row, a genre page, search
+  results, My List, More Like This): at most `BADGES_PER_LIST` = 2 badges, the first earned in
+  list order and decided over the whole list (later pages never add more), of which at most
+  `TOP_10_BADGES_PER_LIST` = 2 Top 10. Billboard and title detail: the title's badge.
 - **Top 10 means the list a member can open from that page**: the "Top 10 ... Today" row of the
   view the card is shown in (the overall list on Home, the series or movies list on those
   views, the title's own type on New & Popular, the overall list on genre pages, search, My
-  List, More Like This and title detail). At most ten titles per view can carry it, and it
-  always agrees with a visible row.
-- **Never in Continue Watching** (that row is about progress) **nor in the ranked row** (the
-  numeral already says it).
-- **At most `TOP_10_BADGES_PER_LIST` = 2 per list** (a row, a genre page, search results, My
-  List), given to the first ranked cards in list order and decided over the whole list, so later
-  pages never add more. A row shows five or six cards at desktop widths: two badges keep the
-  chart-toppers noticeable without the badge becoming the texture of the page (before this rule
-  it sat on about half the home page's cards, five of six in Continue Watching). A ranked card
-  that does not get the badge falls back to its next badge (`new`), if any.
+  List, More Like This and title detail). It always agrees with a visible row.
 - **The rank is always stated where there is room for it**: every card carries `top10Rank` when
   the title is in the surface's Top 10 list, badge or not, so the hover preview and the detail
   say "#3 on Webflix Today" (or "#2 in Series Today") for every genuinely ranked title.

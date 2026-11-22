@@ -17,6 +17,7 @@
  * | Shift + N              | next episode                         |
  * | Shift + . / Shift + ,  | faster / slower                      |
  * | P                      | picture-in-picture                   |
+ * | Shift + D              | playback stats overlay               |
  */
 
 export const SEEK_STEP_SEC = 10;
@@ -36,6 +37,7 @@ export type PlayerCommand =
   | { type: "skipMoment" }
   | { type: "nextEpisode" }
   | { type: "rateStep"; direction: 1 | -1 }
+  | { type: "toggleStats" }
   | { type: "escape" };
 
 /** The subset of `KeyboardEvent` the map reads. */
@@ -92,6 +94,7 @@ function mapKey({ key, shiftKey = false }: KeyInput): PlayerCommand | null {
   const letter = key.length === 1 ? key.toLowerCase() : "";
   if (shiftKey) {
     if (letter === "n") return { type: "nextEpisode" };
+    if (letter === "d") return { type: "toggleStats" };
     // Shift+. / Shift+, on layouts where the browser reports the unshifted character.
     if (key === ".") return { type: "rateStep", direction: 1 };
     if (key === ",") return { type: "rateStep", direction: -1 };

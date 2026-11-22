@@ -7,7 +7,15 @@ import type {
   TitleCard,
 } from "@webflix/contracts";
 import { rankLabel, top10RankLabel } from "../common/format.ts";
+import { anchorArt, isArtReady, loadArt, previewArtUrl, previewWidth } from "./prepare.ts";
 import { type PreviewRequest, previewStore } from "./store.ts";
+
+/**
+ * How long an accepted intent may wait for its artwork to decode (it was requested when the
+ * pointer entered the card, so this is rarely more than a frame): past it, the preview opens
+ * and loads the picture itself.
+ */
+export const PREVIEW_ART_WAIT_MS = 900;
 
 export type RowItem = TitleCard | RankedItem | ContinueWatchingItem;
 
@@ -39,7 +47,11 @@ export interface IntentSource {
   view?: BrowseView;
 }
 
-/** Open the hover preview for an item of a row or grid; false if the store declined it. */
+/**
+ * Open the hover preview for an item of a row or grid; false if the store declined it. The
+ * preview opens on artwork that is already decoded (the hi-res image fetched during intent, or
+ * the card's own image): when neither is, it waits for the hi-res one, briefly.
+ */
 export function requestPreview(
   source: IntentSource,
   item: RowItem,
@@ -48,7 +60,24 @@ export function requestPreview(
   edge: "start" | "end" | null,
 ): boolean {
   const card = cardOf(item);
-  const request: PreviewRequest = {
+  const id = previewId(source.scope, card.id, index);
+  const hiRes = previewArtUrl(card, previewWidth(cardRect(cell)));
+  const art = () => (isArtReady(hiRes) ? hiRes : anchorArt(cell, card));
+  const build = (): PreviewRequest => buildRequest(source, item, index, cell, edge, art());
+  if (art()) return previewStore.open(build());
+  return previewStore.openWhenReady(id, source.scope, loadArt(hiRes), build, PREVIEW_ART_WAIT_MS);
+}
+
+function buildRequest(
+  source: IntentSource,
+  item: RowItem,
+  index: number,
+  cell: HTMLElement,
+  edge: "start" | "end" | null,
+  art: string | null,
+): PreviewRequest {
+  const card = cardOf(item);
+  return {
     id: previewId(source.scope, card.id, index),
     scope: source.scope,
     card,
@@ -63,8 +92,8 @@ export function requestPreview(
     progress: "progress" in item ? item.progress : null,
     episode: "progress" in item ? item.episode : null,
     removable: "progress" in item,
+    art,
   };
-  return previewStore.open(request);
 }
 
 /** Concatenate a row's first page with the pages fetched for it, without duplicate titles. */

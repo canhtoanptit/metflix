@@ -6,6 +6,7 @@
  */
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { frameShowsText, type OpenFilm, openFilms } from "@webflix/catalog";
 import {
   type AvatarImage,
   blobKeys,
@@ -87,19 +88,36 @@ async function frameInterest(path: string): Promise<number> {
   return entropy + contrast / 24 + colour / 40 - exposure;
 }
 
-/** The most thumbnail-worthy of a few frames across the middle of an episode. */
-async function bestFrame(
-  film: { path: string; sha256: string },
+/**
+ * Where an episode still may be taken from: a few points across the middle of the episode's
+ * window, minus any that would show text (an open film's credits, cards or on-screen story
+ * text, margin included; the logo and episode title are laid over stills).
+ */
+export function stillCandidateTimes(
   start: number,
   length: number,
+  film: OpenFilm | undefined,
+): number[] {
+  const times = [0.2, 0.32, 0.44, 0.56, 0.68].map((at) => start + length * at);
+  const clean = film ? times.filter((time) => !frameShowsText(film, time)) : times;
+  if (clean.length === 0)
+    throw new Error(`no text-free still candidate in ${film?.key} at ${start}`);
+  return clean;
+}
+
+/** The most thumbnail-worthy of the candidate frames. */
+async function bestFrame(
+  film: { path: string; sha256: string },
+  times: readonly number[],
 ): Promise<string> {
   let best: { path: string; score: number } | null = null;
-  for (const at of [0.2, 0.32, 0.44, 0.56, 0.68]) {
-    const path = await frameAt(film, start + length * at);
+  for (const time of times) {
+    const path = await frameAt(film, time);
     const score = await frameInterest(path);
     if (!best || score > best.score) best = { path, score };
   }
-  return best?.path ?? frameAt(film, start + length * 0.35);
+  if (!best) throw new Error("no still candidates");
+  return best.path;
 }
 
 async function proceduralRaster(
@@ -439,13 +457,14 @@ export async function runArtStage(
     const film =
       direction.source.kind === "frames" ? await filmFile(direction.source.filmUrl) : null;
     const episodeFrame = async (videoAssetId: string): Promise<string | null> => {
-      const asset = assets.get(videoAssetId);
-      if (asset?.source.kind !== "download") return null;
-      const file = await filmFile(asset.source.url);
+      const source = assets.get(videoAssetId)?.source;
+      if (source?.kind !== "download") return null;
+      const file = await filmFile(source.url);
       if (!file) return null;
-      const start = asset.source.startSec ?? 0;
-      const length = asset.source.durationSec ?? file.durationSec ?? 60;
-      return bestFrame(file, start, length);
+      const start = source.startSec ?? 0;
+      const length = source.durationSec ?? file.durationSec ?? 60;
+      const open = openFilms.find((entry) => entry.source.url === source.url);
+      return bestFrame(file, stillCandidateTimes(start, length, open));
     };
     const key = hashJson({
       title: {

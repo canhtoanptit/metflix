@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { ImageSet, Plan } from "@webflix/contracts";
+import type { ImageSet, Plan, ShowcaseTitle } from "@webflix/contracts";
 import {
   Accordion,
   AccordionItem,
@@ -8,6 +8,8 @@ import {
   Badge,
   Button,
   cx,
+  Dialog,
+  DialogContent,
   KidsIcon,
   LockIcon,
   MonitorIcon,
@@ -18,7 +20,7 @@ import {
   TabletIcon,
   TvIcon,
 } from "@webflix/ui";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { queries } from "../../../app/query/queries.ts";
 import { showcaseImage, useShowcase } from "../shared/artwork.ts";
 import { MemberFooter, MemberHeader } from "../shared/Chrome.tsx";
@@ -48,6 +50,9 @@ export function LandingPage() {
             <PosterWall rows={5} priority />
           </div>
           <div className="absolute inset-0 bg-canvas/60" />
+          {/* A soft pool of canvas behind the headline and subcopy, so the copy never sits on
+              poster typography; the wall stays vivid at the edges. */}
+          <div className="absolute inset-0 bg-radial-[ellipse_65%_45%_at_50%_52%] from-canvas/90 from-40% to-transparent" />
           <div className="absolute inset-0 scrim-top" />
           <div className="absolute inset-0 scrim-bottom" />
           <div className="absolute inset-0 bg-glow" />
@@ -83,7 +88,7 @@ export function LandingPage() {
         </main>
       </section>
 
-      <NowShowing />
+      <NowShowing priceFrom={cheapest} />
 
       <div className="flex flex-col">
         <Feature
@@ -262,32 +267,115 @@ function Feature({
   );
 }
 
-/** A band of real catalog posters (decorative: it fades out at the edge, nothing to scroll). */
-function NowShowing() {
-  const posters = useShowcase()
-    .slice(0, 14)
-    .map((item) => item.images.poster);
-  if (posters.length === 0) return null;
+/**
+ * Posters beyond the column count are hidden, so the row always shows whole posters (3 on a
+ * phone up to 7 on a wide screen) and never a cut-off one.
+ */
+const NOW_SHOWING_VISIBILITY = [
+  "",
+  "",
+  "",
+  "hidden sm:block",
+  "hidden md:block",
+  "hidden lg:block",
+  "hidden xl:block",
+] as const;
+
+/**
+ * A row of real catalog posters. Each opens a teaser (backdrop, title, what it is) that ends in
+ * the same "Get started" email capture as the hero: a visitor who clicks a poster is asking
+ * "can I watch this?", and the answer is the membership.
+ */
+function NowShowing({ priceFrom }: { priceFrom: Plan | null | undefined }) {
+  const titles = useShowcase().slice(0, NOW_SHOWING_VISIBILITY.length);
+  const [open, setOpen] = useState<ShowcaseTitle | null>(null);
+  if (titles.length === 0) return null;
   return (
-    <section aria-labelledby="now-on-webflix" className="relative pb-6">
-      <h2 id="now-on-webflix" className="mb-4 px-gutter type-row-title text-fg">
-        Now on Webflix
-      </h2>
-      <div
-        aria-hidden
-        className="flex gap-2 overflow-hidden px-gutter pb-2 [mask-image:linear-gradient(to_right,black_80%,transparent)] sm:gap-3"
-      >
-        {posters.map((image) => (
-          <ResponsiveImage
-            key={image.template}
-            image={image}
-            alt=""
-            sizes="(min-width: 1100px) 12vw, (min-width: 500px) 22vw, 36vw"
-            className="w-[36vw] shrink-0 overflow-hidden rounded-card sm:w-[22vw] lg:w-[12vw]"
-          />
-        ))}
+    <section aria-labelledby="now-on-webflix" className="px-gutter pb-16 sm:pb-24">
+      <div className="mx-auto max-w-page">
+        <h2 id="now-on-webflix" className="type-row-title text-fg">
+          Now on Webflix
+        </h2>
+        <p className="mt-1 mb-4 type-body text-fg-muted">
+          A few of the films and series members are watching. Select one for a closer look.
+        </p>
+        <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7">
+          {titles.map((title, index) => (
+            <li key={title.id} className={NOW_SHOWING_VISIBILITY[index]}>
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                onClick={() => setOpen(title)}
+                className="focus-ring group block w-full overflow-hidden rounded-card bg-surface-2"
+              >
+                <span className="sr-only">
+                  {title.name}, {title.type === "series" ? "series" : "film"}
+                </span>
+                <ResponsiveImage
+                  image={title.images.poster}
+                  alt=""
+                  sizes="(min-width: 1280px) 11rem, (min-width: 1024px) 15vw, (min-width: 768px) 19vw, (min-width: 640px) 24vw, 31vw"
+                  className="transition-transform duration-base group-hover:scale-105 motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+                />
+              </button>
+            </li>
+          ))}
+        </ul>
       </div>
+      <Dialog
+        open={open !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpen(null);
+        }}
+      >
+        {open ? <ShowcaseTeaser title={open} priceFrom={priceFrom} /> : null}
+      </Dialog>
     </section>
+  );
+}
+
+function ShowcaseTeaser({
+  title,
+  priceFrom,
+}: {
+  title: ShowcaseTitle;
+  priceFrom: Plan | null | undefined;
+}) {
+  const kind = title.type === "series" ? "Series" : "Film";
+  return (
+    <DialogContent title={title.name} hideTitle={title.images.logo !== null} size="lg" bleed>
+      <div className="relative overflow-hidden rounded-t-dialog">
+        <ResponsiveImage
+          image={title.images.backdrop}
+          alt=""
+          sizes="(min-width: 640px) 40rem, 100vw"
+          className="aspect-video"
+        />
+        <div aria-hidden className="absolute inset-0 scrim-bottom" />
+        {title.images.logo ? (
+          <ResponsiveImage
+            image={title.images.logo}
+            alt=""
+            fit="contain"
+            position="left bottom"
+            placeholder="none"
+            sizes="16rem"
+            className="absolute start-6 bottom-4 h-1/3 w-1/2 sm:start-8"
+          />
+        ) : null}
+      </div>
+      <div className="flex flex-col gap-4 px-6 pt-4 pb-6 sm:px-8 sm:pb-8">
+        <div className="flex flex-col gap-2">
+          <p className="type-overline text-accent">{kind} on Webflix</p>
+          <p className="type-body-lg text-fg-muted">
+            Watch {title.name} and the rest of the catalog on any screen.
+            {priceFrom ? ` Plans from ${formatMoney(priceFrom.monthlyPrice)} a month.` : ""} Cancel
+            anytime.
+          </p>
+        </div>
+        <EmailCapture label="Enter your email to start your membership or sign back in." />
+      </div>
+    </DialogContent>
   );
 }
 

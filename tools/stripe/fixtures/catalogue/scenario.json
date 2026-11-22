@@ -1,0 +1,262 @@
+{
+  "name": "catalogue",
+  "title": "Catalogue sync by lookup key, two currencies",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [],
+  "started_at": "2026-11-21T18:38:54.608Z",
+  "duration_ms": 3439,
+  "steps": [
+    {
+      "name": "sync (first pass)",
+      "ms": 912
+    },
+    {
+      "name": "sync (second pass)",
+      "ms": 904
+    },
+    {
+      "name": "price change through transfer_lookup_key",
+      "ms": 1388
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "first pass",
+      "value": {
+        "productsCreated": 0,
+        "pricesCreated": 0,
+        "pricesReplaced": 0,
+        "unchanged": 6
+      },
+      "note": "creates everything only in a fresh sandbox"
+    },
+    {
+      "step": "setup",
+      "key": "second pass changes nothing",
+      "value": {
+        "productsCreated": 0,
+        "pricesCreated": 0,
+        "pricesReplaced": 0,
+        "unchanged": 6,
+        "writes": 0
+      },
+      "expected": {
+        "productsCreated": 0,
+        "pricesCreated": 0,
+        "pricesReplaced": 0,
+        "unchanged": 6,
+        "writes": 0
+      },
+      "ok": true
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "key": "old price lost its lookup key",
+      "value": null,
+      "expected": null,
+      "ok": true
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "key": "old price archived",
+      "value": false,
+      "expected": false,
+      "ok": true
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "key": "exactly one price holds the key afterwards",
+      "value": ["price_WFX000000000000000000001"],
+      "expected": ["price_WFX000000000000000000001"],
+      "ok": true
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 14,
+    "secret_key": 14,
+    "publishable_key": 0,
+    "by_method": {
+      "GET": 12,
+      "POST": 2
+    },
+    "by_status": {
+      "200": 14
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 3427
+  },
+  "events": {
+    "deliveries": 5,
+    "distinct": 5,
+    "types": {
+      "price.updated": 2,
+      "plan.created": 1,
+      "price.created": 1,
+      "plan.updated": 1
+    },
+    "inversions_vs_created": []
+  },
+  "calls": [
+    {
+      "step": "sync (first pass)",
+      "method": "GET",
+      "path": "/v1/products/webflix_basic",
+      "status": 200,
+      "ms": 225,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000001"
+    },
+    {
+      "step": "sync (first pass)",
+      "method": "GET",
+      "path": "/v1/products/webflix_standard",
+      "status": 200,
+      "ms": 226,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000002"
+    },
+    {
+      "step": "sync (first pass)",
+      "method": "GET",
+      "path": "/v1/products/webflix_premium",
+      "status": 200,
+      "ms": 226,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000003"
+    },
+    {
+      "step": "sync (first pass)",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 232,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000004"
+    },
+    {
+      "step": "sync (second pass)",
+      "method": "GET",
+      "path": "/v1/products/webflix_basic",
+      "status": 200,
+      "ms": 224,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000005"
+    },
+    {
+      "step": "sync (second pass)",
+      "method": "GET",
+      "path": "/v1/products/webflix_standard",
+      "status": 200,
+      "ms": 224,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000006"
+    },
+    {
+      "step": "sync (second pass)",
+      "method": "GET",
+      "path": "/v1/products/webflix_premium",
+      "status": 200,
+      "ms": 223,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000007"
+    },
+    {
+      "step": "sync (second pass)",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 231,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000008"
+    },
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 234,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000009"
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "method": "GET",
+      "path": "/v1/products/webflix_proof_transfer",
+      "status": 200,
+      "ms": 223,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000A"
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.proof.transfer.monthly.usd&limit=1",
+      "status": 200,
+      "ms": 255,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000B"
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "method": "POST",
+      "path": "/v1/prices",
+      "status": 200,
+      "ms": 326,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-69d4cf3d-9739-4156-96d2-1e63915bc773",
+      "replayed": false,
+      "request_id": "req_WFX0000000000C"
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "method": "POST",
+      "path": "/v1/prices/price_WFX000000000000000000002",
+      "status": 200,
+      "ms": 324,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-a1983fe8-0a62-4f47-8d4e-84f6b884abf1",
+      "replayed": false,
+      "request_id": "req_WFX0000000000D"
+    },
+    {
+      "step": "price change through transfer_lookup_key",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.proof.transfer.monthly.usd&limit=10",
+      "status": 200,
+      "ms": 254,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000E"
+    }
+  ]
+}

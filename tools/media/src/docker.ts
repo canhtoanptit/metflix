@@ -119,6 +119,23 @@ export async function ffmpeg(args: readonly string[]): Promise<void> {
   }
 }
 
+/** Run ffmpeg for its report (filters such as `astats` log at info level); returns stderr. */
+export async function ffmpegReport(args: readonly string[]): Promise<string> {
+  const result = await dockerRun("ffmpeg", [
+    "-hide_banner",
+    "-nostdin",
+    "-loglevel",
+    "info",
+    ...args,
+  ]);
+  if (result.code !== 0) {
+    throw new DockerError(
+      `ffmpeg failed (${result.code}): ${args.join(" ").slice(0, 400)}\n${result.stderr.slice(-2000)}`,
+    );
+  }
+  return result.stderr;
+}
+
 export interface ProbeResult {
   durationSec: number;
   video: { width: number; height: number; frameRate: number; codec: string } | null;

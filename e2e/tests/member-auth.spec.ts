@@ -58,7 +58,10 @@ test("rate limiting shows a visible timer and keeps the button disabled", async 
     await expect(page.getByRole("alert")).toBeVisible();
   }
   await expect(page.getByRole("alert")).toContainText("Too many sign-in attempts");
+  // One live countdown, on the button: the message itself stays still.
   await expect(page.getByRole("button", { name: /Try again in \d:\d\d/ })).toBeDisabled();
+  await expect(page.getByRole("alert")).not.toContainText(/\d:\d\d/);
+  await expect(page.getByText(/\d:\d\d/)).toHaveCount(1);
 });
 
 test("sign out: a calm confirmation, and the app is closed behind it", async ({ page }) => {

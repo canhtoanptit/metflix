@@ -17,7 +17,7 @@ import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
 import { type CardFormErrors, toCardPayment } from "../shared/validation.ts";
 import { AccountHeading } from "./AccountLayout.tsx";
-import { applyMembership, describeCard, remainingPeriodFraction } from "./membership.ts";
+import { applyMembership, describeCard, upgradeChargeToday } from "./membership.ts";
 
 /**
  * Change plan, or restart an ended membership. Before confirming, the member sees exactly what
@@ -243,12 +243,15 @@ function ChangeSummary({
     const difference = next.monthlyPrice.amountMinor - current.monthlyPrice.amountMinor;
     const renews = formatLongDate(details.subscription.currentPeriodEnd);
     if (difference > 0) {
-      const today = Math.round(
-        difference * remainingPeriodFraction(details.subscription.currentPeriodEnd),
+      const charge = upgradeChargeToday(
+        current.monthlyPrice.amountMinor,
+        next.monthlyPrice.amountMinor,
+        details.subscription.currentPeriodEnd,
       );
+      const days = charge.daysLeft === 1 ? "the 1 day" : `the ${charge.daysLeft} days`;
       lines.push(
-        today > 0
-          ? `You'll pay about ${formatMoney({ amountMinor: today, currency: next.monthlyPrice.currency })} today: the difference for the rest of this billing period.`
+        charge.amountMinor > 0
+          ? `We'll charge ${formatMoney({ amountMinor: charge.amountMinor, currency: next.monthlyPrice.currency })} today: the difference in price for ${days} left in this billing period.`
           : "Nothing extra to pay today.",
       );
     } else {

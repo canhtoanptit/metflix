@@ -13,10 +13,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { formatBitrate, formatRate } from "../core/format.ts";
+import { formatRate } from "../core/format.ts";
 import { PLAYBACK_RATES } from "../core/preferences.ts";
 import type { MenuId } from "../core/state.ts";
-import { languageLabel, menuTextTracks, qualityLabel, qualityOptions } from "../core/tracks.ts";
+import {
+  languageLabel,
+  menuTextTracks,
+  qualityBadge,
+  qualityOptions,
+  qualityTier,
+  titleQualityLimit,
+} from "../core/tracks.ts";
 import { shallowEqual, usePlayer, usePlayerState } from "./context.ts";
 import { Icon } from "./icons.tsx";
 
@@ -27,6 +34,8 @@ interface MenuShellProps {
   className?: string;
   /** Arrow keys that move between items: vertical lists use ↑/↓, the speed row ←/→. */
   orientation: "vertical" | "horizontal" | "grid";
+  /** A sentence under the items, read as the menu's description. */
+  note?: string | null;
   children: ReactNode;
 }
 
@@ -34,7 +43,7 @@ function focusables(menu: HTMLElement): HTMLElement[] {
   return [...menu.querySelectorAll<HTMLElement>("[role='menuitemradio']:not([disabled])")];
 }
 
-function MenuShell({ id, label, anchor, className, orientation, children }: MenuShellProps) {
+function MenuShell({ id, label, anchor, className, orientation, note, children }: MenuShellProps) {
   const { controller, labels, layout, rootRef } = usePlayer();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [right, setRight] = useState<number | null>(null);
@@ -128,6 +137,7 @@ function MenuShell({ id, label, anchor, className, orientation, children }: Menu
       role="menu"
       aria-label={label}
       aria-orientation={orientation === "horizontal" ? "horizontal" : "vertical"}
+      aria-describedby={note ? `wfp-menu-${id}-note` : undefined}
       style={right !== null ? { right: `${right}px` } : undefined}
       onKeyDown={onKeyDown}
     >
@@ -145,6 +155,11 @@ function MenuShell({ id, label, anchor, className, orientation, children }: Menu
         </div>
       ) : null}
       {children}
+      {note ? (
+        <p id={`wfp-menu-${id}-note`} className="wfp-menu__note" role="none">
+          {note}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -179,7 +194,7 @@ function MenuItem({
 }
 
 export function AudioSubtitlesMenu({ anchor }: { anchor: RefObject<HTMLElement | null> }) {
-  const { controller, labels, session } = usePlayer();
+  const { controller, labels, session, layout } = usePlayer();
   const { audioTracks, activeAudioTrackId, textTrackId } = usePlayerState(
     (s) => ({
       audioTracks: s.audioTracks,
@@ -194,7 +209,7 @@ export function AudioSubtitlesMenu({ anchor }: { anchor: RefObject<HTMLElement |
   return (
     <MenuShell
       id="audio-subtitles"
-      label={labels.audioAndSubtitles}
+      label={showAudio ? labels.audioAndSubtitles : labels.subtitles}
       anchor={anchor}
       orientation="grid"
       className={showAudio ? "wfp-menu--columns" : undefined}
@@ -219,9 +234,12 @@ export function AudioSubtitlesMenu({ anchor }: { anchor: RefObject<HTMLElement |
         </div>
       ) : null}
       <div className="wfp-menu__column">
-        <div className="wfp-menu__heading" aria-hidden="true">
-          {labels.subtitles}
-        </div>
+        {/* A lone column on a touch sheet: the sheet title already says "Subtitles". */}
+        {showAudio || layout !== "touch" ? (
+          <div className="wfp-menu__heading" aria-hidden="true">
+            {labels.subtitles}
+          </div>
+        ) : null}
         {/* biome-ignore lint/a11y/useSemanticElements: an ARIA menu group of menuitemradio items; <fieldset> groups form controls. */}
         <div role="group" aria-label={labels.subtitles}>
           <MenuItem
@@ -287,36 +305,46 @@ export function SpeedMenu({ anchor }: { anchor: RefObject<HTMLElement | null> })
 }
 
 export function QualityMenu({ anchor }: { anchor: RefObject<HTMLElement | null> }) {
-  const { controller, labels, session } = usePlayer();
+  const { controller, labels, session, layout } = usePlayer();
   const { levels, mode, activeId } = usePlayerState(
     (s) => ({ levels: s.qualityLevels, mode: s.qualityMode, activeId: s.activeQualityId }),
     shallowEqual,
   );
+  // Classes only ("Full HD", "HD", "SD"): pixel heights and bitrates are engineering detail.
   const options = qualityOptions(levels, session.maxVideoHeight);
   const active = levels.find((level) => level.id === activeId);
+  const pinned = mode === "auto" ? undefined : levels.find((level) => level.id === mode);
+  const pinnedTier = pinned ? qualityTier(pinned) : null;
+  const limit = titleQualityLimit(session);
   return (
-    <MenuShell id="quality" label={labels.quality} anchor={anchor} orientation="vertical">
-      <div className="wfp-menu__heading" aria-hidden="true">
-        {labels.quality}
-      </div>
+    <MenuShell
+      id="quality"
+      label={labels.quality}
+      anchor={anchor}
+      orientation="vertical"
+      note={limit ? labels.qualityTitleLimit(limit) : null}
+    >
+      {layout === "touch" ? null : (
+        <div className="wfp-menu__heading" aria-hidden="true">
+          {labels.quality}
+        </div>
+      )}
       {/* biome-ignore lint/a11y/useSemanticElements: an ARIA menu group of menuitemradio items; <fieldset> groups form controls. */}
       <div role="group" aria-label={labels.quality}>
         <MenuItem
           checked={mode === "auto"}
           onSelect={() => controller.setQuality("auto", "pointer")}
-          detail={active && mode === "auto" ? qualityLabel(active.height) : undefined}
+          detail={active && mode === "auto" ? qualityBadge(active) : undefined}
         >
           {labels.qualityAuto}
         </MenuItem>
         {options.map((option) => (
           <MenuItem
-            key={option.id}
-            checked={mode === option.id}
+            key={option.quality}
+            checked={option.quality === pinnedTier}
             onSelect={() => controller.setQuality(option.id, "pointer")}
-            detail={formatBitrate(option.bitrate)}
           >
             {option.label}
-            <span className="wfp-badge">{option.badge}</span>
           </MenuItem>
         ))}
       </div>

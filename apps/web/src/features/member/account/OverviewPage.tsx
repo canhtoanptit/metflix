@@ -125,7 +125,7 @@ export function AccountOverviewPage() {
                     {profile.name}
                     {profile.id === session.activeProfile?.id ? (
                       <Badge tone="outline" size="sm">
-                        Watching now
+                        This profile
                       </Badge>
                     ) : null}
                   </span>

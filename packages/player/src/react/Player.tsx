@@ -2,6 +2,7 @@
  * `<Player>`: the full-screen watch experience. Takes a `PlaybackSession`-shaped `session`,
  * emits events, never calls the Webflix API. See README for the integration contract.
  */
+import type { ImageSet } from "@webflix/contracts";
 import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
@@ -51,6 +52,7 @@ import {
   PausedOverlay,
   PipPlaceholder,
   SkipButton,
+  StatsOverlay,
 } from "./Overlays.tsx";
 import "../styles/player.css";
 
@@ -354,6 +356,7 @@ export function Player(props: PlayerProps) {
         onPointerLeave={onRootPointerLeave}
         surface={{ onClick: onSurfaceClick, onDoubleClick: onSurfaceDoubleClick }}
         renderEndScreen={props.renderEndScreen}
+        endScreenBackdrop={props.endScreenBackdrop ?? null}
         blockingOverlay={props.blockingOverlay}
         synopsis={props.synopsis ?? null}
       />
@@ -375,6 +378,7 @@ interface FrameProps {
     onDoubleClick: () => void;
   };
   renderEndScreen: PlayerProps["renderEndScreen"];
+  endScreenBackdrop: ImageSet | null;
   blockingOverlay: PlayerProps["blockingOverlay"];
   synopsis: string | null;
 }
@@ -447,7 +451,13 @@ function PlayerFrame(props: FrameProps) {
       <FeedbackLayer />
       <PausedOverlay synopsis={props.synopsis} />
       <Advisory />
-      {endScreen ? <EndScreen phase={endScreen} render={props.renderEndScreen} /> : null}
+      {endScreen ? (
+        <EndScreen
+          phase={endScreen}
+          render={props.renderEndScreen}
+          backdrop={props.endScreenBackdrop}
+        />
+      ) : null}
       <div className="wfp-chrome" inert={chromeHidden}>
         <TopBar />
         {layout === "touch" ? <CenterControls /> : null}
@@ -456,6 +466,7 @@ function PlayerFrame(props: FrameProps) {
         <BottomControls />
         {view.panel === "episodes" ? <EpisodesPanel /> : null}
       </div>
+      <StatsOverlay />
       <AutoplayBlocked />
       <ErrorLayer />
       {props.blockingOverlay ? <BlockingLayer>{props.blockingOverlay}</BlockingLayer> : null}

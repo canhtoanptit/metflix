@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyHlsError,
   classifyMediaElementError,
+  END_OF_STREAM_SLACK_SEC,
   MAX_MEDIA_RECOVERIES,
   MAX_NETWORK_RETRIES,
   MAX_STALL_NUDGES,
@@ -50,6 +51,43 @@ describe("hls.js error recovery policy", () => {
         { type: "mediaError", details: "bufferStalledError", fatal: false, buffer: 0.2 },
         fresh,
       ),
+    ).toEqual({ action: "ignore" });
+  });
+
+  it("finishes a title stalled just short of its end, whatever is buffered", () => {
+    // Seen under load after a seek near the end: hls.js never ended the MediaSource and the
+    // element waited at 149.95 of 150 with 0.05 s buffered ahead.
+    const stalled = {
+      type: "mediaError",
+      details: "bufferStalledError",
+      fatal: false,
+      buffer: 0.05,
+    };
+    expect(classifyHlsError(stalled, fresh, { positionSec: 149.95, durationSec: 150 })).toEqual({
+      action: "finish",
+    });
+    expect(
+      classifyHlsError(stalled, fresh, {
+        positionSec: 150 - END_OF_STREAM_SLACK_SEC,
+        durationSec: 150,
+      }),
+    ).toEqual({ action: "finish" });
+    // Short of the slack it is an ordinary stall: starvation is left to hls.js.
+    expect(classifyHlsError(stalled, fresh, { positionSec: 149, durationSec: 150 })).toEqual({
+      action: "ignore",
+    });
+    // Live streams never end; no metadata yet means no end to seek to.
+    for (const durationSec of [Number.POSITIVE_INFINITY, Number.NaN, 0]) {
+      expect(classifyHlsError(stalled, fresh, { positionSec: 0, durationSec })).toEqual({
+        action: "ignore",
+      });
+    }
+    // Other non-fatal errors near the end are still ignored.
+    expect(
+      classifyHlsError({ type: "networkError", details: "fragLoadError", fatal: false }, fresh, {
+        positionSec: 149.95,
+        durationSec: 150,
+      }),
     ).toEqual({ action: "ignore" });
   });
 

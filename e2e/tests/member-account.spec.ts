@@ -23,7 +23,10 @@ test("change plan: the effects are explained; a declined card changes nothing", 
   await expect(page).toHaveURL(/\/account\/plan/);
   await page.getByRole("radio", { name: /Premium/ }).click();
   const summary = page.getByRole("status").filter({ hasText: "Switching to Premium" });
-  await expect(summary).toContainText(/You'll pay about \$\d+\.\d\d today/);
+  // The exact amount (the server's proration), and what it is for.
+  await expect(summary).toContainText(
+    /We'll charge \$\d+\.\d\d today: the difference in price for the \d+ days? left in this billing period\./,
+  );
   await expect(summary).toContainText("4 screens at a time");
   await expectAccessible(page);
 

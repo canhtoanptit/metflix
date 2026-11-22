@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/experiment-report/1",
+  "title": "Experiment analysis report",
+  "description": "Written by `webflix-recs analyse-experiments` (services/recs/src/webflix_recs/experiments/analysis.py). Means and intervals are per unit (profile) over [first exposure, analysis end).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "generatedAt", "asOf", "code", "experiments"],
+  "properties": {
+    "format": { "const": "webflix.experiment-report" },
+    "formatVersion": { "const": 1 },
+    "generatedAt": { "type": "string" },
+    "asOf": { "type": "string" },
+    "code": { "type": "object" },
+    "read": { "type": "object" },
+    "experiments": { "type": "array", "items": { "$ref": "#/$defs/experiment" } }
+  },
+  "$defs": {
+    "interval": {
+      "type": "array",
+      "prefixItems": [{ "type": ["number", "null"] }, { "type": ["number", "null"] }],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "number": { "type": ["number", "null"] },
+    "variantSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["units", "mean", "ci95"],
+      "properties": {
+        "units": { "type": "integer", "minimum": 0 },
+        "mean": { "$ref": "#/$defs/number" },
+        "sd": { "$ref": "#/$defs/number" },
+        "ci95": { "$ref": "#/$defs/interval" }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variant",
+        "difference",
+        "ci95",
+        "relativeLift",
+        "relativeLiftCi95",
+        "sequential",
+        "fixedHorizon"
+      ],
+      "properties": {
+        "variant": { "type": "string" },
+        "difference": { "$ref": "#/$defs/number" },
+        "ci95": { "$ref": "#/$defs/interval" },
+        "relativeLift": { "$ref": "#/$defs/number" },
+        "relativeLiftCi95": { "$ref": "#/$defs/interval" },
+        "sequential": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "tau",
+            "alwaysValidP",
+            "confidenceSequence",
+            "significant",
+            "alpha"
+          ],
+          "properties": {
+            "method": { "const": "msprt-normal-mixture" },
+            "tau": { "$ref": "#/$defs/number" },
+            "alpha": { "type": "number" },
+            "alwaysValidP": { "type": "number", "minimum": 0, "maximum": 1 },
+            "confidenceSequence": { "$ref": "#/$defs/interval" },
+            "significant": { "type": "boolean" }
+          }
+        },
+        "fixedHorizon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["test", "pValue", "valid", "note"],
+          "properties": {
+            "test": { "const": "welch-normal" },
+            "pValue": { "$ref": "#/$defs/number" },
+            "valid": { "type": "boolean" },
+            "note": { "type": "string" }
+          }
+        }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "variants", "comparisons"],
+      "properties": {
+        "primary": { "type": "boolean" },
+        "variants": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/variantSummary" }
+        },
+        "comparisons": { "type": "array", "items": { "$ref": "#/$defs/comparison" } }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "unit",
+        "control",
+        "variants",
+        "registeredAt",
+        "startsAt",
+        "endsAt",
+        "analysisEnd",
+        "primaryMetric",
+        "alpha",
+        "minimumDetectableEffect",
+        "units",
+        "exclusions",
+        "srm",
+        "metrics",
+        "looks",
+        "decision",
+        "methods"
+      ],
+      "properties": {
+        "key": { "type": "string" },
+        "unit": { "const": "profile" },
+        "control": { "type": "string" },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "weight"],
+            "properties": { "name": { "type": "string" }, "weight": { "type": "number" } }
+          }
+        },
+        "registeredAt": { "type": "string" },
+        "startsAt": { "type": "string" },
+        "endsAt": { "type": ["string", "null"] },
+        "analysisEnd": { "type": "string" },
+        "primaryMetric": { "type": "string" },
+        "alpha": { "type": "number" },
+        "minimumDetectableEffect": { "type": "number" },
+        "units": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "exclusions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "restricted",
+            "noAnalyticsConsent",
+            "multipleVariants",
+            "unknownVariant",
+            "beforeStart",
+            "afterEnd"
+          ],
+          "properties": {
+            "restricted": { "type": "integer", "minimum": 0 },
+            "noAnalyticsConsent": { "type": "integer", "minimum": 0 },
+            "multipleVariants": { "type": "integer", "minimum": 0 },
+            "unknownVariant": { "type": "integer", "minimum": 0 },
+            "beforeStart": { "type": "integer", "minimum": 0 },
+            "afterEnd": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "srm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["chi2", "pValue", "threshold", "flagged", "observed", "expected"],
+          "properties": {
+            "chi2": { "$ref": "#/$defs/number" },
+            "pValue": { "$ref": "#/$defs/number" },
+            "threshold": { "type": "number" },
+            "flagged": { "type": "boolean" },
+            "observed": { "type": "object", "additionalProperties": { "type": "integer" } },
+            "expected": { "type": "object", "additionalProperties": { "type": "number" } }
+          }
+        },
+        "metrics": { "type": "object", "additionalProperties": { "$ref": "#/$defs/metric" } },
+        "looks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["at", "units", "comparisons"],
+            "properties": {
+              "at": { "type": "string" },
+              "units": { "type": "object", "additionalProperties": { "type": "integer" } },
+              "comparisons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["variant", "difference", "alwaysValidP"],
+                  "properties": {
+                    "variant": { "type": "string" },
+                    "difference": { "$ref": "#/$defs/number" },
+                    "alwaysValidP": { "type": "number" },
+                    "naiveP": {
+                      "description": "The fixed-horizon p-value at this look: what an analyst who peeks without protection would read. Never used for decisions.",
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "decision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "metric", "basis"],
+          "properties": {
+            "status": {
+              "enum": [
+                "significant",
+                "not-significant",
+                "invalid-sample-ratio-mismatch",
+                "no-units"
+              ]
+            },
+            "metric": { "type": "string" },
+            "basis": { "type": "string" },
+            "significantVariants": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "methods": { "type": "object" }
+      }
+    }
+  }
+}

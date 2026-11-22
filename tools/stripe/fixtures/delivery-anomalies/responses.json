@@ -1,0 +1,110 @@
+[
+  {
+    "step": "originals: created, updated, updated",
+    "label": "customer created (delivery)",
+    "at": "2026-11-21T18:42:03.482Z",
+    "status": null,
+    "body": {
+      "id": "cus_WFX0000000000K",
+      "object": "customer",
+      "address": null,
+      "balance": 0,
+      "created": 1795286523,
+      "currency": null,
+      "customer_account": null,
+      "default_source": null,
+      "delinquent": false,
+      "description": "webflix proof rmwqr4nao delivery-anomalies delivery",
+      "discount": null,
+      "email": "member-20@example.test",
+      "invoice_prefix": "ATVFI2TJ",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "member": "delivery",
+        "scenario": "delivery-anomalies",
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "name": null,
+      "next_invoice_sequence": 1,
+      "phone": null,
+      "preferred_locales": [],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  },
+  {
+    "step": "outage: events created while nothing listens",
+    "label": "events.list after the outage",
+    "at": "2026-11-21T18:43:30.741Z",
+    "status": null,
+    "body": {
+      "object": "list",
+      "data": [
+        {
+          "id": "evt_WFX000000000000000000055",
+          "object": "event",
+          "api_version": "2026-11-18.endive",
+          "created": 1795286573,
+          "data": {
+            "object": {
+              "id": "cus_WFX0000000000K",
+              "object": "customer",
+              "address": null,
+              "balance": 0,
+              "created": 1795286523,
+              "currency": null,
+              "customer_account": null,
+              "default_source": null,
+              "delinquent": false,
+              "description": "webflix proof rmwqr4nao delivery-anomalies delivery",
+              "discount": null,
+              "email": "member-20@example.test",
+              "invoice_prefix": "ATVFI2TJ",
+              "invoice_settings": {
+                "custom_fields": null,
+                "default_payment_method": null,
+                "footer": null,
+                "rendering_options": null
+              },
+              "livemode": false,
+              "metadata": {
+                "member": "delivery",
+                "scenario": "delivery-anomalies",
+                "step": "4",
+                "webflix_proof_run": "rmwqr4nao"
+              },
+              "name": null,
+              "next_invoice_sequence": 1,
+              "phone": null,
+              "preferred_locales": [],
+              "shipping": null,
+              "tax_exempt": "none",
+              "test_clock": null
+            },
+            "previous_attributes": {
+              "metadata": {
+                "step": "3"
+              }
+            }
+          },
+          "livemode": false,
+          "pending_webhooks": 0,
+          "request": {
+            "id": "req_WFX0000000002M",
+            "idempotency_key": "stripe-node-retry-58d9ce40-ebbd-4241-999b-26fb6bb762e8"
+          },
+          "type": "customer.updated"
+        }
+      ],
+      "has_more": false,
+      "url": "/v1/events"
+    }
+  }
+]

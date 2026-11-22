@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { formatTimeLeft, formatTimeLeftSpoken, progressFraction } from "@webflix/contracts";
 import {
   ChevronDownIcon,
   CloseIcon,
@@ -20,17 +21,15 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
 import { queries } from "../../../app/query/queries.ts";
-import {
-  episodeCode,
-  formatLength,
-  formatProgress,
-  genreLine,
-  progressFraction,
-  qualityLabel,
-} from "../common/format.ts";
+import { episodeCode, formatLength, genreLine, qualityLabel } from "../common/format.ts";
 import { canAnimate, durationMs, easing } from "../common/motion.ts";
 import { PreviewVideo } from "../common/PreviewVideo.tsx";
-import { usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
+import {
+  clipHasAudio,
+  hoverClip,
+  usePreviewMuted,
+  usePreviewsEnabled,
+} from "../common/previews.ts";
 import { useBrowseSession } from "../common/session.ts";
 import { TitleTreatment } from "../common/TitleTreatment.tsx";
 import { watchLink } from "../common/watch.ts";
@@ -40,6 +39,7 @@ import { useLiveViewer } from "../library/useLiveViewer.ts";
 import { useRemoveFromContinueWatching } from "../library/useRemoveFromContinueWatching.ts";
 import { setOverlayReturnFocus } from "../title/returnFocus.ts";
 import { type PreviewGeometry, previewGeometry } from "./geometry.ts";
+import { loadArt, measureLayout, previewArtUrl } from "./prepare.ts";
 import { type PreviewRequest, previewStore, usePreviewRequest } from "./store.ts";
 
 /** After the card has finished growing, the clip waits this long before it starts. */
@@ -89,16 +89,6 @@ export function HoverPreview() {
   );
 }
 
-function measureLayout() {
-  const root = document.documentElement;
-  const rem = Number.parseFloat(getComputedStyle(root).fontSize) || 16;
-  return {
-    viewport: { width: root.clientWidth, height: window.innerHeight },
-    gutter: Math.max(rem, window.innerWidth * 0.04),
-    navHeight: rem * 4.25,
-  };
-}
-
 function PreviewCard({
   request,
   closing,
@@ -117,6 +107,7 @@ function PreviewCard({
   const viewer = useLiveViewer(card);
   const removeFromRow = useRemoveFromContinueWatching();
   const boxRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLDivElement>(null);
   const scrollAtOpen = useRef({ x: window.scrollX, y: window.scrollY });
@@ -127,11 +118,17 @@ function PreviewCard({
   const [entered, setEntered] = useState(false);
   const [armed, setArmed] = useState(false);
   const [playing, setPlaying] = useState(false);
+  // First frame: artwork already decoded when the intent fired (see prepare.ts); after the lift,
+  // the preview-width image takes over if it was not the one painted (same art, sharper).
+  const [art] = useState(() => request.art ?? null);
+  const [hiRes] = useState(() => previewArtUrl(card, geometry.width));
+  const [sharpened, setSharpened] = useState(false);
 
   const live = { ...card, viewer };
   const compact = geometry.width < 300;
   const buttonSize = compact ? "sm" : "md";
-  const clip = previewsEnabled ? card.preview : null;
+  const clip = previewsEnabled ? hoverClip(card.preview) : null;
+  const sound = clipHasAudio(clip);
 
   // Details are one click away: start loading them now.
   useEffect(() => {
@@ -164,6 +161,7 @@ function PreviewCard({
     }
     const duration = durationMs("--duration-base", 240);
     const reduced = duration === 0;
+    // Posters are other artwork than the preview's picture: there the picture fades in as it grows.
     const poster = request.layout === "tall" || request.layout === "ranked";
     const animation = reduced
       ? box.animate([{ opacity: 0 }, { opacity: 1 }], {
@@ -177,11 +175,16 @@ function PreviewCard({
           ],
           { duration, easing: easing("--ease-standard") },
         );
-    if (!reduced && canAnimate(panelRef.current)) {
-      panelRef.current.animate([{ opacity: 0 }, { opacity: 0, offset: 0.35 }, { opacity: 1 }], {
-        duration,
-        easing: "linear",
-      });
+    // The panel (its surface and everything on it, rendered from the first frame) fades in as
+    // one layer while the picture lifts: never an empty panel, never text over the page.
+    if (!reduced) {
+      for (const layer of [surfaceRef.current, panelRef.current]) {
+        if (!canAnimate(layer)) continue;
+        layer.animate([{ opacity: 0 }, { opacity: 1, offset: 0.7 }, { opacity: 1 }], {
+          duration,
+          easing: "linear",
+        });
+      }
     }
     animation.onfinish = () => setEntered(true);
     return () => animation.cancel();
@@ -193,6 +196,17 @@ function PreviewCard({
     const timer = setTimeout(() => setArmed(true), PREVIEW_VIDEO_DELAY_MS);
     return () => clearTimeout(timer);
   }, [entered, clip]);
+
+  useEffect(() => {
+    if (!entered || !art || art === hiRes) return;
+    let live = true;
+    void loadArt(hiRes).then((ready) => {
+      if (live && ready) setSharpened(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [entered, art, hiRes]);
 
   // Shrink back into the card (or simply fade when the card has gone or moved off screen).
   useLayoutEffect(() => {
@@ -224,8 +238,9 @@ function PreviewCard({
             { transform: `scale(${shrink})`, opacity: 0 },
           ]
         : [{ opacity: 1 }, { opacity: 0 }];
-    if (canAnimate(panelRef.current)) {
-      panelRef.current.animate([{ opacity: 1 }, { opacity: 0 }], {
+    for (const layer of [surfaceRef.current, panelRef.current]) {
+      if (!canAnimate(layer)) continue;
+      layer.animate([{ opacity: 1 }, { opacity: 0 }], {
         duration: Math.max(1, duration * 0.6),
         fill: "forwards",
       });
@@ -286,10 +301,7 @@ function PreviewCard({
       aria-label={`${card.name} preview`}
       data-testid="hover-preview"
       data-title-id={card.id}
-      className={cx(
-        "absolute z-(--z-preview) overflow-hidden rounded-lg bg-surface-2 shadow-xl ring-1 ring-line-subtle",
-        !measured && "invisible",
-      )}
+      className={cx("absolute z-(--z-preview)", !measured && "invisible")}
       style={{
         left: geometry.left + window.scrollX,
         top: geometry.top + window.scrollY,
@@ -301,25 +313,58 @@ function PreviewCard({
         if (event.pointerType === "mouse") previewStore.pointerLeftPreview();
       }}
     >
+      {/* The panel's surface: behind the picture, faded in with the panel's content. */}
+      <div
+        ref={surfaceRef}
+        aria-hidden
+        className="absolute inset-0 rounded-lg bg-surface-2 shadow-xl ring-1 ring-line-subtle"
+      />
       {/* Clicking the picture opens the details, as people expect; the "More info" button is
           the same action for keyboard and assistive technology. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer shortcut duplicating the labelled More info button. */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users have the More info button. */}
       <div
         ref={mediaRef}
-        className="relative aspect-video w-full cursor-pointer overflow-hidden bg-surface-1"
+        className={cx(
+          "relative aspect-video w-full cursor-pointer overflow-hidden",
+          // Rounded all round while it is still the card; square below once the panel is there.
+          entered ? "rounded-t-lg" : "rounded-lg",
+        )}
         onClick={(event) => {
           if ((event.target as Element).closest("button")) return;
           expand();
         }}
       >
-        <ResponsiveImage
-          image={card.images.card}
-          alt=""
-          fill
-          sizes={`${Math.round(geometry.width)}px`}
-          priority
-        />
+        {art ? (
+          // Decoded before the preview opened: painted synchronously on the first frame.
+          <img
+            src={art}
+            alt=""
+            decoding="sync"
+            draggable={false}
+            data-preview-art=""
+            className="absolute inset-0 size-full object-cover"
+          />
+        ) : (
+          // Nothing decoded in time (a slow network): the dominant colour, then the picture.
+          <ResponsiveImage
+            image={card.images.card}
+            alt=""
+            fill
+            sizes={`${Math.round(geometry.width)}px`}
+            priority
+            placeholder="color"
+          />
+        )}
+        {sharpened ? (
+          <img
+            src={hiRes}
+            alt=""
+            decoding="sync"
+            draggable={false}
+            className="absolute inset-0 size-full animate-fade-in object-cover"
+          />
+        ) : null}
         {armed && clip ? (
           <PreviewVideo
             src={clip.url}
@@ -349,7 +394,7 @@ function PreviewCard({
             logoClassName="block max-h-12 w-2/5"
             textClassName="type-title line-clamp-2"
           />
-          {playing ? (
+          {playing && sound ? (
             <button
               type="button"
               aria-label={muted ? "Turn sound on" : "Turn sound off"}
@@ -363,7 +408,10 @@ function PreviewCard({
         </div>
       </div>
 
-      <div ref={panelRef} className={cx("flex flex-col", compact ? "gap-2.5 p-3" : "gap-3 p-4")}>
+      <div
+        ref={panelRef}
+        className={cx("relative flex flex-col", compact ? "gap-2.5 p-3" : "gap-3 p-4")}
+      >
         <div className="flex items-center gap-2">
           <Tooltip
             content={episode ? `Resume ${episodeCode(episode)}` : progress ? "Resume" : "Play"}
@@ -420,9 +468,15 @@ function PreviewCard({
               </p>
             ) : null}
             <div className="flex items-center gap-3">
-              <ProgressBar value={progressFraction(progress)} size="sm" className="flex-1" />
-              <span className="shrink-0 type-caption text-fg-muted tabular-nums">
-                {formatProgress(progress)}
+              <ProgressBar
+                value={progressFraction(progress)}
+                size="sm"
+                className="flex-1"
+                label="Watched"
+                valueText={formatTimeLeftSpoken(progress)}
+              />
+              <span aria-hidden className="shrink-0 type-caption text-fg-muted tabular-nums">
+                {formatTimeLeft(progress)}
               </span>
             </div>
           </div>

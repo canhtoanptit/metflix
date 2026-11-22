@@ -8,7 +8,7 @@ export interface ProgressBarProps {
   value: number;
   /** Accessible name ("Watched", "Step 2 of 4"). Omit when decorative (`aria-hidden`). */
   label?: string;
-  /** Human-readable value for screen readers ("21 of 45 minutes"). */
+  /** Human-readable value for screen readers ("24 minutes left"). */
   valueText?: string;
   size?: keyof typeof SIZES;
   /** `onImage` uses a translucent track for artwork backgrounds. */

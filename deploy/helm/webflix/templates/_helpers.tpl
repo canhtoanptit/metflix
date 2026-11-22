@@ -353,3 +353,18 @@ prometheus.io/port: "4001"
 prometheus.io/path: /metrics
 {{- end }}
 {{- end -}}
+
+{{/*
+Pod securityContext of the processes that hold database connections (API, worker, Jobs): the
+chart's podSecurityContext plus the TCP keepalive sysctls (tcpKeepalive).
+*/}}
+{{- define "webflix.appPodSecurityContext" -}}
+{{- $context := deepCopy .Values.podSecurityContext -}}
+{{- $sysctls := list -}}
+{{- with .Values.tcpKeepalive -}}
+{{- if .intervalSec -}}{{- $sysctls = append $sysctls (dict "name" "net.ipv4.tcp_keepalive_intvl" "value" (.intervalSec | int | toString)) -}}{{- end -}}
+{{- if .probes -}}{{- $sysctls = append $sysctls (dict "name" "net.ipv4.tcp_keepalive_probes" "value" (.probes | int | toString)) -}}{{- end -}}
+{{- end -}}
+{{- if $sysctls -}}{{- $_ := set $context "sysctls" (concat ($context.sysctls | default list) $sysctls) -}}{{- end -}}
+{{- toYaml $context -}}
+{{- end -}}

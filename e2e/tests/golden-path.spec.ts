@@ -59,7 +59,7 @@ test("a new member signs up, watches a film, resumes it, and signs out", async (
     await expect(page.getByRole("heading", { name: "Who's watching?" })).toBeVisible();
     await page.getByLabel("Your name").fill("Sam");
     await page.getByLabel("Profile 2 name (optional)").fill("Pip");
-    await page.getByRole("checkbox", { name: "Kids profile" }).first().check();
+    await page.getByRole("checkbox", { name: "Profile 2 is a kids profile" }).check();
     await page.getByRole("button", { name: "Create 2 profiles" }).click();
     await expect(page).toHaveURL(/\/browse/);
     await expect(page.getByRole("button", { name: "Profile menu for Sam" })).toBeVisible();

@@ -14,6 +14,7 @@ const fake = vi.hoisted(() => {
     AUDIO_TRACKS_UPDATED: "hlsAudioTracksUpdated",
     AUDIO_TRACK_SWITCHED: "hlsAudioTrackSwitched",
     FRAG_BUFFERED: "hlsFragBuffered",
+    BUFFER_EOS: "hlsBufferEos",
     ERROR: "hlsError",
   };
   const instances: FakeHls[] = [];
@@ -28,6 +29,7 @@ const fake = vi.hoisted(() => {
     recoverMediaError = vi.fn();
     swapAudioCodec = vi.fn();
     startLoad = vi.fn();
+    trigger = vi.fn();
     stopLoad = vi.fn();
     constructor() {
       instances.push(this);
@@ -113,5 +115,29 @@ describe("hls.js engine: a playhead stuck with data buffered ahead", () => {
     media.setTime(12);
     hls?.emit(fake.Events.ERROR, { ...stuck, buffer: 0 });
     expect(media.currentTime).toBe(12);
+  });
+});
+
+describe("hls.js engine: a stream that never ends", () => {
+  it("ends the stream when playback stalls just short of the end", async () => {
+    const media = createFakeMedia(150);
+    await createHlsEngine(
+      media,
+      {
+        url: "/media/t/vod/a/master.m3u8",
+        startPositionSec: 0,
+        maxVideoHeight: 1080,
+        preferredAudioLanguage: null,
+      },
+      events,
+    );
+    const hls = fake.instances.at(-1);
+    media.setTime(149.949);
+    hls?.emit(fake.Events.ERROR, { ...stuck, buffer: 0.05 });
+    // Every track (no type): hls.js then calls MediaSource.endOfStream() itself.
+    expect(hls?.trigger).toHaveBeenCalledWith(fake.Events.BUFFER_EOS, { type: null });
+    expect(media.currentTime).toBe(149.949);
+    expect(hls?.recoverMediaError).not.toHaveBeenCalled();
+    expect(events.fatal).not.toHaveBeenCalled();
   });
 });

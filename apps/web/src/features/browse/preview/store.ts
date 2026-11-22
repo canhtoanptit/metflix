@@ -27,6 +27,12 @@ export interface PreviewRequest {
   progress?: Progress | null;
   episode?: EpisodeRef | null;
   removable?: boolean;
+  /**
+   * Artwork already decoded when the preview opened (the card's own image, or the preview-width
+   * image fetched during hover intent): painted on the first frame, synchronously. Null: none
+   * was ready in time, and the preview loads its artwork itself.
+   */
+  art?: string | null;
 }
 
 interface State {
@@ -45,6 +51,8 @@ let leaveTimer: ReturnType<typeof setTimeout> | null = null;
 let pointerOnPreview = false;
 let lastClosedAt = 0;
 let lastScrollAt = 0;
+/** An accepted intent waiting (briefly) for its artwork to decode before the preview opens. */
+let pending: { id: string; scope: string; cancel: () => void } | null = null;
 /**
  * Previews never open from a scroll: cards slide under a resting pointer, and an intent that
  * began during scrolling would fire just after it. Longer than the intent delay, so only
@@ -60,6 +68,12 @@ function emit(next: State) {
 function clearLeave() {
   if (leaveTimer) clearTimeout(leaveTimer);
   leaveTimer = null;
+}
+
+function cancelPending(match?: (waiting: { id: string; scope: string }) => boolean) {
+  if (!pending || (match && !match(pending))) return;
+  pending.cancel();
+  pending = null;
 }
 
 export const previewStore = {
@@ -79,12 +93,52 @@ export const previewStore = {
       return true;
     }
     if (Date.now() - lastScrollAt < SCROLL_QUIET_MS) return false;
+    cancelPending();
     clearLeave();
     pointerOnPreview = false;
     emit({ request });
     return true;
   },
+  /**
+   * Accept an intent whose artwork is still decoding: open once `ready` settles (or after
+   * `maxWaitMs`), building the request then, unless the pointer left the card, the page
+   * scrolled or another preview was asked for meanwhile. Same answer as `open` otherwise.
+   */
+  openWhenReady(
+    id: string,
+    scope: string,
+    ready: Promise<unknown>,
+    build: () => PreviewRequest,
+    maxWaitMs: number,
+  ): boolean {
+    if (state.request?.id === id) {
+      clearLeave();
+      return true;
+    }
+    if (Date.now() - lastScrollAt < SCROLL_QUIET_MS) return false;
+    cancelPending();
+    let live = true;
+    const go = () => {
+      if (!live) return;
+      live = false;
+      clearTimeout(timer);
+      pending = null;
+      previewStore.open(build());
+    };
+    const timer = setTimeout(go, maxWaitMs);
+    void ready.then(go, go);
+    pending = {
+      id,
+      scope,
+      cancel: () => {
+        live = false;
+        clearTimeout(timer);
+      },
+    };
+    return true;
+  },
   close(options: { warm?: boolean } = {}): void {
+    cancelPending();
     clearLeave();
     pointerOnPreview = false;
     if (!state.request) return;
@@ -99,14 +153,17 @@ export const previewStore = {
   /** The page scrolled away from an open preview: close it (no warm hand-off). */
   scrolled(): void {
     lastScrollAt = Date.now();
+    cancelPending();
     previewStore.close({ warm: false });
   },
   /** Close if the open preview belongs to `scope` (the row paged, the grid changed). */
   closeScope(scope: string): void {
+    cancelPending((waiting) => waiting.scope === scope);
     if (state.request?.scope === scope) previewStore.close();
   },
   /** The pointer left the anchor card: close unless it arrives on the preview. */
   anchorLeft(id: string): void {
+    cancelPending((waiting) => waiting.id === id);
     if (state.request?.id !== id || pointerOnPreview) return;
     clearLeave();
     leaveTimer = setTimeout(() => {
@@ -131,6 +188,7 @@ export const previewStore = {
   },
   /** Test hook. */
   reset(): void {
+    cancelPending();
     clearLeave();
     pointerOnPreview = false;
     lastClosedAt = 0;

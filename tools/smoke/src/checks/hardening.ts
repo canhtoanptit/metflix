@@ -55,7 +55,134 @@ async function tallRendition(
   return null;
 }
 
+/** A packaged title of `type`, its card, and a playback session of it (ended by the caller). */
+async function packagedTitle(
+  ctx: CheckContext,
+  agent: Agent,
+  type: TitleCard["type"],
+): Promise<TitleCard | null> {
+  const { cards } = await ctx.env.catalog();
+  for (const card of cards.filter((candidate) => candidate.type === type).slice(0, 30)) {
+    const session = await succeeds(
+      () => agent.api.createPlaybackSession({ body: { titleId: card.id } }),
+      `start ${card.id}`,
+    );
+    await agent.api.endPlaybackSession({ params: { id: session.id } });
+    if (session.manifestUrl.startsWith("/media/")) return card;
+  }
+  return null;
+}
+
 export const hardeningChecks: CheckDefinition[] = [
+  {
+    id: "browse.durations-agree",
+    area: "browse",
+    title:
+      "A packaged title's duration is its stream's everywhere: card, detail, episode list and playback session agree within a second",
+    needs: [needs.packagedMedia],
+    timeoutMs: 120_000,
+    async run(ctx: CheckContext) {
+      const viewer = await ctx.env.isolatedViewer("durations");
+      const api = viewer.agent.api;
+      const near = (a: number | null | undefined, b: number, what: string) =>
+        check(a !== null && a !== undefined && Math.abs(a - b) < 1, `${what} disagrees`, {
+          expected: `${b} s (the playback session's duration)`,
+          observed: `${a ?? "none"} s`,
+        });
+      const movie = await packagedTitle(ctx, viewer.agent, "movie");
+      if (movie) {
+        const session = await succeeds(
+          () => api.createPlaybackSession({ body: { titleId: movie.id } }),
+          `start ${movie.id}`,
+        );
+        await api.endPlaybackSession({ params: { id: session.id } });
+        const detail = await succeeds(() => api.getTitle({ params: { id: movie.id } }), "detail");
+        near(movie.runtimeSec, session.durationSec, `the card runtime of ${movie.id}`);
+        near(detail.runtimeSec, session.durationSec, `the detail runtime of ${movie.id}`);
+      }
+      const series = await packagedTitle(ctx, viewer.agent, "series");
+      if (series) {
+        equal(series.runtimeSec, null, `the card runtime of series ${series.id}`);
+        const detail = await succeeds(() => api.getTitle({ params: { id: series.id } }), "detail");
+        equal(detail.runtimeSec, null, `the detail runtime of series ${series.id}`);
+        const episodes = await succeeds(
+          () => api.listEpisodes({ params: { id: series.id, seasonNumber: 1 } }),
+          "episodes",
+        );
+        const episode = episodes.items.find((item) => item.isPlayable);
+        check(episode, `${series.id} season 1 has no playable episode`);
+        const session = await succeeds(
+          () => api.createPlaybackSession({ body: { titleId: series.id, episodeId: episode.id } }),
+          `start ${episode.id}`,
+        );
+        await api.endPlaybackSession({ params: { id: session.id } });
+        if (session.manifestUrl.startsWith("/media/")) {
+          near(episode.runtimeSec, session.durationSec, `the episode runtime of ${episode.id}`);
+        }
+      }
+      if (!movie && !series) ctx.skip("no packaged movie or series found");
+      ctx.note(`movie: ${movie?.id ?? "none"}; series: ${series?.id ?? "none"}`);
+    },
+  },
+  {
+    id: "playback.signout-stops-playback",
+    area: "playback",
+    title:
+      "Signing out everywhere stops a device that is playing: its next heartbeat, playlist and start are refused, and its screen is free",
+    async run(ctx: CheckContext) {
+      const holder = await ctx.env.viewer("signout-playback", { plan: "basic" });
+      const tv = await ctx.env.login(holder.account, "signout-tv");
+      await ctx.env.selectProfile(tv, holder.profile.id);
+      const fixture = await ctx.env.packagedPlayback();
+      const titleId = fixture?.card.id ?? (await ctx.env.catalog()).cards[0]?.id;
+      check(titleId, "the catalog is empty");
+      const session = await succeeds(
+        () => tv.api.createPlaybackSession({ body: { titleId } }),
+        "the TV starts playing",
+      );
+      await succeeds(
+        () =>
+          tv.api.sendHeartbeat({
+            params: { id: session.id },
+            body: { positionSec: 5, durationSec: session.durationSec, state: "playing" },
+          }),
+        "a heartbeat while playing",
+      );
+      const packaged = session.manifestUrl.startsWith("/media/");
+      if (packaged) status(await tv.fetch(session.manifestUrl), 200, "the master playlist");
+      await succeeds(() => holder.agent.api.logoutAll(), "POST /auth/logout-all");
+      const heartbeat = await tv.fetch(`${API}/playback/sessions/${session.id}/heartbeat`, {
+        method: "POST",
+        headers: CSRF,
+        body: { positionSec: 10, durationSec: session.durationSec, state: "playing" },
+      });
+      problem(heartbeat, "unauthenticated", "the TV's next heartbeat");
+      if (packaged) {
+        problem(
+          await tv.fetch(session.manifestUrl),
+          "playback_session_ended",
+          "the TV's next playlist",
+        );
+      }
+      problem(
+        await tv.fetch(`${API}/playback/sessions`, {
+          method: "POST",
+          headers: CSRF,
+          body: { titleId },
+        }),
+        "unauthenticated",
+        "the TV starting again",
+      );
+      // The plan's one screen is free: another device starts at once.
+      const phone = await ctx.env.login(holder.account, "signout-phone");
+      await ctx.env.selectProfile(phone, holder.profile.id);
+      const next = await succeeds(
+        () => phone.api.createPlaybackSession({ body: { titleId } }),
+        "another device starting on the freed screen",
+      );
+      await phone.api.endPlaybackSession({ params: { id: next.id } });
+    },
+  },
   {
     id: "media.quality-cap",
     area: "media",

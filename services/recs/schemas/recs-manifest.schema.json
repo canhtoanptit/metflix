@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/recs-manifest/1",
+  "title": "recs/v={run}/manifest.json: one artefact version",
+  "description": "Written after every file it lists; a version directory without a manifest is incomplete and must be ignored. services/recs/README.md, Artefacts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "formatMinor",
+    "run",
+    "recipeHash",
+    "createdAt",
+    "asOf",
+    "expiresAt",
+    "catalogVersion",
+    "code",
+    "data",
+    "evaluation",
+    "counts",
+    "rowTypes",
+    "tables",
+    "files"
+  ],
+  "properties": {
+    "format": { "const": "webflix.recs" },
+    "formatVersion": {
+      "description": "Major: a reader refuses a major it does not know.",
+      "const": 1
+    },
+    "formatMinor": {
+      "description": "Minor: additive changes only (new columns, row types, fields); readers ignore what they do not know.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "run": { "type": "string", "minLength": 1 },
+    "recipeHash": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "createdAt": { "type": "string" },
+    "asOf": { "type": "string" },
+    "expiresAt": { "type": "string" },
+    "catalogVersion": { "type": "string" },
+    "code": { "type": "object" },
+    "data": { "type": "object" },
+    "evaluation": { "type": ["object", "null"] },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profiles", "titles", "neighbourRows", "profileItems"],
+      "properties": {
+        "profiles": { "type": "integer", "minimum": 0 },
+        "titles": { "type": "integer", "minimum": 0 },
+        "neighbourRows": { "type": "integer", "minimum": 0 },
+        "profileItems": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rowTypes": { "type": "array", "items": { "type": "string" } },
+    "tables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["columns", "orderBy", "primaryKey"],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "type", "nullable"],
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "enum": ["string", "int32", "float32"] },
+                "nullable": { "type": "boolean" },
+                "description": { "type": "string" }
+              }
+            }
+          },
+          "orderBy": { "type": "array", "items": { "type": "string" } },
+          "primaryKey": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "table", "rows", "bytes", "sha256", "firstKey", "lastKey"],
+        "properties": {
+          "path": { "description": "Relative to recs/v={run}/.", "type": "string" },
+          "table": { "type": "string" },
+          "rows": { "type": "integer", "minimum": 0 },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "firstKey": { "type": ["string", "null"] },
+          "lastKey": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

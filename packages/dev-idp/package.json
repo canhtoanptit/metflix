@@ -1,0 +1,26 @@
+{
+  "name": "@webflix/dev-idp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Development OpenID Provider: a standards-compliant local stand-in for Google, Apple and Keycloak, with a relying-party test kit. Never served in production.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts",
+    "./node": "./src/node/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . && tsc -p tsconfig.node.json",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@types/node": "catalog:",
+    "@webflix/contracts": "workspace:*",
+    "oauth4webapi": "3.8.8",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

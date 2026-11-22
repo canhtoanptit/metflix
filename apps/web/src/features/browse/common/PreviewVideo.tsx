@@ -14,6 +14,8 @@ export interface PreviewVideoProps {
   fade?: "--duration-slow" | "--duration-cinematic";
   /** Fraction of the picture that must be on screen to play (billboard: half; cards: most). */
   visibilityThreshold?: number;
+  /** Where the clip starts (a hand-over from the billboard); read once, when it mounts. */
+  startPositionSec?: number;
   handle?: Ref<PreviewPlayerHandle>;
 }
 
@@ -34,6 +36,7 @@ export function PreviewVideo({
   onError,
   fade = "--duration-slow",
   visibilityThreshold = 0.5,
+  startPositionSec = 0,
   handle,
 }: PreviewVideoProps) {
   return (
@@ -48,6 +51,7 @@ export function PreviewVideo({
         onEnded={onEnded}
         onError={onError}
         visibilityThreshold={visibilityThreshold}
+        startPositionSec={startPositionSec}
         // Reduced motion and the profile's autoplay setting are decided before this mounts.
         respectReducedMotion={false}
         maxVideoHeight={720}

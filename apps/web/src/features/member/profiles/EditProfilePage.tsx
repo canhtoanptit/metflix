@@ -50,6 +50,7 @@ import {
   useIsDemoAccount,
 } from "../shared/privileges.ts";
 import { removeSessionProfile, upsertSessionProfile } from "../shared/sessionProfiles.ts";
+import { useToastOffset } from "../shared/useToastOffset.ts";
 import { validateProfileName } from "../shared/validation.ts";
 import { AvatarPicker } from "./AvatarPicker.tsx";
 import {
@@ -576,7 +577,7 @@ function EditorShell({
       <MemberHeader home="/profiles" className="border-b border-line-subtle" />
       <main
         id="main"
-        className="mx-auto flex w-full max-w-dialog-lg flex-col gap-8 px-gutter pt-8 pb-20 sm:pt-12"
+        className="mx-auto flex w-full max-w-dialog-lg flex-col gap-8 px-gutter pt-8 pb-36 sm:pt-12"
       >
         <div className="flex flex-col gap-3">
           <Link
@@ -651,6 +652,8 @@ function ProfileEditor({
 }) {
   const [checked, setChecked] = useState(false);
   const [picking, setPicking] = useState(false);
+  const barRef = useRef<HTMLDivElement>(null);
+  useToastOffset(barRef);
   const nameRef = useRef<HTMLInputElement>(null);
   const alertRef = useRef<HTMLDivElement>(null);
   const nameError = checked ? validateProfileName(form.name, otherNames) : null;
@@ -810,20 +813,26 @@ function ProfileEditor({
         </div>
       </Section>
 
-      {/* Sticky, so Save is always in reach on a long form. */}
-      <div className="sticky bottom-0 z-(--z-sticky) -mx-gutter flex gap-3 border-t border-line-subtle bg-canvas/90 px-gutter py-4 backdrop-blur-md sm:justify-end">
-        <Button variant="outline" size="lg" onClick={onCancel} className="flex-1 sm:flex-none">
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          variant="accent"
-          size="lg"
-          loading={saving}
-          className="flex-1 sm:flex-none"
-        >
-          {mode === "create" ? "Add profile" : "Save"}
-        </Button>
+      {/* A full-width bar fixed to the bottom, so Save is always in reach on a long form; its
+          buttons line up with the form column. Toasts rise above it. */}
+      <div
+        ref={barRef}
+        className="fixed inset-x-0 bottom-0 z-(--z-sticky) border-t border-line bg-surface-1 pb-[env(safe-area-inset-bottom)]"
+      >
+        <div className="mx-auto flex w-full max-w-dialog-lg gap-3 px-gutter py-4 sm:justify-end">
+          <Button variant="outline" size="lg" onClick={onCancel} className="flex-1 sm:flex-none">
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="accent"
+            size="lg"
+            loading={saving}
+            className="flex-1 sm:flex-none"
+          >
+            {mode === "create" ? "Add profile" : "Save"}
+          </Button>
+        </div>
       </div>
 
       {danger}

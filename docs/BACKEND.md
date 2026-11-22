@@ -137,7 +137,9 @@ ratings so the home page is full on first load.
 - **Rate limits.** Every 429 is `rate_limited` with `retryAfterSec` and `Retry-After`. Client
   addresses are keyed per subscriber: an IPv6 address by its /64.
 
-  | Policy | Keyed by | Strict (k8s, Cloudflare) | Dev | What counts |
+  This table is the reference for every mode; the other documents point here.
+
+  | Policy | Keyed by | Strict (default: k8s, Cloudflare production) | Relaxed (dev, Cloudflare local, `make k8s-up RATE_LIMITS=relaxed`) | What counts |
   | --- | --- | --- | --- | --- |
   | `auth` | client address | 10/60 s | 60/60 s | `POST /auth/login` |
   | `auth-email` | email address | 10/900 s | 10/900 s | `POST /auth/login`, unless the browser signed in to that account before (its `webflix_device` cookie) or it is the demo account |
@@ -147,10 +149,33 @@ ratings so the home page is full on first load.
   | `payment` | account | 10/600 s | 10/600 s | card verifications: `PUT /account/payment-method`, a plan change that carries a card |
   | `playback-start` | account | 60/60 s | 60/60 s | `POST /playback/sessions` |
 
-  Dev relaxes the address-keyed limits so e2e suites sharing 127.0.0.1 do not trip them. To
-  exercise 429 handling in dev, set e.g. `WEBFLIX_RATE_LIMIT_AUTH=3/60`. Sign-up and sign-in set
+  The relaxed profile raises `auth`, `signup`, `email-lookup` and `profile-pin`, which the e2e
+  suites and people sharing 127.0.0.1 and the demo account would otherwise trip. To exercise
+  429 handling in dev, set e.g. `WEBFLIX_RATE_LIMIT_AUTH=3/60`. Sign-up and sign-in set
   the `webflix_device` cookie (`__Host-` on https; HttpOnly, a year, stateless): it only exempts
   that browser from the per-email limit.
+- **Durations**: wherever a title or episode has packaged media, every duration the API returns
+  for it is that stream's playable duration, in seconds: `TitleCard.runtimeSec` (movies),
+  `EpisodeSummary.runtimeSec`, `NextEpisode.runtimeSec`, `PlaybackSession.durationSec`, and the
+  `durationSec` of progress (Continue Watching, detail, history), which is what the player reports.
+  The catalogue runtime only stands in for external fallback media. Series cards carry
+  `seasonCount`, never minutes; nothing sums episode runtimes. Compute "time left" from
+  `positionSec` and `durationSec` (`formatTimeLeft` in `@webflix/contracts`).
+- **Previews** (`TitleCard.preview`, so cards, detail and billboard) say what they are: `kind`
+  `footage` (a cut of the title) or `motion` (motion art from its key art), and `hasAudio`
+  (false: a silent clip, offer no sound control). Both always sent; absent from older servers,
+  where they mean footage with audio.
+- **Search** accepts a query of up to 2000 characters and searches its first 100, cut between
+  code points: a long query is never an error. `SearchResults.query` is what was searched.
+- **Notifications**: a profile sees arrivals since it was created as unread, plus the latest
+  three from before, already read: a new profile opens with no backlog.
+- **Signing devices out** (`POST /auth/logout-all`, every device including the asking one;
+  `DELETE /account/sessions/:id`, one device) ends those sessions and frees their screens at
+  once: a device that was playing has its next heartbeat refused (`401`), then its playlists
+  (`410`), and cannot start again. Segments it already holds a token for stay fetchable until the
+  token expires (DECISIONS.md D1); the player stops at the refused heartbeat, at most one
+  heartbeat interval (30 s) later. Both need an account holder (§3, Privileges): from the gate
+  they answer `profile_required` and sign nobody out.
 - **Images** are `ImageSet` templates under `/cdn/...` with `?v=<hash>` (immutable caching).
   Without packaged media they 404; `dominantColor` is always set.
 - **Diagnostics** (not in production): `GET /titles/:id/popularity` returns a title's stored
@@ -186,6 +211,8 @@ every problem listed). **Dev mode needs none.**
 | `HOST` | all interfaces | Listen address |
 | `WEBFLIX_DATABASE_URL` | dev: `sqlite:<repo>/.data/webflix.sqlite`; required otherwise | `postgres://user:pass@host:5432/db` or `sqlite:<path>` / `sqlite::memory:` |
 | `WEBFLIX_DATABASE_POOL_MAX` | `10` | Postgres pool size per process |
+| `WEBFLIX_DATABASE_<ROLE>_STATEMENT_TIMEOUT_MS`, `WEBFLIX_DATABASE_<ROLE>_QUERY_TIMEOUT_MS` (`<ROLE>`: `REQUEST`, `BACKGROUND`, `MAINTENANCE`) | the role's budget (§6: 5 000 / 7 000, 60 000 / 65 000, 600 000 / 605 000) | Override one role's server-side `statement_timeout` and client-side query timeout (ms, `0` = none). Each process uses its own role's (`serve` and `wait`: request, `worker`: background, `migrate` and `seed`: maintenance); the query timeout must exceed the statement timeout, or both be `0`, else startup fails |
+| `WEBFLIX_DATABASE_KEEPALIVE_MS` | `10000` | TCP keepalive's first probe on database connections (`0` = off); interval and count are the host's (the chart sets 10 s × 3) |
 | `WEBFLIX_BLOB_STORE` | dev: `fs`; else `s3` | `fs`, `memory` or `s3` (see §5) |
 | `WEBFLIX_BLOB_DIR` | `<repo>/.data/blobs` | Root of the `fs` store |
 | `WEBFLIX_MEDIA_DIR` | dev: `<repo>/.cache/media/fast` or `full` if present | Read-only packaged-media directory layered under the blob store; `none` to disable |
@@ -206,7 +233,14 @@ every problem listed). **Dev mode needs none.**
 | `WEBFLIX_SCHEDULER_INTERVAL_SEC` | `300` | Scheduler tick (stats rollups, daily baseline, cleanup) |
 | `WEBFLIX_METRICS` | `true` | Serve `/metrics` |
 
-Tests: `WEBFLIX_TEST_POSTGRES_URL` enables the Postgres runs of the `packages/db` suites.
+Tests: `WEBFLIX_TEST_POSTGRES_URL` enables the Postgres runs of the `packages/db` suites;
+`WEBFLIX_TEST_VALKEY_URL` and `WEBFLIX_TEST_S3_*` the Valkey and S3 runs (`test:services` sets
+them).
+
+### Cloudflare only (`apps/edge`)
+
+The Worker reads the portable variables above as vars and secrets, plus its own
+`WEBFLIX_PASSWORD_ITERATIONS` and `WEBFLIX_EDGE_CACHE` (docs/CLOUDFLARE.md §6 and §3).
 
 ## 5. Composition and plugging in adapters
 
@@ -321,11 +355,37 @@ Notes for that work:
 | Mode | Dialect | Factory |
 | --- | --- | --- |
 | dev, tests | SQLite via built-in `node:sqlite` (WAL, foreign keys on) | `createSqliteDatabase({ path })` from `@webflix/db/sqlite` |
-| k8s | PostgreSQL via `pg` | `createPostgresDatabase({ connectionString, maxConnections })` from `@webflix/db/postgres` |
+| k8s | PostgreSQL via `pg` | `createPostgresDatabase({ connectionString, maxConnections, role })` from `@webflix/db/postgres` |
 | cloudflare | D1 | `createD1Database(env.DB)` from `@webflix/db/d1` |
 
-One repository implementation serves all three; the repository contract suite (28 tests,
-`describeRepositoryContract` in `@webflix/core/testing`) passes on memory, SQLite, Postgres 19
+#### PostgreSQL time budgets and failure modes
+
+Each process opens its pool with a role (`createPostgresDatabase({ role })`, DECISIONS.md D42):
+
+| Role | Used by | `statement_timeout` (server) | Client-side query timeout | Idle in transaction (server ends it) |
+| --- | --- | --- | --- | --- |
+| `request` | `serve` (HTTP API), `wait` | 5 s | 7 s | 7 s |
+| `background` | `worker` (jobs, scheduler) | 60 s | 65 s | 65 s |
+| `maintenance` | `migrate`, `seed` | 10 min | 10 min 5 s | 10 min 5 s |
+| none given | (library default; `apps/api` always passes one) | 15 s | 17 s | 17 s |
+
+`apps/api` maps each process to its role (`DATABASE_ROLES` in `src/adapters.ts`); a runtime
+composed for an unknown process name fails with a `ConfigError` instead of falling back to a
+default budget. Every role: at most 5 s to open a connection or get a free one from the pool,
+TCP keepalive from 10 s of idleness. An API request therefore waits at most about 12 s on the database
+before it answers 503 `service_unavailable` with `Retry-After` (the gateway's route timeout is
+60 s).
+
+| Failure | What happens |
+| --- | --- |
+| A statement runs too long on a reachable server | The server cancels it (`57014`): 500, retrying would be as slow |
+| Server restart, graceful shutdown, failover (`57P01`, closed sockets) | The requests in flight answer 503; the connections are discarded; the process never exits (D41) |
+| The server stops answering (partition, host lost with its connections) | The statement fails client-side after the role's query timeout: 503; its connection is destroyed, never reused; the next request opens a new one (5 s bound) |
+| A transaction cut before COMMIT went out | Nothing of it is applied: the server rolls it back when it sees the connection gone or after the idle-in-transaction timeout (no locks left behind) |
+| The connection lost after COMMIT went out | Outcome unknown: 503 whose detail says the change may or may not have been saved. The web app never retries a mutation on its own |
+
+One repository implementation serves all three; the repository contract suite
+(`describeRepositoryContract` in `@webflix/core/testing`) passes on memory, SQLite, Postgres 19
 and D1 in workerd. A test introspects SQLite and Postgres schemas and asserts identical tables,
 columns, type families and nullability.
 
@@ -347,9 +407,11 @@ columns, type families and nullability.
 `services.seeder.seed({ catalog, demoAccount, manifest }, { force })` is portable. It writes the
 catalog atomically, upserts notifications, rebuilds the search index, writes 14 days of synthetic
 title stats and resets the demo account. It is idempotent (skips when the input hash is
-unchanged). The hash includes a seed format version: format 3 (this change) stores each packaged
-asset's nominal best height and measures demo progress on the playable stream, so every
-deployment re-applies the seed once (it resets the demo account, as any re-seed does).
+unchanged). The hash includes a seed format version: format 3 stores each packaged asset's
+nominal best height and measures demo progress on the playable stream; format 4 makes the
+runtimes of packaged titles and episodes their stream's duration and records what each preview
+is. Every deployment re-applies the seed once per format (it resets the demo account, as any
+re-seed does).
 
 - dev: automatic on `serve` (and `node apps/api/src/main.ts seed`).
 - k8s: `seed` Job after `migrate`, with `--manifest` pointing at the manifest uploaded with the

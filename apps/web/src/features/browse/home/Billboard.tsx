@@ -26,8 +26,9 @@ import {
   useState,
 } from "react";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
+import { offerClipHandoff } from "../common/clipHandoff.ts";
 import { genreLine } from "../common/format.ts";
-import { usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
+import { clipHasAudio, usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
 import { TitleTreatment } from "../common/TitleTreatment.tsx";
 import { playLabel, watchLink } from "../common/watch.ts";
 import { useMyListToggle } from "../library/useMyListToggle.ts";
@@ -71,7 +72,9 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
   const sectionRef = useRef<HTMLElement>(null);
   const synopsisRef = useRef<HTMLParagraphElement>(null);
   const [shift, setShift] = useState(0);
+  // Footage and motion previews both play here; only a clip with sound gets a sound control.
   const clip = previewsEnabled ? title.preview : null;
+  const sound = clipHasAudio(clip);
 
   // Cached backdrops never fire `load` after mount; treat an already-decoded image as loaded.
   useEffect(() => {
@@ -183,7 +186,11 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
             size="hero"
             variant="secondary"
             icon={InfoIcon}
-            onClick={() => open(title.id, { origin: sectionRef.current })}
+            onClick={() => {
+              // The detail hero continues this clip from this frame (same title, same clip).
+              offerClipHandoff(title.id, phase === "playing" ? video.current?.media : null, sound);
+              open(title.id, { origin: sectionRef.current });
+            }}
           >
             More info
           </Button>
@@ -191,7 +198,7 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
       </div>
 
       <div className="absolute end-0 bottom-[24%] flex items-center gap-3 lg:bottom-[28%]">
-        {phase === "playing" ? (
+        {phase === "playing" && sound ? (
           <RoundControl
             label={muted ? "Turn sound on" : "Turn sound off"}
             pressed={!muted}

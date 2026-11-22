@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { preloadable, useModule } from "../common/modules.ts";
+import { previewModule } from "../preview/prepare.ts";
 import { previewStore, usePreviewRequest } from "../preview/store.ts";
 import { Footer } from "./Footer.tsx";
 import { MobileTabBar } from "./MobileTabBar.tsx";
@@ -14,7 +15,6 @@ import { notificationsModule } from "./NotificationsBell.tsx";
 import { PHONE_QUERY, TopNav } from "./TopNav.tsx";
 
 const overlayModule = preloadable(() => import("../title/TitleDetailOverlay.tsx"));
-const previewModule = preloadable(() => import("../preview/HoverPreview.tsx"));
 
 /**
  * The signed-in shell: top navigation, the page, footer, the phone tab bar, and the two layers

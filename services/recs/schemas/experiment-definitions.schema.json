@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/experiment-definitions/1",
+  "title": "Experiment definitions for analyse-experiments",
+  "description": "Pre-registered experiments (docs/BLUEPRINT-M2.md §8.1). The primary metric, alpha, minimum detectable effect and horizon are fixed here before the experiment starts; the analysis never accepts another primary metric after the fact. In production this file is exported from the experiments table.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "experiments"],
+  "properties": {
+    "format": { "const": "webflix.experiment-definitions" },
+    "formatVersion": { "const": 1 },
+    "experiments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/experiment" }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+    },
+    "metric": {
+      "enum": ["qualified_plays", "watch_hours", "any_play", "active_days", "retained"]
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "variants",
+        "unit",
+        "primaryMetric",
+        "alpha",
+        "minimumDetectableEffect",
+        "registeredAt",
+        "startsAt"
+      ],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+        "description": { "type": "string" },
+        "variants": {
+          "description": "Design weights (need not sum to 1; they are normalised). The first variant is the control unless `control` names another.",
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "weight"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "weight": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          }
+        },
+        "control": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "unit": { "const": "profile" },
+        "primaryMetric": { "$ref": "#/$defs/metric" },
+        "secondaryMetrics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/metric" },
+          "uniqueItems": true
+        },
+        "alpha": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.5 },
+        "power": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+        "minimumDetectableEffect": {
+          "description": "Relative effect on the primary metric the experiment is sized for. Also sets the mSPRT mixing scale: tau = MDE x control mean.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "registeredAt": { "$ref": "#/$defs/timestamp" },
+        "startsAt": { "$ref": "#/$defs/timestamp" },
+        "endsAt": {
+          "description": "Pre-registered horizon. The fixed-horizon test is reported as valid only once the analysis reaches it.",
+          "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "analysis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "looks"],
+          "properties": {
+            "method": { "const": "msprt" },
+            "looks": { "const": "daily" }
+          }
+        },
+        "srmThreshold": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.1 }
+      }
+    }
+  }
+}

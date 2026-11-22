@@ -22,16 +22,21 @@ import { fullCatalog, fullDemoAccount } from "./data/full.ts";
 import type { OpenFilm } from "./data/open-film-types.ts";
 import { OPEN_FILMS } from "./data/open-films.ts";
 
+export { footagePreviewAsset, motionArtAsset } from "./data/assemble.ts";
 export {
   CURATED_PREVIEWS,
   type CuratedPreview,
   cleanSpans,
+  FOOTAGE_PREVIEW_RECIPE,
   featureCut,
+  frameShowsText,
   MOTION_ART_PREVIEW_SEC,
+  MOTION_ART_RECIPE,
   mediumOfGenres,
   type PreviewClass,
   RECAP_SEC,
   showsSourceText,
+  TEXT_MARGIN_SEC,
 } from "./data/footage.ts";
 export type { Medium, OpenFilm, Span } from "./data/open-film-types.ts";
 

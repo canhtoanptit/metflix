@@ -43,7 +43,7 @@ describe("video plan", () => {
     expect(asset("v-sintel-cut").feature).toBe(true);
     expect(asset("v-sintel").feature).toBe(false);
     expect(profileWindow(asset("v-sintel-cut"), 888, PROFILES.fast)).toEqual({
-      startSec: 101,
+      startSec: 103,
       durationSec: 210,
     });
     expect(profileWindow(asset("v-sintel"), 888, PROFILES.full)).toEqual({
@@ -51,8 +51,8 @@ describe("video plan", () => {
       durationSec: 888,
     });
     expect(profileWindow(asset("v-sintel-cut"), 888, PROFILES.full)).toEqual({
-      startSec: 101,
-      durationSec: 642,
+      startSec: 103,
+      durationSec: 643,
     });
     expect(profileWindow(asset("v-sintel-ep2"), 888, PROFILES.fast)).toEqual({
       startSec: 242,
@@ -72,16 +72,16 @@ describe("video plan", () => {
   it("marks only what is on screen", () => {
     // The real film: its own opening titles and credits.
     expect(markersFor(asset("v-sintel"), { startSec: 0, durationSec: 888 }, facts)).toEqual({
-      intro: { startSec: 1, endSec: 25 },
+      intro: { startSec: 3, endSec: 23 },
       recap: null,
-      creditsStartSec: 743,
+      creditsStartSec: 747,
     });
     // Fast clips the film before the credits: no credits marker.
     expect(
       markersFor(asset("v-sintel"), { startSec: 0, durationSec: 150 }, facts).creditsStartSec,
     ).toBeNull();
     // The text-free cut has no title sequence and no credits.
-    expect(markersFor(asset("v-sintel-cut"), { startSec: 101, durationSec: 642 }, facts)).toEqual({
+    expect(markersFor(asset("v-sintel-cut"), { startSec: 103, durationSec: 643 }, facts)).toEqual({
       intro: null,
       recap: null,
       creditsStartSec: null,
@@ -93,7 +93,7 @@ describe("video plan", () => {
       creditsStartSec: null,
     });
     expect(
-      markersFor(asset("v-sintel-ep1"), { startSec: 101, durationSec: 161 }, facts).recap,
+      markersFor(asset("v-sintel-ep1"), { startSec: 103, durationSec: 159 }, facts).recap,
     ).toBeNull();
     // Previews carry no markers.
     const preview = planned.find((entry) => entry.role === "preview");

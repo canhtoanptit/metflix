@@ -1,0 +1,553 @@
+[
+  {
+    "n": 0,
+    "run_seq": 280,
+    "received_offset_ms": 482,
+    "delivery_of_id": 1,
+    "signature_verified": true,
+    "responded_with": 200,
+    "signed_minus_created_s": 1,
+    "event": {
+      "id": "evt_WFX000000000000000000051",
+      "object": "event",
+      "api_version": "2026-11-18.endive",
+      "created": 1795286434,
+      "data": {
+        "object": {
+          "id": "cus_WFX0000000000H",
+          "object": "customer",
+          "address": null,
+          "balance": 0,
+          "created": 1795286434,
+          "currency": null,
+          "customer_account": null,
+          "default_source": null,
+          "delinquent": false,
+          "description": null,
+          "discount": null,
+          "email": "member-17@example.test",
+          "invoice_prefix": "UQJUCKN5",
+          "invoice_settings": {
+            "custom_fields": null,
+            "default_payment_method": null,
+            "footer": null,
+            "rendering_options": null
+          },
+          "livemode": false,
+          "metadata": {
+            "webflix_proof_run": "rmwqr4nao"
+          },
+          "name": null,
+          "next_invoice_sequence": 1,
+          "phone": null,
+          "preferred_locales": [],
+          "shipping": null,
+          "tax_exempt": "none",
+          "test_clock": null
+        }
+      },
+      "livemode": false,
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_WFX0000000002C",
+        "idempotency_key": "webflix-proof-rmwqr4nao-same"
+      },
+      "type": "customer.created"
+    }
+  },
+  {
+    "n": 1,
+    "run_seq": 289,
+    "received_offset_ms": 1958,
+    "delivery_of_id": 1,
+    "signature_verified": true,
+    "responded_with": 200,
+    "signed_minus_created_s": 0,
+    "event": {
+      "id": "evt_WFX000000000000000000050",
+      "object": "event",
+      "api_version": "2026-11-18.endive",
+      "created": 1795286436,
+      "data": {
+        "object": {
+          "id": "ch_WFX00000000000000000000C",
+          "object": "charge",
+          "amount": 500,
+          "amount_captured": 0,
+          "amount_refunded": 0,
+          "application": null,
+          "application_fee": null,
+          "application_fee_amount": null,
+          "balance_transaction": null,
+          "billing_details": {
+            "address": {
+              "city": null,
+              "country": null,
+              "line1": null,
+              "line2": null,
+              "postal_code": null,
+              "state": null
+            },
+            "email": null,
+            "name": null,
+            "phone": null,
+            "tax_id": null
+          },
+          "calculated_statement_descriptor": "Stripe",
+          "captured": false,
+          "created": 1795286435,
+          "currency": "usd",
+          "customer": null,
+          "description": null,
+          "destination": null,
+          "dispute": null,
+          "disputed": false,
+          "failure_balance_transaction": null,
+          "failure_code": "card_declined",
+          "failure_message": "Your card was declined.",
+          "fraud_details": {},
+          "livemode": false,
+          "metadata": {
+            "webflix_proof_run": "rmwqr4nao"
+          },
+          "on_behalf_of": null,
+          "order": null,
+          "outcome": {
+            "advice_code": "try_again_later",
+            "network_advice_code": null,
+            "network_decline_code": "01",
+            "network_status": "declined_by_network",
+            "reason": "generic_decline",
+            "risk_level": "normal",
+            "risk_score": 24,
+            "seller_message": "The bank did not return any further details with this decline.",
+            "type": "issuer_declined"
+          },
+          "paid": false,
+          "payment_intent": "pi_WFX00000000000000000000C",
+          "payment_method": "pm_WFX00000000000000000000J",
+          "payment_method_details": {
+            "card": {
+              "amount_authorized": null,
+              "authorization_code": "415776",
+              "brand": "visa",
+              "checks": {
+                "address_line1_check": null,
+                "address_postal_code_check": null,
+                "cvc_check": "pass"
+              },
+              "country": "US",
+              "electronic_commerce_indicator": "07",
+              "exp_month": 11,
+              "exp_year": 2027,
+              "extended_authorization": {
+                "status": "disabled"
+              },
+              "fingerprint": "WFX0000000000005",
+              "funding": "credit",
+              "incremental_authorization": {
+                "status": "unavailable"
+              },
+              "installments": null,
+              "last4": "0002",
+              "mandate": null,
+              "multicapture": {
+                "status": "unavailable"
+              },
+              "network": "visa",
+              "network_token": {
+                "used": false
+              },
+              "network_transaction_id": "807582841187511",
+              "overcapture": {
+                "maximum_amount_capturable": 500,
+                "status": "unavailable"
+              },
+              "regulated_status": "unregulated",
+              "three_d_secure": null,
+              "transaction_link_id": null,
+              "wallet": null
+            },
+            "type": "card"
+          },
+          "radar_options": {},
+          "receipt_email": null,
+          "receipt_number": null,
+          "receipt_url": null,
+          "refunded": false,
+          "review": null,
+          "shipping": null,
+          "source": null,
+          "source_transfer": null,
+          "statement_descriptor": null,
+          "statement_descriptor_suffix": null,
+          "status": "failed",
+          "transfer_data": null,
+          "transfer_group": null
+        }
+      },
+      "livemode": false,
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_WFX0000000002A",
+        "idempotency_key": "webflix-proof-rmwqr4nao-declined"
+      },
+      "type": "charge.failed"
+    }
+  },
+  {
+    "n": 2,
+    "run_seq": 290,
+    "received_offset_ms": 1969,
+    "delivery_of_id": 1,
+    "signature_verified": true,
+    "responded_with": 200,
+    "signed_minus_created_s": 1,
+    "event": {
+      "id": "evt_WFX00000000000000000004z",
+      "object": "event",
+      "api_version": "2026-11-18.endive",
+      "created": 1795286435,
+      "data": {
+        "object": {
+          "id": "pi_WFX00000000000000000000C",
+          "object": "payment_intent",
+          "allowed_payment_method_types": null,
+          "amount": 500,
+          "amount_capturable": 0,
+          "amount_details": {
+            "tip": {}
+          },
+          "amount_received": 0,
+          "application": null,
+          "application_fee_amount": null,
+          "automatic_payment_methods": {
+            "allow_redirects": "never",
+            "enabled": true
+          },
+          "canceled_at": null,
+          "cancellation_reason": null,
+          "capture_method": "automatic_async",
+          "client_secret": "pi_WFX00000000000000000000C_secret_[redacted]",
+          "confirmation_method": "automatic",
+          "created": 1795286435,
+          "currency": "usd",
+          "customer": null,
+          "customer_account": null,
+          "description": null,
+          "excluded_payment_method_types": null,
+          "last_payment_error": null,
+          "latest_charge": null,
+          "livemode": false,
+          "managed_payments": {
+            "enabled": false
+          },
+          "metadata": {
+            "webflix_proof_run": "rmwqr4nao"
+          },
+          "next_action": null,
+          "on_behalf_of": null,
+          "payment_method": null,
+          "payment_method_configuration_details": {
+            "id": "pmc_WFX000000000000000000001",
+            "parent": null
+          },
+          "payment_method_options": {
+            "card": {
+              "installments": null,
+              "mandate_options": null,
+              "network": null,
+              "request_three_d_secure": "automatic"
+            },
+            "link": {
+              "persistent_token": null
+            }
+          },
+          "payment_method_types": ["card", "link"],
+          "payment_record": null,
+          "processing": null,
+          "receipt_email": null,
+          "review": null,
+          "setup_future_usage": null,
+          "shared_payment_granted_token": null,
+          "shipping": null,
+          "source": null,
+          "statement_descriptor": null,
+          "statement_descriptor_suffix": null,
+          "status": "requires_payment_method",
+          "transfer_data": null,
+          "transfer_group": null
+        }
+      },
+      "livemode": false,
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_WFX0000000002A",
+        "idempotency_key": "webflix-proof-rmwqr4nao-declined"
+      },
+      "type": "payment_intent.created"
+    }
+  },
+  {
+    "n": 3,
+    "run_seq": 291,
+    "received_offset_ms": 2072,
+    "delivery_of_id": 1,
+    "signature_verified": true,
+    "responded_with": 200,
+    "signed_minus_created_s": 0,
+    "event": {
+      "id": "evt_WFX000000000000000000052",
+      "object": "event",
+      "api_version": "2026-11-18.endive",
+      "created": 1795286436,
+      "data": {
+        "object": {
+          "id": "pi_WFX00000000000000000000C",
+          "object": "payment_intent",
+          "allowed_payment_method_types": null,
+          "amount": 500,
+          "amount_capturable": 0,
+          "amount_details": {
+            "tip": {}
+          },
+          "amount_received": 0,
+          "application": null,
+          "application_fee_amount": null,
+          "automatic_payment_methods": {
+            "allow_redirects": "never",
+            "enabled": true
+          },
+          "canceled_at": null,
+          "cancellation_reason": null,
+          "capture_method": "automatic_async",
+          "client_secret": "pi_WFX00000000000000000000C_secret_[redacted]",
+          "confirmation_method": "automatic",
+          "created": 1795286435,
+          "currency": "usd",
+          "customer": null,
+          "customer_account": null,
+          "description": null,
+          "excluded_payment_method_types": null,
+          "last_payment_error": {
+            "advice_code": "try_again_later",
+            "charge": "ch_WFX00000000000000000000C",
+            "code": "card_declined",
+            "decline_code": "generic_decline",
+            "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+            "message": "Your card was declined.",
+            "network_decline_code": "01",
+            "payment_method": {
+              "id": "pm_WFX00000000000000000000J",
+              "object": "payment_method",
+              "allow_redisplay": "unspecified",
+              "billing_details": {
+                "address": {
+                  "city": null,
+                  "country": null,
+                  "line1": null,
+                  "line2": null,
+                  "postal_code": null,
+                  "state": null
+                },
+                "email": null,
+                "name": null,
+                "phone": null,
+                "tax_id": null
+              },
+              "card": {
+                "brand": "visa",
+                "checks": {
+                  "address_line1_check": null,
+                  "address_postal_code_check": null,
+                  "cvc_check": "pass"
+                },
+                "country": "US",
+                "display_brand": "visa",
+                "exp_month": 11,
+                "exp_year": 2027,
+                "fingerprint": "WFX0000000000005",
+                "funding": "credit",
+                "generated_from": null,
+                "last4": "0002",
+                "networks": {
+                  "available": ["visa"],
+                  "preferred": null
+                },
+                "regulated_status": "unregulated",
+                "three_d_secure_usage": {
+                  "supported": true
+                },
+                "wallet": null
+              },
+              "created": 1795286435,
+              "customer": null,
+              "customer_account": null,
+              "livemode": false,
+              "metadata": {},
+              "shared_payment_granted_token": null,
+              "type": "card"
+            },
+            "payment_method_type": "card",
+            "type": "card_error"
+          },
+          "latest_charge": "ch_WFX00000000000000000000C",
+          "livemode": false,
+          "managed_payments": {
+            "enabled": false
+          },
+          "metadata": {
+            "webflix_proof_run": "rmwqr4nao"
+          },
+          "next_action": null,
+          "on_behalf_of": null,
+          "payment_method": null,
+          "payment_method_configuration_details": {
+            "id": "pmc_WFX000000000000000000001",
+            "parent": null
+          },
+          "payment_method_options": {
+            "card": {
+              "installments": null,
+              "mandate_options": null,
+              "network": null,
+              "request_three_d_secure": "automatic"
+            },
+            "link": {
+              "persistent_token": null
+            }
+          },
+          "payment_method_types": ["card", "link"],
+          "payment_record": null,
+          "processing": null,
+          "receipt_email": null,
+          "review": null,
+          "setup_future_usage": null,
+          "shared_payment_granted_token": null,
+          "shipping": null,
+          "source": null,
+          "statement_descriptor": null,
+          "statement_descriptor_suffix": null,
+          "status": "requires_payment_method",
+          "transfer_data": null,
+          "transfer_group": null
+        }
+      },
+      "livemode": false,
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_WFX0000000002A",
+        "idempotency_key": "webflix-proof-rmwqr4nao-declined"
+      },
+      "type": "payment_intent.payment_failed"
+    }
+  },
+  {
+    "n": 4,
+    "run_seq": 292,
+    "received_offset_ms": 2478,
+    "delivery_of_id": 1,
+    "signature_verified": true,
+    "responded_with": 200,
+    "signed_minus_created_s": 1,
+    "event": {
+      "id": "evt_WFX000000000000000000053",
+      "object": "event",
+      "api_version": "2026-11-18.endive",
+      "created": 1795286436,
+      "data": {
+        "object": {
+          "id": "cus_WFX0000000000I",
+          "object": "customer",
+          "address": null,
+          "balance": 0,
+          "created": 1795286436,
+          "currency": null,
+          "customer_account": null,
+          "default_source": null,
+          "delinquent": false,
+          "description": null,
+          "discount": null,
+          "email": "member-18@example.test",
+          "invoice_prefix": "Y9CNSM54",
+          "invoice_settings": {
+            "custom_fields": null,
+            "default_payment_method": null,
+            "footer": null,
+            "rendering_options": null
+          },
+          "livemode": false,
+          "metadata": {},
+          "name": null,
+          "next_invoice_sequence": 1,
+          "phone": null,
+          "preferred_locales": [],
+          "shipping": null,
+          "tax_exempt": "none",
+          "test_clock": null
+        }
+      },
+      "livemode": false,
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_WFX0000000002F",
+        "idempotency_key": "webflix-proof-rmwqr4nao-concurrent"
+      },
+      "type": "customer.created"
+    }
+  },
+  {
+    "n": 5,
+    "run_seq": 300,
+    "received_offset_ms": 3502,
+    "delivery_of_id": 1,
+    "signature_verified": true,
+    "responded_with": 200,
+    "signed_minus_created_s": 1,
+    "event": {
+      "id": "evt_WFX000000000000000000054",
+      "object": "event",
+      "api_version": "2026-11-18.endive",
+      "created": 1795286437,
+      "data": {
+        "object": {
+          "id": "cus_WFX0000000000J",
+          "object": "customer",
+          "address": null,
+          "balance": 0,
+          "created": 1795286437,
+          "currency": null,
+          "customer_account": null,
+          "default_source": null,
+          "delinquent": false,
+          "description": null,
+          "discount": null,
+          "email": "member-19@example.test",
+          "invoice_prefix": "CVXGLQUM",
+          "invoice_settings": {
+            "custom_fields": null,
+            "default_payment_method": null,
+            "footer": null,
+            "rendering_options": null
+          },
+          "livemode": false,
+          "metadata": {},
+          "name": null,
+          "next_invoice_sequence": 1,
+          "phone": null,
+          "preferred_locales": [],
+          "shipping": null,
+          "tax_exempt": "none",
+          "test_clock": null
+        }
+      },
+      "livemode": false,
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_WFX0000000002H",
+        "idempotency_key": "stripe-node-retry-3d11aed1-ccbf-4bd5-a573-34881ac25e4a"
+      },
+      "type": "customer.created"
+    }
+  }
+]

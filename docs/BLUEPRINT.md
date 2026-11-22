@@ -9,9 +9,11 @@ Webflix is a spike that reproduces the main features of Netflix and proves that 
 | `k8s` | Kubernetes via Helm | kind cluster on the developer machine |
 | `cloudflare` | Cloudflare serverless (Workers, D1, KV, R2, Durable Objects, Queues) | `wrangler dev` (workerd/miniflare) |
 | `dev` | Plain Node process, zero infrastructure | SQLite file + in-memory + filesystem |
-| optional | Another cloud provider on a local emulator | only after the two required modes are complete |
+| optional | Another cloud provider on a local emulator | not built (deferred, §1.2) |
 
 A feature is done only when it works in **both** required modes.
+
+**Status (2026-11-21).** The MVP (§1.1) is built and verified in the dev mode, on kind and in Cloudflare's local runtime. The Cloudflare production deploy has only been rehearsed as a dry run (docs/CLOUDFLARE.md §8). None of the stretch goals (§1.2) was built. How to run and verify each mode: the repository's `README.md`.
 
 ---
 
@@ -45,6 +47,7 @@ A feature is done only when it works in **both** required modes.
 - Streams are protected by short‑lived signed playback tokens.
 
 ### 1.2 Stretch (only after MVP is verified in both modes)
+Not built; all three are deferred.
 - Admin "Studio": upload a video → queue → transcode → publish (k8s: worker Deployment; Cloudflare: Queues + Containers if available locally).
 - Optional third deployment mode on a cloud emulator.
 - i18n (en + vi).
@@ -85,13 +88,13 @@ Hexagonal (ports and adapters). Business logic never imports a runtime, a driver
 | Port | dev | k8s | cloudflare |
 | --- | --- | --- | --- |
 | Database (Kysely) | SQLite file | PostgreSQL | D1 |
-| `SearchIndex` | SQLite FTS5 | Postgres FTS + trigram | D1 FTS5 |
+| `SearchIndex` | SQLite FTS5 | Postgres full-text search (weighted `tsvector`; no trigram, DECISIONS.md D6) | D1 FTS5 |
 | `KeyValueCache` (TTL get/set/del) | memory | Valkey | KV |
 | `RateLimiter` | memory | Valkey | Durable Object (the rate‑limit binding is approximate per location and cannot meet the port contract) |
 | `StreamGate` (concurrent streams) | memory | Valkey | Durable Object per account |
-| `BlobStore` (get w/ range, put, head, list, delete) | filesystem | S3 API | R2 binding |
+| `BlobStore` (get w/ range, put, head, list, delete) | filesystem | S3 API (Garage in the chart) | R2 binding, read through the Workers edge cache |
 | `JobQueue` (publish + consumer) | in‑process | Valkey Streams, `worker` Deployment | Queues consumer + Cron |
-| `PasswordHasher` | scrypt/argon2 | scrypt/argon2 | WebCrypto‑compatible KDF |
+| `PasswordHasher` | scrypt | scrypt | PBKDF2‑SHA256 on WebCrypto |
 | `Clock`, `IdGenerator`, `Logger`, `TokenSigner` | portable | portable | portable |
 
 Rules:
@@ -172,7 +175,7 @@ Pick the latest **stable** release of each at implementation time (`npm view <pk
 - **API**: Hono, zod, OpenAPI generated from the same schemas, docs UI at `/api/docs`.
 - **Data**: Kysely; `pg`; D1; SQLite locally (prefer built‑in `node:sqlite`).
 - **Web**: React, Vite, TanStack Query, a typed router with URL‑driven state, Tailwind CSS v4 on CSS‑variable tokens, Radix primitives for accessible overlays, Motion for animation, hls.js. Fonts self‑hosted. No runtime calls to third‑party origins.
-- **k8s**: Helm chart with our own templates on official images. Do not depend on Bitnami charts/images (public catalog deprecated in 2025). Prefer **Gateway API** (`HTTPRoute`) with a maintained implementation that runs well on kind — ingress‑nginx was retired in March 2026. Verify the current state of whichever S3‑compatible store you choose (MinIO community images stopped updating in late 2025); the adapter speaks plain S3 so the store is swappable.
+- **k8s**: Helm chart with our own templates on official images. Do not depend on Bitnami charts/images (public catalog deprecated in 2025). Prefer **Gateway API** (`HTTPRoute`) with a maintained implementation that runs well on kind — ingress‑nginx was retired in March 2026. Verify the current state of whichever S3‑compatible store you choose (MinIO community images stopped updating in late 2025); the adapter speaks plain S3 so the store is swappable. Chosen: Envoy Gateway and Garage (docs/KUBERNETES.md §1).
 - **Cloudflare**: Wrangler (as a devDependency), `wrangler.jsonc`, Workers static assets for the SPA, D1, KV, R2, Durable Objects, Queues, Cron Triggers.
 
 ---
@@ -189,7 +192,7 @@ Pick the latest **stable** release of each at implementation time (`npm view <pk
 
 ## 6. HTTP API
 
-Base path `/api/v1`. JSON. The exact schemas live in `packages/contracts` and are authoritative; this table is the intended surface.
+Base path `/api/v1`. JSON. The route table (`packages/contracts/src/routes.ts`) and its schemas are authoritative; this table summarises its 46 routes, and the OpenAPI document served at `/api/openapi.json` is generated from it. Each route declares who may call it (`auth`: `public`, `account`, `profile` or `account-holder`); the privilege rules are in docs/BACKEND.md §3.
 
 **Auth & session**
 | Method | Path | Notes |
@@ -200,7 +203,7 @@ Base path `/api/v1`. JSON. The exact schemas live in `packages/contracts` and ar
 | GET | `/session` | bootstrap: account, subscription, plan, profiles, activeProfile |
 | PUT · DELETE | `/session/profile` | select `{profileId, pin?}` / clear active profile; only PIN attempts on locked profiles are rate limited (per account) |
 
-**Account**
+**Account** (`/plans` is public; the rest need an account holder: a session whose active profile has no parental controls)
 | GET · PATCH | `/account` | email / password change requires current password |
 | GET | `/plans` | |
 | PUT · DELETE | `/account/subscription` | change plan / cancel; `POST /account/subscription/resume` |
@@ -220,7 +223,7 @@ Base path `/api/v1`. JSON. The exact schemas live in `packages/contracts` and ar
 | GET | `/titles/:id` | detail incl. viewer state (inMyList, rating, progress, matchScore) |
 | GET | `/titles/:id/seasons/:seasonNumber/episodes` | with per‑episode progress |
 | GET | `/titles/:id/similar` | |
-| GET | `/titles/:id/popularity` | daily view counters (diagnostics; not in production) |
+| GET | `/titles/:id/popularity` | daily view counters (diagnostics; any signed-in account; not in production) |
 | GET | `/search?q=&cursor=` | `{results[], suggestions[], nextCursor}` |
 
 **Library**
@@ -235,7 +238,7 @@ Base path `/api/v1`. JSON. The exact schemas live in `packages/contracts` and ar
 | POST | `/playback/sessions/:id/heartbeat` | `{positionSec, durationSec, state}` |
 | DELETE | `/playback/sessions/:id` | optional body: the final heartbeat (recorded, then the slot is freed, in one request) |
 
-**Ops**: `/healthz`, `/readyz`, `/metrics` (Node), `/api/openapi.json`, `/api/docs`.
+**Ops**: `/healthz`, `/readyz`, `/dependencies` and `/metrics` (both Node), `/api/openapi.json`, `/api/docs`.
 
 ---
 
@@ -251,19 +254,19 @@ Base path `/api/v1`. JSON. The exact schemas live in `packages/contracts` and ar
 
 ## 8. Running it
 
-| Mode | URL | Command (target shape) |
+| Mode | URL | Command |
 | --- | --- | --- |
 | dev | http://localhost:5173 (API on 4000) | `make dev` |
 | k8s | http://localhost:8080 | `make k8s-up` / `make k8s-down` |
-| cloudflare | http://localhost:8787 | `make cf-dev`; `make cf-deploy` for a real account |
+| cloudflare | http://localhost:8787 | `make cf-dev` / `make cf-stop`; `make cf-deploy` for a real account |
 
-Other targets: `make setup`, `make content PROFILE=fast|full`, `make test`, `make lint`, `make typecheck`, `make e2e TARGET=dev|k8s|cf`.
+Other targets: `make setup`, `make content PROFILE=fast|full`, `make check` (lint, typecheck, test), `make verify TARGET=dev|k8s|cf` (the browser suite, then the conformance suite), `make e2e TARGET=…`, `make smoke TARGET=…`. `make help` lists every target; the repository's `README.md` walks through each mode.
 
-The root `Makefile` only defines the generic targets and `-include`s one fragment per area (`tools/media/media.mk`, `deploy/kind/k8s.mk`, `apps/edge/cloudflare.mk`, `e2e/e2e.mk`), so each owner adds targets without editing a shared file.
+The root `Makefile` only defines the generic targets and `-include`s one fragment per area (`tools/media/media.mk`, `deploy/kind/k8s.mk`, `apps/edge/cloudflare.mk`, `e2e/e2e.mk`, `tools/smoke/smoke.mk`), so each owner adds targets without editing a shared file.
 
 Use `localhost` (a secure context) rather than custom hostnames so WebCrypto, Secure cookies and media APIs behave the same everywhere.
 
-Demo account seeded in every mode: `demo@webflix.dev` / `webflix-demo` with several profiles and some watch history so the home page is rich on first load.
+Demo account seeded in every local mode (a production deployment only on request: `seed.demo` in the chart, `CF_DEMO=1` on Cloudflare): `demo@webflix.dev` / `webflix-demo` with several profiles and some watch history so the home page is rich on first load.
 
 ---
 
@@ -308,7 +311,8 @@ Several agents work in this tree at the same time.
 
 - **Never** run `git commit`, `git stash`, `git reset`, `git checkout`, `git clean` or anything else that rewrites the working tree or history. Read‑only git is fine.
 - Stay inside your assigned directories. Errors in files you do not own are someone else's work in progress: do not "fix" them; note them in your report.
-- Adding a dependency: `pnpm --filter <package> add <dep>`. If it fails because another install is running, wait and retry. Never delete `pnpm-lock.yaml` or `node_modules`.
-- Use only the ports assigned to you for anything you start, stop everything you started, and prefix Docker resources with `webflix-`. Never prune or remove Docker resources you did not create.
+- Adding a dependency: `pnpm --filter <package> add <dep>` (use the catalog first: docs/FOUNDATION.md §1). If it fails because another install is running, wait and retry. Never delete `pnpm-lock.yaml` or `node_modules`.
+- Use only the ports assigned to you for anything you start, stop everything you started (by PID, never by name pattern), and prefix Docker resources with `webflix-`. Never prune or remove Docker resources you did not create.
+- The running modes may be someone else's test bed. A second Cloudflare instance needs its own `CF_PORT`, `CF_INSPECTOR_PORT`, `CF_STATE` and `CF_ASSETS` (docs/CLOUDFLARE.md §7); `make cf-stop` stops only this repository's dev server on that port. Kubernetes work touches only kind clusters named `webflix*`, through the repository's kubeconfig (`.cache/kube/config`), never `~/.kube/config` (docs/KUBERNETES.md §2).
 - Temporary files go in your scratch directory, never in the repo.
 - Report format when you finish: what you built; how you verified it (commands and observed results); deviations from this blueprint; known gaps; any file touched outside your assignment.

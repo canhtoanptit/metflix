@@ -53,7 +53,7 @@ import {
   type SourceInfo,
 } from "../core/state.ts";
 import { createStore, type Store } from "../core/store.ts";
-import { languageLabel, menuTextTracks, qualityLabel, selectTextTrack } from "../core/tracks.ts";
+import { languageLabel, menuTextTracks, qualityBadge, selectTextTrack } from "../core/tracks.ts";
 import { defaultEngineFactory, resolveEngineKind } from "../engine/create-engine.ts";
 import type { EngineEvents, EngineFactory, PlaybackEngine } from "../engine/types.ts";
 import type { NextEpisodeReason, ProgressReason, ProgressReport, QualityChange } from "../types.ts";
@@ -105,7 +105,10 @@ export interface ControllerOptions {
 
 type Timer = ReturnType<typeof setTimeout>;
 
-/** Event-driven progress reports (pause, seek…) are throttled to one per this window. */
+/**
+ * Event-driven progress reports (pause, seek…) are throttled to one per this window; one that
+ * comes too soon is sent, with the state of that moment, when the window ends.
+ */
 const EVENT_REPORT_MIN_GAP_MS = 2000;
 const ADVISORY_MS = 6500;
 const COUNTDOWN_TICK_MS = 200;
@@ -138,6 +141,8 @@ export class PlayerController {
   private feedbackTimer: Timer | null = null;
   private advisoryTimer: Timer | null = null;
   private seekReportTimer: Timer | null = null;
+  private eventReportTimer: Timer | null = null;
+  private pendingEventReason: ProgressReason | null = null;
   private lastEventReportAt = Number.NEGATIVE_INFINITY;
   private endedNotified = false;
   private advisoryShown = false;
@@ -213,6 +218,7 @@ export class PlayerController {
     this.clearTimer("feedbackTimer");
     this.clearTimer("advisoryTimer");
     this.clearTimer("seekReportTimer");
+    this.cancelPendingEventReport();
     this.clearMediaSession();
   }
 
@@ -235,6 +241,7 @@ export class PlayerController {
       return;
     }
     if (previous) this.report("unload", true);
+    this.cancelPendingEventReport();
     this.request = request;
     if (this.media) void this.startLoad(request);
   }
@@ -625,7 +632,9 @@ export class PlayerController {
     }, ADVISORY_MS);
   }
 
-  private clearTimer(name: "feedbackTimer" | "advisoryTimer" | "seekReportTimer"): void {
+  private clearTimer(
+    name: "feedbackTimer" | "advisoryTimer" | "seekReportTimer" | "eventReportTimer",
+  ): void {
     const timer = this[name];
     if (timer !== null) clearTimeout(timer);
     this[name] = null;
@@ -651,12 +660,32 @@ export class PlayerController {
   private report(reason: ProgressReason, force = false): void {
     const snapshot = this.progressSnapshot(reason);
     if (!snapshot || !this.host.onProgress) return;
-    if (!force && reason !== "interval") {
+    if (force) {
+      // The last word (unload, ended): a report still waiting for its window is superseded.
+      this.cancelPendingEventReport();
+    } else if (reason !== "interval") {
       const now = Date.now();
-      if (now - this.lastEventReportAt < EVENT_REPORT_MIN_GAP_MS) return;
+      const wait = this.lastEventReportAt + EVENT_REPORT_MIN_GAP_MS - now;
+      if (wait > 0) {
+        // Too soon after the last one, but never dropped: a pause right after a seek must
+        // still reach the server, or it believes the stream plays on until the next interval.
+        this.pendingEventReason = reason;
+        this.eventReportTimer ??= setTimeout(() => {
+          this.eventReportTimer = null;
+          const pending = this.pendingEventReason;
+          this.pendingEventReason = null;
+          if (pending) this.report(pending);
+        }, wait);
+        return;
+      }
       this.lastEventReportAt = now;
     }
     this.host.onProgress(snapshot);
+  }
+
+  private cancelPendingEventReport(): void {
+    this.clearTimer("eventReportTimer");
+    this.pendingEventReason = null;
   }
 
   private startProgressTimer(): void {
@@ -832,7 +861,7 @@ export class PlayerController {
     this.engine?.setQuality(mode);
     this.dispatch({ type: "engine/quality-mode", mode });
     const level = mode === "auto" ? null : this.state.qualityLevels.find((l) => l.id === mode);
-    const label = level ? qualityLabel(level.height) : this.labels.qualityAuto;
+    const label = level ? qualityBadge(level) : this.labels.qualityAuto;
     if (origin !== "host") this.announce(this.labels.qualityChanged(label));
   }
 
@@ -1040,6 +1069,9 @@ export class PlayerController {
           stepRate(this.media?.playbackRate ?? state.playbackRate, command.direction),
           origin,
         );
+        return true;
+      case "toggleStats":
+        this.dispatch({ type: "ui/stats", visible: !state.statsVisible });
         return true;
       case "escape":
         if (state.menu) {

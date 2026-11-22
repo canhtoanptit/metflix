@@ -1,6 +1,13 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { Episode, ImageSet, TitleDetail } from "@webflix/contracts";
+import {
+  type Episode,
+  formatTimeLeft,
+  formatTimeLeftSpoken,
+  type ImageSet,
+  progressFraction,
+  type TitleDetail,
+} from "@webflix/contracts";
 import {
   Button,
   cx,
@@ -12,9 +19,9 @@ import {
   Skeleton,
   SkeletonText,
 } from "@webflix/ui";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { queries } from "../../../app/query/queries.ts";
-import { formatRuntime, formatRuntimeLong, progressFraction } from "../common/format.ts";
+import { formatRuntime, formatRuntimeLong } from "../common/format.ts";
 import { watchLink } from "../common/watch.ts";
 
 /**
@@ -107,8 +114,14 @@ function EpisodeRow({
   fallback: ImageSet;
   current: boolean;
 }) {
+  // Started or completed: what is left ("Finished" once completed), from the same numbers as
+  // the bar (the shared wording of `@webflix/contracts`); otherwise the episode's length.
   const fraction = progressFraction(episode.progress);
-  const watched = episode.progress?.completed ?? false;
+  const started = episode.progress && fraction > 0 ? episode.progress : null;
+  const synopsisId = useId();
+  // The link is named by what it shows (label in name, WCAG 2.5.3): "Episode 1: Dead Air,
+  // 12 minutes left", the short visible forms hidden in favour of spoken ones; the synopsis is
+  // its description.
   const body = (
     <>
       <span
@@ -136,21 +149,36 @@ function EpisodeRow({
         ) : null}
         {fraction > 0 ? (
           <span className="absolute inset-x-0 bottom-0 px-2 pb-1.5">
-            <ProgressBar value={watched ? 1 : fraction} size="xs" track="onImage" />
+            <ProgressBar value={fraction} size="xs" track="onImage" />
           </span>
         ) : null}
       </span>
       <span className="flex min-w-0 flex-col gap-1.5">
         <span className="flex items-baseline justify-between gap-3">
           <span className="type-label text-fg">
-            <span className="sm:hidden">{episode.number}. </span>
+            <span className="sr-only">Episode {episode.number}: </span>
+            <span aria-hidden className="sm:hidden">
+              {episode.number}.{" "}
+            </span>
             {episode.name}
           </span>
           <span className="shrink-0 type-caption text-fg-muted tabular-nums">
-            {formatRuntime(episode.runtimeSec)}
+            <span aria-hidden>
+              {started ? formatTimeLeft(started) : formatRuntime(episode.runtimeSec)}
+            </span>
+            <span className="sr-only">
+              , {started ? formatTimeLeftSpoken(started) : formatRuntimeLong(episode.runtimeSec)}
+            </span>
           </span>
         </span>
-        <span className="line-clamp-3 type-body-sm text-fg-muted">{episode.synopsis}</span>
+        {/* In a link: its description, not part of its name. Otherwise plain text. */}
+        <span
+          id={synopsisId}
+          aria-hidden={episode.isPlayable || undefined}
+          className="line-clamp-3 type-body-sm text-fg-muted"
+        >
+          {episode.synopsis}
+        </span>
         {!episode.isPlayable ? (
           <span className="type-caption text-fg-subtle">Not available to play yet</span>
         ) : null}
@@ -167,9 +195,7 @@ function EpisodeRow({
       {episode.isPlayable ? (
         <Link
           {...watchLink(episode.titleId, { episodeId: episode.id })}
-          aria-label={`Episode ${episode.number}, ${episode.name}${
-            fraction > 0 && !watched ? `, ${Math.round(fraction * 100)}% watched` : ""
-          }, ${formatRuntimeLong(episode.runtimeSec)}`}
+          aria-describedby={synopsisId}
           aria-current={current ? "true" : undefined}
           className={cx(
             rowClass,

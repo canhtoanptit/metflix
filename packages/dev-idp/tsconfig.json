@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Portable: the runtime code and the suite that also runs in workerd see Web types only.
+    "lib": ["ES2024", "WebWorker"]
+  },
+  "include": ["src", "test"],
+  "exclude": ["src/node", "test/node"]
+}

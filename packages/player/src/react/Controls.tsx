@@ -15,7 +15,7 @@ import {
 import { formatEpisodeCode } from "../core/format.ts";
 import { SEEK_STEP_SEC, VOLUME_STEP } from "../core/keymap.ts";
 import type { MenuId } from "../core/state.ts";
-import { menuTextTracks } from "../core/tracks.ts";
+import { menuTextTracks, qualityOptions } from "../core/tracks.ts";
 import { shallowEqual, usePlayer, usePlayerState } from "./context.ts";
 import { Icon, type IconName } from "./icons.tsx";
 import { AudioSubtitlesMenu, QualityMenu, SpeedMenu } from "./Menus.tsx";
@@ -341,7 +341,8 @@ export function BottomControls() {
       menu: s.menu,
       panel: s.panel,
       qualityControllable: s.qualityControllable,
-      qualityCount: s.qualityLevels.length,
+      // Classes the menu would offer: two 720p encodes are one choice, so no menu.
+      qualityCount: qualityOptions(s.qualityLevels, session.maxVideoHeight).length,
       audioCount: s.audioTracks.length,
     }),
     shallowEqual,
@@ -351,6 +352,8 @@ export function BottomControls() {
   const [hovering, setHovering] = useState(false);
   const touch = layout === "touch";
   const hasSubtitles = menuTextTracks(session.textTracks).length > 0 || audioCount > 1;
+  // One audio track is no choice: the menu is then "Subtitles" alone.
+  const subtitlesLabel = audioCount > 1 ? labels.audioAndSubtitles : labels.subtitles;
   const hasQuality = qualityControllable && qualityCount > 1;
 
   const menuButton = (id: MenuId, icon: IconName, label: string, shortcut?: string) => (
@@ -384,9 +387,7 @@ export function BottomControls() {
           onPress={() => controller.openPanel(panel === "episodes" ? null : "episodes")}
         />
       ) : null}
-      {hasSubtitles
-        ? menuButton("audio-subtitles", "subtitles", labels.audioAndSubtitles, "C")
-        : null}
+      {hasSubtitles ? menuButton("audio-subtitles", "subtitles", subtitlesLabel, "C") : null}
       {touch ? null : menuButton("speed", "speed", labels.speed)}
       {hasQuality ? menuButton("quality", "quality", labels.quality) : null}
       <NextEpisodeButton withText={touch} />

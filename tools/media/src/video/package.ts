@@ -9,9 +9,8 @@
  *   vod/{assetId}/trickplay/sheet-000.jpg …
  *   public/previews/{assetId}/preview.mp4
  *
- * Motion-art previews (`artwork` sources) are rendered from a title's own textless backdrop:
- * a slow eased push and drift, a soft light passing across, film grain and a vignette, faded
- * in and out of black so the clip loops cleanly.
+ * Motion-art previews (`artwork` sources) are rendered from a title's own textless backdrop
+ * by `motion.ts`: video only, starting and ending exactly on the still.
  */
 import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -26,6 +25,8 @@ import { containerPath, ffmpeg, type ProbeResult } from "../docker.ts";
 import { AAC_LC, avcCodecString, type ProfileConfig, type Rung } from "../profiles.ts";
 import { ensureDir, listFiles, writeFileAtomic } from "../util/fs.ts";
 import { buildMasterPlaylist, type MasterVariant, measurePlaylist } from "./hls.ts";
+import { encodeMotionArt } from "./motion.ts";
+import { checkMotionEdges } from "./preview-check.ts";
 import { clipCues, decodeSubtitleBytes, languageLabel, parseCues, toWebVtt } from "./subtitles.ts";
 import { checkTiming } from "./validate.ts";
 
@@ -105,16 +106,8 @@ function inputArgs(source: VideoSource, window: TimeWindow): string[] {
     ];
   }
   if (source.kind === "artwork") {
-    // One still frame (zoompan turns it into the clip) and a silent stereo track, so the
-    // preview's HLS rendition really has the AAC audio its CODECS attribute declares.
-    return [
-      "-i",
-      containerPath(source.path),
-      "-f",
-      "lavfi",
-      "-i",
-      `anullsrc=r=48000:cl=stereo:d=${window.durationSec}`,
-    ];
+    // One still frame: motion.ts turns it into the clip (video only, no audio track).
+    return ["-i", containerPath(source.path)];
   }
   // Offline fallback: a slow colour drift with the asset label and a running timecode, plus
   // quiet pink noise, so players, ladders and previews all behave like the real thing.
@@ -163,7 +156,8 @@ function inputArgs(source: VideoSource, window: TimeWindow): string[] {
 }
 
 function audioInput(source: VideoSource): string | null {
-  if (source.kind === "synthetic" || source.kind === "artwork") return "1:a:0";
+  if (source.kind === "artwork") return null;
+  if (source.kind === "synthetic") return "1:a:0";
   return source.probe.audio ? "0:a:0" : null;
 }
 
@@ -385,120 +379,6 @@ async function buildTrickPlay(
   };
 }
 
-/** Deterministic pseudo-random values in [0, 1) from a seed. */
-function seeded(seed: number, count: number): number[] {
-  const out: number[] = [];
-  let state = seed >>> 0 || 1;
-  for (let i = 0; i < count; i += 1) {
-    state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0;
-    out.push(state / 2 ** 32);
-  }
-  return out;
-}
-
-/**
- * Motion art from a still: an eased push (in or out) with a slow drift, a soft warm light
- * that passes across the frame, a breathing exposure, grain and a vignette, faded in and out
- * of black. The still is upscaled 2x first so the zoom moves in sub-pixel steps.
- * Inputs: 0 = still, 1 = silent audio, 2 = light sprite (looped).
- */
-export function motionArtFilter(
-  seed: number,
-  durationSec: number,
-  width: number,
-  height: number,
-): string {
-  const [direction = 0, ax = 0, ay = 0, bx = 0, by = 0, light = 0] = seeded(seed, 6);
-  const frames = Math.round(durationSec * 24);
-  const pushIn = direction < 0.65;
-  const [z0, z1] = pushIn ? [1.0, 1.1] : [1.1, 1.0];
-  // Drift between two points near the middle of the frame.
-  const fx = 0.35 + ax * 0.3;
-  const fy = 0.35 + ay * 0.3;
-  const tx = 0.45 + bx * 0.3;
-  const ty = 0.4 + by * 0.2;
-  const ease = `(0.5-0.5*cos(PI*on/${frames - 1}))`;
-  const fixed = (value: number) => value.toFixed(4);
-  // The light sprite is as wide as the frame; it crosses from one side to the other.
-  const leftToRight = light < 0.5;
-  const x0 = leftToRight ? -width : width;
-  const x1 = leftToRight ? width : -width;
-  const lightY = Math.round(-height * (0.45 - light * 0.3));
-  const fadeOut = Math.max(0, durationSec - 1).toFixed(2);
-  return [
-    `[0:v]scale=3840:2160:flags=lanczos,zoompan=z='${z0}+${fixed(z1 - z0)}*${ease}':x='(iw-iw/zoom)*(${fixed(fx)}+${fixed(tx - fx)}*${ease})':y='(ih-ih/zoom)*(${fixed(fy)}+${fixed(ty - fy)}*${ease})':d=${frames}:s=${width}x${height}:fps=24,format=rgba[base]`,
-    "[2:v]format=rgba[light]",
-    `[base][light]overlay=x='${x0}+(${x1 - x0})*t/${durationSec}':y=${lightY}:shortest=1:eval=frame,eq=brightness='0.015*sin(2*PI*t/${durationSec})':eval=frame,vignette=angle=PI/6,format=yuv420p,noise=c0s=6:c0f=t+u,setsar=1,fade=t=in:st=0:d=0.8,fade=t=out:st=${fadeOut}:d=1[v]`,
-  ].join(";");
-}
-
-/** A soft warm light sprite (transparent edges) the size of the preview frame. */
-async function lightSprite(target: string, width: number, height: number): Promise<void> {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height * 2}"><defs><radialGradient id="l" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#fff3df" stop-opacity="0.26"/><stop offset="0.45" stop-color="#ffe9c8" stop-opacity="0.11"/><stop offset="1" stop-color="#ffe9c8" stop-opacity="0"/></radialGradient></defs><rect width="100%" height="100%" fill="url(#l)"/></svg>`;
-  await ensureDir(join(target, ".."));
-  await sharp(Buffer.from(svg)).png().toFile(target);
-}
-
-async function encodeMotionArt(
-  job: VideoJob,
-  window: TimeWindow,
-  config: ProfileConfig,
-  target: string,
-  work: string,
-): Promise<void> {
-  if (job.source.kind !== "artwork") throw new Error(`${job.assetId} is not motion art`);
-  const { width, height, maxrateKbps, crf, audioKbps } = config.preview;
-  const light = join(work, "light.png");
-  await lightSprite(light, width, height);
-  await ensureDir(join(target, ".."));
-  await ffmpeg([
-    ...inputArgs(job.source, window),
-    "-loop",
-    "1",
-    "-framerate",
-    "24",
-    "-i",
-    containerPath(light),
-    "-filter_complex",
-    motionArtFilter(job.source.seed, window.durationSec, width, height),
-    "-map",
-    "[v]",
-    "-map",
-    "1:a:0",
-    "-t",
-    window.durationSec.toFixed(3),
-    "-c:v",
-    "libx264",
-    "-preset",
-    config.preset,
-    "-profile:v",
-    "high",
-    "-level:v",
-    "3.1",
-    "-crf",
-    String(crf),
-    "-maxrate",
-    `${maxrateKbps}k`,
-    "-bufsize",
-    `${maxrateKbps * 2}k`,
-    "-force_key_frames",
-    "expr:gte(t,n_forced*2)",
-    "-c:a",
-    "aac",
-    "-b:a",
-    `${audioKbps}k`,
-    "-ac",
-    "2",
-    "-ar",
-    "48000",
-    "-avoid_negative_ts",
-    "disabled",
-    "-movflags",
-    "+faststart+negative_cts_offsets",
-    containerPath(target),
-  ]);
-}
-
 async function encodePreview(
   job: VideoJob,
   window: TimeWindow,
@@ -631,7 +511,13 @@ export async function packageVideo(
 
   if (job.preview) {
     if (job.source.kind === "artwork") {
-      await encodeMotionArt(job, job.preview, config, previewPath, dirs.work);
+      const { path, seed } = job.source;
+      await encodeMotionArt(path, seed, job.preview.durationSec, config, previewPath, dirs.work);
+      // The web shows the backdrop until the clip starts and again after it ends.
+      const edges = await checkMotionEdges(previewPath, path, join(dirs.work, "edges"));
+      if (edges.problems.length > 0) {
+        throw new Error(`${job.assetId}: motion art ${edges.problems.join("; ")}`);
+      }
     } else {
       await encodePreview(job, job.preview, config, previewPath);
     }
@@ -642,7 +528,8 @@ export async function packageVideo(
   let trickPlay: TrickPlayFiles | null = null;
   let renditions: PackagedVideoAsset["renditions"];
   let audioRenditions: PackagedVideoAsset["audio"] = [];
-  const muxedAudio = job.role === "preview-only";
+  // Preview-only assets mux the preview's audio into their one rendition (motion art has none).
+  const muxedAudio = job.role === "preview-only" && audioInput(job.source) !== null;
 
   if (job.role === "main") {
     const framesDir = join(dirs.work, "frames");
@@ -714,7 +601,7 @@ export async function packageVideo(
         width: config.preview.width,
         height: config.preview.height,
         bandwidth: stats.peakBps,
-        codecs: `${codec},${AAC_LC}`,
+        codecs: muxedAudio ? `${codec},${AAC_LC}` : codec,
         frameRate: previewFrameRate(job.source),
         playlist: `${blobKeys.vodPrefix(job.assetId)}main/index.m3u8`,
       },

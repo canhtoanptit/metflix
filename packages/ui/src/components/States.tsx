@@ -13,6 +13,8 @@ export interface EmptyStateProps {
   layout?: "page" | "inline";
   /** Heading level of the title (default 2). */
   headingLevel?: 2 | 3;
+  /** Small print under the actions (an error's support reference). */
+  footer?: ReactNode;
   className?: string;
 }
 
@@ -24,6 +26,7 @@ export function EmptyState({
   action,
   layout = "inline",
   headingLevel = 2,
+  footer,
   className,
 }: EmptyStateProps) {
   const Heading = headingLevel === 2 ? "h2" : "h3";
@@ -43,13 +46,17 @@ export function EmptyState({
       <Heading className="type-title-lg text-fg">{title}</Heading>
       {description ? <p className="type-body text-fg-muted">{description}</p> : null}
       {action ? <div className="mt-4 flex flex-wrap justify-center gap-3">{action}</div> : null}
+      {footer}
     </div>
   );
 }
 
 export interface ErrorStateProps extends Omit<EmptyStateProps, "icon"> {
   icon?: IconComponent;
-  /** Support reference shown small under the message (the problem's `requestId`). */
+  /**
+   * Support reference (the problem's `requestId`), kept behind a "Details" disclosure: useful
+   * when reporting a problem, noise for everyone else.
+   */
   reference?: string | null;
 }
 
@@ -57,23 +64,42 @@ export interface ErrorStateProps extends Omit<EmptyStateProps, "icon"> {
 export function ErrorState({
   icon = AlertTriangleIcon,
   reference,
-  description,
+  footer,
   ...rest
 }: ErrorStateProps) {
   return (
     <EmptyState
       icon={icon}
-      description={
-        description || reference ? (
+      footer={
+        reference || footer ? (
           <>
-            {description}
-            {reference ? (
-              <span className="mt-2 block type-caption text-fg-subtle">Reference: {reference}</span>
-            ) : null}
+            {footer}
+            {reference ? <ErrorReference reference={reference} className="mt-2" /> : null}
           </>
         ) : undefined
       }
       {...rest}
     />
+  );
+}
+
+/**
+ * A support reference behind a "Details" disclosure (error states, failure screens). Collapsed
+ * by default; the reference is selectable for copying into a support request.
+ */
+export function ErrorReference({
+  reference,
+  className,
+}: {
+  reference: string;
+  className?: string;
+}) {
+  return (
+    <details className={cx("group mx-auto type-caption text-fg-subtle", className)}>
+      <summary className="focus-ring inline-flex cursor-pointer list-none items-center gap-1 rounded-xs marker:hidden hover:text-fg-muted [&::-webkit-details-marker]:hidden">
+        Details
+      </summary>
+      <span className="mt-1 block select-all tabular-nums">Reference {reference}</span>
+    </details>
   );
 }

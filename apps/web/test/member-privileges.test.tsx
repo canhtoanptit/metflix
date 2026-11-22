@@ -129,7 +129,7 @@ describe("adding a profile", () => {
     const { router } = renderMember("/signup/profile", state);
     await user.type(await screen.findByLabelText("Your name"), "Sam");
     await user.type(screen.getByLabelText("Profile 2 name (optional)"), "Pip");
-    await user.click(screen.getByRole("checkbox", { name: "Kids profile" }));
+    await user.click(screen.getByRole("checkbox", { name: "Profile 2 is a kids profile" }));
     await user.type(screen.getByLabelText("Profile 3 name (optional)"), "Ana");
     await user.click(screen.getByRole("button", { name: "Create 3 profiles" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/browse"), {
@@ -313,6 +313,21 @@ describe("account pages", () => {
     expect(
       await screen.findByText(/Mara's profile has a maturity limit \(16\+ · Older teens\)\./),
     ).toBeVisible();
+  });
+
+  it("sign out of all devices refused after controls came on says why, never silently", async () => {
+    const user = userEvent.setup();
+    const state = seeded("profile-mara");
+    renderMember("/account/devices", state);
+    await user.click(await screen.findByRole("button", { name: "Sign out of all devices" }));
+    profileIn(state, "profile-mara").maturityCeiling = "13+";
+    const confirm = await screen.findByRole("alertdialog", { name: "Sign out of all devices?" });
+    expect(confirm).toHaveTextContent("stops within about half a minute");
+    await user.click(within(confirm).getByRole("button", { name: "Sign out everywhere" }));
+    expect(
+      await screen.findByText(/Mara's profile has a maturity limit \(13\+ · Teens\)\./),
+    ).toBeVisible();
+    expect(state.signedIn).toBe(true);
   });
 
   it("a profile signed off on another device goes to Who's watching? and comes back", async () => {

@@ -5,7 +5,7 @@
  */
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { MEDIA_PROFILES, MediaManifest, type MediaProfile } from "@webflix/contracts";
 
@@ -18,13 +18,18 @@ Build
   upload --profile fast|full     Push the profile tree + manifest through the BlobStore port
         [--target fs:]           Target spec (default fs: → WEBFLIX_BLOB_DIR or .data/blobs)
         [--prune] [--concurrency 16]
-  validate-manifest <file>       Check a manifest.json against the MediaManifest contract
+  validate-manifest <file>       Check a manifest.json against the MediaManifest contract; next
+                                 to its files, also timing and previews (declared kind and
+                                 sound vs the decoded clip, motion art vs the backdrop)
 
 Review
   contact-sheets --profile fast  Render review sheets to .cache/media/review/<profile>/
-                                 (rows, billboards, posters, logos, episodes, avatars, previews)
+        [--only boundaries,…]    (rows, billboards, top10, posters, logos, episodes, avatars,
+                                 previews, boundaries: first/+0.5/+1/+3 s/middle/−3/−1 s/last
+                                 frame of every playable clip)
   check-art --profile fast       Perceptual-hash check: no shared backdrops/posters across titles,
-                                 no repeated still within a series (exit 1 if any)
+                                 no repeated still within a series; real films' key art frames
+                                 clear of any text (exit 1 if any)
   review --profile fast          Serve a review page with the player (port 4400)
   status                         Cache sizes and what each profile holds
 
@@ -65,17 +70,30 @@ async function validateManifest(file: string): Promise<number> {
     const root = dirname(resolve(file));
     const problems: string[] = [];
     let checked = 0;
+    let previews = "";
     if (videoAssets[0] && existsSync(join(root, videoAssets[0].master))) {
       const { checkTiming } = await import("./video/validate.ts");
       for (const asset of videoAssets) {
         problems.push(...(await checkTiming(root, asset)).problems);
         checked += 1;
       }
+      // Previews: declared kind and sound against the decoded clip (needs Docker).
+      const { checkPreviews } = await import("./video/validate-previews.ts");
+      const { catalog } = await import("@webflix/catalog");
+      const { MEDIA_ROOT } = await import("./paths.ts");
+      const report = await checkPreviews(
+        root,
+        result.data,
+        catalog,
+        join(MEDIA_ROOT, "work", "validate", basename(root)),
+      );
+      problems.push(...report.problems);
+      previews = `; ${report.checked} previews checked (${report.motion} motion art starting and ending on the backdrop, ${report.footageWithSound} footage with measured sound, ${report.footageSilent} silent footage)`;
     }
     for (const problem of problems) console.error(problem);
     if (problems.length > 0) return 1;
     console.log(
-      `ok: ${videoAssets.length} video assets${checked ? ` (timing checked: every rendition starts at 0, audio with video, segments add up)` : ""}, ${titleArtwork.length} titles with artwork, ${episodeStills.length} episode stills, ${avatars.length} avatars`,
+      `ok: ${videoAssets.length} video assets${checked ? ` (timing checked: every rendition starts at 0, audio with video, segments add up${previews})` : ""}, ${titleArtwork.length} titles with artwork, ${episodeStills.length} episode stills, ${avatars.length} avatars`,
     );
     return 0;
   }
@@ -133,7 +151,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       }
       case "contact-sheets": {
         const { contactSheets } = await import("./review/sheets.ts");
-        return await contactSheets(profileOf(values.profile));
+        return await contactSheets(profileOf(values.profile), values.only?.split(","));
       }
       case "check-art": {
         const { runArtCheck } = await import("./review/check.ts");

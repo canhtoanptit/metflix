@@ -1,0 +1,255 @@
+[
+  {
+    "step": "setup",
+    "label": "prices by lookup key",
+    "at": "2026-11-21T18:38:56.659Z",
+    "status": null,
+    "body": {
+      "object": "list",
+      "data": [
+        {
+          "id": "price_WFX000000000000000000003",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "created": 1795284709,
+          "currency": "eur",
+          "custom_unit_amount": null,
+          "livemode": false,
+          "lookup_key": "webflix.basic.monthly.eur",
+          "metadata": {
+            "webflix_plan": "basic"
+          },
+          "nickname": null,
+          "product": "webflix_basic",
+          "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "meter": null,
+            "trial_period_days": null,
+            "usage_type": "licensed"
+          },
+          "tax_behavior": "unspecified",
+          "tiers_mode": null,
+          "transform_quantity": null,
+          "type": "recurring",
+          "unit_amount": 799,
+          "unit_amount_decimal": "799"
+        },
+        {
+          "id": "price_WFX000000000000000000004",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "created": 1795284709,
+          "currency": "usd",
+          "custom_unit_amount": null,
+          "livemode": false,
+          "lookup_key": "webflix.basic.monthly.usd",
+          "metadata": {
+            "webflix_plan": "basic"
+          },
+          "nickname": null,
+          "product": "webflix_basic",
+          "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "meter": null,
+            "trial_period_days": null,
+            "usage_type": "licensed"
+          },
+          "tax_behavior": "unspecified",
+          "tiers_mode": null,
+          "transform_quantity": null,
+          "type": "recurring",
+          "unit_amount": 799,
+          "unit_amount_decimal": "799"
+        },
+        {
+          "id": "price_WFX000000000000000000005",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "created": 1795284710,
+          "currency": "eur",
+          "custom_unit_amount": null,
+          "livemode": false,
+          "lookup_key": "webflix.premium.monthly.eur",
+          "metadata": {
+            "webflix_plan": "premium"
+          },
+          "nickname": null,
+          "product": "webflix_premium",
+          "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "meter": null,
+            "trial_period_days": null,
+            "usage_type": "licensed"
+          },
+          "tax_behavior": "unspecified",
+          "tiers_mode": null,
+          "transform_quantity": null,
+          "type": "recurring",
+          "unit_amount": 1899,
+          "unit_amount_decimal": "1899"
+        },
+        {
+          "id": "price_WFX000000000000000000006",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "created": 1795284710,
+          "currency": "usd",
+          "custom_unit_amount": null,
+          "livemode": false,
+          "lookup_key": "webflix.premium.monthly.usd",
+          "metadata": {
+            "webflix_plan": "premium"
+          },
+          "nickname": null,
+          "product": "webflix_premium",
+          "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "meter": null,
+            "trial_period_days": null,
+            "usage_type": "licensed"
+          },
+          "tax_behavior": "unspecified",
+          "tiers_mode": null,
+          "transform_quantity": null,
+          "type": "recurring",
+          "unit_amount": 1899,
+          "unit_amount_decimal": "1899"
+        },
+        {
+          "id": "price_WFX000000000000000000007",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "created": 1795284710,
+          "currency": "eur",
+          "custom_unit_amount": null,
+          "livemode": false,
+          "lookup_key": "webflix.standard.monthly.eur",
+          "metadata": {
+            "webflix_plan": "standard"
+          },
+          "nickname": null,
+          "product": "webflix_standard",
+          "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "meter": null,
+            "trial_period_days": null,
+            "usage_type": "licensed"
+          },
+          "tax_behavior": "unspecified",
+          "tiers_mode": null,
+          "transform_quantity": null,
+          "type": "recurring",
+          "unit_amount": 1299,
+          "unit_amount_decimal": "1299"
+        },
+        {
+          "id": "price_WFX000000000000000000008",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "created": 1795284709,
+          "currency": "usd",
+          "custom_unit_amount": null,
+          "livemode": false,
+          "lookup_key": "webflix.standard.monthly.usd",
+          "metadata": {
+            "webflix_plan": "standard"
+          },
+          "nickname": null,
+          "product": "webflix_standard",
+          "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "meter": null,
+            "trial_period_days": null,
+            "usage_type": "licensed"
+          },
+          "tax_behavior": "unspecified",
+          "tiers_mode": null,
+          "transform_quantity": null,
+          "type": "recurring",
+          "unit_amount": 1299,
+          "unit_amount_decimal": "1299"
+        }
+      ],
+      "has_more": false,
+      "url": "/v1/prices"
+    }
+  },
+  {
+    "step": "price change through transfer_lookup_key",
+    "label": "new price takes the lookup key",
+    "at": "2026-11-21T18:38:57.465Z",
+    "status": null,
+    "body": {
+      "id": "price_WFX000000000000000000001",
+      "object": "price",
+      "active": true,
+      "billing_scheme": "per_unit",
+      "created": 1795286337,
+      "currency": "usd",
+      "custom_unit_amount": null,
+      "livemode": false,
+      "lookup_key": "webflix.proof.transfer.monthly.usd",
+      "metadata": {},
+      "nickname": null,
+      "product": "webflix_proof_transfer",
+      "recurring": {
+        "interval": "month",
+        "interval_count": 1,
+        "meter": null,
+        "trial_period_days": null,
+        "usage_type": "licensed"
+      },
+      "tax_behavior": "unspecified",
+      "tiers_mode": null,
+      "transform_quantity": null,
+      "type": "recurring",
+      "unit_amount": 200,
+      "unit_amount_decimal": "200"
+    }
+  },
+  {
+    "step": "price change through transfer_lookup_key",
+    "label": "old price after transfer and archive",
+    "at": "2026-11-21T18:38:57.792Z",
+    "status": null,
+    "body": {
+      "id": "price_WFX000000000000000000002",
+      "object": "price",
+      "active": false,
+      "billing_scheme": "per_unit",
+      "created": 1795286231,
+      "currency": "usd",
+      "custom_unit_amount": null,
+      "livemode": false,
+      "lookup_key": null,
+      "metadata": {},
+      "nickname": null,
+      "product": "webflix_proof_transfer",
+      "recurring": {
+        "interval": "month",
+        "interval_count": 1,
+        "meter": null,
+        "trial_period_days": null,
+        "usage_type": "licensed"
+      },
+      "tax_behavior": "unspecified",
+      "tiers_mode": null,
+      "transform_quantity": null,
+      "type": "recurring",
+      "unit_amount": 100,
+      "unit_amount_decimal": "100"
+    }
+  }
+]

@@ -1,0 +1,430 @@
+{
+  "name": "plan-change",
+  "title": "Upgrade and downgrade against their proration previews",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": ["the renewal invoice after a downgrade matches its preview"],
+  "started_at": "2026-11-21T18:40:05.598Z",
+  "duration_ms": 10720,
+  "steps": [
+    {
+      "name": "subscribe to Standard",
+      "ms": 3574
+    },
+    {
+      "name": "upgrade to Premium, invoiced now",
+      "ms": 3667
+    },
+    {
+      "name": "downgrade to Basic, credited now",
+      "ms": 2411
+    },
+    {
+      "name": "next renewal against its preview",
+      "ms": 473
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "subscribe to Standard",
+      "key": "first payment: customer.subscription.updated with status active received",
+      "value": true
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "key": "upgrade: preview lines",
+      "value": [
+        {
+          "description": "Unused time on Webflix Standard after 21 Nov 2026",
+          "amount": -1299,
+          "proration": true,
+          "period": [1795286407, 1797878406]
+        },
+        {
+          "description": "Remaining time on Webflix Premium after 21 Nov 2026",
+          "amount": 1899,
+          "proration": true,
+          "period": [1795286407, 1797878406]
+        }
+      ]
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "key": "upgrade: invoice lines",
+      "value": [
+        {
+          "description": "Unused time on Webflix Standard after 21 Nov 2026",
+          "amount": -1299,
+          "proration": true,
+          "period": [1795286407, 1797878406]
+        },
+        {
+          "description": "Remaining time on Webflix Premium after 21 Nov 2026",
+          "amount": 1899,
+          "proration": true,
+          "period": [1795286407, 1797878406]
+        }
+      ]
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "key": "upgrade: invoiced total equals previewed total",
+      "value": 600,
+      "expected": 600,
+      "ok": true
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "key": "upgrade: totals",
+      "value": {
+        "preview": 600,
+        "invoiced": 600,
+        "amount_due": 600,
+        "status": "paid"
+      }
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "key": "upgrade: customer balance afterwards (negative = credit)",
+      "value": 0
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "key": "downgrade: preview lines",
+      "value": [
+        {
+          "description": "Unused time on Webflix Premium after 21 Nov 2026",
+          "amount": -1899,
+          "proration": true,
+          "period": [1795286411, 1797878406]
+        },
+        {
+          "description": "Remaining time on Webflix Basic after 21 Nov 2026",
+          "amount": 799,
+          "proration": true,
+          "period": [1795286411, 1797878406]
+        }
+      ]
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "key": "downgrade: invoice lines",
+      "value": [
+        {
+          "description": "Unused time on Webflix Premium after 21 Nov 2026",
+          "amount": -1899,
+          "proration": true,
+          "period": [1795286411, 1797878406]
+        },
+        {
+          "description": "Remaining time on Webflix Basic after 21 Nov 2026",
+          "amount": 799,
+          "proration": true,
+          "period": [1795286411, 1797878406]
+        }
+      ]
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "key": "downgrade: invoiced total equals previewed total",
+      "value": -1100,
+      "expected": -1100,
+      "ok": true
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "key": "downgrade: totals",
+      "value": {
+        "preview": -1100,
+        "invoiced": -1100,
+        "amount_due": 0,
+        "status": "paid"
+      }
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "key": "downgrade: customer balance afterwards (negative = credit)",
+      "value": -1100
+    },
+    {
+      "step": "next renewal against its preview",
+      "key": "next renewal preview",
+      "value": {
+        "total": 799,
+        "amount_due": 0,
+        "starting_balance": -1100
+      }
+    },
+    {
+      "step": "next renewal against its preview",
+      "key": "SKIPPED (needs a test clock): the renewal invoice after a downgrade matches its preview",
+      "value": "skipped"
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 11,
+    "secret_key": 10,
+    "publishable_key": 1,
+    "by_method": {
+      "GET": 3,
+      "POST": 8
+    },
+    "by_status": {
+      "200": 11
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 9922
+  },
+  "events": {
+    "deliveries": 33,
+    "distinct": 33,
+    "types": {
+      "customer.created": 1,
+      "invoice.created": 3,
+      "payment_intent.created": 2,
+      "invoice.finalized": 3,
+      "customer.updated": 2,
+      "customer.subscription.created": 1,
+      "invoice_payment.paid": 2,
+      "charge.succeeded": 2,
+      "invoice.paid": 3,
+      "payment_method.attached": 1,
+      "customer.subscription.updated": 3,
+      "payment_intent.succeeded": 2,
+      "invoice.updated": 1,
+      "invoice.payment_succeeded": 3,
+      "invoiceitem.created": 4
+    },
+    "inversions_vs_created": [
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002P",
+          "type": "payment_method.attached",
+          "created": 1795286408
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002Q",
+          "type": "invoice.paid",
+          "created": 1795286409
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002R",
+          "type": "payment_intent.succeeded",
+          "created": 1795286408
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002Q",
+          "type": "invoice.paid",
+          "created": 1795286409
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002R",
+          "type": "payment_intent.succeeded",
+          "created": 1795286408
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002S",
+          "type": "customer.subscription.updated",
+          "created": 1795286409
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002T",
+          "type": "payment_intent.created",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002U",
+          "type": "invoice_payment.paid",
+          "created": 1795286412
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002T",
+          "type": "payment_intent.created",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002V",
+          "type": "charge.succeeded",
+          "created": 1795286412
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002T",
+          "type": "payment_intent.created",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002W",
+          "type": "invoice.finalized",
+          "created": 1795286412
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002T",
+          "type": "payment_intent.created",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002X",
+          "type": "invoice.paid",
+          "created": 1795286412
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000002T",
+          "type": "payment_intent.created",
+          "created": 1795286411
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000002Y",
+          "type": "customer.subscription.updated",
+          "created": 1795286412
+        }
+      }
+    ]
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 232,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000016"
+    },
+    {
+      "step": "setup",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 363,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-0efda96b-09a0-4c08-a6d0-91b2214fae4e",
+      "replayed": false,
+      "request_id": "req_WFX00000000017"
+    },
+    {
+      "step": "subscribe to Standard",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1307,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-29f76ade-3ab2-45bf-b237-a60c8a5bafee",
+      "replayed": false,
+      "request_id": "req_WFX00000000018"
+    },
+    {
+      "step": "subscribe to Standard",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX000000000000000000007/confirm",
+      "status": 200,
+      "ms": 1860,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000019"
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "method": "POST",
+      "path": "/v1/invoices/create_preview",
+      "status": 200,
+      "ms": 533,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-b896ec3f-99fa-4593-ba12-8fec3a6b5a35",
+      "replayed": false,
+      "request_id": "req_WFX0000000001A"
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "method": "POST",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000007",
+      "status": 200,
+      "ms": 2471,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-240a61d7-7299-428f-b475-aa9d59b03c04",
+      "replayed": false,
+      "request_id": "req_WFX0000000001B"
+    },
+    {
+      "step": "upgrade to Premium, invoiced now",
+      "method": "GET",
+      "path": "/v1/customers/cus_WFX00000000007",
+      "status": 200,
+      "ms": 275,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001C"
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "method": "POST",
+      "path": "/v1/invoices/create_preview",
+      "status": 200,
+      "ms": 934,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-3f9ae601-8580-4f78-b923-97033b513f31",
+      "replayed": false,
+      "request_id": "req_WFX0000000001D"
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "method": "POST",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000007",
+      "status": 200,
+      "ms": 1178,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-5269d5a4-2868-4e4d-ae69-98c213d90c8c",
+      "replayed": false,
+      "request_id": "req_WFX0000000001E"
+    },
+    {
+      "step": "downgrade to Basic, credited now",
+      "method": "GET",
+      "path": "/v1/customers/cus_WFX00000000007",
+      "status": 200,
+      "ms": 297,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001F"
+    },
+    {
+      "step": "next renewal against its preview",
+      "method": "POST",
+      "path": "/v1/invoices/create_preview",
+      "status": 200,
+      "ms": 472,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-0f1b136d-bbda-4ba0-ac6d-d0f876fd8b95",
+      "replayed": false,
+      "request_id": "req_WFX0000000001G"
+    }
+  ]
+}

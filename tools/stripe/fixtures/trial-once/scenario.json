@@ -1,0 +1,342 @@
+{
+  "name": "trial-once",
+  "title": "One trial per customer and per card fingerprint",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [],
+  "started_at": "2026-11-21T18:40:22.299Z",
+  "duration_ms": 12231,
+  "steps": [
+    {
+      "name": "member A: trial, cancel, trial again",
+      "ms": 5929
+    },
+    {
+      "name": "member B: same card number, another customer",
+      "ms": 3259
+    },
+    {
+      "name": "member C: a different card",
+      "ms": 2811
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "key": "Stripe grants the same customer a second trial",
+      "value": "trialing",
+      "expected": "trialing",
+      "ok": true
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "key": "card collected for the trial",
+      "value": {
+        "brand": "visa",
+        "last4": "4242"
+      }
+    },
+    {
+      "step": "member B: same card number, another customer",
+      "key": "card collected for the trial",
+      "value": {
+        "brand": "visa",
+        "last4": "4242"
+      }
+    },
+    {
+      "step": "member B: same card number, another customer",
+      "key": "same card on another customer has the same fingerprint",
+      "value": true,
+      "expected": true,
+      "ok": true
+    },
+    {
+      "step": "member C: a different card",
+      "key": "card collected for the trial",
+      "value": {
+        "brand": "mastercard",
+        "last4": "4444"
+      }
+    },
+    {
+      "step": "member C: a different card",
+      "key": "a different card has a different fingerprint",
+      "value": true,
+      "expected": true,
+      "ok": true
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 16,
+    "secret_key": 12,
+    "publishable_key": 4,
+    "by_method": {
+      "GET": 4,
+      "POST": 11,
+      "DELETE": 1
+    },
+    "by_status": {
+      "200": 16
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 11338
+  },
+  "events": {
+    "deliveries": 46,
+    "distinct": 46,
+    "types": {
+      "customer.created": 3,
+      "setup_intent.created": 4,
+      "invoice.paid": 4,
+      "invoice.finalized": 4,
+      "customer.updated": 3,
+      "customer.subscription.created": 4,
+      "invoice.created": 4,
+      "invoice.payment_succeeded": 4,
+      "payment_method.attached": 4,
+      "setup_intent.succeeded": 4,
+      "customer.subscription.deleted": 1,
+      "customer.subscription.updated": 4,
+      "invoice.upcoming": 3
+    },
+    "inversions_vs_created": [
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000004F",
+          "type": "customer.updated",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000004G",
+          "type": "invoice.paid",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000004F",
+          "type": "customer.updated",
+          "created": 1795286423
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000004H",
+          "type": "invoice.finalized",
+          "created": 1795286424
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000004I",
+          "type": "customer.updated",
+          "created": 1795286432
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000004J",
+          "type": "invoice.finalized",
+          "created": 1795286433
+        }
+      },
+      {
+        "earlier": {
+          "id": "evt_WFX00000000000000000004I",
+          "type": "customer.updated",
+          "created": 1795286432
+        },
+        "later": {
+          "id": "evt_WFX00000000000000000004K",
+          "type": "invoice.paid",
+          "created": 1795286433
+        }
+      }
+    ]
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 231,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001t"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 363,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-b0f32d43-2e1c-4c71-8041-84386f8eb2b4",
+      "replayed": false,
+      "request_id": "req_WFX0000000001u"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1139,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-c0dfaf72-de6d-4164-b3de-67a0e6a59bb4",
+      "replayed": false,
+      "request_id": "req_WFX0000000001v"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000008/confirm",
+      "status": 200,
+      "ms": 837,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001w"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "DELETE",
+      "path": "/v1/subscriptions/sub_WFX00000000000000000000C",
+      "status": 200,
+      "ms": 458,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001x"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1574,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-9b47dd2a-82b1-4e2b-b845-5f942ff2fa52",
+      "replayed": false,
+      "request_id": "req_WFX0000000001y"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000009/confirm",
+      "status": 200,
+      "ms": 855,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001z"
+    },
+    {
+      "step": "member A: trial, cancel, trial again",
+      "method": "GET",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000009?expand[0]=payment_method",
+      "status": 200,
+      "ms": 288,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000020"
+    },
+    {
+      "step": "member B: same card number, another customer",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 365,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-4bd6015f-4a02-4057-8d4c-3de3a695ada3",
+      "replayed": false,
+      "request_id": "req_WFX00000000021"
+    },
+    {
+      "step": "member B: same card number, another customer",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1141,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-ddb2e8f8-9878-4cd8-bed1-0984842b4255",
+      "replayed": false,
+      "request_id": "req_WFX00000000022"
+    },
+    {
+      "step": "member B: same card number, another customer",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX00000000000000000000A/confirm",
+      "status": 200,
+      "ms": 1191,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000023"
+    },
+    {
+      "step": "member B: same card number, another customer",
+      "method": "GET",
+      "path": "/v1/setup_intents/seti_WFX00000000000000000000A?expand[0]=payment_method",
+      "status": 200,
+      "ms": 292,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000024"
+    },
+    {
+      "step": "member C: a different card",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 354,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-45768c79-5804-4bef-b705-0bc1723bdaac",
+      "replayed": false,
+      "request_id": "req_WFX00000000025"
+    },
+    {
+      "step": "member C: a different card",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1127,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-79a618c2-8d0e-421f-b93e-68c547bdf62c",
+      "replayed": false,
+      "request_id": "req_WFX00000000026"
+    },
+    {
+      "step": "member C: a different card",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX00000000000000000000B/confirm",
+      "status": 200,
+      "ms": 840,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000027"
+    },
+    {
+      "step": "member C: a different card",
+      "method": "GET",
+      "path": "/v1/setup_intents/seti_WFX00000000000000000000B?expand[0]=payment_method",
+      "status": 200,
+      "ms": 283,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX00000000028"
+    }
+  ]
+}

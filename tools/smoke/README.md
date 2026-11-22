@@ -43,7 +43,7 @@ Exit status: `0` nothing failed, `1` a check failed (or something was skipped wi
 | `--json <file>` | | Write the JSON summary (`-` for stdout; the text report then goes to stderr) |
 | `--expect-fail <ids>` | | Known failures: reported `XFAIL` and do not fail the run; a passing one is `XPASS` |
 | `--fail-on-skip` | off | Any skip fails the run (use when the target is expected to support everything) |
-| `--rate-limits <spec>` | `auto` | `auto` detects; `strict` / `relaxed` pin the documented profiles; `profile-pin=10/60,auth=20/60` pins custom limits (policies: `auth`, `signup`, `email-lookup`, `profile-pin`, `payment`) |
+| `--rate-limits <spec>` | `auto` | `auto` detects; `strict` / `relaxed` pin the documented profiles; `profile-pin=10/60,auth=20/60` pins custom limits (policies: `auth`, `signup`, `email-lookup`, `profile-pin`, `payment`, `auth-email`, `playback-start`) |
 | `--no-ip-exhaustion` | off | Never exhaust IP-keyed limits (sign-in, sign-up, email lookup): for a deployment shared with people behind the same address |
 | `--concurrency <n>` | 4 | Checks running at once |
 | `--parallelism <n>` | 8 | Concurrent requests per consistency fan-out |
@@ -121,7 +121,7 @@ Requirements are detected from outside, never assumed from the mode name:
 - Packaged-media checks keep one playback session alive with heartbeats for the duration of the
   run and stop it at the end.
 
-## Check catalogue (93)
+## Check catalogue (95)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
@@ -167,23 +167,25 @@ restricted or deleted · `privileges.account-holder` account routes answer `prof
 the gate and `unrestricted_profile_required` from a 13+ profile · `privileges.pin-locks-other-devices`
 a PIN set on one device sends another device on that profile back to the gate.
 
-**browse (15)**: `browse.views` billboard (null for new-popular), typed rows, ranks ·
+**browse (16)**: `browse.views` billboard (null for new-popular), typed rows, ranks ·
 `browse.row-batches` cursors, no repeated rows, tampered cursor · `browse.row-pagination` next pages
 without overlap, `limit`, unknown row · `browse.genres` every sort (a-z collation, z-a = reversed,
 newest/oldest by year), type filter, pagination, unknown/invalid slug · `browse.title-detail` ·
 `browse.episodes` numbering and counts, bad season, movie · `browse.similar` ·
 `browse.search` prefix, case, added and stripped diacritics, people and genre suggestions, empty
-state, validation · `browse.demo-first-load` [d] billboard with a match score, ≥ 12 rows of ≥ 6
+state, a long query cut and searched, validation · `browse.demo-first-load` [d] billboard with a match score, ≥ 12 rows of ≥ 6
 kinds, Top 10 of 10 distinct, cards scored · `browse.showcase` the public showcase: guests, ≤ 13+,
 the catalog's versioned artwork, `public` caching without `Vary: Cookie`, 304 on revalidation,
-the same document for a member · `browse.badges` a chart-topper being watched: no Top 10 badge in
-Continue Watching or ranked rows, at most two per row in every view, every `top10Rank` equal to
-the view's Top 10 row · `browse.video-quality` `bestVideoQuality` of the packaged session equals
+the same document for a member · `browse.badges` a chart-topper being watched: no badge on the Top 10
+row, only "new episodes" in Continue Watching, no "new" in New Releases or on the played title,
+at most two badges per row in every view, every `top10Rank` equal to the view's Top 10 row · `browse.video-quality` `bestVideoQuality` of the packaged session equals
 the tier of its master playlist's best rendition, matched on detail and card; none for external
 media · `browse.search-any-script` long CJK, Cyrillic, astral-plane, emoji and combining-mark
 queries answer 200 · `browse.search-cursor-invalid` a cursor the server did not issue is
 `validation_failed` · `browse.batches-stable` My List emptied between batches: every row of the
-plan is served exactly once.
+plan is served exactly once · `browse.durations-agree` a packaged movie's card and detail
+runtime, a packaged episode's listed runtime, and their playback sessions agree within a second;
+series carry no runtime.
 
 **library (7)**: `library.my-list` round trip, newest first, idempotent, pagination ·
 `library.ratings` love/dislike/clear in viewer state · `library.dislikes-leave-rows` one title
@@ -193,10 +195,10 @@ resume point, play-from-start, hide until watched again · `library.continue-wat
 finished episode then two seconds of the next: the series stays at the next episode from 0, and
 the row, the home row, the play target and Play agree; a series sampled for 3 s stays out ·
 `library.history` newest first,
-pagination, removal clears progress · `library.notifications` unread count, read one/all, per
-profile.
+pagination, removal clears progress · `library.notifications` a new profile opens with no backlog: at
+most three earlier arrivals, already read, newest first; read-all and validation.
 
-**playback and media (15)**: `playback.session` shape, plan cap, series play target and next
+**playback and media (16)**: `playback.session` shape, plan cap, series play target and next
 episode, one stream per device, errors, stop and heartbeat after stop ·
 `playback.release-final-position` a release carrying the final position records it and frees the
 one Basic screen in one request (no heartbeat sent); another profile cannot report on the
@@ -219,7 +221,9 @@ backslash, control characters and over-long keys never reach a blob store: the A
 an empty 400 for a NUL), which passes as any 4xx without content; a gateway's redirect for the
 backslash is followed and the final answer must be the API's 404; never a 5xx ·
 `playback.release-empty-body` a release with `Content-Type: application/json` and an empty or
-blank body is a 204.
+blank body is a 204 · `playback.signout-stops-playback` a device playing on Basic, then "sign out
+of all devices" from another: the player's next heartbeat (401), playlist (410) and start (401)
+are refused and another device starts on the freed screen.
 
 **plans (6)**: `plans.catalogue` · `plans.stream-limit` Basic across devices, 409 lists the active
 device, release on stop and on sign-out · `plans.change-effects` downgrade ends the newest extra

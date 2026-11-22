@@ -91,7 +91,11 @@ export function createBrowseService(deps: ServiceDependencies, state: ServiceSta
       plan.layout === "ranked" ? plan.titleIds.length : limit,
     );
     // Badges are decided over the whole row, so later pages respect the row's Top 10 cap.
-    const surface = personalization.cardSurface(plan.titleIds, plan.view, ROW_BADGES[plan.layout]);
+    const surface = personalization.cardSurface(
+      plan.titleIds,
+      plan.view,
+      plan.kind === "new-releases" ? "new-list" : ROW_BADGES[plan.layout],
+    );
     const base = {
       id: plan.id,
       kind: plan.kind,

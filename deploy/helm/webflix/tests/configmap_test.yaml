@@ -123,3 +123,50 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: externalValkey.url is required when valkey.enabled is false
+  - it: leaves the PostgreSQL role budgets to the application unless set
+    asserts:
+      - notExists:
+          path: data.WEBFLIX_DATABASE_REQUEST_STATEMENT_TIMEOUT_MS
+      - notExists:
+          path: data.WEBFLIX_DATABASE_REQUEST_QUERY_TIMEOUT_MS
+      - notExists:
+          path: data.WEBFLIX_DATABASE_KEEPALIVE_MS
+  - it: passes per-role budgets and keepalive through, 0 included
+    set:
+      config.databaseTimeouts.request: { statementMs: 3000, queryMs: 4500 }
+      config.databaseTimeouts.maintenance: { statementMs: 0, queryMs: 0 }
+      config.databaseTimeouts.background: { queryMs: 900000 }
+      config.databaseKeepAliveMs: 0
+    asserts:
+      - equal:
+          path: data.WEBFLIX_DATABASE_REQUEST_STATEMENT_TIMEOUT_MS
+          value: "3000"
+      - equal:
+          path: data.WEBFLIX_DATABASE_REQUEST_QUERY_TIMEOUT_MS
+          value: "4500"
+      - equal:
+          path: data.WEBFLIX_DATABASE_MAINTENANCE_STATEMENT_TIMEOUT_MS
+          value: "0"
+      - equal:
+          path: data.WEBFLIX_DATABASE_MAINTENANCE_QUERY_TIMEOUT_MS
+          value: "0"
+      - equal:
+          path: data.WEBFLIX_DATABASE_BACKGROUND_QUERY_TIMEOUT_MS
+          value: "900000"
+      - notExists:
+          path: data.WEBFLIX_DATABASE_BACKGROUND_STATEMENT_TIMEOUT_MS
+      - equal:
+          path: data.WEBFLIX_DATABASE_KEEPALIVE_MS
+          value: "0"
+  - it: refuses a client-side timeout that does not exceed the statement timeout
+    set:
+      config.databaseTimeouts.request: { queryMs: 5000 }
+    asserts:
+      - failedTemplate:
+          errorMessage: "webflix: config.databaseTimeouts.request.queryMs (5000) must exceed statementMs (5000), or be 0: the client-side bound fires only when the server cannot answer."
+  - it: refuses a client-side timeout without a server-side one
+    set:
+      config.databaseTimeouts.background: { statementMs: 0 }
+    asserts:
+      - failedTemplate:
+          errorMessage: "webflix: config.databaseTimeouts.background.queryMs (65000) must exceed statementMs (0), or be 0: the client-side bound fires only when the server cannot answer."

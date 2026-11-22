@@ -1,0 +1,309 @@
+{
+  "name": "promotion-codes",
+  "title": "Promotion code redemption limit and expiry",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [
+    "promotion-code expiry for a customer whose test clock is past it (real time is not)"
+  ],
+  "started_at": "2026-11-21T18:40:16.318Z",
+  "duration_ms": 67640,
+  "steps": [
+    {
+      "name": "create a coupon and two codes",
+      "ms": 1556
+    },
+    {
+      "name": "first member redeems the limited code",
+      "ms": 7083
+    },
+    {
+      "name": "second member is refused (redemption limit)",
+      "ms": 666
+    },
+    {
+      "name": "expiry against the test clock, not real time",
+      "ms": 0
+    },
+    {
+      "name": "expired in real time",
+      "ms": 58103
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "first member redeems the limited code",
+      "key": "first redemption",
+      "value": {
+        "ok": true,
+        "subtotal": 799,
+        "total": 399,
+        "discounts": [400]
+      }
+    },
+    {
+      "step": "first member redeems the limited code",
+      "key": "first redemption succeeds",
+      "value": true,
+      "expected": true,
+      "ok": true
+    },
+    {
+      "step": "first member redeems the limited code",
+      "key": "limited code after one redemption",
+      "value": {
+        "times_redeemed": 1,
+        "active": false
+      }
+    },
+    {
+      "step": "second member is refused (redemption limit)",
+      "key": "second redemption",
+      "value": {
+        "ok": false,
+        "error": {
+          "status": 400,
+          "type": "StripeInvalidRequestError",
+          "code": null,
+          "message": "[req_WFX0000000001g] This promotion code has been used up. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)"
+        }
+      }
+    },
+    {
+      "step": "second member is refused (redemption limit)",
+      "key": "second redemption refused",
+      "value": false,
+      "expected": false,
+      "ok": true
+    },
+    {
+      "step": "expiry against the test clock, not real time",
+      "key": "SKIPPED (needs a test clock): promotion-code expiry for a customer whose test clock is past it (real time is not)",
+      "value": "skipped"
+    },
+    {
+      "step": "expired in real time",
+      "key": "redemption after expiry",
+      "value": {
+        "ok": false,
+        "error": {
+          "status": 400,
+          "type": "StripeInvalidRequestError",
+          "code": null,
+          "message": "[req_WFX0000000001h] This promotion code has expired. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)"
+        }
+      }
+    },
+    {
+      "step": "expired in real time",
+      "key": "redemption after expiry refused",
+      "value": false,
+      "expected": false,
+      "ok": true
+    },
+    {
+      "step": "expired in real time",
+      "key": "short-lived code after expiry",
+      "value": {
+        "active": false,
+        "times_redeemed": 0
+      }
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 13,
+    "secret_key": 12,
+    "publishable_key": 1,
+    "by_method": {
+      "GET": 3,
+      "POST": 10
+    },
+    "by_status": {
+      "200": 11,
+      "400": 2
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 7599
+  },
+  "events": {
+    "deliveries": 22,
+    "distinct": 22,
+    "types": {
+      "coupon.created": 1,
+      "promotion_code.created": 2,
+      "customer.created": 3,
+      "payment_intent.created": 1,
+      "invoice.created": 1,
+      "invoice.finalized": 1,
+      "customer.updated": 1,
+      "customer.discount.created": 1,
+      "customer.discount.deleted": 1,
+      "promotion_code.updated": 1,
+      "customer.subscription.created": 1,
+      "invoice_payment.paid": 1,
+      "charge.succeeded": 1,
+      "invoice.paid": 1,
+      "payment_method.attached": 1,
+      "customer.subscription.updated": 1,
+      "payment_intent.succeeded": 1,
+      "invoice.updated": 1,
+      "invoice.payment_succeeded": 1
+    },
+    "inversions_vs_created": []
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 232,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001i"
+    },
+    {
+      "step": "create a coupon and two codes",
+      "method": "POST",
+      "path": "/v1/coupons",
+      "status": 200,
+      "ms": 634,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-95eb7aae-5757-498a-b280-760371fcd063",
+      "replayed": false,
+      "request_id": "req_WFX0000000001j"
+    },
+    {
+      "step": "create a coupon and two codes",
+      "method": "POST",
+      "path": "/v1/promotion_codes",
+      "status": 200,
+      "ms": 285,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-a718fdcb-5eea-4076-814b-8af164c238b9",
+      "replayed": false,
+      "request_id": "req_WFX0000000001k"
+    },
+    {
+      "step": "create a coupon and two codes",
+      "method": "POST",
+      "path": "/v1/promotion_codes",
+      "status": 200,
+      "ms": 636,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-ada47de7-d9f0-47fc-9278-ce22dc7b8f80",
+      "replayed": false,
+      "request_id": "req_WFX0000000001l"
+    },
+    {
+      "step": "first member redeems the limited code",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 350,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-85a82e4f-ba90-4698-9332-f76ce2b1f678",
+      "replayed": false,
+      "request_id": "req_WFX0000000001m"
+    },
+    {
+      "step": "first member redeems the limited code",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1352,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-7f436cbb-93c1-4a6d-9ad0-08847a441a05",
+      "replayed": false,
+      "request_id": "req_WFX0000000001n"
+    },
+    {
+      "step": "first member redeems the limited code",
+      "method": "POST",
+      "path": "/v1/payment_intents/pi_WFX00000000000000000000B/confirm",
+      "status": 200,
+      "ms": 2128,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001o"
+    },
+    {
+      "step": "first member redeems the limited code",
+      "method": "GET",
+      "path": "/v1/promotion_codes/promo_WFX000000000000000000001",
+      "status": 200,
+      "ms": 249,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001p"
+    },
+    {
+      "step": "second member is refused (redemption limit)",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 355,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-4197adf8-f54a-44c6-86d0-d78b1a020a3e",
+      "replayed": false,
+      "request_id": "req_WFX0000000001q"
+    },
+    {
+      "step": "second member is refused (redemption limit)",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 400,
+      "ms": 309,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-7265266c-fa1a-48c2-9589-c28cd5632d17",
+      "replayed": false,
+      "request_id": "req_WFX0000000001g"
+    },
+    {
+      "step": "expired in real time",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 517,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-71b7a25b-acb8-4572-90d8-7762b93b0aba",
+      "replayed": false,
+      "request_id": "req_WFX0000000001r"
+    },
+    {
+      "step": "expired in real time",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 400,
+      "ms": 302,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-3dfc26f7-b16b-4a93-8387-a060ac8f9cff",
+      "replayed": false,
+      "request_id": "req_WFX0000000001h"
+    },
+    {
+      "step": "expired in real time",
+      "method": "GET",
+      "path": "/v1/promotion_codes/promo_WFX000000000000000000002",
+      "status": 200,
+      "ms": 250,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000001s"
+    }
+  ]
+}

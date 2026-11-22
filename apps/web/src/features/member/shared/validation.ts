@@ -44,6 +44,14 @@ export function validateNewPassword(value: string): string | null {
   return null;
 }
 
+/** Re-entering the password chosen on step 1 (the draft keeps it in memory only). */
+export function validateChosenPassword(value: string): string | null {
+  if (value.length === 0) return "Enter the password you chose.";
+  return validateNewPassword(value) === null
+    ? null
+    : `The password you chose has at least ${PASSWORD_MIN_LENGTH} characters.`;
+}
+
 export function validateCurrentPassword(value: string): string | null {
   return value.length === 0 ? "Enter your password." : null;
 }

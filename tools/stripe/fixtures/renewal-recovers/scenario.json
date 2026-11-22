@@ -1,0 +1,338 @@
+{
+  "name": "renewal-recovers",
+  "title": "Renewal declines, Stripe retries, card replaced, invoice paid",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": ["Stripe's own retry of the failed invoice at next_payment_attempt"],
+  "started_at": "2026-11-21T18:38:58.049Z",
+  "duration_ms": 84250,
+  "steps": [
+    {
+      "name": "subscribe with a card that will decline",
+      "ms": 2334
+    },
+    {
+      "name": "first renewal fails",
+      "ms": 76241
+    },
+    {
+      "name": "Stripe retries on its schedule",
+      "ms": 0
+    },
+    {
+      "name": "member replaces the card and the invoice is paid",
+      "ms": 5051
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "first renewal fails",
+      "key": "real time: first renewal invoice drafted",
+      "value": {
+        "seconds_after_trial_end": 34,
+        "status": "draft",
+        "total": 1299
+      }
+    },
+    {
+      "step": "first renewal fails",
+      "key": "after early finalization",
+      "value": {
+        "status": "open",
+        "attempt_count": 0,
+        "next_payment_attempt_in_minutes": 60
+      }
+    },
+    {
+      "step": "first renewal fails",
+      "key": "first renewal attempt failed",
+      "value": {
+        "status": 402,
+        "type": "StripeCardError",
+        "code": "card_declined"
+      }
+    },
+    {
+      "step": "first renewal fails",
+      "key": "subscription status after the failed renewal",
+      "value": "past_due",
+      "expected": "past_due",
+      "ok": true
+    },
+    {
+      "step": "first renewal fails",
+      "key": "invoice after the failed renewal",
+      "value": {
+        "status": "open",
+        "attempt_count": 1,
+        "hours_until_stripe_retries": 42.6
+      }
+    },
+    {
+      "step": "Stripe retries on its schedule",
+      "key": "SKIPPED (needs a test clock): Stripe's own retry of the failed invoice at next_payment_attempt",
+      "value": "skipped"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "key": "invoice after the card change, before paying",
+      "value": {
+        "status": "open",
+        "attempt_count": 1
+      },
+      "note": "changing the default card does not trigger a payment attempt; the adapter pays the open invoice"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "key": "invoice status after pay",
+      "value": "paid",
+      "expected": "paid",
+      "ok": true
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "key": "recovery: customer.subscription.updated with status active received",
+      "value": true
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "key": "subscription status after recovery",
+      "value": "active",
+      "expected": "active",
+      "ok": true
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "key": "subscription after recovery",
+      "value": {
+        "status": "active",
+        "cancel_at_period_end": false,
+        "cancel_at": null,
+        "canceled_at": null,
+        "ended_at": null,
+        "trial_end": 1795286378,
+        "current_period_end": 1797878378,
+        "default_payment_method": "set",
+        "billing_mode": "flexible"
+      }
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 15,
+    "secret_key": 13,
+    "publishable_key": 2,
+    "by_method": {
+      "GET": 6,
+      "POST": 9
+    },
+    "by_status": {
+      "200": 14,
+      "402": 1
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 11703
+  },
+  "events": {
+    "deliveries": 37,
+    "distinct": 37,
+    "types": {
+      "customer.created": 1,
+      "setup_intent.created": 3,
+      "invoice.finalized": 2,
+      "invoice.paid": 2,
+      "customer.updated": 3,
+      "customer.subscription.created": 1,
+      "invoice.created": 2,
+      "invoice.payment_succeeded": 2,
+      "payment_method.attached": 2,
+      "setup_intent.succeeded": 3,
+      "customer.subscription.updated": 5,
+      "payment_intent.created": 1,
+      "invoice.updated": 4,
+      "charge.failed": 1,
+      "payment_intent.payment_failed": 1,
+      "invoice.payment_failed": 1,
+      "invoice_payment.paid": 1,
+      "payment_intent.succeeded": 1,
+      "charge.succeeded": 1
+    },
+    "inversions_vs_created": []
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 280,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000O"
+    },
+    {
+      "step": "setup",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 340,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-76cb133c-017e-49d3-b80f-7d39ff95f698",
+      "replayed": false,
+      "request_id": "req_WFX0000000000P"
+    },
+    {
+      "step": "subscribe with a card that will decline",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1127,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-6709e031-797e-41a7-a4c3-3052995dc18a",
+      "replayed": false,
+      "request_id": "req_WFX0000000000Q"
+    },
+    {
+      "step": "subscribe with a card that will decline",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000002/confirm",
+      "status": 200,
+      "ms": 982,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000R"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000003/finalize",
+      "status": 200,
+      "ms": 909,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-9ba7d1f5-6bfe-4d79-b230-91140c772e3d",
+      "replayed": false,
+      "request_id": "req_WFX0000000000S"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000003/pay",
+      "status": 402,
+      "ms": 1937,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-f0643d5e-60b0-4426-a4c9-111db0135881",
+      "replayed": false,
+      "request_id": "req_WFX0000000000T"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX000000000000000000003",
+      "status": 200,
+      "ms": 1271,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000U"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000002",
+      "status": 200,
+      "ms": 276,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000V"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "POST",
+      "path": "/v1/setup_intents",
+      "status": 200,
+      "ms": 325,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-60c0f90d-1322-41fb-ba66-21b14d1ef5e5",
+      "replayed": false,
+      "request_id": "req_WFX0000000000W"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000003/confirm",
+      "status": 200,
+      "ms": 905,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000X"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "GET",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000003",
+      "status": 200,
+      "ms": 271,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000Y"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "POST",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000002",
+      "status": 200,
+      "ms": 763,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-b1e24b08-4c56-4bce-bd44-6e08f3768c7c",
+      "replayed": false,
+      "request_id": "req_WFX0000000000Z"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX000000000000000000003",
+      "status": 200,
+      "ms": 321,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000a"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000003/pay",
+      "status": 200,
+      "ms": 1719,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-ab369ad7-c015-45c6-8032-160a91dba057",
+      "replayed": false,
+      "request_id": "req_WFX0000000000b"
+    },
+    {
+      "step": "member replaces the card and the invoice is paid",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000002",
+      "status": 200,
+      "ms": 277,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000c"
+    }
+  ]
+}

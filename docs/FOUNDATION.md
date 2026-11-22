@@ -13,8 +13,8 @@ How the workspace, the API contract and the ports work, and the conventions ever
 | TypeScript | 7.0.x | Native compiler. No `tsserver.js` in the package: editors use their bundled TS. |
 | Turborepo | 2.11 | `envMode: loose`, so every env var reaches tasks. |
 | Biome | 2.6 | Lint + format, one root `biome.json`. Markdown is not formatted. |
-| Vitest | 5.1 | One version for the whole repo (see §6). |
-| Playwright | 1.65 | Chromium already installed (`make setup` reinstalls). |
+| Vitest | 5.1 | One version for the whole repo (see §7). |
+| Playwright | 1.65 | `make setup` installs Chromium, Firefox and WebKit. |
 
 Every version lives in the **pnpm catalog** in `pnpm-workspace.yaml`. Packages say `"zod": "catalog:"`.
 
@@ -29,7 +29,7 @@ pnpm dev                  # api (:4000) + web (:5173); PORT / WEB_PORT / WEBFLIX
 **Adding a dependency.** If it is already in the catalog, use `"<dep>": "catalog:"`. If not, add it to your package normally (`pnpm --filter <pkg> add <dep>`) and list it in your report: the root files (catalog, `onlyBuiltDependencies`, `turbo.json`, `biome.json`) stay unchanged during parallel work. pnpm 10 skips dependency install scripts unless the package is in `onlyBuiltDependencies`. Today that list is `esbuild`, `sharp`, `workerd`. If an install prints "Ignored build scripts", report it.
 
 **Makefile.** The root `Makefile` holds the generic targets. Your area's targets go in your own fragment, which the root `-include`s:
-`tools/media/media.mk`, `deploy/kind/k8s.mk`, `apps/edge/cloudflare.mk`, `e2e/e2e.mk`. Write `target: ## description` so `make help` lists it. To hook into `setup`, `clean` or `doctor`, use a double-colon rule (`setup:: content`).
+`tools/media/media.mk`, `deploy/kind/k8s.mk`, `apps/edge/cloudflare.mk`, `e2e/e2e.mk`, `tools/smoke/smoke.mk`. Write `target: ## description` so `make help` lists it. To hook into `setup`, `clean` or `doctor`, use a double-colon rule (`setup:: content`).
 
 **Ports used locally.** api 4000, web 5173, edge 8787, k8s 8080 (blueprint §8).
 
@@ -225,7 +225,7 @@ The factory returns a fresh harness for each test. Add `time: { advance(ms) }` w
 
 ## 5. Seed data and media manifest
 
-- `@webflix/catalog` exports `catalog: CatalogSeed` and `demoAccount: DemoAccountSeed`, both validated when the module is imported (including referential integrity and `demoSeedIssues`). Right now they hold a minimal starter seed that the content work replaces.
+- `@webflix/catalog` exports `catalog: CatalogSeed` and `demoAccount: DemoAccountSeed`, both validated when the module is imported (including referential integrity and `demoSeedIssues`). They hold the full catalog (blueprint §7) and the demo account.
 - `CatalogSeed`: genres, people, video assets (download source with licence, or synthetic, plus an optional `externalHlsUrl` fallback), titles (movies with `videoAssetId`; series with numbered seasons and episodes), avatars, and free-form `art` direction for `tools/media`. Times are relative (`addedDaysAgo`, `daysAgo`) so seeds always look fresh.
 - `MediaManifest` (`tools/media` output, `.cache/media/<profile>/manifest.json`): packaged assets (renditions, audio, text tracks, trick-play sheets, preview clip, intro/recap/credits markers) plus artwork for titles, episodes and avatars. Every path is a `BlobKey` built with `blobKeys`. An asset listed in the manifest is *packaged*; an asset that appears only in the seed with `externalHlsUrl` is *external*.
 - `artworkToImageSet(manifestImage)` produces the `ImageSet` DTO, with `?v=<hash>` cache-busting.
@@ -233,10 +233,10 @@ The factory returns a fresh harness for each test. Add `time: { advance(ms) }` w
 
 ---
 
-## 6. Open design points (owners decide)
+## 6. Design points (decided)
 
 - **Stream limits vs stateless media tokens.** *Decided* (docs/DECISIONS.md D1): the limit is enforced at session start, on every heartbeat, and on every playlist (`.m3u8`) request, which also requires the session to still hold its stream slot; segments, subtitles and trick-play stay stateless until the token's `exp` (6 h default). The master playlist is also filtered to the plan's maximum height.
-- **Password KDF on Workers.** PBKDF2 at 600k iterations is about 40 ms of CPU per sign-in, so the Cloudflare mode needs Workers Paid. Hashes are portable across modes; scrypt hashes from Node verify only on Node.
+- **Password KDF on Workers.** *Decided* (docs/CLOUDFLARE.md §6): PBKDF2-SHA256 at 600k iterations by default, about 40 ms of CPU per sign-in, so the Cloudflare mode needs Workers Paid. PBKDF2 hashes verify in every mode; scrypt hashes from Node verify only on Node.
 
 ## 7. Version couplings and gotchas
 

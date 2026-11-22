@@ -58,6 +58,18 @@ describe("upload", () => {
     expect(await store.head("vod/v-old/master.m3u8")).toBeNull();
   });
 
+  it("never replaces a published preview clip in place (it is cached as immutable)", async () => {
+    const store = new MemoryBlobStore();
+    await mkdir(join(dir, "fast/public/previews/v-a"), { recursive: true });
+    await writeFile(join(dir, "fast/public/previews/v-a/preview.mp4"), "clip");
+    await uploadTree(tree(), store);
+    await writeFile(join(dir, "fast/public/previews/v-a/preview.mp4"), "another clip");
+    await expect(uploadTree(tree(), store)).rejects.toThrow(/new asset id.*v-a\/preview\.mp4/);
+    // Same bytes again: nothing to refuse.
+    await writeFile(join(dir, "fast/public/previews/v-a/preview.mp4"), "clip");
+    expect((await uploadTree(tree(), store)).uploaded).toBe(0);
+  });
+
   it("parses target specs and picks cache headers by key", () => {
     expect(parseTarget("fs:")).toEqual({ scheme: "fs", path: "", raw: "fs:" });
     expect(parseTarget("s3://bucket/prefix").scheme).toBe("s3");

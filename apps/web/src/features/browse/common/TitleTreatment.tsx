@@ -19,6 +19,8 @@ export interface TitleTreatmentProps {
   sizes: string;
   priority?: boolean;
   className?: string;
+  /** A visual repeat of a name already given elsewhere (a dialog's title): hide it from AT. */
+  "aria-hidden"?: boolean;
 }
 
 /**
@@ -35,13 +37,19 @@ export function TitleTreatment({
   sizes,
   priority = false,
   className,
+  "aria-hidden": hidden,
 }: TitleTreatmentProps) {
   const [failed, setFailed] = useState(false);
   if (!logo || failed) {
-    return <Tag className={cx(textClassName, "text-fg drop-shadow-md", className)}>{name}</Tag>;
+    return (
+      <Tag aria-hidden={hidden} className={cx(textClassName, "text-fg drop-shadow-md", className)}>
+        {name}
+      </Tag>
+    );
   }
   return (
     <Tag
+      aria-hidden={hidden}
       className={cx("relative", logoClassName, className)}
       style={{ aspectRatio: logo.aspectRatio }}
     >

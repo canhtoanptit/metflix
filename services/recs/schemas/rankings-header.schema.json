@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/rankings-header/1",
+  "title": "External rankings file: header line",
+  "description": "First line of an NDJSON rankings file the evaluation harness accepts from any system (services/recs/README.md, External rankings). Every following line is a rankings-line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "system", "asOf"],
+  "properties": {
+    "format": { "const": "webflix.rankings" },
+    "formatVersion": { "const": 1 },
+    "system": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "description": { "type": "string" },
+    "asOf": {
+      "description": "Knowledge cutoff the rankings were produced with. The harness refuses rankings produced after its evaluation cutoff.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "generatedAt": { "type": "string" },
+    "catalogVersion": { "type": "string" }
+  }
+}

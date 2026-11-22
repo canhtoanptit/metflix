@@ -1,0 +1,31 @@
+suite: Pods that hold database connections
+templates:
+  - api/deployment.yaml
+  - worker/deployment.yaml
+  - jobs/migrate.yaml
+  - jobs/seed.yaml
+  # Rendered for the checksum annotations only.
+  - configmap.yaml
+release:
+  name: webflix
+  namespace: webflix
+tests:
+  - it: tunes TCP keepalive (namespaced safe sysctls) so a dead idle connection shows in ~40 s
+    templates: [api/deployment.yaml, worker/deployment.yaml, jobs/migrate.yaml, jobs/seed.yaml]
+    asserts:
+      - contains:
+          path: spec.template.spec.securityContext.sysctls
+          content: { name: net.ipv4.tcp_keepalive_intvl, value: "10" }
+      - contains:
+          path: spec.template.spec.securityContext.sysctls
+          content: { name: net.ipv4.tcp_keepalive_probes, value: "3" }
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+  - it: sets no sysctls when tcpKeepalive is null
+    templates: [api/deployment.yaml, worker/deployment.yaml, jobs/migrate.yaml, jobs/seed.yaml]
+    set:
+      tcpKeepalive: null
+    asserts:
+      - notExists:
+          path: spec.template.spec.securityContext.sysctls

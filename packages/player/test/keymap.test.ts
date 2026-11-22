@@ -34,6 +34,7 @@ describe("resolveKeyCommand (blueprint §9 keyboard map)", () => {
 
   it("handles shifted shortcuts", () => {
     expect(resolveKeyCommand({ key: "N", shiftKey: true })).toEqual({ type: "nextEpisode" });
+    expect(resolveKeyCommand({ key: "D", shiftKey: true })).toEqual({ type: "toggleStats" });
     expect(resolveKeyCommand({ key: ".", shiftKey: true })).toEqual({
       type: "rateStep",
       direction: 1,

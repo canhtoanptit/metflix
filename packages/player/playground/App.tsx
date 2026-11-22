@@ -6,8 +6,9 @@
  *   ?scenario=episode|last-episode|movie|capped|expired|external
  *   &start=<sec>  &autoplay=0  &autoplayNext=0  &blocked=1  &theme=alt  &ui=0  &page=preview
  *   &countdown=<sec>  &engine=auto|hls.js|native  &progress=<sec>
+ *   &best=sd|hd|full-hd|4k  &cap=<maxVideoHeight>  (the title's best quality and the plan cap)
  */
-import type { PlaybackSession } from "@webflix/contracts";
+import type { PlaybackSession, VideoQualityTier } from "@webflix/contracts";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type EnginePreference,
@@ -22,6 +23,7 @@ import {
   SCENARIOS,
   type ScenarioId,
   sessionForEpisode,
+  stillImageSet,
   type TestAsset,
 } from "./scenarios.ts";
 
@@ -104,6 +106,21 @@ function WatchPage({ assets }: { assets: TestAsset[] }) {
   );
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  // What the API would say for a title packaged below the plan, or a different plan.
+  const playerSession = useMemo<PlaybackSession>(() => {
+    const best = params.get("best") as VideoQualityTier | null;
+    const cap = params.get("cap");
+    return {
+      ...session,
+      ...(best ? { bestVideoQuality: best } : {}),
+      ...(cap ? { maxVideoHeight: Number(cap) } : {}),
+    };
+  }, [session]);
+  // The title's backdrop for the end screen: here, the first episode's still.
+  const endScreenBackdrop = useMemo(
+    () => (assets[0] ? stillImageSet(assets[0], "#1b2a55") : null),
+    [assets],
+  );
 
   const log = useCallback((name: string, detail: unknown = null) => {
     const entry = { at: Math.round(performance.now()), name, detail };
@@ -157,7 +174,7 @@ function WatchPage({ assets }: { assets: TestAsset[] }) {
         {mounted ? (
           <Player
             ref={handleRef}
-            session={session}
+            session={playerSession}
             startPositionSec={startPositionSec}
             autoPlay={flag("autoplay", true)}
             autoplayNextEpisode={autoplayNext}
@@ -212,6 +229,7 @@ function WatchPage({ assets }: { assets: TestAsset[] }) {
               log("preferences", { prefs, changed })
             }
             renderEndScreen={({ phase }) => <Recommendations phase={phase} />}
+            endScreenBackdrop={endScreenBackdrop}
             blockingOverlay={
               blocked ? <TooManyScreens onDismiss={() => setBlocked(false)} /> : null
             }
@@ -352,6 +370,7 @@ function Recommendations({ phase }: { phase: "credits" | "ended" }) {
 function TooManyScreens({ onDismiss }: { onDismiss: () => void }) {
   return (
     <div className="pg-blocking">
+      <div className="pg-blocking__backdrop" aria-hidden="true" />
       <h2>Playback stopped</h2>
       <p>
         Your Webflix account is being used on too many screens right now. Your Standard plan streams

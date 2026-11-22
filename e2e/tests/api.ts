@@ -184,15 +184,18 @@ export interface CatalogCard {
   name: string;
   type: "movie" | "series";
   maturity: string;
-  preview: unknown;
+  preview: { kind?: string; hasAudio?: boolean } | null;
 }
 
 /**
  * Titles the active profile can see, from the first batch of home rows. Specs pick what they
  * need from here (a rating, a type) instead of hard-coding catalogue ids.
  */
-export async function catalogCards(request: APIRequestContext): Promise<CatalogCard[]> {
-  const response = await request.get("/api/v1/browse?view=home");
+export async function catalogCards(
+  request: APIRequestContext,
+  view: "home" | "series" | "movies" | "new-popular" = "home",
+): Promise<CatalogCard[]> {
+  const response = await request.get(`/api/v1/browse?view=${view}`);
   expect(response.status(), `browse: ${await response.text()}`).toBe(200);
   const page = (await response.json()) as {
     billboard: { title: CatalogCard } | null;

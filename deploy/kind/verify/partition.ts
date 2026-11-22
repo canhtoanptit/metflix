@@ -54,8 +54,8 @@ const remoteHex = `${serviceIp
   .reverse()
   .join("")
   .toUpperCase()}:1538`;
-function stuckConnections(): number {
-  let total = 0;
+function stuckConnections(): { api: number; worker: number } {
+  const total = { api: 0, worker: 0 };
   const pods = kubectl([
     "get",
     "pods",
@@ -82,7 +82,9 @@ function stuckConnections(): number {
       for (const line of table.split("\n").slice(1)) {
         const fields = line.trim().split(/\s+/);
         const txQueue = Number.parseInt(fields[4]?.split(":")[0] ?? "0", 16);
-        if (fields[2] === remoteHex && fields[3] === "01" && txQueue > 0) total += 1;
+        if (fields[2] === remoteHex && fields[3] === "01" && txQueue > 0) {
+          total[name.includes("-worker-") ? "worker" : "api"] += 1;
+        }
       }
     } catch {}
   }
@@ -218,12 +220,13 @@ await sleep(5000);
 const cutAt = Date.now() - t0;
 for (const rule of rules) iptables("-I", rule);
 dropping = true;
-const stuck: { at: number; count: number }[] = [];
+const stuck: { at: number; count: number; api: number; worker: number }[] = [];
 let polling = true;
 const poller = (async () => {
   await sleep(3000);
   while (polling) {
-    stuck.push({ at: Date.now() - t0, count: stuckConnections() });
+    const counts = stuckConnections();
+    stuck.push({ at: Date.now() - t0, count: counts.api + counts.worker, ...counts });
     await sleep(5000);
   }
 })();
@@ -307,6 +310,12 @@ console.log(
   `  stopped sending at ${fmt(stoppedAt)}; ${hanging ? `${hanging} request(s) still unanswered at ${fmt(settledAt)}` : `every request answered by ${fmt(settledAt)}`}`,
 );
 const peak = Math.max(0, ...stuck.map((sample) => sample.count));
+for (const component of ["api", "worker"] as const) {
+  const last = [...stuck].reverse().find((sample) => sample[component] > 0);
+  console.log(
+    `  ${component} connections stuck: at most ${Math.max(0, ...stuck.map((sample) => sample[component]))}${last ? `, last seen ${fmt(last.at - cutAt)} after the cut` : ""}`,
+  );
+}
 const lastStuck = [...stuck].reverse().find((sample) => sample.count > 0);
 const cleared = lastStuck
   ? stuck.find((sample) => sample.at > lastStuck.at && sample.count === 0)

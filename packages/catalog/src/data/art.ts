@@ -9,7 +9,11 @@
  */
 type Art = Record<string, unknown>;
 
-/** The real films use frames from the films themselves. */
+/**
+ * The real films use frames from the films themselves. The billboard and the detail hero lay
+ * the logo over the key frame, so every frame here is text-free: clear of the film's text
+ * spans and on-screen story text by the footage margin (`webflix-media check-art` enforces it).
+ */
 const OPEN: Record<string, Art> = {
   "t-sintel": {
     frames: { key: 323, poster: 344 },
@@ -17,7 +21,8 @@ const OPEN: Record<string, Art> = {
     grade: "natural",
     focus: [0.5, 0.5],
   },
-  "t-tears-of-steel": { frames: { key: 296, poster: 342 }, type: "steel", grade: "natural" },
+  // Thom and the robot on the canal (296 s, the PLAYBACK console, carried interface text).
+  "t-tears-of-steel": { frames: { key: 287, poster: 342 }, type: "steel", grade: "natural" },
   "t-big-buck-bunny": { frames: { key: 88, poster: 472 }, type: "playful", grade: "natural" },
   "t-elephants-dream": { frames: { key: 504, poster: 160 }, type: "chakra", grade: "natural" },
   "t-cosmos-laundromat": { frames: { key: 576, poster: 104 }, type: "orbit", grade: "natural" },

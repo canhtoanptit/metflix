@@ -5,10 +5,37 @@ import { type CompiledQuery, PostgresDialect } from "kysely";
 import pg from "pg";
 import {
   assertParameterCount,
+  CommitOutcomeUnknownError,
   createDatabase,
   type Database,
   isDatabaseUnavailable,
 } from "./database.ts";
+
+/**
+ * Who is using the pool, which decides how long a statement may take (docs/DECISIONS.md D42):
+ *
+ * - `request`: the HTTP API. Its statements take milliseconds; a request that waits longer than
+ *   a few seconds on the database serves the member better as a 503 they can retry. Statements
+ *   5 s on the server, 7 s on the client: with at most 5 s to get a pooled connection
+ *   (`connectTimeoutMs`), a request waits at most 12 s on the database, well inside the
+ *   gateway's 60 s.
+ * - `background`: the job worker and the scheduler's jobs (rollups recompute whole days).
+ *   60 s and 65 s; a running job keeps its lease alive meanwhile.
+ * - `maintenance`: `migrate` and `seed` (DDL, the catalog's large batches). 10 minutes, so a
+ *   lost database still ends the Job instead of leaving it to TCP.
+ */
+export type PostgresRole = "request" | "background" | "maintenance";
+
+export const POSTGRES_ROLE_TIMEOUTS: Readonly<
+  Record<PostgresRole, { statementTimeoutMs: number; queryTimeoutMs: number }>
+> = {
+  request: { statementTimeoutMs: 5_000, queryTimeoutMs: 7_000 },
+  background: { statementTimeoutMs: 60_000, queryTimeoutMs: 65_000 },
+  maintenance: { statementTimeoutMs: 600_000, queryTimeoutMs: 605_000 },
+};
+
+/** Without a role: the statement timeout this package always had, now bounded client-side. */
+const DEFAULT_TIMEOUTS = { statementTimeoutMs: 15_000, queryTimeoutMs: 17_000 };
 
 export interface PostgresOptions {
   /** `postgres://user:pass@host:port/db`. */
@@ -17,8 +44,28 @@ export interface PostgresOptions {
   maxConnections?: number;
   /** Sets `search_path` on every connection (isolated schemas in tests). */
   schema?: string;
-  /** Statement timeout in milliseconds. Default 15 000. */
+  /** The timeouts of this role (`POSTGRES_ROLE_TIMEOUTS`); the two options below override them. */
+  role?: PostgresRole;
+  /**
+   * Server-side `statement_timeout` in milliseconds (0: none). The server cancels a statement
+   * that runs longer (`57014`, a 500: retrying it would be as slow).
+   */
   statementTimeoutMs?: number;
+  /**
+   * Client-side bound on a statement's answer in milliseconds (0: none). It fires only when the
+   * server cannot answer (a partition, a lost host): give it a margin over `statementTimeoutMs`
+   * so a reachable server's own timeout answers first. The statement fails as unavailable (503)
+   * and its connection is destroyed. The server also ends a transaction left idle that long
+   * (`idle_in_transaction_session_timeout`), so a transaction abandoned by a lost client does not
+   * keep its locks.
+   */
+  queryTimeoutMs?: number;
+  /**
+   * TCP keepalive: the first probe after this much idle time, in milliseconds (0: off).
+   * Default 10 000. Probe interval and count are the host's (`net.ipv4.tcp_keepalive_intvl`,
+   * `_probes`); they decide how soon a dead idle connection is noticed.
+   */
+  keepAliveInitialDelayMs?: number;
   /**
    * Bound on opening a connection, and on waiting for a free one when the pool is busy.
    * Default 5 000. Without it a connection attempt to an address that silently drops packets
@@ -51,13 +98,34 @@ const types = {
   },
 };
 
+/**
+ * End a client's connection at once. A connection whose statement went unanswered must not wait
+ * for a graceful close (that waits on the same silent network): the pool discards the client,
+ * and this releases its socket now.
+ */
+function destroyConnection(client: pg.PoolClient): void {
+  (
+    client as unknown as { connection?: { stream?: { destroy(): void } } }
+  ).connection?.stream?.destroy();
+}
+
 export function createPostgresDatabase(options: PostgresOptions): Database {
+  const role = options.role ? POSTGRES_ROLE_TIMEOUTS[options.role] : DEFAULT_TIMEOUTS;
+  const statementTimeoutMs = options.statementTimeoutMs ?? role.statementTimeoutMs;
+  const queryTimeoutMs = options.queryTimeoutMs ?? role.queryTimeoutMs;
+  const keepAliveInitialDelayMs = options.keepAliveInitialDelayMs ?? 10_000;
   const pool = new pg.Pool({
     connectionString: options.connectionString,
     max: options.maxConnections ?? 10,
     application_name: options.applicationName ?? "webflix",
-    statement_timeout: options.statementTimeoutMs ?? 15_000,
     connectionTimeoutMillis: options.connectTimeoutMs ?? 5_000,
+    // 0 (none) is left out: node-postgres sends only set values.
+    ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
+    ...(queryTimeoutMs > 0
+      ? { query_timeout: queryTimeoutMs, idle_in_transaction_session_timeout: queryTimeoutMs }
+      : {}),
+    keepAlive: keepAliveInitialDelayMs > 0,
+    keepAliveInitialDelayMillis: keepAliveInitialDelayMs,
     types,
     ...(options.schema ? { options: `-c search_path=${options.schema}` } : {}),
   });
@@ -87,8 +155,8 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
   pool.on("release", (_error, client) => lent.delete(client));
 
   // Every query, through Kysely or a batch, passes the D1 parameter cap check. A client whose
-  // connection failed goes back to the pool marked as such, so it is discarded at once instead
-  // of being lent to the next request before its socket has finished closing.
+  // connection failed or whose statement went unanswered is discarded with its socket
+  // destroyed: never lent again (a timed-out statement may still be running or stuck on it).
   const guardedPool = {
     options: pool.options,
     end: () => pool.end(),
@@ -103,7 +171,10 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
             throw error;
           });
         }) as never,
-        release: (destroy?: boolean) => client.release(destroy || failed),
+        release: (destroy?: boolean) => {
+          if (failed) destroyConnection(client);
+          client.release(destroy || failed);
+        },
       };
     },
   };
@@ -117,6 +188,7 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
       // could not be rolled back (a client left inside a transaction would poison the next
       // request).
       let discard: Error | undefined;
+      let committing = false;
       try {
         await client.query("BEGIN");
         const results = [];
@@ -125,13 +197,17 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
           const result = await client.query(statement.sql, statement.parameters as unknown[]);
           results.push({ rows: result.rows, numAffectedRows: result.rowCount ?? 0 });
         }
+        committing = true;
         await client.query("COMMIT");
         return results;
       } catch (error) {
         if (isDatabaseUnavailable(error)) {
-          // The server ended the transaction with the connection: nothing of it was applied
-          // (COMMIT never completed), and there is nothing to roll back.
+          // The connection is lost or unanswered; its socket is destroyed below. Before COMMIT
+          // went out, nothing of the transaction can be applied: the server rolls it back when it
+          // sees the connection gone, or when it has sat idle in the transaction past the budget.
+          // During COMMIT the server may have committed: the outcome is unknown, and said so.
           discard = error as Error;
+          if (committing) throw new CommitOutcomeUnknownError(error);
         } else {
           await client.query("ROLLBACK").catch((rollbackError: unknown) => {
             discard =
@@ -140,6 +216,7 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
         }
         throw error;
       } finally {
+        if (discard) destroyConnection(client);
         client.release(discard);
       }
     },

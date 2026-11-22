@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make k8s-up: from a machine with Docker, kind, Helm and kubectl to Webflix on
+# make k8s-up: from a machine with Docker, kind, Helm (>= 4.0.1) and kubectl to Webflix on
 # http://localhost:8080, running as in production: several API replicas behind Envoy Gateway,
 # Valkey, PostgreSQL, Garage (S3), the job worker, migrations and seed as Jobs.
 #
@@ -23,7 +23,8 @@ printf '%sWebflix on kind%s  cluster=%s namespace=%s release=%s\n' "$C_BOLD" "$C
 step "Preflight"
 require_tool docker "Install Docker Desktop (or Docker Engine) and start it."
 require_tool kind "Install kind >= 0.31: https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
-require_tool helm "Install Helm >= 3.18 (4.x recommended): https://helm.sh/docs/intro/install/"
+require_tool helm "Install Helm >= $HELM_MIN_VERSION: https://helm.sh/docs/intro/install/"
+require_helm
 require_tool kubectl "Install kubectl: https://kubernetes.io/docs/tasks/tools/"
 docker info >/dev/null 2>&1 || fail "The Docker daemon is not reachable. Start Docker and retry."
 docker buildx version >/dev/null 2>&1 || fail "docker buildx is missing (bundled with Docker Desktop / docker-buildx-plugin)."

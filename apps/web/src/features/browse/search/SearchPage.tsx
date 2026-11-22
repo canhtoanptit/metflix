@@ -1,13 +1,13 @@
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { getRouteApi, Link } from "@tanstack/react-router";
-import type { SearchSuggestion } from "@webflix/contracts";
-import { Button, cx, ErrorState, SearchIcon, Skeleton } from "@webflix/ui";
-import { Fragment, useMemo } from "react";
+import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
+import { ApiError, type SearchSuggestion } from "@webflix/contracts";
+import { Button, cx, SearchIcon, Skeleton } from "@webflix/ui";
+import { Fragment, useEffect, useMemo } from "react";
 import { useDocumentTitle } from "../../../app/head/DocumentTitle.tsx";
 import { titleOverlayLinkProps } from "../../../app/overlay/titleOverlay.ts";
-import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { TitleGrid, TitleGridSkeleton } from "../common/TitleGrid.tsx";
+import { searchQueryOf } from "./query.ts";
 
 const route = getRouteApi("/profile/browse-shell/search");
 
@@ -15,10 +15,26 @@ const route = getRouteApi("/profile/browse-shell/search");
  * Search results for `?q=` (typed in the navigation's search field). Previous results stay on
  * screen, dimmed, while the next query loads; "Explore titles related to" offers the titles,
  * people and genres the query matched; an empty query or no match offers genres to browse.
+ *
+ * Search never shows an error page: the query is cut to what the server searches (a long link
+ * cannot fail validation), results are titled with the query as searched, and a search that
+ * could not run (offline, busy) keeps the last results or says so quietly, with a retry.
  */
 export function SearchPage() {
   const { q } = route.useSearch();
-  const query = (q ?? "").trim();
+  const query = searchQueryOf(q);
+  const navigate = useNavigate();
+  // A link longer than any query (pasted, shared) is rewritten to the query searched, so the
+  // address people copy from here is what they see.
+  useEffect(() => {
+    if (q === undefined || q.trim() === query) return;
+    void navigate({
+      to: "/search",
+      search: query ? { q: query } : {},
+      replace: true,
+      resetScroll: false,
+    });
+  }, [q, query, navigate]);
   useDocumentTitle(query ? `Search: ${query}` : "Search");
 
   return (
@@ -32,38 +48,41 @@ export function SearchPage() {
 }
 
 function Results({ query }: { query: string }) {
-  const search = useInfiniteQuery({ ...queries.search(query), placeholderData: keepPreviousData });
+  const search = useInfiniteQuery({
+    ...queries.search(query),
+    placeholderData: keepPreviousData,
+    // This page says so itself, in place; and a busy service is waited out, not reported.
+    meta: { silent: true },
+    retry: (failures, error) =>
+      ApiError.is(error, "rate_limited")
+        ? failures < 3
+        : (!ApiError.is(error) || error.status >= 500) && failures < 2,
+    retryDelay: (failures, error) =>
+      ApiError.is(error, "rate_limited")
+        ? error.problem.retryAfterSec * 1000
+        : Math.min(4000, 500 * 2 ** failures),
+  });
   const pages = search.data?.pages;
   const results = useMemo(() => pages?.flatMap((page) => page.results) ?? [], [pages]);
   const suggestions = pages?.[0]?.suggestions ?? [];
-  const shownQuery = pages?.[0]?.query ?? query;
+  // The query as the server searched it (it may be shorter than what was sent).
+  const shownQuery = (search.isPlaceholderData ? null : pages?.[0]?.query) || query;
 
-  if (search.isError && !search.data) {
-    const error = describeError(search.error);
-    return (
-      <ErrorState
-        layout="page"
-        title={error.title}
-        description={error.description}
-        reference={error.reference}
-        action={
-          <Button variant="primary" onClick={() => search.refetch()}>
-            Try again
-          </Button>
-        }
-      />
-    );
+  // Failed (after retries), with nothing for this query: the previous query's results would be
+  // misleading under a new heading.
+  if (search.isError && (!search.data || search.isPlaceholderData)) {
+    return <SearchUnavailable query={query} onRetry={() => void search.refetch()} />;
   }
 
   return (
     <>
-      <h1 className="sr-only">Search results for “{query}”</h1>
+      <h1 className="sr-only">Search results for “{shownQuery}”</h1>
       <p role="status" className="sr-only">
         {search.isPending || search.isPlaceholderData
           ? ""
           : results.length === 0
-            ? `No results for ${query}`
-            : `${results.length}${search.hasNextPage ? " or more" : ""} results for ${query}`}
+            ? `No results for ${shownQuery}`
+            : `${results.length}${search.hasNextPage ? " or more" : ""} results for ${shownQuery}`}
       </p>
       {search.isPending ? (
         <>
@@ -88,6 +107,29 @@ function Results({ query }: { query: string }) {
         </>
       )}
     </>
+  );
+}
+
+/**
+ * The search could not run (offline, the service busy): said plainly, in the page's own voice,
+ * with a retry and genres to browse meanwhile. Not an error page: nothing the person did is
+ * wrong, and the field above keeps their query.
+ */
+function SearchUnavailable({ query, onRetry }: { query: string; onRetry: () => void }) {
+  return (
+    <div
+      data-testid="search-unavailable"
+      className="flex max-w-prose flex-col items-start gap-4 py-6"
+    >
+      <h1 className="type-title-lg text-fg">We couldn't search for “{query}” just now.</h1>
+      <p className="type-body text-fg-muted">
+        Give it a moment and try again. Your search is still in the box above.
+      </p>
+      <Button variant="secondary" onClick={onRetry}>
+        Search again
+      </Button>
+      <GenreChips heading="Or browse a genre" />
+    </div>
   );
 }
 

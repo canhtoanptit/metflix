@@ -1,0 +1,184 @@
+{
+  "name": "delivery-anomalies",
+  "title": "Webhook duplicates, reordering, failure and outage",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": [],
+  "started_at": "2026-11-21T18:42:03.145Z",
+  "duration_ms": 88135,
+  "steps": [
+    {
+      "name": "originals: created, updated, updated",
+      "ms": 1943
+    },
+    {
+      "name": "duplicates: the same event resent twice",
+      "ms": 1292
+    },
+    {
+      "name": "reordering: the oldest event delivered last",
+      "ms": 598
+    },
+    {
+      "name": "a failed delivery is not retried by stripe listen",
+      "ms": 46042
+    },
+    {
+      "name": "outage: events created while nothing listens",
+      "ms": 38259
+    }
+  ],
+  "observations": [
+    {
+      "step": "originals: created, updated, updated",
+      "key": "Stripe-Signature header entries",
+      "value": ["t", "v1", "v0"]
+    },
+    {
+      "step": "duplicates: the same event resent twice",
+      "key": "three deliveries of one event",
+      "value": {
+        "same_event_id": true,
+        "identical_payload": true,
+        "fresh_signature_timestamps": true,
+        "all_verified": true
+      }
+    },
+    {
+      "step": "reordering: the oldest event delivered last",
+      "key": "customer.created arrives after customer.updated",
+      "value": {
+        "created_event_created": 1795286523,
+        "update_event_created": 1795286524,
+        "arrived_after": true
+      }
+    },
+    {
+      "step": "a failed delivery is not retried by stripe listen",
+      "key": "deliveries 45 s after answering 500",
+      "value": 1,
+      "note": "stripe listen forwards once; Stripe's own retry schedule applies to webhook endpoints, not CLI sessions"
+    },
+    {
+      "step": "a failed delivery is not retried by stripe listen",
+      "key": "resend after the failure",
+      "value": {
+        "respondedWith": 200
+      }
+    },
+    {
+      "step": "outage: events created while nothing listens",
+      "key": "events created during the outage delivered after restart",
+      "value": 0,
+      "note": "a new stripe listen session does not replay what it missed"
+    },
+    {
+      "step": "outage: events created while nothing listens",
+      "key": "the missed event is listed by the Events API",
+      "value": true
+    },
+    {
+      "step": "outage: events created while nothing listens",
+      "key": "missed event delivered by resend",
+      "value": {
+        "respondedWith": 200
+      }
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 6,
+    "secret_key": 6,
+    "publishable_key": 0,
+    "by_method": {
+      "POST": 5,
+      "GET": 1
+    },
+    "by_status": {
+      "200": 6
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 2508
+  },
+  "events": {
+    "deliveries": 9,
+    "distinct": 5,
+    "types": {
+      "customer.created": 1,
+      "customer.updated": 4
+    },
+    "inversions_vs_created": []
+  },
+  "calls": [
+    {
+      "step": "originals: created, updated, updated",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 334,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-26884bb7-6ca7-4dd7-a45f-71a5c38b356d",
+      "replayed": false,
+      "request_id": "req_WFX0000000002I"
+    },
+    {
+      "step": "originals: created, updated, updated",
+      "method": "POST",
+      "path": "/v1/customers/cus_WFX0000000000K",
+      "status": 200,
+      "ms": 327,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-4b1d3eec-5380-4a5a-acb2-e28d9fb0caf6",
+      "replayed": false,
+      "request_id": "req_WFX0000000002J"
+    },
+    {
+      "step": "originals: created, updated, updated",
+      "method": "POST",
+      "path": "/v1/customers/cus_WFX0000000000K",
+      "status": 200,
+      "ms": 739,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-cb84905f-4f7f-466e-93d2-89c76e3bb5d9",
+      "replayed": false,
+      "request_id": "req_WFX0000000002K"
+    },
+    {
+      "step": "a failed delivery is not retried by stripe listen",
+      "method": "POST",
+      "path": "/v1/customers/cus_WFX0000000000K",
+      "status": 200,
+      "ms": 318,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-6d9168ff-c6aa-4139-bf0b-882992b266c4",
+      "replayed": false,
+      "request_id": "req_WFX0000000002L"
+    },
+    {
+      "step": "outage: events created while nothing listens",
+      "method": "POST",
+      "path": "/v1/customers/cus_WFX0000000000K",
+      "status": 200,
+      "ms": 422,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-58d9ce40-ebbd-4241-999b-26fb6bb762e8",
+      "replayed": false,
+      "request_id": "req_WFX0000000002M"
+    },
+    {
+      "step": "outage: events created while nothing listens",
+      "method": "GET",
+      "path": "/v1/events?type=customer.updated&created[gte]=1795286568&limit=20",
+      "status": 200,
+      "ms": 368,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000002N"
+    }
+  ]
+}

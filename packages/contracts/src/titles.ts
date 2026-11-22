@@ -113,7 +113,11 @@ export const TitleCard = z
     name: z.string(),
     releaseYear: z.number().int(),
     maturity: MaturityLevel,
-    /** Movies only. */
+    /**
+     * Movies only: the playable duration of the title's packaged media (the same base as
+     * `PlaybackSession.durationSec` and progress), or the catalogue runtime for external
+     * fallback media. Series show `seasonCount` instead; nothing sums episode runtimes.
+     */
     runtimeSec: WholeSeconds.nullable(),
     /** Series only. */
     seasonCount: z.number().int().positive().nullable(),
@@ -177,6 +181,7 @@ export const Episode = z
     number: z.number().int().positive(),
     name: z.string(),
     synopsis: z.string(),
+    /** The playable duration of the episode's packaged media, else the catalogue runtime. */
     runtimeSec: WholeSeconds,
     /** 16:9 still; null falls back to the title backdrop. */
     still: ImageSet.nullable(),

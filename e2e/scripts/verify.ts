@@ -25,6 +25,12 @@ if (!baseUrl) {
   process.exit(2);
 }
 const smokeUrl = process.env.SMOKE_BASE_URL || baseUrl;
+if (process.env.VERIFY_DRY_RUN) {
+  // `make verify VERIFY_DRY_RUN=1`: what would run where (scripts/check-verify-urls.ts asserts it).
+  console.log(`browser suite: ${baseUrl}`);
+  console.log(`conformance: ${smokeUrl}`);
+  process.exit(0);
+}
 const cooldownSec = Number(process.env.VERIFY_COOLDOWN_SEC ?? 65);
 // Playwright empties test-results when it starts, so the summaries are written after that.
 const outDir = join(e2eDir, "test-results", "verify");

@@ -45,8 +45,33 @@ export function describeExpiry(card: PaymentMethod): string {
   return `Expires ${String(card.expMonth).padStart(2, "0")}/${card.expYear}`;
 }
 
+const PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /** Remaining fraction of the current billing period (the server prorates upgrades by it). */
 export function remainingPeriodFraction(currentPeriodEnd: string, now = Date.now()): number {
-  const PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
   return Math.min(1, Math.max(0, (new Date(currentPeriodEnd).getTime() - now) / PERIOD_MS));
+}
+
+/**
+ * What an upgrade charges now: the price difference for the rest of the billing period,
+ * computed exactly as the server computes it (`account.changePlan`: the difference times the
+ * remaining fraction of the 30-day period, rounded to the cent). The contract has no preview
+ * route, so this is the same formula, not an estimate of it.
+ */
+export function upgradeChargeToday(
+  currentMonthlyMinor: number,
+  nextMonthlyMinor: number,
+  currentPeriodEnd: string,
+  now = Date.now(),
+): { amountMinor: number; daysLeft: number } {
+  const difference = nextMonthlyMinor - currentMonthlyMinor;
+  const remainingMs = Math.max(0, new Date(currentPeriodEnd).getTime() - now);
+  return {
+    amountMinor: Math.max(
+      0,
+      Math.round(difference * remainingPeriodFraction(currentPeriodEnd, now)),
+    ),
+    daysLeft: Math.ceil(remainingMs / DAY_MS),
+  };
 }

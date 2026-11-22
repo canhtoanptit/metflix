@@ -4,6 +4,10 @@
  * SHA-256 (custom metadata) and size match the local file are skipped, so a second run only
  * lists and compares. `--prune` deletes stored objects under `public/` and `vod/` that the
  * profile no longer has.
+ *
+ * Preview clips are public and served as immutable under a key without a version, so the
+ * upload refuses to replace a stored preview with different bytes: a changed clip must ship
+ * under a new asset id (motion art: bump `MOTION_ART_RECIPE` in the catalog).
  */
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -12,6 +16,7 @@ import { Readable } from "node:stream";
 import type { MediaProfile } from "@webflix/contracts";
 import { type BlobStore, contentTypeForKey } from "@webflix/core";
 import { manifestPath, mediaCacheDir, workDir } from "../paths.ts";
+import { IMMUTABLE_UNVERSIONED } from "../published.ts";
 import { listFiles, readJson, writeJson } from "../util/fs.ts";
 import { sha256, sha256File } from "../util/hash.ts";
 import { formatBytes, formatDuration, log } from "../util/log.ts";
@@ -113,6 +118,22 @@ export async function uploadTree(
     ...(await listStore(store, "vod/")),
   ]);
   const report: UploadReport = { uploaded: 0, skipped: 0, deleted: 0, bytes: 0 };
+
+  const replaced: string[] = [];
+  await mapPool(
+    files.filter((key) => IMMUTABLE_UNVERSIONED.test(key) && stored.has(key)),
+    16,
+    async (key) => {
+      const sha = index[key]?.sha256;
+      const storedSha = uploaded[key] ?? (await store.head(key))?.customMetadata.sha256;
+      if (sha && storedSha && storedSha !== sha) replaced.push(key);
+    },
+  );
+  if (replaced.length > 0) {
+    throw new Error(
+      `refusing to overwrite ${replaced.length} published preview(s) with different bytes (cached as immutable; give the clip a new asset id): ${replaced.sort().slice(0, 10).join(", ")}`,
+    );
+  }
 
   const put = async (key: string, path: string, sha: string, size: number) => {
     await store.put(

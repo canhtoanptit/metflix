@@ -13,7 +13,6 @@ import { useAuthenticatedSession } from "../../../app/session/session.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown } from "../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../shared/privileges.ts";
-import { RetryTimer } from "../shared/RetryTimer.tsx";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import {
   normalizeEmail,
@@ -132,7 +131,7 @@ function EmailForm() {
             {ApiError.is(other, "rate_limited") ? (
               rate.limited ? (
                 <>
-                  Please wait <RetryTimer seconds={rate.waiting} /> and try again.
+                  For your security, please wait a moment. The button shows when you can try again.
                 </>
               ) : (
                 "You can try again now."
@@ -228,7 +227,7 @@ function PasswordForm() {
   return (
     <AccountSection
       title="Password"
-      description="Changing your password signs out every other device. Anything playing on them stops."
+      description="Changing your password signs out every other device. Anything playing on them stops within about half a minute."
     >
       <form
         onSubmit={submit}
@@ -247,7 +246,7 @@ function PasswordForm() {
             {ApiError.is(other, "rate_limited") ? (
               rate.limited ? (
                 <>
-                  Please wait <RetryTimer seconds={rate.waiting} /> and try again.
+                  For your security, please wait a moment. The button shows when you can try again.
                 </>
               ) : (
                 "You can try again now."

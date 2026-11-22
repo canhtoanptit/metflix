@@ -10,7 +10,15 @@ import {
   useMediaQuery,
 } from "@webflix/ui";
 import { Dialog as RadixDialog } from "radix-ui";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useDocumentTitle } from "../../../app/head/DocumentTitle.tsx";
 import {
   getTitleOverlayOrigin,
@@ -19,6 +27,7 @@ import {
 } from "../../../app/overlay/titleOverlay.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
+import { takeClipHandoff } from "../common/clipHandoff.ts";
 import { canAnimate, durationMs, easing } from "../common/motion.ts";
 import { findCachedCard } from "../library/cache.ts";
 import { PHONE_QUERY } from "../shell/TopNav.tsx";
@@ -67,6 +76,8 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
   // The picture that was clicked (card, preview, billboard), already decoded: the hero paints it
   // on its first frame so the element that flies out of the card *is* the card.
   const [originImage] = useState(() => imageAt(origin));
+  // Opened by the billboard's "More info": its clip, to continue in the hero.
+  const [handoff] = useState(() => takeClipHandoff(titleId));
   // Radix returns focus to a Dialog.Trigger, and the overlay has none (cards, previews and links
   // open it through the URL): remember what had focus when it opened.
   const [opener] = useState(() =>
@@ -74,6 +85,8 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
   );
   const [entered, setEntered] = useState(false);
   const shownTitle = useRef(titleId);
+  // Read once the panel is in the document (Radix mounts the portal a render later).
+  const barSolid = usePhoneBarSolid(phone && entered, scrollerRef, heroRef);
 
   const title = detail.data ?? null;
   const name = title?.name ?? seed?.name ?? "Title details";
@@ -270,16 +283,49 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
                 className="absolute inset-0 bg-surface-2 shadow-xl sm:rounded-dialog"
               />
               <RadixDialog.Title className="sr-only">{name}</RadixDialog.Title>
-              <RadixDialog.Close asChild>
-                <IconButton
-                  ref={closeRef}
-                  label="Close"
-                  icon={CloseIcon}
-                  variant="glass"
-                  size="md"
-                  className={cx("z-(--z-raised) end-3 top-3", phone ? "fixed" : "absolute")}
-                />
-              </RadixDialog.Close>
+              {phone ? (
+                // Phones: a bar that stays at the top. Clear over the picture; once the page
+                // scrolls past it, solid with the title, so the close button never sits on text.
+                <div
+                  data-testid="detail-phone-bar"
+                  data-solid={barSolid || undefined}
+                  className={cx(
+                    "sticky top-0 z-(--z-raised) -mb-14 flex h-14 items-center gap-3 ps-5 pe-3",
+                    "border-b transition-colors duration-base ease-standard",
+                    barSolid ? "border-line-subtle bg-surface-2" : "border-transparent",
+                  )}
+                >
+                  <p
+                    aria-hidden
+                    className={cx(
+                      "min-w-0 flex-1 truncate type-title text-fg transition-opacity duration-base ease-standard",
+                      barSolid ? "opacity-100" : "opacity-0",
+                    )}
+                  >
+                    {name}
+                  </p>
+                  <RadixDialog.Close asChild>
+                    <IconButton
+                      ref={closeRef}
+                      label="Close"
+                      icon={CloseIcon}
+                      variant="glass"
+                      size="md"
+                    />
+                  </RadixDialog.Close>
+                </div>
+              ) : (
+                <RadixDialog.Close asChild>
+                  <IconButton
+                    ref={closeRef}
+                    label="Close"
+                    icon={CloseIcon}
+                    variant="glass"
+                    size="md"
+                    className="absolute end-3 top-3 z-(--z-raised)"
+                  />
+                </RadixDialog.Close>
+              )}
 
               {blocking ? (
                 <BlockedTitle
@@ -293,6 +339,7 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
                     key={titleId}
                     pictureRef={heroRef}
                     originImage={originImage}
+                    handoff={titleId === handoff?.titleId ? handoff : null}
                     title={title}
                     seed={seed}
                     entered={entered && !closing}
@@ -317,6 +364,44 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
       </RadixDialog.Portal>
     </RadixDialog.Root>
   );
+}
+
+/**
+ * Phones: whether the overlay has scrolled the picture out from under its top bar (the bar then
+ * turns solid). Read on scroll, set only when it changes.
+ */
+function usePhoneBarSolid(
+  phone: boolean,
+  scrollerRef: RefObject<HTMLDivElement | null>,
+  heroRef: RefObject<HTMLDivElement | null>,
+): boolean {
+  const [solid, setSolid] = useState(false);
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!phone || !scroller) {
+      setSolid(false);
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const picture = heroRef.current?.offsetHeight ?? 0;
+      // The bar is h-14 (3.5rem): solid once the picture's bottom edge passes under it.
+      const bar =
+        3.5 * (Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+      setSolid(scroller.scrollTop > Math.max(0, picture - bar));
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    update();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [phone, scrollerRef, heroRef]);
+  return solid;
 }
 
 function DetailBody({ title, phone }: { title: TitleDetail; phone: boolean }) {

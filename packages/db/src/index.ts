@@ -10,6 +10,7 @@
  */
 export {
   assertParameterCount,
+  CommitOutcomeUnknownError,
   chunkRows,
   chunkValues,
   createDatabase,

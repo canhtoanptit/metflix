@@ -11,6 +11,7 @@ import {
   IMAGE_TEMPLATE_WIDTH,
   MEDIA_MANIFEST_VERSION,
   MEDIA_PROFILES,
+  PREVIEW_KINDS,
 } from "./constants.ts";
 import { ImageFormat, type ImageSet } from "./media.ts";
 import { cdnUrlForBlobKey } from "./media-helpers.ts";
@@ -149,6 +150,10 @@ export const PackagedVideoAsset = z.object({
       durationSec: Seconds,
       width: z.number().int().positive(),
       height: z.number().int().positive(),
+      /** `footage` (cut from the asset) or `motion` (motion art from key art). Absent: footage. */
+      kind: z.enum(PREVIEW_KINDS).optional(),
+      /** False when the clip's audio is silent (or absent). Absent: true. */
+      hasAudio: z.boolean().optional(),
     })
     .nullable(),
   markers: z.object({

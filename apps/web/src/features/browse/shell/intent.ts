@@ -2,14 +2,17 @@ import { useCallback, useMemo, useState } from "react";
 
 /**
  * Load-on-intent for navigation menus. Menus (Radix menu, popper, focus scope, scroll lock —
- * about 30 KB) are only needed once someone reaches for them, so the page's first load carries
- * a lightweight trigger with the same look; the pointer arriving, focus, or a press loads the
- * real menu, which then takes over the trigger in place:
+ * about 30 KB) are not in the page's first load: it carries a lightweight trigger with the same
+ * look. The pointer arriving, focus or a press loads the real menu (and the shell preloads them
+ * all once the page is idle); the real menu takes over the trigger in place as soon as its code
+ * is there:
  *
- * - a press before the code arrived opens the menu as soon as it mounts (`openOnLoad`),
+ * - a click before the code arrived opens the menu as soon as it mounts (`openOnLoad`),
  * - a focused trigger hands focus to the real one (`hadFocus`).
  *
- * Radix menus open on pointerdown, so the stand-in records pointerdown as a press too.
+ * Only a completed click counts as a press, never pointerdown: a tap is pointerdown … click,
+ * and if the real trigger took over in between (already opened on load), the tap's own click
+ * would land on it and toggle the menu shut again — the "first tap does nothing" bug on phones.
  */
 export interface IntentState {
   requested: boolean;
@@ -44,9 +47,7 @@ export function useLoadOnIntent() {
       onFocus: () => request({ hadFocus: true }),
       onBlur: () =>
         setState((current) => (current.hadFocus ? { ...current, hadFocus: false } : current)),
-      onPointerDown: (event: { button: number; ctrlKey: boolean }) => {
-        if (event.button === 0 && !event.ctrlKey) request({ openOnLoad: true });
-      },
+      onPointerDown: () => request(),
       onClick: () => request({ openOnLoad: true }),
     }),
     [request],

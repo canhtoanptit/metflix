@@ -8,7 +8,7 @@ import {
   type PlayerPreferences,
 } from "@webflix/player";
 import { ArrowLeftIcon, IconButton, Spinner, WifiOffIcon } from "@webflix/ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../app/api.ts";
 import { useDocumentTitle } from "../../app/head/DocumentTitle.tsx";
 import { qk } from "../../app/query/keys.ts";
@@ -146,12 +146,13 @@ export function WatchPage() {
     ...queries.episodes(titleId, season ?? 1),
     enabled: season !== undefined,
   });
-  const synopsis =
-    (current?.episodeId
-      ? seasonEpisodes.data?.items.find((episode) => episode.id === current.episodeId)?.synopsis
-      : null) ??
-    detail?.synopsis ??
-    null;
+  const playingEpisode = current?.episodeId
+    ? seasonEpisodes.data?.items.find((episode) => episode.id === current.episodeId)
+    : undefined;
+  const synopsis = playingEpisode?.synopsis ?? detail?.synopsis ?? null;
+  // The still behind the post-play screen once the picture ends: the finale's own still, or the
+  // title's backdrop.
+  const endScreenBackdrop = playingEpisode?.still ?? detail?.images.backdrop ?? null;
 
   const autoplay = useUnattendedAutoplayGuard(current);
   const preferences = useProfilePlayerPreferences(profile);
@@ -188,6 +189,7 @@ export function WatchPage() {
     return <WatchLoading titleName={detail?.name ?? null} onBack={() => void leave()} />;
   }
 
+  const offline = state.connection === "offline" && !state.block;
   return (
     <div className="fixed inset-0 bg-black" data-testid="watch-page" data-session={current.id}>
       <Player
@@ -209,11 +211,20 @@ export function WatchPage() {
         preferences={preferences.value}
         preferenceStorage={`webflix.player.${profile.id}`}
         onPreferencesChange={preferences.onChange}
-        renderEndScreen={(context) => <WatchEndScreen title={detail} context={context} />}
+        endScreenBackdrop={endScreenBackdrop}
+        renderEndScreen={(context) => (
+          <WatchEndScreen
+            title={detail}
+            context={context}
+            autoplay={current.autoplayNextEpisode && !autoplay.paused}
+            onAutoplay={() => autoplay.count("autoplay")}
+          />
+        )}
         blockingOverlay={status}
-        style={PLAYER_THEME}
+        // While the connection pill shows, the player keeps its top-anchored UI clear of it.
+        style={offline ? PLAYER_THEME_UNDER_BANNER : PLAYER_THEME}
       />
-      {state.connection === "offline" && !state.block ? <ConnectionBanner /> : null}
+      {offline ? <ConnectionBanner /> : null}
     </div>
   );
 }
@@ -237,6 +248,12 @@ function WatchLoading({ titleName, onBack }: { titleName: string | null; onBack:
     </div>
   );
 }
+
+/** The connection pill: 16 px from the top, about 44 px tall, plus the same gap below it. */
+const PLAYER_THEME_UNDER_BANNER = {
+  ...PLAYER_THEME,
+  "--wfp-inset-top": "calc(var(--spacing) * 19)",
+} as CSSProperties;
 
 /** Heartbeats are failing: say so quietly while the buffer keeps playing. */
 function ConnectionBanner() {

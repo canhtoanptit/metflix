@@ -1,0 +1,211 @@
+{
+  "name": "retries-exhausted",
+  "title": "Renewal left unpaid until Stripe stops retrying",
+  "ok": true,
+  "error": null,
+  "time_mode": "real-time",
+  "skipped": ["Stripe's retries until it gives up, and the final subscription state"],
+  "started_at": "2026-11-21T18:38:58.049Z",
+  "duration_ms": 72370,
+  "steps": [
+    {
+      "name": "subscribe with a card that will decline",
+      "ms": 2235
+    },
+    {
+      "name": "first renewal fails",
+      "ms": 69509
+    },
+    {
+      "name": "every retry fails until Stripe stops",
+      "ms": 0
+    }
+  ],
+  "observations": [
+    {
+      "step": "setup",
+      "key": "time mode",
+      "value": "real-time"
+    },
+    {
+      "step": "first renewal fails",
+      "key": "real time: first renewal invoice drafted",
+      "value": {
+        "seconds_after_trial_end": 27,
+        "status": "draft",
+        "total": 1299
+      }
+    },
+    {
+      "step": "first renewal fails",
+      "key": "after early finalization",
+      "value": {
+        "status": "open",
+        "attempt_count": 0,
+        "next_payment_attempt_in_minutes": 60
+      }
+    },
+    {
+      "step": "first renewal fails",
+      "key": "first renewal attempt failed",
+      "value": {
+        "status": 402,
+        "type": "StripeCardError",
+        "code": "card_declined"
+      }
+    },
+    {
+      "step": "first renewal fails",
+      "key": "subscription status after the failed renewal",
+      "value": "past_due",
+      "expected": "past_due",
+      "ok": true
+    },
+    {
+      "step": "first renewal fails",
+      "key": "invoice after the failed renewal",
+      "value": {
+        "status": "open",
+        "attempt_count": 1,
+        "hours_until_stripe_retries": 45.2
+      }
+    },
+    {
+      "step": "every retry fails until Stripe stops",
+      "key": "SKIPPED (needs a test clock): Stripe's retries until it gives up, and the final subscription state",
+      "value": "skipped"
+    }
+  ],
+  "failed_expectations": [],
+  "clock_advances": [],
+  "api": {
+    "total": 8,
+    "secret_key": 7,
+    "publishable_key": 1,
+    "by_method": {
+      "GET": 3,
+      "POST": 5
+    },
+    "by_status": {
+      "200": 7,
+      "402": 1
+    },
+    "replayed": 0,
+    "rate_limited": 0,
+    "rate_limited_reasons": {},
+    "total_ms": 6333
+  },
+  "events": {
+    "deliveries": 23,
+    "distinct": 23,
+    "types": {
+      "customer.created": 1,
+      "setup_intent.created": 1,
+      "invoice.finalized": 2,
+      "invoice.paid": 1,
+      "customer.updated": 2,
+      "customer.subscription.created": 1,
+      "invoice.created": 2,
+      "invoice.payment_succeeded": 1,
+      "payment_method.attached": 1,
+      "setup_intent.succeeded": 1,
+      "customer.subscription.updated": 3,
+      "payment_intent.created": 1,
+      "invoice.updated": 3,
+      "payment_intent.payment_failed": 1,
+      "charge.failed": 1,
+      "invoice.payment_failed": 1
+    },
+    "inversions_vs_created": []
+  },
+  "calls": [
+    {
+      "step": "setup",
+      "method": "GET",
+      "path": "/v1/prices?lookup_keys[0]=webflix.basic.monthly.usd&lookup_keys[1]=webflix.basic.monthly.eur&lookup_keys[2]=webflix.standard.monthly.usd&lookup_keys[3]=webflix.standard.monthly.eur&lookup_keys[4]=webflix.premium.monthly.usd&lookup_keys[5]=webflix.premium.monthly.eur&limit=100",
+      "status": 200,
+      "ms": 270,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000d"
+    },
+    {
+      "step": "setup",
+      "method": "POST",
+      "path": "/v1/customers",
+      "status": 200,
+      "ms": 352,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-710cdade-7431-4ac2-ad4b-aa75652c705a",
+      "replayed": false,
+      "request_id": "req_WFX0000000000e"
+    },
+    {
+      "step": "subscribe with a card that will decline",
+      "method": "POST",
+      "path": "/v1/subscriptions",
+      "status": 200,
+      "ms": 1106,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-36937991-9fd7-4f47-b242-7d070f91e991",
+      "replayed": false,
+      "request_id": "req_WFX0000000000f"
+    },
+    {
+      "step": "subscribe with a card that will decline",
+      "method": "POST",
+      "path": "/v1/setup_intents/seti_WFX000000000000000000005/confirm",
+      "status": 200,
+      "ms": 909,
+      "auth": "publishable",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000g"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000005/finalize",
+      "status": 200,
+      "ms": 1131,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-4de1c879-7e59-457d-a473-950f1d945e55",
+      "replayed": false,
+      "request_id": "req_WFX0000000000h"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "POST",
+      "path": "/v1/invoices/in_WFX000000000000000000005/pay",
+      "status": 402,
+      "ms": 1663,
+      "auth": "secret",
+      "idempotency_key": "stripe-node-retry-69cc6b23-9d07-4696-8f8e-8fb3c426ba23",
+      "replayed": false,
+      "request_id": "req_WFX0000000000i"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "GET",
+      "path": "/v1/invoices/in_WFX000000000000000000005",
+      "status": 200,
+      "ms": 626,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000j"
+    },
+    {
+      "step": "first renewal fails",
+      "method": "GET",
+      "path": "/v1/subscriptions/sub_WFX000000000000000000003",
+      "status": 200,
+      "ms": 276,
+      "auth": "secret",
+      "idempotency_key": null,
+      "replayed": false,
+      "request_id": "req_WFX0000000000k"
+    }
+  ]
+}

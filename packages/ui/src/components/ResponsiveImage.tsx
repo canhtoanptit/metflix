@@ -23,6 +23,12 @@ export interface ResponsiveImageProps {
   fill?: boolean;
   /** Above-the-fold artwork: load eagerly with high priority (the billboard backdrop). */
   priority?: boolean;
+  /**
+   * Override the loading mode (default: `eager` with `priority`, else `lazy`). `eager` without
+   * `priority` fetches at normal priority before the image is in view: a row's neighbouring
+   * pages, so paging never reveals a placeholder mid-glide.
+   */
+  loading?: "eager" | "lazy";
   /** `blur` (ThumbHash over the dominant colour, default), `color` or `none`. */
   placeholder?: "blur" | "color" | "none";
   /** CSS `object-position`, e.g. "center top". */
@@ -45,6 +51,7 @@ export function ResponsiveImage({
   fit = "cover",
   fill = false,
   priority = false,
+  loading,
   placeholder = "blur",
   position,
   className,
@@ -102,7 +109,7 @@ export function ResponsiveImage({
           src={fallbackSrc}
           alt={alt}
           sizes={sizes}
-          loading={priority ? "eager" : "lazy"}
+          loading={loading ?? (priority ? "eager" : "lazy")}
           decoding="async"
           fetchPriority={priority ? "high" : "auto"}
           draggable={false}

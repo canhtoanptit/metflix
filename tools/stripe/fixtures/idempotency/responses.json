@@ -1,0 +1,563 @@
+[
+  {
+    "step": "same key, same body",
+    "label": "first create",
+    "at": "2026-11-21T18:40:35.147Z",
+    "status": null,
+    "body": {
+      "id": "cus_WFX0000000000H",
+      "object": "customer",
+      "address": null,
+      "balance": 0,
+      "created": 1795286434,
+      "currency": null,
+      "customer_account": null,
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "member-17@example.test",
+      "invoice_prefix": "UQJUCKN5",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "name": null,
+      "next_invoice_sequence": 1,
+      "phone": null,
+      "preferred_locales": [],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  },
+  {
+    "step": "same key, same body",
+    "label": "replayed create",
+    "at": "2026-11-21T18:40:35.147Z",
+    "status": null,
+    "body": {
+      "id": "cus_WFX0000000000H",
+      "object": "customer",
+      "address": null,
+      "balance": 0,
+      "created": 1795286434,
+      "currency": null,
+      "customer_account": null,
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "member-17@example.test",
+      "invoice_prefix": "UQJUCKN5",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "name": null,
+      "next_invoice_sequence": 1,
+      "phone": null,
+      "preferred_locales": [],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  },
+  {
+    "step": "same key, different body",
+    "label": "reused key with a different body",
+    "at": "2026-11-21T18:40:35.394Z",
+    "status": 400,
+    "body": {
+      "message": "Keys for idempotent requests can only be used with the same parameters they were first used with. Try using a key other than 'webflix-proof-rmwqr4nao-same' if you meant to execute a different request. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)",
+      "type": "idempotency_error",
+      "headers": {
+        "access-control-allow-credentials": "true",
+        "access-control-allow-methods": "GET, HEAD, PUT, PATCH, POST, DELETE",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "Request-Id, Stripe-Manage-Version, Stripe-Should-Retry, X-Stripe-External-Auth-Required, X-Stripe-Privileged-Session-Required",
+        "access-control-max-age": "300",
+        "cache-control": "no-cache, no-store",
+        "content-length": "372",
+        "content-security-policy": "base-uri 'none'; default-src 'none'; form-action 'none'; frame-ancestors 'none'; img-src 'self'; script-src 'self' 'report-sample'; style-src 'self'; worker-src 'none'; upgrade-insecure-requests; report-uri https://q.stripe.com/csp-violation?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt; report-to csp",
+        "content-type": "application/json",
+        "date": "Sat, 21 Nov 2026 18:40:35 GMT",
+        "idempotency-key": "webflix-proof-rmwqr4nao-same",
+        "original-request": "req_WFX0000000002C",
+        "report-to": "{\"group\":\"csp\",\"max_age\":8640,\"endpoints\":[{\"url\":\"https://q.stripe.com/csp-report-v2?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt&t=1\"}],\"include_subdomains\":true}",
+        "reporting-endpoints": "csp=\"https://q.stripe.com/csp-report-v2?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt&t=1\"",
+        "request-id": "req_WFX00000000029",
+        "server": "nginx",
+        "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
+        "stripe-version": "2026-11-18.endive",
+        "vary": "Origin",
+        "x-stripe-priority-routing-enabled": "true",
+        "x-stripe-routing-context-priority-tier": "api-testmode",
+        "x-wc": "3c3"
+      },
+      "statusCode": 400,
+      "requestId": "req_WFX00000000029"
+    }
+  },
+  {
+    "step": "same key after a declined payment",
+    "label": "declined payment, attempt 1",
+    "at": "2026-11-21T18:40:36.301Z",
+    "status": 402,
+    "body": {
+      "advice_code": "try_again_later",
+      "charge": "ch_WFX00000000000000000000C",
+      "code": "card_declined",
+      "decline_code": "generic_decline",
+      "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+      "message": "Your card was declined. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)",
+      "network_decline_code": "01",
+      "payment_intent": {
+        "id": "pi_WFX00000000000000000000C",
+        "object": "payment_intent",
+        "allowed_payment_method_types": null,
+        "amount": 500,
+        "amount_capturable": 0,
+        "amount_details": {
+          "tip": {}
+        },
+        "amount_received": 0,
+        "application": null,
+        "application_fee_amount": null,
+        "automatic_payment_methods": {
+          "allow_redirects": "never",
+          "enabled": true
+        },
+        "canceled_at": null,
+        "cancellation_reason": null,
+        "capture_method": "automatic_async",
+        "client_secret": "pi_WFX00000000000000000000C_secret_[redacted]",
+        "confirmation_method": "automatic",
+        "created": 1795286435,
+        "currency": "usd",
+        "customer": null,
+        "customer_account": null,
+        "description": null,
+        "excluded_payment_method_types": null,
+        "last_payment_error": {
+          "advice_code": "try_again_later",
+          "charge": "ch_WFX00000000000000000000C",
+          "code": "card_declined",
+          "decline_code": "generic_decline",
+          "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+          "message": "Your card was declined.",
+          "network_decline_code": "01",
+          "payment_method": {
+            "id": "pm_WFX00000000000000000000J",
+            "object": "payment_method",
+            "allow_redisplay": "unspecified",
+            "billing_details": {
+              "address": {
+                "city": null,
+                "country": null,
+                "line1": null,
+                "line2": null,
+                "postal_code": null,
+                "state": null
+              },
+              "email": null,
+              "name": null,
+              "phone": null,
+              "tax_id": null
+            },
+            "card": {
+              "brand": "visa",
+              "checks": {
+                "address_line1_check": null,
+                "address_postal_code_check": null,
+                "cvc_check": "pass"
+              },
+              "country": "US",
+              "display_brand": "visa",
+              "exp_month": 11,
+              "exp_year": 2027,
+              "fingerprint": "WFX0000000000005",
+              "funding": "credit",
+              "generated_from": null,
+              "last4": "0002",
+              "networks": {
+                "available": ["visa"],
+                "preferred": null
+              },
+              "regulated_status": "unregulated",
+              "three_d_secure_usage": {
+                "supported": true
+              },
+              "wallet": null
+            },
+            "created": 1795286435,
+            "customer": null,
+            "customer_account": null,
+            "livemode": false,
+            "metadata": {},
+            "shared_payment_granted_token": null,
+            "type": "card"
+          },
+          "payment_method_type": "card",
+          "type": "card_error"
+        },
+        "latest_charge": "ch_WFX00000000000000000000C",
+        "livemode": false,
+        "managed_payments": {
+          "enabled": false
+        },
+        "metadata": {
+          "webflix_proof_run": "rmwqr4nao"
+        },
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": null,
+        "payment_method_configuration_details": {
+          "id": "pmc_WFX000000000000000000001",
+          "parent": null
+        },
+        "payment_method_options": {
+          "card": {
+            "installments": null,
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          },
+          "link": {
+            "persistent_token": null
+          }
+        },
+        "payment_method_types": ["card", "link"],
+        "payment_record": null,
+        "processing": null,
+        "receipt_email": null,
+        "review": null,
+        "setup_future_usage": null,
+        "shared_payment_granted_token": null,
+        "shipping": null,
+        "source": null,
+        "statement_descriptor": null,
+        "statement_descriptor_suffix": null,
+        "status": "requires_payment_method",
+        "transfer_data": null,
+        "transfer_group": null
+      },
+      "payment_method": {
+        "id": "pm_WFX00000000000000000000J",
+        "object": "payment_method",
+        "allow_redisplay": "unspecified",
+        "billing_details": {
+          "address": {
+            "city": null,
+            "country": null,
+            "line1": null,
+            "line2": null,
+            "postal_code": null,
+            "state": null
+          },
+          "email": null,
+          "name": null,
+          "phone": null,
+          "tax_id": null
+        },
+        "card": {
+          "brand": "visa",
+          "checks": {
+            "address_line1_check": null,
+            "address_postal_code_check": null,
+            "cvc_check": "pass"
+          },
+          "country": "US",
+          "display_brand": "visa",
+          "exp_month": 11,
+          "exp_year": 2027,
+          "fingerprint": "WFX0000000000005",
+          "funding": "credit",
+          "generated_from": null,
+          "last4": "0002",
+          "networks": {
+            "available": ["visa"],
+            "preferred": null
+          },
+          "regulated_status": "unregulated",
+          "three_d_secure_usage": {
+            "supported": true
+          },
+          "wallet": null
+        },
+        "created": 1795286435,
+        "customer": null,
+        "customer_account": null,
+        "livemode": false,
+        "metadata": {},
+        "shared_payment_granted_token": null,
+        "type": "card"
+      },
+      "type": "card_error",
+      "headers": {
+        "access-control-allow-credentials": "true",
+        "access-control-allow-methods": "GET, HEAD, PUT, PATCH, POST, DELETE",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "Request-Id, Stripe-Manage-Version, Stripe-Should-Retry, X-Stripe-External-Auth-Required, X-Stripe-Privileged-Session-Required",
+        "access-control-max-age": "300",
+        "cache-control": "no-cache, no-store",
+        "content-length": "5857",
+        "content-security-policy": "base-uri 'none'; default-src 'none'; form-action 'none'; frame-ancestors 'none'; img-src 'self'; script-src 'self' 'report-sample'; style-src 'self'; worker-src 'none'; upgrade-insecure-requests; report-uri https://q.stripe.com/csp-violation?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt; report-to csp",
+        "content-type": "application/json",
+        "date": "Sat, 21 Nov 2026 18:40:36 GMT",
+        "idempotency-key": "webflix-proof-rmwqr4nao-declined",
+        "original-request": "req_WFX0000000002A",
+        "report-to": "{\"group\":\"csp\",\"max_age\":8640,\"endpoints\":[{\"url\":\"https://q.stripe.com/csp-report-v2?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt&t=1\"}],\"include_subdomains\":true}",
+        "reporting-endpoints": "csp=\"https://q.stripe.com/csp-report-v2?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt&t=1\"",
+        "request-id": "req_WFX0000000002A",
+        "server": "nginx",
+        "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
+        "stripe-should-retry": "false",
+        "stripe-version": "2026-11-18.endive",
+        "vary": "Origin",
+        "x-stripe-priority-routing-enabled": "true",
+        "x-stripe-routing-context-priority-tier": "api-testmode",
+        "x-wc": "3c3"
+      },
+      "statusCode": 402,
+      "requestId": "req_WFX0000000002A"
+    }
+  },
+  {
+    "step": "same key after a declined payment",
+    "label": "declined payment, attempt 2",
+    "at": "2026-11-21T18:40:36.561Z",
+    "status": 402,
+    "body": {
+      "advice_code": "try_again_later",
+      "charge": "ch_WFX00000000000000000000C",
+      "code": "card_declined",
+      "decline_code": "generic_decline",
+      "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+      "message": "Your card was declined. (This is an unclaimed Stripe sandbox. Dashboard links in this error message will not work until the sandbox is claimed.)",
+      "network_decline_code": "01",
+      "payment_intent": {
+        "id": "pi_WFX00000000000000000000C",
+        "object": "payment_intent",
+        "allowed_payment_method_types": null,
+        "amount": 500,
+        "amount_capturable": 0,
+        "amount_details": {
+          "tip": {}
+        },
+        "amount_received": 0,
+        "application": null,
+        "application_fee_amount": null,
+        "automatic_payment_methods": {
+          "allow_redirects": "never",
+          "enabled": true
+        },
+        "canceled_at": null,
+        "cancellation_reason": null,
+        "capture_method": "automatic_async",
+        "client_secret": "pi_WFX00000000000000000000C_secret_[redacted]",
+        "confirmation_method": "automatic",
+        "created": 1795286435,
+        "currency": "usd",
+        "customer": null,
+        "customer_account": null,
+        "description": null,
+        "excluded_payment_method_types": null,
+        "last_payment_error": {
+          "advice_code": "try_again_later",
+          "charge": "ch_WFX00000000000000000000C",
+          "code": "card_declined",
+          "decline_code": "generic_decline",
+          "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+          "message": "Your card was declined.",
+          "network_decline_code": "01",
+          "payment_method": {
+            "id": "pm_WFX00000000000000000000J",
+            "object": "payment_method",
+            "allow_redisplay": "unspecified",
+            "billing_details": {
+              "address": {
+                "city": null,
+                "country": null,
+                "line1": null,
+                "line2": null,
+                "postal_code": null,
+                "state": null
+              },
+              "email": null,
+              "name": null,
+              "phone": null,
+              "tax_id": null
+            },
+            "card": {
+              "brand": "visa",
+              "checks": {
+                "address_line1_check": null,
+                "address_postal_code_check": null,
+                "cvc_check": "pass"
+              },
+              "country": "US",
+              "display_brand": "visa",
+              "exp_month": 11,
+              "exp_year": 2027,
+              "fingerprint": "WFX0000000000005",
+              "funding": "credit",
+              "generated_from": null,
+              "last4": "0002",
+              "networks": {
+                "available": ["visa"],
+                "preferred": null
+              },
+              "regulated_status": "unregulated",
+              "three_d_secure_usage": {
+                "supported": true
+              },
+              "wallet": null
+            },
+            "created": 1795286435,
+            "customer": null,
+            "customer_account": null,
+            "livemode": false,
+            "metadata": {},
+            "shared_payment_granted_token": null,
+            "type": "card"
+          },
+          "payment_method_type": "card",
+          "type": "card_error"
+        },
+        "latest_charge": "ch_WFX00000000000000000000C",
+        "livemode": false,
+        "managed_payments": {
+          "enabled": false
+        },
+        "metadata": {
+          "webflix_proof_run": "rmwqr4nao"
+        },
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": null,
+        "payment_method_configuration_details": {
+          "id": "pmc_WFX000000000000000000001",
+          "parent": null
+        },
+        "payment_method_options": {
+          "card": {
+            "installments": null,
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          },
+          "link": {
+            "persistent_token": null
+          }
+        },
+        "payment_method_types": ["card", "link"],
+        "payment_record": null,
+        "processing": null,
+        "receipt_email": null,
+        "review": null,
+        "setup_future_usage": null,
+        "shared_payment_granted_token": null,
+        "shipping": null,
+        "source": null,
+        "statement_descriptor": null,
+        "statement_descriptor_suffix": null,
+        "status": "requires_payment_method",
+        "transfer_data": null,
+        "transfer_group": null
+      },
+      "payment_method": {
+        "id": "pm_WFX00000000000000000000J",
+        "object": "payment_method",
+        "allow_redisplay": "unspecified",
+        "billing_details": {
+          "address": {
+            "city": null,
+            "country": null,
+            "line1": null,
+            "line2": null,
+            "postal_code": null,
+            "state": null
+          },
+          "email": null,
+          "name": null,
+          "phone": null,
+          "tax_id": null
+        },
+        "card": {
+          "brand": "visa",
+          "checks": {
+            "address_line1_check": null,
+            "address_postal_code_check": null,
+            "cvc_check": "pass"
+          },
+          "country": "US",
+          "display_brand": "visa",
+          "exp_month": 11,
+          "exp_year": 2027,
+          "fingerprint": "WFX0000000000005",
+          "funding": "credit",
+          "generated_from": null,
+          "last4": "0002",
+          "networks": {
+            "available": ["visa"],
+            "preferred": null
+          },
+          "regulated_status": "unregulated",
+          "three_d_secure_usage": {
+            "supported": true
+          },
+          "wallet": null
+        },
+        "created": 1795286435,
+        "customer": null,
+        "customer_account": null,
+        "livemode": false,
+        "metadata": {},
+        "shared_payment_granted_token": null,
+        "type": "card"
+      },
+      "type": "card_error",
+      "headers": {
+        "access-control-allow-credentials": "true",
+        "access-control-allow-methods": "GET, HEAD, PUT, PATCH, POST, DELETE",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "Request-Id, Stripe-Manage-Version, Stripe-Should-Retry, X-Stripe-External-Auth-Required, X-Stripe-Privileged-Session-Required",
+        "access-control-max-age": "300",
+        "cache-control": "no-cache, no-store",
+        "content-length": "5857",
+        "content-security-policy": "base-uri 'none'; default-src 'none'; form-action 'none'; frame-ancestors 'none'; img-src 'self'; script-src 'self' 'report-sample'; style-src 'self'; worker-src 'none'; upgrade-insecure-requests; report-uri https://q.stripe.com/csp-violation?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt; report-to csp",
+        "content-type": "application/json",
+        "date": "Sat, 21 Nov 2026 18:40:36 GMT",
+        "idempotency-key": "webflix-proof-rmwqr4nao-declined",
+        "idempotent-replayed": "true",
+        "original-request": "req_WFX0000000002A",
+        "report-to": "{\"group\":\"csp\",\"max_age\":8640,\"endpoints\":[{\"url\":\"https://q.stripe.com/csp-report-v2?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt&t=1\"}],\"include_subdomains\":true}",
+        "reporting-endpoints": "csp=\"https://q.stripe.com/csp-report-v2?q=IUX4a9hlhHsMTuz0kXMK0YazB_nil5QYJQNE_JStvCbi9nNw4H-sc1nVEAW8XsZIt1iUVifEZS9AwiOt&t=1\"",
+        "request-id": "req_WFX0000000002B",
+        "server": "nginx",
+        "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
+        "stripe-should-retry": "false",
+        "stripe-version": "2026-11-18.endive",
+        "vary": "Origin",
+        "x-stripe-priority-routing-enabled": "true",
+        "x-stripe-routing-context-priority-tier": "api-testmode",
+        "x-wc": "3c3"
+      },
+      "statusCode": 402,
+      "requestId": "req_WFX0000000002B"
+    }
+  }
+]

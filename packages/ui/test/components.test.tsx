@@ -172,7 +172,9 @@ describe("TitleTile", () => {
     );
     expect(screen.getByRole("link", { name: /^1\. Title 1/ })).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: /Title 2, Season 1, episode 2: The Ferry, 25% watched/ }),
+      screen.getByRole("link", {
+        name: /Title 2, Season 1, episode 2: The Ferry, 45 minutes left/,
+      }),
     ).toBeInTheDocument();
   });
 });

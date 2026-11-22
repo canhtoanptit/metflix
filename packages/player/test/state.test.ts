@@ -7,9 +7,11 @@ import {
   isBuffering,
   type PlayerAction,
   type PlayerState,
+  pausedOverlayVisible,
   playerReducer,
   type SourceInfo,
   selectMomentsView,
+  selectOffers,
 } from "../src/core/state.ts";
 
 const source: SourceInfo = {
@@ -142,9 +144,60 @@ describe("player state machine", () => {
     expect(countdownRunning(playerReducer(state, { type: "ui/panel", panel: "episodes" }))).toBe(
       false,
     );
+    // A menu hides the card, so it holds the count as well.
+    expect(countdownRunning(playerReducer(state, { type: "ui/menu", menu: "speed" }))).toBe(false);
     state = playerReducer(state, { type: "moments/next-requested" });
     expect(state.moments).toMatchObject({ nextRequested: true, countdownMs: null });
     expect(selectMomentsView(state)?.nextUp).toBeNull();
+  });
+
+  it("hides corner offers under the paused overlay, menus and the next-episode card", () => {
+    const inIntro = run(
+      [{ type: "media/playing" }, { type: "media/time", currentTime: 25 }],
+      loaded(),
+    );
+    expect(selectOffers(inIntro).skip?.kind).toBe("intro");
+    const pausedIdle = run(
+      [{ type: "media/pause" }, { type: "ui/idle", controlsVisible: false, pausedIdle: true }],
+      inIntro,
+    );
+    expect(pausedOverlayVisible(pausedIdle)).toBe(true);
+    expect(selectOffers(pausedIdle)).toEqual({ skip: null, nextUp: null });
+    // Any activity drops the overlay and the offer comes back.
+    const active = playerReducer(pausedIdle, {
+      type: "ui/idle",
+      controlsVisible: true,
+      pausedIdle: false,
+    });
+    expect(selectOffers(active).skip?.kind).toBe("intro");
+    expect(selectOffers(playerReducer(inIntro, { type: "ui/menu", menu: "quality" })).skip).toBe(
+      null,
+    );
+    expect(
+      selectOffers(playerReducer(inIntro, { type: "ui/panel", panel: "episodes" })).skip,
+    ).toBeNull();
+    expect(selectOffers(playerReducer(inIntro, { type: "ui/blocked", value: true })).skip).toBe(
+      null,
+    );
+    // A skip window inside the credits gives way to the next-episode card.
+    const overlapping = run(
+      [
+        {
+          type: "source/load",
+          source: {
+            ...source,
+            markers: { ...source.markers, intro: { startSec: 130, endSec: 140 } },
+          },
+          startPositionSec: 0,
+          autoplay: true,
+        },
+        { type: "media/playing" },
+        { type: "media/time", currentTime: 132 },
+      ],
+      createInitialState(),
+    );
+    expect(selectMomentsView(overlapping)?.skip).not.toBeNull();
+    expect(selectOffers(overlapping)).toMatchObject({ skip: null, nextUp: { mode: "countdown" } });
   });
 
   it("host overlay closes menus and panels", () => {

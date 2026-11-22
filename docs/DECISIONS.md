@@ -319,6 +319,7 @@ with one rung per tier, which `tools/media` produces.
 enforced where the route table says (`auth: "account-holder"`) or by the profile and account
 services calling it; nothing restates a rule. Parental controls are *in use* when any profile is
 a kids profile, has a ceiling below 18+, or is locked with a PIN (`ProfileList.parentalControls`).
+The table below is the decision as taken; the current reference is BACKEND.md §3.
 
 | Who is acting (the session's active profile) | Profiles | Account (details, plan, card, cancel, devices, sign out everywhere) |
 | --- | --- | --- |
@@ -496,7 +497,9 @@ which esbuild keeps whole with every locale.
 
 **Why.** About 260 KiB of the Worker bundle were zod locales nobody uses. Same API, same
 messages. `apps/edge/src/env.ts` still imports `{ z }`; changing that one line drops the locales
-from the Worker (measured with esbuild: 811 → 470 KiB, locales 258 → 3 KiB).
+from the Worker (measured with esbuild: 811 → 470 KiB, locales 258 → 3 KiB). *Done since:*
+`apps/edge/src/env.ts` imports the namespace too, and `make cf-bundle` fails if the locale
+tables come back (CLOUDFLARE.md §5).
 
 ## D38. Every route's rate-limit policy exists at composition
 
@@ -539,3 +542,93 @@ without the listener.
 **Not applicable to SQLite or D1.** `node:sqlite` is synchronous and in process: no socket, no
 event, every failure is thrown by the call. A D1 query or batch is one request on the binding:
 a failure rejects that call, and a batch is atomic on the D1 side.
+
+## D42. Database time budgets belong to the caller's role
+
+**Decision.** `createPostgresDatabase` takes a `role` (`POSTGRES_ROLE_TIMEOUTS`): `request` (the
+API: statements 5 s on the server, 7 s on the client), `background` (the worker: 60 s / 65 s),
+`maintenance` (`migrate`, `seed`: 10 min / 10 min 5 s). Explicit `statementTimeoutMs`,
+`queryTimeoutMs` and `keepAliveInitialDelayMs` override it. Without a role the previous 15 s
+statement timeout stays, bounded at 17 s client-side. Every connection has TCP keepalive (first
+probe after 10 s idle) and `idle_in_transaction_session_timeout` equal to the client timeout. A
+statement left unanswered fails as `Query read timeout`, which is unavailable (503,
+`Retry-After`); its client is released as failed with its socket destroyed, in the Kysely path and
+in `executeBatch`, so it is never lent again with its statement still running or stuck.
+
+**Why these numbers.** The API's statements take milliseconds (a browse page is two round trips),
+so 5 s on the server is ample headroom under load, and the client's extra 2 s lets a reachable
+server's own cancellation answer first. With at most 5 s to get a connection, a request waits at
+most about 12 s on the database: well inside the gateway's 60 s route timeout (measured before:
+108 s on the pod, a 504 at 60 s, and 15 min 47 s for connections to a lost host). A shorter
+budget would turn legitimately slow moments (a cold catalog load, an overloaded server) into
+errors; a longer one keeps a member staring at a spinner for something a retry fixes. Jobs and
+seeding legitimately run long statements, so the budget follows the process, not the pool.
+
+**Transactions.** Writes are single statements or one `executeBatch` transaction, never applied
+in part. A client-side timeout destroys the socket: before COMMIT went out the server can only
+roll back (when it sees the connection gone, or when the transaction has sat idle past the
+budget, which also frees its locks). After COMMIT went out and before its answer, the server may
+have committed: `executeBatch` throws `CommitOutcomeUnknownError` and the request answers 503
+with a detail saying the change may or may not have been saved. Reads, settings, My List,
+ratings, progress, heartbeats, releases, the seed and the rollups are idempotent and safe to
+retry. Sign-up, adding a profile, starting playback, changing the password or the plan are not:
+a retry after an unknown outcome can answer `email_already_registered`, add a second profile,
+start a second session, or answer `current_password_invalid`. None of that can corrupt data,
+the web app never retries a mutation by itself, and the detail tells a member to check first.
+Idempotency keys would close it fully; not worth it for a window this narrow.
+
+**Cost.** In-process jobs (`serve` without Valkey) share the request budget: a rollup longer than
+5 s fails there and is retried. Keepalive only notices a dead *idle* connection as fast as the
+host's probe interval and count allow (Linux: 75 s × 9 by default; `net.ipv4.tcp_keepalive_intvl`
+and `_probes` are namespaced sysctls a pod can lower). Busy connections are bounded by the query
+timeout.
+
+## D43. One duration per stream
+
+**Decision.** The seeder stores a packaged title's or episode's runtime as its stream's playable
+duration (seed format 4); the catalogue runtime stays only for external fallback media. Cards,
+detail, episode lists, next-episode cards, playback sessions and progress then share one base, in
+seconds. Series cards show seasons; nothing sums episode runtimes.
+
+**Why.** Catalogue runtimes are fictional and packaged clips are minutes long: the product said
+"15m" above "1 of 3m", and "54m" beside a scrubber with 1:05 left.
+
+## D44. Badges are the exception (supersedes the per-surface rules of D22)
+
+**Decision.** None on the Top 10 row; only "new episodes" in Continue Watching; "new" never on a
+title the profile has played, nor in New Releases; at most `BADGES_PER_LIST` = 2 per list in all.
+"New episodes" means a series the profile has watched, recently added with more than one season,
+with an episode of its latest season beyond the furthest watched. Measured on the first home page:
+demo profile 47 % → 13 % of cards, a new profile 38 % → 8 % (RECOMMENDATIONS.md, Badges).
+
+## D45. Previews say what they are
+
+**Decision.** `PreviewClip.kind` (`footage` / `motion`) and `hasAudio` come from the media manifest
+(absent there: footage with audio) and are always sent; stored rows without them read as footage
+with audio. **Why:** most previews are now motion art with a silent track, and "Turn sound on"
+played silence.
+
+## D46. A new profile has no notification backlog
+
+**Decision.** Unread notifications are arrivals since the profile was created; the latest three
+from before are shown, already read. **Why:** a day-old account opened on "9+".
+
+## D47. Long search queries are searched, not refused
+
+**Decision.** `q` is accepted up to 2000 characters and searched in its first 100, cut between
+code points (the byte-safe LIKE tokens of D3 still apply); `SearchResults.query` is what was
+searched. Empty queries, and longer ones no search field sends, stay `validation_failed`.
+
+## D48. "Sign out of all devices" was right; no "stop now" in the heartbeat
+
+**Finding.** The report of a device playing for two minutes after "Sign out of all devices" came
+from a script that asked from a session without a profile: the request answered 403
+`profile_required` (account management needs an account holder, D24) and signed nobody out. Asked
+from the account page, the playing device's next heartbeat is refused (401), its playlists answer
+410, it cannot start again, and its screen is free at once (`packages/http/test/signout-playback.test.ts`,
+conformance `playback.signout-stops-playback`). Segments it already holds a token for remain
+fetchable until the token expires (D1).
+
+**Decision.** No explicit "stop now" in the heartbeat acknowledgement: the next heartbeat is where
+the player learns either way, and the refusal already stops it, at most one heartbeat interval
+(30 s) after the sign-out. Only a push channel could be faster; not worth it for this.

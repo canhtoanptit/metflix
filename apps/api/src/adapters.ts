@@ -24,6 +24,7 @@ import {
 import {
   type BlobStore,
   type Clock,
+  ConfigError,
   createPasswordHasherChain,
   createPbkdf2PasswordHasher,
   type IdGenerator,
@@ -46,7 +47,7 @@ import {
   MemoryStreamGate,
 } from "@webflix/core/memory";
 import { createRepositories, createSqlSearchIndex, type Database } from "@webflix/db";
-import { createPostgresDatabase } from "@webflix/db/postgres";
+import { createPostgresDatabase, type PostgresRole } from "@webflix/db/postgres";
 import { createSqliteDatabase } from "@webflix/db/sqlite";
 import type { ReadinessCheck } from "@webflix/http";
 import type { ApiConfig } from "./config.ts";
@@ -81,12 +82,42 @@ export interface Infrastructure extends SharedState {
   passwords: PasswordHasher;
 }
 
-export function createDatabase(config: ApiConfig, logger?: Logger): Database {
+/**
+ * The processes this runtime is composed for, and the PostgreSQL budgets each one's statements
+ * get (`POSTGRES_ROLE_TIMEOUTS`, docs/DECISIONS.md D42): the API answers members (`request`),
+ * the worker runs jobs and the scheduler (`background`), the Jobs migrate and seed
+ * (`maintenance`). `wait` is the init container's check, a few quick statements.
+ */
+export const DATABASE_ROLES = {
+  api: "request",
+  wait: "request",
+  worker: "background",
+  migrate: "maintenance",
+  seed: "maintenance",
+} as const satisfies Record<string, PostgresRole>;
+export type RuntimeComponent = keyof typeof DATABASE_ROLES;
+
+/** The component's role; an unknown name is a composition error, never a default budget. */
+export function databaseRole(component: string): PostgresRole {
+  if (!Object.hasOwn(DATABASE_ROLES, component)) {
+    throw new ConfigError([
+      `component "${component}": expected one of ${Object.keys(DATABASE_ROLES).join(", ")}`,
+    ]);
+  }
+  return DATABASE_ROLES[component as RuntimeComponent];
+}
+
+export function createDatabase(config: ApiConfig, role: PostgresRole, logger?: Logger): Database {
   return config.database.kind === "postgres"
     ? createPostgresDatabase({
         connectionString: config.database.url,
         maxConnections: config.database.maxConnections,
         applicationName: `webflix-${config.core.mode}`,
+        role,
+        ...config.database.timeouts[role],
+        ...(config.database.keepAliveInitialDelayMs !== null
+          ? { keepAliveInitialDelayMs: config.database.keepAliveInitialDelayMs }
+          : {}),
         // A database restart: the pool drops the dead connection and reconnects on demand.
         onIdleConnectionError: (error) =>
           logger?.warn("db.connection_lost", { error: serializeError(error) }),
@@ -202,11 +233,11 @@ function createPasswordHasher(config: ApiConfig): PasswordHasher {
 
 export function createInfrastructure(
   config: ApiConfig,
-  deps: { clock: Clock; ids: IdGenerator; logger: Logger; component?: string },
+  deps: { clock: Clock; ids: IdGenerator; logger: Logger; component: RuntimeComponent },
 ): Infrastructure {
-  const database = createDatabase(config, deps.logger);
+  const database = createDatabase(config, databaseRole(deps.component), deps.logger);
   const repos = createRepositories(database);
-  const shared = createSharedState(config, { ...deps, component: deps.component ?? "api" });
+  const shared = createSharedState(config, deps);
   const blobs = createBlobStore(config);
   return {
     ...shared,

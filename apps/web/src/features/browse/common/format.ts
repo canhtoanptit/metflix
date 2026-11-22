@@ -3,30 +3,37 @@ import {
   effectiveVideoQuality,
   type MATURITY_LEVELS,
   type Plan,
-  type Progress,
   type TitleCard,
   videoQualityLabel,
 } from "@webflix/contracts";
 
-/** "1h 52m", "47m", "45s" (runtimes and remaining time). */
-export function formatRuntime(seconds: number): string {
+// Time left ("12m left") and the progress bar's fraction come from `@webflix/contracts`
+// (`formatTimeLeft`, `formatTimeLeftSpoken`, `progressFraction`): one wording for browse and the
+// player. The runtimes below follow the same rounding (seconds under two minutes).
+
+function runtimeParts(seconds: number): { hours: number; minutes: number; seconds: number } {
   const total = Math.max(0, Math.round(seconds));
-  if (total < 60) return `${total}s`;
-  const minutes = Math.round(total / 60);
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (hours === 0) return `${minutes}m`;
-  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+  if (total < 120) return { hours: 0, minutes: Math.floor(total / 60), seconds: total % 60 };
+  const minutes = Math.floor((total + 30) / 60);
+  return { hours: Math.floor(minutes / 60), minutes: minutes % 60, seconds: 0 };
 }
 
-/** Spoken form for screen readers: "1 hour 52 minutes". */
+/** A playable duration: "1h 52m", "47m", "1m 10s", "45s". */
+export function formatRuntime(seconds: number): string {
+  const p = runtimeParts(seconds);
+  if (p.hours === 0 && p.minutes === 0) return `${p.seconds}s`;
+  if (p.hours === 0) return p.seconds > 0 ? `${p.minutes}m ${p.seconds}s` : `${p.minutes}m`;
+  return p.minutes === 0 ? `${p.hours}h` : `${p.hours}h ${p.minutes}m`;
+}
+
+/** Spoken form for screen readers: "1 hour 52 minutes", "1 minute 10 seconds". */
 export function formatRuntimeLong(seconds: number): string {
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
+  const p = runtimeParts(seconds);
+  const unit = (value: number, word: string) => `${value} ${word}${value === 1 ? "" : "s"}`;
   const parts: string[] = [];
-  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
-  if (rest > 0) parts.push(`${rest} minute${rest === 1 ? "" : "s"}`);
+  if (p.hours > 0) parts.push(unit(p.hours, "hour"));
+  if (p.minutes > 0) parts.push(unit(p.minutes, "minute"));
+  if (p.seconds > 0 || parts.length === 0) parts.push(unit(p.seconds, "second"));
   return parts.join(" ");
 }
 
@@ -38,20 +45,6 @@ export function formatSeasons(count: number): string {
 export function formatLength(card: Pick<TitleCard, "type" | "runtimeSec" | "seasonCount">): string {
   if (card.type === "series") return formatSeasons(card.seasonCount ?? 1);
   return card.runtimeSec ? formatRuntime(card.runtimeSec) : "";
-}
-
-/** "23 of 47m" — position against duration, for resume affordances. */
-export function formatProgress(progress: Pick<Progress, "positionSec" | "durationSec">): string {
-  const watched = Math.round(progress.positionSec / 60);
-  const total = Math.max(1, Math.round(progress.durationSec / 60));
-  return `${Math.min(watched, total)} of ${total}m`;
-}
-
-export function progressFraction(
-  progress: Pick<Progress, "positionSec" | "durationSec"> | null | undefined,
-): number {
-  if (!progress || progress.durationSec <= 0) return 0;
-  return Math.min(1, Math.max(0, progress.positionSec / progress.durationSec));
 }
 
 /** "S2:E3" */

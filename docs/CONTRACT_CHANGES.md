@@ -146,3 +146,25 @@ default 60/60). `PASSWORD_MAX_BYTES` (1024) is new.
   `Content-Type` says.
 - A database that cannot be reached answers `service_unavailable` (503) with `Retry-After`
   (it answered 500).
+
+## 2026-11-22 — round 5: previews, durations, badges, search length (all additive)
+
+- **`PreviewClip.kind?: "footage" | "motion"`** (`PREVIEW_KINDS`, `PreviewKind`) and
+  **`PreviewClip.hasAudio?: boolean`**: on every card (so detail and billboard too). Current
+  servers always send both; absent (older servers) means footage with audio. Offer no sound
+  control for `hasAudio: false`; describe motion art as such.
+- **Media manifest**: `PackagedVideoAsset.preview.kind?` and `.hasAudio?`, same meaning; absent
+  means footage with audio, so existing manifests stay valid.
+- **Durations** (no field change): `TitleCard.runtimeSec`, `EpisodeSummary.runtimeSec` and
+  `NextEpisode.runtimeSec` are the playable duration of packaged media (the same base as
+  `PlaybackSession.durationSec` and progress), the catalogue runtime only for external fallback
+  media. Values change once the seed re-applies (format 4).
+- **Search**: `SearchQuery.q` accepts up to `SEARCH_QUERY_INPUT_MAX_LENGTH` (2000, new) and
+  searches its first `SEARCH_QUERY_MAX_LENGTH` (100) characters, cut between code points; a query
+  of 101 to 2000 characters used to be `validation_failed`. `SearchResults.query` is the query as
+  searched. Cap the field at 100 client-side.
+- **`BADGES_PER_LIST`** (2, new): badges of any kind per list. The server also stops sending
+  badges on the Top 10 row, sends only `new-episodes` in Continue Watching, and never `new` on a
+  title the profile has played (RECOMMENDATIONS.md, Badges).
+- **Notifications** (behaviour): a new profile's arrivals from before it was created come read
+  (at most three); `unreadCount` counts only later ones.

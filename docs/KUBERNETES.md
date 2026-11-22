@@ -57,8 +57,17 @@ make k8s-down
 
 ## 2. One command: `make k8s-up`
 
-Needs Docker (with buildx), kind ≥ 0.31, Helm ≥ 3.18 (4.x used here) and kubectl. Nothing else
-on the host: images, the media uploader and the chart checks all run in containers.
+Needs Docker (with buildx), kind ≥ 0.31, Helm ≥ 4.0.1 (4.2 used here) and kubectl, against
+Kubernetes ≥ 1.31 (the chart's `kubeVersion`). Nothing else on the host: images, the media
+uploader and the chart checks all run in containers.
+
+Why Helm 4.0.1: releases are applied server-side (`--server-side`, `--force-conflicts`, the
+field ownership handling below) and waited on with `--wait=watcher`; Helm 3.18 and 3.19 have
+none of these (`--wait` is a plain switch there). Helm 4.0.0 upgrades the release fine but
+renders this chart offline (`helm template`, as the Cloudflare header generator does) against
+Kubernetes 1.20, below `kubeVersion`; 4.0.1 fixed that. Checked with the release binaries in a
+throwaway container: an upgrade of this release with 4.0.0, offline renders with 4.0.0 to 4.2.4.
+`up.sh`, `release.sh` and `make doctor` check the version.
 
 | Step | What happens | Re-run |
 | --- | --- | --- |
@@ -277,8 +286,8 @@ gets a 5 s `preStop` sleep and its image stop signal (SIGQUIT, graceful). PDBs k
 API/web pod out during node drains. Under a steady 16-client mix (shell, assets, public and
 authenticated API, playlists, Range requests, heartbeats), API and web rolled out together
 twice through the release (`make k8s-verify`: an upgrade that changes a pod annotation, then its
-rollback): **0 failed** (52 168 requests, p99 165 ms, while other workloads loaded the machine;
-earlier runs with `kubectl rollout restart`: 65 708 requests, 0 failed).
+rollback): **0 failed** (132 316 requests at 1 500 req/s, p99 49 ms; an earlier run while other
+workloads loaded the machine: 52 168 requests, p99 165 ms).
 
 ### Failure injection (measured, `make k8s-chaos`)
 
@@ -290,7 +299,7 @@ any API or worker process restarts.
 | --- | --- | --- |
 | Valkey pod deleted | heartbeats (stream gate) answer 503 for ~7 s; browse, sign-in pages and media keep working | automatic; no restart; stream leases intact (a second screen still refused) |
 | Valkey container SIGKILLed | heartbeats 503 for ~2.5 s | automatic; leases intact (AOF) |
-| PostgreSQL pod deleted (3 runs) | database-backed requests answer `503` + `Retry-After` for 1 to 6 s (3 to 12 % of the background load); web and plans never fail | automatic; no API or worker restart |
+| PostgreSQL pod deleted (4 runs) | database-backed requests answer `503` + `Retry-After` for 1 to 6 s (3 to 12 % of the background load); web and plans never fail | automatic; no API or worker restart |
 | PostgreSQL container SIGKILLed | 503 + `Retry-After` for ~1 s (2 % of the background load) | automatic; no restart |
 | Worker at 0 replicas (through the release) / force-killed | nothing visible; jobs wait in Valkey | drained by the next worker; no job lost |
 
@@ -302,28 +311,24 @@ connection` reaching a client lent out between two statements, an unhandled `err
 ended the process (4 to 5 of 5 API pods restarted per run under load before the fix, none in
 the 4 runs since).
 
-### PostgreSQL gone without a goodbye (open: needs a pool change)
+### PostgreSQL gone without a goodbye
 
-A pod deletion closes connections; a node failure or a network partition does not. Measured with
-`node deploy/kind/verify/partition.ts heal|lost` (every packet to and from the PostgreSQL pod's
-IP dropped on its node; 16 clients of load; requests through the gateway and straight to one API
-pod), on the current tree:
+A pod deletion closes connections; a node failure or a network partition does not, and a
+server that is gone cannot apply its own `statement_timeout`. Each process therefore bounds its
+statements client-side too, by role (`docs/BACKEND.md` §6): the API 5 s on the server and 7 s
+on the client, the worker 60 / 65 s, migrate and seed 10 min / 10 min 5 s; a statement that
+times out client-side fails as unavailable (503 + `Retry-After`) and its connection is
+destroyed. Measured with `node deploy/kind/verify/partition.ts heal|lost` (every packet to and
+from the PostgreSQL pod's IP dropped on its node; 16 clients of load; requests through the
+gateway and straight to one API pod):
 
-| Scenario | What users see | Pooled connections |
+| Scenario | Before (no client-side bound) | Now |
 | --- | --- | --- |
-| Partition for 60 s, then lifted | most database requests `503` within 5 s (new connections time out); the ones on a pooled connection hang: `504` from the gateway at 60 s, 108 s straight to the pod; plans and web unaffected | stuck until TCP retransmission gets through after the partition (≈ 50 s after it) |
-| Host lost, PostgreSQL replaced on a new IP after 10 s | for the whole 10-minute observation, 9 to 25 % of database requests through the gateway answered `503`: every one that reached the API pod whose pool the stuck connections had filled | 38 stuck on queries nobody will answer, until TCP gives up (`tcp_retries2=15`): the last one went 15 min 47 s after the cut |
+| Partition for 60 s, then lifted | requests on pooled connections hung: `504` from the gateway at 60 s, 108 s straight to the pod | every request answered within 7.3 s, all `503` + `Retry-After`, no `504`; API connections released 9 s after the cut; recovered 0.1 s after the lift |
+| Host lost, PostgreSQL replaced on a new IP after 9 s | 38 connections stuck until TCP gave up, the last 15 min 47 s after the cut; meanwhile 9 to 25 % of database requests answered `503` (the pod whose pool they filled answered nothing else) | longest wait 9.0 s (`503`); API connections released 9 s after the cut (the worker's one at its 65 s budget); recovered as soon as the replacement was Ready |
 
-node-postgres has no client-side query timeout and no TCP keepalive by default, and the server's
-`statement_timeout` cannot fire on a server that is gone. The remedy is in
-`packages/db/src/postgres.ts` (pool options) and the unavailable-error classifier:
-`keepAlive: true, keepAliveInitialDelayMillis: 10_000, query_timeout: statementTimeout + 5_000`
-(so the server's own timeout still answers first when it is reachable), and `Query read timeout`
-treated as "database unavailable" (503 + `Retry-After`, and the client discarded instead of going
-back to the pool with its stuck query). An API image built with exactly that, deployed through
-the release and rolled back afterwards: host lost, every request answered within 20.3 s (503),
-stuck connections gone 27 s after the cut, full recovery 6.5 s after the replacement was Ready;
-60 s partition, longest wait 20.8 s, no 504.
+No API or worker restart in any run. `tcpKeepalive` (below) also notices a dead *idle*
+connection after 40 s instead of ~11 minutes.
 
 ### Security
 
@@ -366,6 +371,9 @@ and malformed values (e.g. `api.replica`, `rateLimits.auth: lots`).
 | `tls.extraCaCerts.{secretName,configMapName,key}` | none | private CAs for PostgreSQL / Valkey TLS / an S3 endpoint (`NODE_EXTRA_CA_CERTS`) |
 | `api.autoscaling.{min,max}Replicas` | 3 / 12 | CPU 70 % |
 | `api.databasePoolMax` | 10 | per pod; keep (max API + workers + 2) × pool < `postgresql.maxConnections` (200) |
+| `config.databaseTimeouts.{request,background,maintenance}.{statementMs,queryMs}` | the roles' budgets: 5000 / 7000 (API), 60000 / 65000 (worker), 600000 / 605000 (Jobs) | server-side statement timeout / client-side bound (ms, 0 = none); `queryMs` must exceed `statementMs`, else the chart refuses to render |
+| `config.databaseKeepAliveMs` | `null` = 10000 | TCP keepalive's first probe on database connections (0 = off) |
+| `tcpKeepalive.{intervalSec,probes}` | 10 / 3 | `net.ipv4.tcp_keepalive_intvl` / `_probes` in the API, worker and Job pods (namespaced safe sysctls, allowed by Pod Security `restricted` since 1.29; checked on kind 1.37); `null` sets none |
 | `api.shutdownDelaySec` / `terminationGracePeriodSeconds` | 5 / 40 | grace ≥ delay + 30 |
 | `worker.replicas` / `worker.concurrency` | 2 / 4 | consumers share the queue |
 | `web.contentSecurityPolicy` | same-origin, `https:` for media/XHR (external HLS fallback) | mounted over the image's default |
@@ -441,7 +449,7 @@ store needs `externalS3.endpoint` and `forcePathStyle: true`.
 - **Scale:** the API and web autoscale; the worker through the release (`worker.replicas`;
   on kind `deploy/kind/release.sh reapply --set worker.replicas=N`). A `kubectl scale` of a
   release object leaves `.spec.replicas` owned outside the release (see Field ownership, §2).
-  The data stores are single instances by design (see §7).
+  The data stores are single instances by design (see §8).
 - **Roll out:** `helm upgrade` (or `make k8s-redeploy`); `make k8s-restart C=api` restarts
   without a change. A failed upgrade leaves the previous ReplicaSet serving (`maxUnavailable:
   0`). `helm rollback webflix <rev> --wait --wait-for-jobs` works across a release that added
@@ -488,7 +496,7 @@ store needs `externalS3.endpoint` and `forcePathStyle: true`.
 | S3 adapter against a stalled store | `pnpm --filter @webflix/adapters-node test` | never-answering store: every operation fails within its deadline as `service_unavailable`; a body stalled mid-transfer fails after the idle timeout; a slow reader is not mistaken for a stall |
 | Two API "replicas" in one process | `pnpm --filter @webflix/api test:services` | stream limit, revocation, rate limits, blob manifests, readiness vs dependency health, the ops listener |
 | Migrations after a rollback | `pnpm --filter @webflix/db test` (SQLite), `test:postgres` (PostgreSQL) | newer unknown migrations accepted with a warning; an unknown one in the middle, or a known one missing, refused |
-| Chart | `make k8s-test` | `helm lint --strict` on 4 value sets; kubeconform (Kubernetes 1.37 + CRD schemas): 145 resources valid; 69 template tests |
+| Chart | `make k8s-test` | `helm lint --strict` on 4 value sets; kubeconform (Kubernetes 1.37 + CRD schemas): 145 resources valid; 75 template tests |
 | In the cluster | `helm test webflix -n webflix` | ops `/readyz` 200 on `:4001` and 404 on the public port; plans, web shell, a missing asset 404 |
 | Web image | `make k8s-test-web` | hashed asset `immutable`; missing `.js`/`.css`/`.png` 404 `no-store` problem, never HTML (also as a page load); deep links get the shell |
 | TLS to PostgreSQL | `make k8s-test-pg-tls` | private CA refused without `tls.extraCaCerts`, accepted with it; plaintext refused; client certificate login |
@@ -498,11 +506,11 @@ store needs `externalS3.endpoint` and `forcePathStyle: true`.
 | Key rotation under load | `node deploy/kind/verify/rotation.ts [naive]` | §5 |
 | Hot-patched release object | `make k8s-test-drift` | `kubectl set image` on the API, then `up.sh` in each `K8S_OWNERSHIP` mode: strict stops before Helm (revision unchanged) naming `kubectl-set` and the field; off fails in Helm with the same explanation; take logs the field it takes back and deploys; the next strict deploy finds nothing |
 | Field ownership | `make k8s-ownership` | only controllers' `status` entries besides Helm's |
-| PostgreSQL partition / host loss | `node deploy/kind/verify/partition.ts heal\|lost` | §3: requests on pooled connections hang 108 s (partition) or connections stay stuck ~16 min (host lost) until the pool remedy lands |
+| PostgreSQL partition / host loss | `node deploy/kind/verify/partition.ts heal\|lost` | §3: every request answered within 9 s (503 + `Retry-After`), no 504, recovery within a second of the database being back |
 
 Rate limits on kind are the strict production values; because every local client shares one
-address, `RATE_LIMITS=relaxed` switches to the documented relaxed profile (60/60, 60/60,
-300/60, 60/60) for e2e runs. Both are recognised by the smoke suite.
+address, `RATE_LIMITS=relaxed` switches to the documented relaxed profile (docs/BACKEND.md §3)
+for e2e runs. Both are recognised by the smoke suite.
 
 ## 7. Footprint
 
@@ -542,8 +550,5 @@ worker 45, web 25 each, Valkey 13). Requests at minimum replicas: ~0.5 CPU, ~0.9
 - **Observability:** Prometheus Operator (`metrics.serviceMonitor.enabled`), Valkey and
   PostgreSQL exporters, alerts on `webflix_jobs{state="dead"}`, `webflix_dependency_up == 0`,
   container restarts, readiness flaps, Valkey memory.
-- **Database host failures:** apply the pool remedy in §3 ("PostgreSQL gone without a goodbye")
-  before relying on a managed database's failover: until then a host that vanishes leaves pooled
-  connections stuck for ~16 minutes and can starve a pod's pool.
 - **Scheduling:** set `topologySpreadConstraints` to `DoNotSchedule` across real zones, add a
   PriorityClass, and consider KEDA on queue depth for the worker.

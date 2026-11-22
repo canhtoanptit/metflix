@@ -6,7 +6,8 @@
  *   taller than `maxVideoHeight` are removed on MANIFEST_PARSED, then loading starts at the
  *   resume position. ABR (and `capLevelToPlayerSize`) then only ever sees allowed levels.
  * - Errors go through `classifyHlsError`: network retries with back-off, media recovery (then
- *   with an audio codec swap), and only then a fatal error to the player.
+ *   with an audio codec swap), and only then a fatal error to the player. A stall just short of
+ *   the end ends the stream, so the element ends even when hls.js never ended it itself.
  */
 import type Hls from "hls.js";
 import type { ErrorData, HlsConfig, Level, MediaPlaylist } from "hls.js";
@@ -130,9 +131,18 @@ export async function createHlsEngine(
   });
   hls.on(Events.ERROR, (_event, data: ErrorData) => {
     if (destroyed) return;
-    const decision = classifyHlsError(data, budget);
+    const decision = classifyHlsError(data, budget, {
+      positionSec: media.currentTime,
+      durationSec: media.duration,
+    });
     switch (decision.action) {
       case "ignore":
+        return;
+      case "finish":
+        // End the stream the way hls.js does once everything is appended, for every track: the
+        // MediaSource ends, its duration shrinks to what is buffered, and the element plays out
+        // its last frames and ends.
+        hls.trigger(Events.BUFFER_EOS, { type: null });
         return;
       case "retry-network":
         budget.networkRetries += 1;

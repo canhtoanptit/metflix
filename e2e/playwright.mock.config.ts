@@ -1,10 +1,14 @@
 import { defineConfig, devices } from "@playwright/test";
+import { video, workers } from "./host-limits.ts";
 
 /**
  * UI suites against the web app in mock mode (no backend): guards, overlay, slider interaction,
  * accessibility. Starts `vite --mode mock` on E2E_MOCK_PORT (default 4210) unless one is running.
  *
- *   pnpm --filter @webflix/e2e e2e:mock        (or: make e2e-mock)
+ *   pnpm --filter @webflix/e2e e2e:mock        (or: make e2e-mock, under the host guard)
+ *
+ * Host limits as in the main suite (host-limits.ts): 4 workers (E2E_WORKERS), video only with
+ * E2E_VIDEO=1.
  */
 const port = Number(process.env.E2E_MOCK_PORT ?? 4210);
 const baseURL = `http://localhost:${port}`;
@@ -14,13 +18,14 @@ export default defineConfig({
   testDir: "./mock",
   outputDir: "./test-results/mock",
   fullyParallel: true,
+  workers,
   forbidOnly: ci,
   retries: ci ? 2 : 0,
   reporter: [
     [ci ? "github" : "list"],
     ["html", { open: "never", outputFolder: "playwright-report/mock" }],
   ],
-  use: { baseURL, trace: "retain-on-failure", screenshot: "only-on-failure" },
+  use: { baseURL, trace: "retain-on-failure", screenshot: "only-on-failure", video },
   projects: [
     {
       name: "chromium",

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/rankings-line/1",
+  "title": "External rankings file: one profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profileKey", "titleIds"],
+  "properties": {
+    "profileKey": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22}$" },
+    "titleIds": {
+      "description": "Best first. Titles unknown to the catalogue, unavailable at the cutoff or already watched are dropped by the harness before scoring, for every system alike.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "scores": {
+      "description": "Optional, aligned with titleIds, non-increasing.",
+      "anyOf": [{ "type": "array", "items": { "type": "number" } }, { "type": "null" }]
+    }
+  }
+}

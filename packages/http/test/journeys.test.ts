@@ -192,8 +192,10 @@ describe("sign up → profile → browse → play → heartbeat → continue wat
       404,
     );
 
+    // A new profile opens with no backlog: the latest earlier arrivals, already read.
     const notifications = await device.api.listNotifications();
-    expect(notifications.unreadCount).toBeGreaterThan(0);
+    expect(notifications.unreadCount).toBe(0);
+    expect(notifications.items.length).toBeGreaterThan(0);
     await device.api.markNotificationsRead({ body: {} });
     expect((await device.api.listNotifications()).unreadCount).toBe(0);
   });

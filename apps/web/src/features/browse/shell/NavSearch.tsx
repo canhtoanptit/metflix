@@ -1,10 +1,26 @@
 import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
+import { SEARCH_QUERY_MAX_LENGTH } from "@webflix/contracts";
 import { Button, IconButton, SearchIcon, SearchInput } from "@webflix/ui";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ClipboardEvent,
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { searchParam } from "../../../app/router/search.ts";
 import { canAnimate, durationMs, easing } from "../common/motion.ts";
+import {
+  capSearchText,
+  cleanPastedText,
+  codePointLength,
+  insertWithinLimit,
+  searchQueryOf,
+} from "../search/query.ts";
 
 const SEARCH_PATH = "/search";
+const SEARCH_LIMIT = SEARCH_QUERY_MAX_LENGTH;
 /** Typing settles into the URL after this pause (results and history stay calm). */
 export const SEARCH_DEBOUNCE_MS = 220;
 
@@ -22,6 +38,9 @@ export interface NavSearchProps {
  * (`/search?q=`) after a short pause: the first keystroke pushes a history entry (Back returns
  * to where you were), later ones replace it. Clearing the field returns to that page; Escape
  * clears, and a second Escape folds the field away.
+ *
+ * The field holds at most what the server searches (`search/query.ts`): typing stops at the
+ * limit, a paste is cleaned to one line and shortened to fit, and nothing typed can fail.
  */
 export function NavSearch({ variant }: NavSearchProps) {
   const navigate = useNavigate();
@@ -30,7 +49,7 @@ export function NavSearch({ variant }: NavSearchProps) {
   const urlQuery = useRouterState({
     select: (s) =>
       s.location.pathname === SEARCH_PATH
-        ? (searchParam.string((s.location.search as Record<string, unknown>).q) ?? "")
+        ? searchQueryOf(searchParam.string((s.location.search as Record<string, unknown>).q))
         : "",
   });
   const [value, setValue] = useState(urlQuery);
@@ -44,6 +63,8 @@ export function NavSearch({ variant }: NavSearchProps) {
   const pushed = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusAfterExpand = useRef(false);
+  /** An input method is composing (CJK and others): its interim text is not capped mid-way. */
+  const composing = useRef(false);
 
   const cancelPending = () => {
     if (timer.current) clearTimeout(timer.current);
@@ -111,7 +132,7 @@ export function NavSearch({ variant }: NavSearchProps) {
 
   const commit = (raw: string) => {
     cancelPending();
-    const q = raw.trim();
+    const q = searchQueryOf(raw);
     if (q === written.current) return;
     written.current = q;
     if (!q) {
@@ -126,7 +147,15 @@ export function NavSearch({ variant }: NavSearchProps) {
     }
   };
 
-  const onValueChange = (next: string) => {
+  const onValueChange = (input: string) => {
+    // One line: tabs and line breaks (dropped or composed text) become spaces.
+    const raw = input.replace(/[\t\r\n]+/g, " ");
+    let next = raw;
+    if (!composing.current && codePointLength(raw) > codePointLength(value)) {
+      // Typing (or dropping text) past the limit: keep what fits; at the limit, nothing more.
+      if (codePointLength(value) >= SEARCH_LIMIT && codePointLength(raw) > SEARCH_LIMIT) return;
+      next = capSearchText(raw);
+    }
     setValue(next);
     cancelPending();
     // Emptying the field leaves search at once; typing settles first.
@@ -155,6 +184,19 @@ export function NavSearch({ variant }: NavSearchProps) {
     }
   };
 
+  const onPaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    // No text (an image, or nothing): leave it to the browser.
+    const text = event.clipboardData?.getData("text/plain");
+    if (!text) return;
+    event.preventDefault();
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? value.length;
+    const end = input.selectionEnd ?? start;
+    const pasted = insertWithinLimit(value, cleanPastedText(text), start, end);
+    onValueChange(pasted.value);
+    requestAnimationFrame(() => input.setSelectionRange(pasted.caret, pasted.caret));
+  };
+
   const expand = () => {
     focusAfterExpand.current = true;
     setExpanded(true);
@@ -180,6 +222,17 @@ export function NavSearch({ variant }: NavSearchProps) {
       label="Search titles, people and genres"
       placeholder="Titles, people, genres"
       onKeyDown={onKeyDown}
+      onPaste={onPaste}
+      onCompositionStart={() => {
+        composing.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        composing.current = false;
+        const text = event.currentTarget.value;
+        if (codePointLength(text) > SEARCH_LIMIT) onValueChange(capSearchText(text));
+      }}
+      // Right-to-left queries (Arabic, Hebrew) read and edit in their own direction.
+      dir="auto"
       onBlur={(event) => {
         const stillInside = event.currentTarget
           .closest("search")

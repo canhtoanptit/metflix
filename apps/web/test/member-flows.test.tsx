@@ -77,7 +77,9 @@ describe("sign in", () => {
     renderMember("/login?email=demo%40webflix.dev", "anonymous", { login });
     await user.type(await screen.findByLabelText("Password", { exact: true }), "whatever-1");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/please wait 0:4[12]/i);
+    // One live countdown, on the button; the message itself stays still.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/sign-in is paused for a moment/i);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/\d:\d\d/);
     const button = screen.getByRole("button", { name: /Try again in 0:4[12]/ });
     expect(button).toBeDisabled();
     expect(login).toHaveBeenCalledTimes(1);
@@ -164,7 +166,7 @@ describe("sign-up", () => {
     expect(screen.getByLabelText("Your name")).toHaveAccessibleDescription("Enter a name.");
     await user.type(screen.getByLabelText("Your name"), "Sam");
     await user.type(screen.getByLabelText("Profile 2 name (optional)"), "Pip");
-    await user.click(screen.getAllByRole("checkbox", { name: "Kids profile" })[0] as HTMLElement);
+    await user.click(screen.getByRole("checkbox", { name: "Profile 2 is a kids profile" }));
     await user.click(screen.getByRole("button", { name: "Create 2 profiles" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/browse"), { timeout: 5000 });
   }, 30_000);

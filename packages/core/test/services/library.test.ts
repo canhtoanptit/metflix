@@ -10,7 +10,7 @@ import {
   FIXTURE_MANIFEST,
   TEST_NOW,
 } from "../../src/testing/index.ts";
-import { demoViewer } from "./helpers.ts";
+import { demoViewer, memberViewer } from "./helpers.ts";
 
 function withoutStreams(): CatalogSeed {
   return {
@@ -124,6 +124,38 @@ describe("library", () => {
     expect((await t.services.library.notifications(viewer)).unreadCount).toBe(0);
     // Read state is per profile.
     expect((await t.services.library.notifications(kids)).unreadCount).toBe(kidsList.unreadCount);
+  });
+});
+
+describe("notifications of a new profile", () => {
+  it("open with no backlog: a few earlier arrivals, already read; later ones unread", async () => {
+    const t = await createTestServices();
+    const me = await memberViewer(t);
+    const first = await t.services.library.notifications(me);
+    expect(first.unreadCount).toBe(0);
+    expect(first.items.length).toBeGreaterThan(0);
+    expect(first.items.length).toBeLessThanOrEqual(3);
+    expect(first.items.every((item) => item.readAt !== null)).toBe(true);
+    // The latest arrivals from before the profile existed, newest first.
+    const older = await t.services.library.notifications(await demoViewer(t));
+    expect(first.items.map((item) => item.id)).toEqual(
+      older.items.slice(0, first.items.length).map((item) => item.id),
+    );
+    // What arrives afterwards is news to it: a title added after the profile was created.
+    t.clock.advance(60_000);
+    const catalog = {
+      ...FIXTURE_CATALOG,
+      titles: FIXTURE_CATALOG.titles.map((title) =>
+        title.id === "t-owl" ? { ...title, addedDaysAgo: 0 } : title,
+      ),
+    };
+    await t.services.seeder.seed(
+      { catalog, demoAccount: FIXTURE_DEMO_ACCOUNT, manifest: FIXTURE_MANIFEST },
+      { force: true },
+    );
+    const later = await t.services.library.notifications(me);
+    expect(later.unreadCount).toBe(1);
+    expect(later.items[0]).toMatchObject({ title: { id: "t-owl" }, readAt: null });
   });
 });
 

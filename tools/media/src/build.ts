@@ -7,6 +7,7 @@ import type { MediaProfile, PackagedVideoAsset } from "@webflix/contracts";
 import { runArtStage } from "./art/run.ts";
 import { linkArtwork, pruneVideo, writeManifest } from "./manifest.ts";
 import { manifestPath } from "./paths.ts";
+import { checkPublished, publishedBefore } from "./published.ts";
 import { readJson } from "./util/fs.ts";
 import { formatBytes, formatDuration, log, timed } from "./util/log.ts";
 import type { FilmFacts } from "./video/plan.ts";
@@ -56,8 +57,16 @@ export async function build(profile: MediaProfile, options: BuildOptions = {}): 
 
   let video: PackagedVideoAsset[] | null = null;
   if (!options.skipVideo) {
+    // Immutable public keys (preview clips) must never change bytes: snapshot what this
+    // profile has published before, package, then compare (src/published.ts).
+    const before = await publishedBefore(profile);
     video = await timed(`video (${profile})`, () =>
       runVideoStage(catalog, films, profile, { only: options.only }),
+    );
+    await checkPublished(
+      profile,
+      before,
+      video.flatMap((asset) => (asset.preview ? [asset.preview.key] : [])),
     );
   }
 

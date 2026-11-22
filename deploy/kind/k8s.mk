@@ -113,5 +113,5 @@ k8s-chaos: ## Failure injection: TARGET=valkey|postgresql MODE=delete|crash (nee
 
 doctor::
 	@kind version 2>/dev/null || echo "kind: not installed (needed for make k8s-up)"
-	@helm version --short 2>/dev/null || echo "helm: not installed (needed for make k8s-up)"
+	@bash -c '. deploy/kind/lib.sh && helm_doctor'
 	@kubectl version --client 2>/dev/null | head -n 1 || echo "kubectl: not installed (needed for make k8s-up)"

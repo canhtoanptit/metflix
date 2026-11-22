@@ -1,6 +1,11 @@
 import * as z from "zod";
 import { HexColor, ResourceUrl, Seconds } from "./common.ts";
-import { IMAGE_FORMATS, IMAGE_TEMPLATE_FORMAT, IMAGE_TEMPLATE_WIDTH } from "./constants.ts";
+import {
+  IMAGE_FORMATS,
+  IMAGE_TEMPLATE_FORMAT,
+  IMAGE_TEMPLATE_WIDTH,
+  PREVIEW_KINDS,
+} from "./constants.ts";
 
 export const ImageFormat = z.enum(IMAGE_FORMATS);
 export type ImageFormat = z.output<typeof ImageFormat>;
@@ -46,6 +51,16 @@ export const PreviewClip = z
     durationSec: Seconds,
     width: z.number().int().positive(),
     height: z.number().int().positive(),
+    /**
+     * `footage` (a cut of the title) or `motion` (motion art from its key art). Always sent by
+     * current servers; absent from older ones, where it means `footage`.
+     */
+    kind: z.enum(PREVIEW_KINDS).optional(),
+    /**
+     * False when the clip is silent: offer no sound control for it. Always sent by current
+     * servers; absent from older ones, where it means `true`.
+     */
+    hasAudio: z.boolean().optional(),
   })
   .meta({ id: "PreviewClip" });
 export type PreviewClip = z.output<typeof PreviewClip>;

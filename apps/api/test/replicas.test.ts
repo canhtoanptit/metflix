@@ -83,8 +83,8 @@ describe.skipIf(!configured)("two API replicas sharing Valkey, S3 and the databa
     dir = await mkdtemp(join(tmpdir(), "webflix-replicas-"));
     const url = `sqlite:${join(dir, "webflix.sqlite")}`;
     const prefix = `test:${crypto.randomUUID()}:`;
-    a = createRuntime(replicaConfig(url, prefix), "replica-a");
-    b = createRuntime(replicaConfig(url, prefix), "replica-b");
+    a = createRuntime(replicaConfig(url, prefix), "api");
+    b = createRuntime(replicaConfig(url, prefix), "api");
     await migrateToLatest(a.infra.database);
     await a.services.seeder.seed({
       catalog: FIXTURE_CATALOG,

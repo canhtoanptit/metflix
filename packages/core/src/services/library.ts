@@ -25,8 +25,13 @@ const HistoryCursor = z.object({ w: z.number().int(), i: z.string().min(1).max(6
 
 /** Notifications older than this are not shown. */
 const NOTIFICATION_WINDOW_MS = 60 * DAY_MS;
-/** A new profile still sees what arrived shortly before it was created. */
+/** How far back, before a profile was created, its highlights may reach. */
 const NOTIFICATION_BACKFILL_MS = 30 * DAY_MS;
+/**
+ * A new profile opens with no backlog: only what arrives after it was created is unread. It
+ * still sees the latest few arrivals from before, already read, so the list is not empty.
+ */
+const NOTIFICATION_HIGHLIGHTS = 3;
 const NOTIFICATION_LIMIT = 30;
 
 export function createLibraryService(
@@ -158,9 +163,16 @@ export function createLibraryService(
           limit: NOTIFICATION_LIMIT,
         }),
       ]);
+      const createdAt = viewer.profile.createdAt;
+      const since = notifications.filter((notification) => notification.createdAt >= createdAt);
+      const highlights = notifications
+        .filter((notification) => notification.createdAt < createdAt)
+        .slice(0, NOTIFICATION_HIGHLIGHTS)
+        .map((notification) => ({ ...notification, readAt: notification.readAt ?? createdAt }));
+      const shown = [...since, ...highlights];
       return {
-        items: notifications.map((notification) => presentNotification(snapshot, notification)),
-        unreadCount: notifications.filter((notification) => notification.readAt === null).length,
+        items: shown.map((notification) => presentNotification(snapshot, notification)),
+        unreadCount: shown.filter((notification) => notification.readAt === null).length,
       };
     },
 

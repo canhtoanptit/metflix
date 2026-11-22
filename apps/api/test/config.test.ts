@@ -95,6 +95,9 @@ describe("api config", () => {
       kind: "postgres",
       url: "postgres://u:p@db:5432/webflix",
       maxConnections: 20,
+      // The role budgets (POSTGRES_ROLE_TIMEOUTS) apply unless overridden.
+      timeouts: {},
+      keepAliveInitialDelayMs: null,
     });
     expect(config.blobs).toMatchObject({
       kind: "s3",

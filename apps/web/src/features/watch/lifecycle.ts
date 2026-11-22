@@ -329,6 +329,18 @@ export class WatchLifecycle {
     }
   }
 
+  /**
+   * The page is visible again. Browsers throttle a hidden tab's timers (Chrome stretches them to
+   * a minute after five minutes hidden with nothing audible), so a paused player in a background
+   * tab may be well past its interval report: report now, so a sign-out or a session ended
+   * elsewhere shows the moment the member looks, never a frame that will die at the next tick.
+   */
+  visible(): void {
+    if (this.disposed || this.state.status !== "ready") return;
+    const sample = this.options.snapshot?.("interval");
+    if (sample) void this.report(sample);
+  }
+
   // --- player errors --------------------------------------------------------------------------
 
   /** Fatal player errors the host can do something about. */

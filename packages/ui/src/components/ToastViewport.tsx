@@ -73,7 +73,8 @@ export function ToastViewport() {
       <RadixToast.Viewport
         className={cx(
           "fixed inset-x-0 bottom-0 z-(--z-toast) mx-auto flex w-full max-w-dialog-sm flex-col gap-2 p-4 outline-none",
-          "sm:bottom-6",
+          // A screen with a bar fixed to the bottom sets --wf-toast-offset to its height.
+          "mb-(--wf-toast-offset) sm:bottom-6",
         )}
       />
     </RadixToast.Provider>

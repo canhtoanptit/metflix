@@ -1,0 +1,1738 @@
+[
+  {
+    "step": "member A: trial, cancel, trial again",
+    "label": "customer created (a)",
+    "at": "2026-11-21T18:40:22.894Z",
+    "status": null,
+    "body": {
+      "id": "cus_WFX0000000000E",
+      "object": "customer",
+      "address": null,
+      "balance": 0,
+      "created": 1795286422,
+      "currency": null,
+      "customer_account": null,
+      "default_source": null,
+      "delinquent": false,
+      "description": "webflix proof rmwqr4nao trial-once a",
+      "discount": null,
+      "email": "member-14@example.test",
+      "invoice_prefix": "KI0OQRF4",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "member": "a",
+        "scenario": "trial-once",
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "name": null,
+      "next_invoice_sequence": 1,
+      "phone": null,
+      "preferred_locales": [],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  },
+  {
+    "step": "member A: trial, cancel, trial again",
+    "label": "trial subscription created (a first)",
+    "at": "2026-11-21T18:40:24.034Z",
+    "status": null,
+    "body": {
+      "id": "sub_WFX00000000000000000000C",
+      "object": "subscription",
+      "application": null,
+      "application_fee_percent": null,
+      "automatic_tax": {
+        "disabled_reason": null,
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1795891223,
+      "billing_cycle_anchor_config": null,
+      "billing_mode": {
+        "flexible": {
+          "proration_discounts": "included"
+        },
+        "type": "flexible",
+        "updated_at": 1795286423
+      },
+      "billing_schedules": [],
+      "billing_thresholds": null,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "feedback_option": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1795286423,
+      "currency": "usd",
+      "customer": "cus_WFX0000000000E",
+      "customer_account": null,
+      "days_until_due": null,
+      "default_payment_method": null,
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discounts": [],
+      "ended_at": null,
+      "invoice_settings": {
+        "account_tax_ids": null,
+        "custom_fields": null,
+        "description": null,
+        "footer": null,
+        "issuer": {
+          "type": "self"
+        }
+      },
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_WFX0000000000C",
+            "object": "subscription_item",
+            "billing_thresholds": null,
+            "created": 1795286423,
+            "current_period_end": 1795891223,
+            "current_period_start": 1795286423,
+            "current_trial": null,
+            "discounts": [],
+            "metadata": {},
+            "plan": {
+              "id": "price_WFX000000000000000000004",
+              "object": "plan",
+              "active": true,
+              "amount": 799,
+              "amount_decimal": "799",
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "interval": "month",
+              "interval_count": 1,
+              "livemode": false,
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "meter": null,
+              "nickname": null,
+              "product": "webflix_basic",
+              "tiers_mode": null,
+              "transform_usage": null,
+              "trial_period_days": null,
+              "usage_type": "licensed"
+            },
+            "price": {
+              "id": "price_WFX000000000000000000004",
+              "object": "price",
+              "active": true,
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "custom_unit_amount": null,
+              "livemode": false,
+              "lookup_key": "webflix.basic.monthly.usd",
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "nickname": null,
+              "product": "webflix_basic",
+              "recurring": {
+                "interval": "month",
+                "interval_count": 1,
+                "meter": null,
+                "trial_period_days": null,
+                "usage_type": "licensed"
+              },
+              "tax_behavior": "unspecified",
+              "tiers_mode": null,
+              "transform_quantity": null,
+              "type": "recurring",
+              "unit_amount": 799,
+              "unit_amount_decimal": "799"
+            },
+            "quantity": 1,
+            "subscription": "sub_WFX00000000000000000000C",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_WFX00000000000000000000C"
+      },
+      "latest_invoice": {
+        "id": "in_WFX00000000000000000000J",
+        "object": "invoice",
+        "account_country": "US",
+        "account_name": null,
+        "account_tax_ids": null,
+        "amount_due": 0,
+        "amount_overpaid": 0,
+        "amount_paid": 0,
+        "amount_remaining": 0,
+        "amount_shipping": 0,
+        "application": null,
+        "attempt_count": 0,
+        "attempted": true,
+        "auto_advance": false,
+        "automatic_tax": {
+          "disabled_reason": null,
+          "enabled": false,
+          "liability": null,
+          "provider": null,
+          "status": null
+        },
+        "automatically_finalizes_at": null,
+        "billing_reason": "subscription_create",
+        "collection_method": "charge_automatically",
+        "confirmation_secret": null,
+        "created": 1795286423,
+        "currency": "usd",
+        "custom_fields": null,
+        "customer": "cus_WFX0000000000E",
+        "customer_account": null,
+        "customer_address": null,
+        "customer_email": "member-14@example.test",
+        "customer_name": null,
+        "customer_phone": null,
+        "customer_shipping": null,
+        "customer_tax_exempt": "none",
+        "customer_tax_ids": [],
+        "default_payment_method": null,
+        "default_source": null,
+        "default_tax_rates": [],
+        "description": null,
+        "discounts": [],
+        "due_date": null,
+        "effective_at": 1795286423,
+        "ending_balance": 0,
+        "footer": null,
+        "from_invoice": null,
+        "hosted_invoice_url": "https://invoice.stripe.com/[redacted]",
+        "invoice_pdf": "https://pay.stripe.com/[redacted]",
+        "issuer": {
+          "type": "self"
+        },
+        "last_finalization_error": null,
+        "latest_revision": null,
+        "lines": {
+          "object": "list",
+          "data": [
+            {
+              "id": "il_WFX00000000000000000000L",
+              "object": "line_item",
+              "amount": 0,
+              "currency": "usd",
+              "description": "Free trial for 1 × Webflix Basic",
+              "discount_amounts": [],
+              "discountable": true,
+              "discounts": [],
+              "invoice": "in_WFX00000000000000000000J",
+              "livemode": false,
+              "metadata": {
+                "webflix_proof_run": "rmwqr4nao"
+              },
+              "parent": {
+                "invoice_item_details": null,
+                "subscription_item_details": {
+                  "invoice_item": null,
+                  "proration": false,
+                  "proration_details": {
+                    "credited_items": null
+                  },
+                  "subscription": "sub_WFX00000000000000000000C",
+                  "subscription_item": "si_WFX0000000000C"
+                },
+                "type": "subscription_item_details"
+              },
+              "period": {
+                "end": 1795891223,
+                "start": 1795286423
+              },
+              "pretax_credit_amounts": [],
+              "pricing": {
+                "price_details": {
+                  "price": "price_WFX000000000000000000004",
+                  "product": "webflix_basic"
+                },
+                "type": "price_details",
+                "unit_amount_decimal": "0"
+              },
+              "quantity": 1,
+              "quantity_decimal": "1",
+              "subtotal": 0,
+              "taxes": []
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/invoices/in_WFX00000000000000000000J/lines"
+        },
+        "livemode": false,
+        "metadata": {},
+        "next_payment_attempt": null,
+        "number": "KI0OQRF4-0001",
+        "on_behalf_of": null,
+        "parent": {
+          "quote_details": null,
+          "subscription_details": {
+            "metadata": {
+              "webflix_proof_run": "rmwqr4nao"
+            },
+            "subscription": "sub_WFX00000000000000000000C"
+          },
+          "type": "subscription_details"
+        },
+        "payment_settings": {
+          "default_mandate": null,
+          "payment_method_options": null,
+          "payment_method_types": null
+        },
+        "period_end": 1795286423,
+        "period_start": 1795286423,
+        "post_payment_credit_notes_amount": 0,
+        "pre_payment_credit_notes_amount": 0,
+        "receipt_number": null,
+        "rendering": null,
+        "shipping_cost": null,
+        "shipping_details": null,
+        "starting_balance": 0,
+        "statement_descriptor": null,
+        "status": "paid",
+        "status_transitions": {
+          "finalized_at": 1795286423,
+          "marked_uncollectible_at": null,
+          "paid_at": 1795286423,
+          "voided_at": null
+        },
+        "subtotal": 0,
+        "subtotal_excluding_tax": 0,
+        "test_clock": null,
+        "total": 0,
+        "total_discount_amounts": [],
+        "total_excluding_tax": 0,
+        "total_pretax_credit_amounts": [],
+        "total_taxes": [],
+        "webhooks_delivered_at": null
+      },
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "next_pending_invoice_item_invoice": null,
+      "on_behalf_of": null,
+      "pause_collection": null,
+      "payment_settings": {
+        "payment_method_options": null,
+        "payment_method_types": null,
+        "save_default_payment_method": "on_subscription"
+      },
+      "pending_invoice_item_interval": null,
+      "pending_setup_intent": {
+        "id": "seti_WFX000000000000000000008",
+        "object": "setup_intent",
+        "allowed_payment_method_types": null,
+        "application": null,
+        "automatic_payment_methods": null,
+        "cancellation_reason": null,
+        "client_secret": "seti_WFX000000000000000000008_secret_[redacted]",
+        "created": 1795286423,
+        "customer": "cus_WFX0000000000E",
+        "customer_account": null,
+        "description": null,
+        "excluded_payment_method_types": null,
+        "flow_directions": null,
+        "last_setup_error": null,
+        "latest_attempt": null,
+        "livemode": false,
+        "managed_payments": {
+          "enabled": false
+        },
+        "mandate": null,
+        "metadata": {},
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": null,
+        "payment_method_configuration_details": null,
+        "payment_method_options": {
+          "card": {
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+        "single_use_mandate": null,
+        "status": "requires_payment_method",
+        "usage": "off_session"
+      },
+      "pending_update": null,
+      "plan": {
+        "id": "price_WFX000000000000000000004",
+        "object": "plan",
+        "active": true,
+        "amount": 799,
+        "amount_decimal": "799",
+        "billing_scheme": "per_unit",
+        "created": 1795284709,
+        "currency": "usd",
+        "interval": "month",
+        "interval_count": 1,
+        "livemode": false,
+        "metadata": {
+          "webflix_plan": "basic"
+        },
+        "meter": null,
+        "nickname": null,
+        "product": "webflix_basic",
+        "tiers_mode": null,
+        "transform_usage": null,
+        "trial_period_days": null,
+        "usage_type": "licensed"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1795286423,
+      "status": "trialing",
+      "test_clock": null,
+      "transfer_data": null,
+      "trial_end": 1795891223,
+      "trial_settings": {
+        "end_behavior": {
+          "billing_cycle_anchor": "now",
+          "missing_payment_method": "cancel"
+        }
+      },
+      "trial_start": 1795286423
+    }
+  },
+  {
+    "step": "member A: trial, cancel, trial again",
+    "label": "browser confirms pending_setup_intent with pm_card_visa (a first)",
+    "at": "2026-11-21T18:40:24.871Z",
+    "status": 200,
+    "body": {
+      "id": "seti_WFX000000000000000000008",
+      "object": "setup_intent",
+      "allowed_payment_method_types": null,
+      "automatic_payment_methods": null,
+      "cancellation_reason": null,
+      "client_secret": "seti_WFX000000000000000000008_secret_[redacted]",
+      "created": 1795286423,
+      "description": null,
+      "excluded_payment_method_types": null,
+      "last_setup_error": null,
+      "livemode": false,
+      "next_action": null,
+      "payment_method": "pm_WFX00000000000000000000F",
+      "payment_method_configuration_details": null,
+      "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+      "status": "succeeded",
+      "usage": "off_session"
+    }
+  },
+  {
+    "step": "member A: trial, cancel, trial again",
+    "label": "trial subscription created (a second)",
+    "at": "2026-11-21T18:40:27.108Z",
+    "status": null,
+    "body": {
+      "id": "sub_WFX00000000000000000000D",
+      "object": "subscription",
+      "application": null,
+      "application_fee_percent": null,
+      "automatic_tax": {
+        "disabled_reason": null,
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1795891226,
+      "billing_cycle_anchor_config": null,
+      "billing_mode": {
+        "flexible": {
+          "proration_discounts": "included"
+        },
+        "type": "flexible",
+        "updated_at": 1795286426
+      },
+      "billing_schedules": [],
+      "billing_thresholds": null,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "feedback_option": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1795286426,
+      "currency": "usd",
+      "customer": "cus_WFX0000000000E",
+      "customer_account": null,
+      "days_until_due": null,
+      "default_payment_method": null,
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discounts": [],
+      "ended_at": null,
+      "invoice_settings": {
+        "account_tax_ids": null,
+        "custom_fields": null,
+        "description": null,
+        "footer": null,
+        "issuer": {
+          "type": "self"
+        }
+      },
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_WFX0000000000D",
+            "object": "subscription_item",
+            "billing_thresholds": null,
+            "created": 1795286426,
+            "current_period_end": 1795891226,
+            "current_period_start": 1795286426,
+            "current_trial": null,
+            "discounts": [],
+            "metadata": {},
+            "plan": {
+              "id": "price_WFX000000000000000000004",
+              "object": "plan",
+              "active": true,
+              "amount": 799,
+              "amount_decimal": "799",
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "interval": "month",
+              "interval_count": 1,
+              "livemode": false,
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "meter": null,
+              "nickname": null,
+              "product": "webflix_basic",
+              "tiers_mode": null,
+              "transform_usage": null,
+              "trial_period_days": null,
+              "usage_type": "licensed"
+            },
+            "price": {
+              "id": "price_WFX000000000000000000004",
+              "object": "price",
+              "active": true,
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "custom_unit_amount": null,
+              "livemode": false,
+              "lookup_key": "webflix.basic.monthly.usd",
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "nickname": null,
+              "product": "webflix_basic",
+              "recurring": {
+                "interval": "month",
+                "interval_count": 1,
+                "meter": null,
+                "trial_period_days": null,
+                "usage_type": "licensed"
+              },
+              "tax_behavior": "unspecified",
+              "tiers_mode": null,
+              "transform_quantity": null,
+              "type": "recurring",
+              "unit_amount": 799,
+              "unit_amount_decimal": "799"
+            },
+            "quantity": 1,
+            "subscription": "sub_WFX00000000000000000000D",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_WFX00000000000000000000D"
+      },
+      "latest_invoice": {
+        "id": "in_WFX00000000000000000000K",
+        "object": "invoice",
+        "account_country": "US",
+        "account_name": null,
+        "account_tax_ids": null,
+        "amount_due": 0,
+        "amount_overpaid": 0,
+        "amount_paid": 0,
+        "amount_remaining": 0,
+        "amount_shipping": 0,
+        "application": null,
+        "attempt_count": 0,
+        "attempted": true,
+        "auto_advance": false,
+        "automatic_tax": {
+          "disabled_reason": null,
+          "enabled": false,
+          "liability": null,
+          "provider": null,
+          "status": null
+        },
+        "automatically_finalizes_at": null,
+        "billing_reason": "subscription_create",
+        "collection_method": "charge_automatically",
+        "confirmation_secret": null,
+        "created": 1795286426,
+        "currency": "usd",
+        "custom_fields": null,
+        "customer": "cus_WFX0000000000E",
+        "customer_account": null,
+        "customer_address": null,
+        "customer_email": "member-14@example.test",
+        "customer_name": null,
+        "customer_phone": null,
+        "customer_shipping": null,
+        "customer_tax_exempt": "none",
+        "customer_tax_ids": [],
+        "default_payment_method": null,
+        "default_source": null,
+        "default_tax_rates": [],
+        "description": null,
+        "discounts": [],
+        "due_date": null,
+        "effective_at": 1795286426,
+        "ending_balance": 0,
+        "footer": null,
+        "from_invoice": null,
+        "hosted_invoice_url": "https://invoice.stripe.com/[redacted]",
+        "invoice_pdf": "https://pay.stripe.com/[redacted]",
+        "issuer": {
+          "type": "self"
+        },
+        "last_finalization_error": null,
+        "latest_revision": null,
+        "lines": {
+          "object": "list",
+          "data": [
+            {
+              "id": "il_WFX00000000000000000000M",
+              "object": "line_item",
+              "amount": 0,
+              "currency": "usd",
+              "description": "Free trial for 1 × Webflix Basic",
+              "discount_amounts": [],
+              "discountable": true,
+              "discounts": [],
+              "invoice": "in_WFX00000000000000000000K",
+              "livemode": false,
+              "metadata": {
+                "webflix_proof_run": "rmwqr4nao"
+              },
+              "parent": {
+                "invoice_item_details": null,
+                "subscription_item_details": {
+                  "invoice_item": null,
+                  "proration": false,
+                  "proration_details": {
+                    "credited_items": null
+                  },
+                  "subscription": "sub_WFX00000000000000000000D",
+                  "subscription_item": "si_WFX0000000000D"
+                },
+                "type": "subscription_item_details"
+              },
+              "period": {
+                "end": 1795891226,
+                "start": 1795286426
+              },
+              "pretax_credit_amounts": [],
+              "pricing": {
+                "price_details": {
+                  "price": "price_WFX000000000000000000004",
+                  "product": "webflix_basic"
+                },
+                "type": "price_details",
+                "unit_amount_decimal": "0"
+              },
+              "quantity": 1,
+              "quantity_decimal": "1",
+              "subtotal": 0,
+              "taxes": []
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/invoices/in_WFX00000000000000000000K/lines"
+        },
+        "livemode": false,
+        "metadata": {},
+        "next_payment_attempt": null,
+        "number": "KI0OQRF4-0002",
+        "on_behalf_of": null,
+        "parent": {
+          "quote_details": null,
+          "subscription_details": {
+            "metadata": {
+              "webflix_proof_run": "rmwqr4nao"
+            },
+            "subscription": "sub_WFX00000000000000000000D"
+          },
+          "type": "subscription_details"
+        },
+        "payment_settings": {
+          "default_mandate": null,
+          "payment_method_options": null,
+          "payment_method_types": null
+        },
+        "period_end": 1795286426,
+        "period_start": 1795286426,
+        "post_payment_credit_notes_amount": 0,
+        "pre_payment_credit_notes_amount": 0,
+        "receipt_number": null,
+        "rendering": null,
+        "shipping_cost": null,
+        "shipping_details": null,
+        "starting_balance": 0,
+        "statement_descriptor": null,
+        "status": "paid",
+        "status_transitions": {
+          "finalized_at": 1795286426,
+          "marked_uncollectible_at": null,
+          "paid_at": 1795286426,
+          "voided_at": null
+        },
+        "subtotal": 0,
+        "subtotal_excluding_tax": 0,
+        "test_clock": null,
+        "total": 0,
+        "total_discount_amounts": [],
+        "total_excluding_tax": 0,
+        "total_pretax_credit_amounts": [],
+        "total_taxes": [],
+        "webhooks_delivered_at": null
+      },
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "next_pending_invoice_item_invoice": null,
+      "on_behalf_of": null,
+      "pause_collection": null,
+      "payment_settings": {
+        "payment_method_options": null,
+        "payment_method_types": null,
+        "save_default_payment_method": "on_subscription"
+      },
+      "pending_invoice_item_interval": null,
+      "pending_setup_intent": {
+        "id": "seti_WFX000000000000000000009",
+        "object": "setup_intent",
+        "allowed_payment_method_types": null,
+        "application": null,
+        "automatic_payment_methods": null,
+        "cancellation_reason": null,
+        "client_secret": "seti_WFX000000000000000000009_secret_[redacted]",
+        "created": 1795286426,
+        "customer": "cus_WFX0000000000E",
+        "customer_account": null,
+        "description": null,
+        "excluded_payment_method_types": null,
+        "flow_directions": null,
+        "last_setup_error": null,
+        "latest_attempt": null,
+        "livemode": false,
+        "managed_payments": {
+          "enabled": false
+        },
+        "mandate": null,
+        "metadata": {},
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": null,
+        "payment_method_configuration_details": null,
+        "payment_method_options": {
+          "card": {
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+        "single_use_mandate": null,
+        "status": "requires_payment_method",
+        "usage": "off_session"
+      },
+      "pending_update": null,
+      "plan": {
+        "id": "price_WFX000000000000000000004",
+        "object": "plan",
+        "active": true,
+        "amount": 799,
+        "amount_decimal": "799",
+        "billing_scheme": "per_unit",
+        "created": 1795284709,
+        "currency": "usd",
+        "interval": "month",
+        "interval_count": 1,
+        "livemode": false,
+        "metadata": {
+          "webflix_plan": "basic"
+        },
+        "meter": null,
+        "nickname": null,
+        "product": "webflix_basic",
+        "tiers_mode": null,
+        "transform_usage": null,
+        "trial_period_days": null,
+        "usage_type": "licensed"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1795286426,
+      "status": "trialing",
+      "test_clock": null,
+      "transfer_data": null,
+      "trial_end": 1795891226,
+      "trial_settings": {
+        "end_behavior": {
+          "billing_cycle_anchor": "now",
+          "missing_payment_method": "cancel"
+        }
+      },
+      "trial_start": 1795286426
+    }
+  },
+  {
+    "step": "member A: trial, cancel, trial again",
+    "label": "browser confirms pending_setup_intent with pm_card_visa (a second)",
+    "at": "2026-11-21T18:40:27.964Z",
+    "status": 200,
+    "body": {
+      "id": "seti_WFX000000000000000000009",
+      "object": "setup_intent",
+      "allowed_payment_method_types": null,
+      "automatic_payment_methods": null,
+      "cancellation_reason": null,
+      "client_secret": "seti_WFX000000000000000000009_secret_[redacted]",
+      "created": 1795286426,
+      "description": null,
+      "excluded_payment_method_types": null,
+      "last_setup_error": null,
+      "livemode": false,
+      "next_action": null,
+      "payment_method": "pm_WFX00000000000000000000G",
+      "payment_method_configuration_details": null,
+      "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+      "status": "succeeded",
+      "usage": "off_session"
+    }
+  },
+  {
+    "step": "member B: same card number, another customer",
+    "label": "customer created (b)",
+    "at": "2026-11-21T18:40:28.824Z",
+    "status": null,
+    "body": {
+      "id": "cus_WFX0000000000F",
+      "object": "customer",
+      "address": null,
+      "balance": 0,
+      "created": 1795286428,
+      "currency": null,
+      "customer_account": null,
+      "default_source": null,
+      "delinquent": false,
+      "description": "webflix proof rmwqr4nao trial-once b",
+      "discount": null,
+      "email": "member-15@example.test",
+      "invoice_prefix": "SSMIXBHU",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "member": "b",
+        "scenario": "trial-once",
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "name": null,
+      "next_invoice_sequence": 1,
+      "phone": null,
+      "preferred_locales": [],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  },
+  {
+    "step": "member B: same card number, another customer",
+    "label": "trial subscription created (b)",
+    "at": "2026-11-21T18:40:29.966Z",
+    "status": null,
+    "body": {
+      "id": "sub_WFX00000000000000000000E",
+      "object": "subscription",
+      "application": null,
+      "application_fee_percent": null,
+      "automatic_tax": {
+        "disabled_reason": null,
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1795891229,
+      "billing_cycle_anchor_config": null,
+      "billing_mode": {
+        "flexible": {
+          "proration_discounts": "included"
+        },
+        "type": "flexible",
+        "updated_at": 1795286429
+      },
+      "billing_schedules": [],
+      "billing_thresholds": null,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "feedback_option": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1795286429,
+      "currency": "usd",
+      "customer": "cus_WFX0000000000F",
+      "customer_account": null,
+      "days_until_due": null,
+      "default_payment_method": null,
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discounts": [],
+      "ended_at": null,
+      "invoice_settings": {
+        "account_tax_ids": null,
+        "custom_fields": null,
+        "description": null,
+        "footer": null,
+        "issuer": {
+          "type": "self"
+        }
+      },
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_WFX0000000000E",
+            "object": "subscription_item",
+            "billing_thresholds": null,
+            "created": 1795286429,
+            "current_period_end": 1795891229,
+            "current_period_start": 1795286429,
+            "current_trial": null,
+            "discounts": [],
+            "metadata": {},
+            "plan": {
+              "id": "price_WFX000000000000000000004",
+              "object": "plan",
+              "active": true,
+              "amount": 799,
+              "amount_decimal": "799",
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "interval": "month",
+              "interval_count": 1,
+              "livemode": false,
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "meter": null,
+              "nickname": null,
+              "product": "webflix_basic",
+              "tiers_mode": null,
+              "transform_usage": null,
+              "trial_period_days": null,
+              "usage_type": "licensed"
+            },
+            "price": {
+              "id": "price_WFX000000000000000000004",
+              "object": "price",
+              "active": true,
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "custom_unit_amount": null,
+              "livemode": false,
+              "lookup_key": "webflix.basic.monthly.usd",
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "nickname": null,
+              "product": "webflix_basic",
+              "recurring": {
+                "interval": "month",
+                "interval_count": 1,
+                "meter": null,
+                "trial_period_days": null,
+                "usage_type": "licensed"
+              },
+              "tax_behavior": "unspecified",
+              "tiers_mode": null,
+              "transform_quantity": null,
+              "type": "recurring",
+              "unit_amount": 799,
+              "unit_amount_decimal": "799"
+            },
+            "quantity": 1,
+            "subscription": "sub_WFX00000000000000000000E",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_WFX00000000000000000000E"
+      },
+      "latest_invoice": {
+        "id": "in_WFX00000000000000000000L",
+        "object": "invoice",
+        "account_country": "US",
+        "account_name": null,
+        "account_tax_ids": null,
+        "amount_due": 0,
+        "amount_overpaid": 0,
+        "amount_paid": 0,
+        "amount_remaining": 0,
+        "amount_shipping": 0,
+        "application": null,
+        "attempt_count": 0,
+        "attempted": true,
+        "auto_advance": false,
+        "automatic_tax": {
+          "disabled_reason": null,
+          "enabled": false,
+          "liability": null,
+          "provider": null,
+          "status": null
+        },
+        "automatically_finalizes_at": null,
+        "billing_reason": "subscription_create",
+        "collection_method": "charge_automatically",
+        "confirmation_secret": null,
+        "created": 1795286429,
+        "currency": "usd",
+        "custom_fields": null,
+        "customer": "cus_WFX0000000000F",
+        "customer_account": null,
+        "customer_address": null,
+        "customer_email": "member-15@example.test",
+        "customer_name": null,
+        "customer_phone": null,
+        "customer_shipping": null,
+        "customer_tax_exempt": "none",
+        "customer_tax_ids": [],
+        "default_payment_method": null,
+        "default_source": null,
+        "default_tax_rates": [],
+        "description": null,
+        "discounts": [],
+        "due_date": null,
+        "effective_at": 1795286429,
+        "ending_balance": 0,
+        "footer": null,
+        "from_invoice": null,
+        "hosted_invoice_url": "https://invoice.stripe.com/[redacted]",
+        "invoice_pdf": "https://pay.stripe.com/[redacted]",
+        "issuer": {
+          "type": "self"
+        },
+        "last_finalization_error": null,
+        "latest_revision": null,
+        "lines": {
+          "object": "list",
+          "data": [
+            {
+              "id": "il_WFX00000000000000000000N",
+              "object": "line_item",
+              "amount": 0,
+              "currency": "usd",
+              "description": "Free trial for 1 × Webflix Basic",
+              "discount_amounts": [],
+              "discountable": true,
+              "discounts": [],
+              "invoice": "in_WFX00000000000000000000L",
+              "livemode": false,
+              "metadata": {
+                "webflix_proof_run": "rmwqr4nao"
+              },
+              "parent": {
+                "invoice_item_details": null,
+                "subscription_item_details": {
+                  "invoice_item": null,
+                  "proration": false,
+                  "proration_details": {
+                    "credited_items": null
+                  },
+                  "subscription": "sub_WFX00000000000000000000E",
+                  "subscription_item": "si_WFX0000000000E"
+                },
+                "type": "subscription_item_details"
+              },
+              "period": {
+                "end": 1795891229,
+                "start": 1795286429
+              },
+              "pretax_credit_amounts": [],
+              "pricing": {
+                "price_details": {
+                  "price": "price_WFX000000000000000000004",
+                  "product": "webflix_basic"
+                },
+                "type": "price_details",
+                "unit_amount_decimal": "0"
+              },
+              "quantity": 1,
+              "quantity_decimal": "1",
+              "subtotal": 0,
+              "taxes": []
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/invoices/in_WFX00000000000000000000L/lines"
+        },
+        "livemode": false,
+        "metadata": {},
+        "next_payment_attempt": null,
+        "number": "SSMIXBHU-0001",
+        "on_behalf_of": null,
+        "parent": {
+          "quote_details": null,
+          "subscription_details": {
+            "metadata": {
+              "webflix_proof_run": "rmwqr4nao"
+            },
+            "subscription": "sub_WFX00000000000000000000E"
+          },
+          "type": "subscription_details"
+        },
+        "payment_settings": {
+          "default_mandate": null,
+          "payment_method_options": null,
+          "payment_method_types": null
+        },
+        "period_end": 1795286429,
+        "period_start": 1795286429,
+        "post_payment_credit_notes_amount": 0,
+        "pre_payment_credit_notes_amount": 0,
+        "receipt_number": null,
+        "rendering": null,
+        "shipping_cost": null,
+        "shipping_details": null,
+        "starting_balance": 0,
+        "statement_descriptor": null,
+        "status": "paid",
+        "status_transitions": {
+          "finalized_at": 1795286429,
+          "marked_uncollectible_at": null,
+          "paid_at": 1795286429,
+          "voided_at": null
+        },
+        "subtotal": 0,
+        "subtotal_excluding_tax": 0,
+        "test_clock": null,
+        "total": 0,
+        "total_discount_amounts": [],
+        "total_excluding_tax": 0,
+        "total_pretax_credit_amounts": [],
+        "total_taxes": [],
+        "webhooks_delivered_at": null
+      },
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "next_pending_invoice_item_invoice": null,
+      "on_behalf_of": null,
+      "pause_collection": null,
+      "payment_settings": {
+        "payment_method_options": null,
+        "payment_method_types": null,
+        "save_default_payment_method": "on_subscription"
+      },
+      "pending_invoice_item_interval": null,
+      "pending_setup_intent": {
+        "id": "seti_WFX00000000000000000000A",
+        "object": "setup_intent",
+        "allowed_payment_method_types": null,
+        "application": null,
+        "automatic_payment_methods": null,
+        "cancellation_reason": null,
+        "client_secret": "seti_WFX00000000000000000000A_secret_[redacted]",
+        "created": 1795286429,
+        "customer": "cus_WFX0000000000F",
+        "customer_account": null,
+        "description": null,
+        "excluded_payment_method_types": null,
+        "flow_directions": null,
+        "last_setup_error": null,
+        "latest_attempt": null,
+        "livemode": false,
+        "managed_payments": {
+          "enabled": false
+        },
+        "mandate": null,
+        "metadata": {},
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": null,
+        "payment_method_configuration_details": null,
+        "payment_method_options": {
+          "card": {
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+        "single_use_mandate": null,
+        "status": "requires_payment_method",
+        "usage": "off_session"
+      },
+      "pending_update": null,
+      "plan": {
+        "id": "price_WFX000000000000000000004",
+        "object": "plan",
+        "active": true,
+        "amount": 799,
+        "amount_decimal": "799",
+        "billing_scheme": "per_unit",
+        "created": 1795284709,
+        "currency": "usd",
+        "interval": "month",
+        "interval_count": 1,
+        "livemode": false,
+        "metadata": {
+          "webflix_plan": "basic"
+        },
+        "meter": null,
+        "nickname": null,
+        "product": "webflix_basic",
+        "tiers_mode": null,
+        "transform_usage": null,
+        "trial_period_days": null,
+        "usage_type": "licensed"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1795286429,
+      "status": "trialing",
+      "test_clock": null,
+      "transfer_data": null,
+      "trial_end": 1795891229,
+      "trial_settings": {
+        "end_behavior": {
+          "billing_cycle_anchor": "now",
+          "missing_payment_method": "cancel"
+        }
+      },
+      "trial_start": 1795286429
+    }
+  },
+  {
+    "step": "member B: same card number, another customer",
+    "label": "browser confirms pending_setup_intent with pm_card_visa (b)",
+    "at": "2026-11-21T18:40:31.158Z",
+    "status": 200,
+    "body": {
+      "id": "seti_WFX00000000000000000000A",
+      "object": "setup_intent",
+      "allowed_payment_method_types": null,
+      "automatic_payment_methods": null,
+      "cancellation_reason": null,
+      "client_secret": "seti_WFX00000000000000000000A_secret_[redacted]",
+      "created": 1795286429,
+      "description": null,
+      "excluded_payment_method_types": null,
+      "last_setup_error": null,
+      "livemode": false,
+      "next_action": null,
+      "payment_method": "pm_WFX00000000000000000000H",
+      "payment_method_configuration_details": null,
+      "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+      "status": "succeeded",
+      "usage": "off_session"
+    }
+  },
+  {
+    "step": "member C: a different card",
+    "label": "customer created (c)",
+    "at": "2026-11-21T18:40:32.073Z",
+    "status": null,
+    "body": {
+      "id": "cus_WFX0000000000G",
+      "object": "customer",
+      "address": null,
+      "balance": 0,
+      "created": 1795286432,
+      "currency": null,
+      "customer_account": null,
+      "default_source": null,
+      "delinquent": false,
+      "description": "webflix proof rmwqr4nao trial-once c",
+      "discount": null,
+      "email": "member-16@example.test",
+      "invoice_prefix": "ZUOBNWPD",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "member": "c",
+        "scenario": "trial-once",
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "name": null,
+      "next_invoice_sequence": 1,
+      "phone": null,
+      "preferred_locales": [],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  },
+  {
+    "step": "member C: a different card",
+    "label": "trial subscription created (c)",
+    "at": "2026-11-21T18:40:33.200Z",
+    "status": null,
+    "body": {
+      "id": "sub_WFX00000000000000000000F",
+      "object": "subscription",
+      "application": null,
+      "application_fee_percent": null,
+      "automatic_tax": {
+        "disabled_reason": null,
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1795891232,
+      "billing_cycle_anchor_config": null,
+      "billing_mode": {
+        "flexible": {
+          "proration_discounts": "included"
+        },
+        "type": "flexible",
+        "updated_at": 1795286432
+      },
+      "billing_schedules": [],
+      "billing_thresholds": null,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "feedback_option": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1795286432,
+      "currency": "usd",
+      "customer": "cus_WFX0000000000G",
+      "customer_account": null,
+      "days_until_due": null,
+      "default_payment_method": null,
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discounts": [],
+      "ended_at": null,
+      "invoice_settings": {
+        "account_tax_ids": null,
+        "custom_fields": null,
+        "description": null,
+        "footer": null,
+        "issuer": {
+          "type": "self"
+        }
+      },
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_WFX0000000000F",
+            "object": "subscription_item",
+            "billing_thresholds": null,
+            "created": 1795286432,
+            "current_period_end": 1795891232,
+            "current_period_start": 1795286432,
+            "current_trial": null,
+            "discounts": [],
+            "metadata": {},
+            "plan": {
+              "id": "price_WFX000000000000000000004",
+              "object": "plan",
+              "active": true,
+              "amount": 799,
+              "amount_decimal": "799",
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "interval": "month",
+              "interval_count": 1,
+              "livemode": false,
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "meter": null,
+              "nickname": null,
+              "product": "webflix_basic",
+              "tiers_mode": null,
+              "transform_usage": null,
+              "trial_period_days": null,
+              "usage_type": "licensed"
+            },
+            "price": {
+              "id": "price_WFX000000000000000000004",
+              "object": "price",
+              "active": true,
+              "billing_scheme": "per_unit",
+              "created": 1795284709,
+              "currency": "usd",
+              "custom_unit_amount": null,
+              "livemode": false,
+              "lookup_key": "webflix.basic.monthly.usd",
+              "metadata": {
+                "webflix_plan": "basic"
+              },
+              "nickname": null,
+              "product": "webflix_basic",
+              "recurring": {
+                "interval": "month",
+                "interval_count": 1,
+                "meter": null,
+                "trial_period_days": null,
+                "usage_type": "licensed"
+              },
+              "tax_behavior": "unspecified",
+              "tiers_mode": null,
+              "transform_quantity": null,
+              "type": "recurring",
+              "unit_amount": 799,
+              "unit_amount_decimal": "799"
+            },
+            "quantity": 1,
+            "subscription": "sub_WFX00000000000000000000F",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_WFX00000000000000000000F"
+      },
+      "latest_invoice": {
+        "id": "in_WFX00000000000000000000M",
+        "object": "invoice",
+        "account_country": "US",
+        "account_name": null,
+        "account_tax_ids": null,
+        "amount_due": 0,
+        "amount_overpaid": 0,
+        "amount_paid": 0,
+        "amount_remaining": 0,
+        "amount_shipping": 0,
+        "application": null,
+        "attempt_count": 0,
+        "attempted": true,
+        "auto_advance": false,
+        "automatic_tax": {
+          "disabled_reason": null,
+          "enabled": false,
+          "liability": null,
+          "provider": null,
+          "status": null
+        },
+        "automatically_finalizes_at": null,
+        "billing_reason": "subscription_create",
+        "collection_method": "charge_automatically",
+        "confirmation_secret": null,
+        "created": 1795286432,
+        "currency": "usd",
+        "custom_fields": null,
+        "customer": "cus_WFX0000000000G",
+        "customer_account": null,
+        "customer_address": null,
+        "customer_email": "member-16@example.test",
+        "customer_name": null,
+        "customer_phone": null,
+        "customer_shipping": null,
+        "customer_tax_exempt": "none",
+        "customer_tax_ids": [],
+        "default_payment_method": null,
+        "default_source": null,
+        "default_tax_rates": [],
+        "description": null,
+        "discounts": [],
+        "due_date": null,
+        "effective_at": 1795286432,
+        "ending_balance": 0,
+        "footer": null,
+        "from_invoice": null,
+        "hosted_invoice_url": "https://invoice.stripe.com/[redacted]",
+        "invoice_pdf": "https://pay.stripe.com/[redacted]",
+        "issuer": {
+          "type": "self"
+        },
+        "last_finalization_error": null,
+        "latest_revision": null,
+        "lines": {
+          "object": "list",
+          "data": [
+            {
+              "id": "il_WFX00000000000000000000O",
+              "object": "line_item",
+              "amount": 0,
+              "currency": "usd",
+              "description": "Free trial for 1 × Webflix Basic",
+              "discount_amounts": [],
+              "discountable": true,
+              "discounts": [],
+              "invoice": "in_WFX00000000000000000000M",
+              "livemode": false,
+              "metadata": {
+                "webflix_proof_run": "rmwqr4nao"
+              },
+              "parent": {
+                "invoice_item_details": null,
+                "subscription_item_details": {
+                  "invoice_item": null,
+                  "proration": false,
+                  "proration_details": {
+                    "credited_items": null
+                  },
+                  "subscription": "sub_WFX00000000000000000000F",
+                  "subscription_item": "si_WFX0000000000F"
+                },
+                "type": "subscription_item_details"
+              },
+              "period": {
+                "end": 1795891232,
+                "start": 1795286432
+              },
+              "pretax_credit_amounts": [],
+              "pricing": {
+                "price_details": {
+                  "price": "price_WFX000000000000000000004",
+                  "product": "webflix_basic"
+                },
+                "type": "price_details",
+                "unit_amount_decimal": "0"
+              },
+              "quantity": 1,
+              "quantity_decimal": "1",
+              "subtotal": 0,
+              "taxes": []
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/invoices/in_WFX00000000000000000000M/lines"
+        },
+        "livemode": false,
+        "metadata": {},
+        "next_payment_attempt": null,
+        "number": "ZUOBNWPD-0001",
+        "on_behalf_of": null,
+        "parent": {
+          "quote_details": null,
+          "subscription_details": {
+            "metadata": {
+              "webflix_proof_run": "rmwqr4nao"
+            },
+            "subscription": "sub_WFX00000000000000000000F"
+          },
+          "type": "subscription_details"
+        },
+        "payment_settings": {
+          "default_mandate": null,
+          "payment_method_options": null,
+          "payment_method_types": null
+        },
+        "period_end": 1795286432,
+        "period_start": 1795286432,
+        "post_payment_credit_notes_amount": 0,
+        "pre_payment_credit_notes_amount": 0,
+        "receipt_number": null,
+        "rendering": null,
+        "shipping_cost": null,
+        "shipping_details": null,
+        "starting_balance": 0,
+        "statement_descriptor": null,
+        "status": "paid",
+        "status_transitions": {
+          "finalized_at": 1795286432,
+          "marked_uncollectible_at": null,
+          "paid_at": 1795286432,
+          "voided_at": null
+        },
+        "subtotal": 0,
+        "subtotal_excluding_tax": 0,
+        "test_clock": null,
+        "total": 0,
+        "total_discount_amounts": [],
+        "total_excluding_tax": 0,
+        "total_pretax_credit_amounts": [],
+        "total_taxes": [],
+        "webhooks_delivered_at": null
+      },
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {
+        "webflix_proof_run": "rmwqr4nao"
+      },
+      "next_pending_invoice_item_invoice": null,
+      "on_behalf_of": null,
+      "pause_collection": null,
+      "payment_settings": {
+        "payment_method_options": null,
+        "payment_method_types": null,
+        "save_default_payment_method": "on_subscription"
+      },
+      "pending_invoice_item_interval": null,
+      "pending_setup_intent": {
+        "id": "seti_WFX00000000000000000000B",
+        "object": "setup_intent",
+        "allowed_payment_method_types": null,
+        "application": null,
+        "automatic_payment_methods": null,
+        "cancellation_reason": null,
+        "client_secret": "seti_WFX00000000000000000000B_secret_[redacted]",
+        "created": 1795286432,
+        "customer": "cus_WFX0000000000G",
+        "customer_account": null,
+        "description": null,
+        "excluded_payment_method_types": null,
+        "flow_directions": null,
+        "last_setup_error": null,
+        "latest_attempt": null,
+        "livemode": false,
+        "managed_payments": {
+          "enabled": false
+        },
+        "mandate": null,
+        "metadata": {},
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": null,
+        "payment_method_configuration_details": null,
+        "payment_method_options": {
+          "card": {
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+        "single_use_mandate": null,
+        "status": "requires_payment_method",
+        "usage": "off_session"
+      },
+      "pending_update": null,
+      "plan": {
+        "id": "price_WFX000000000000000000004",
+        "object": "plan",
+        "active": true,
+        "amount": 799,
+        "amount_decimal": "799",
+        "billing_scheme": "per_unit",
+        "created": 1795284709,
+        "currency": "usd",
+        "interval": "month",
+        "interval_count": 1,
+        "livemode": false,
+        "metadata": {
+          "webflix_plan": "basic"
+        },
+        "meter": null,
+        "nickname": null,
+        "product": "webflix_basic",
+        "tiers_mode": null,
+        "transform_usage": null,
+        "trial_period_days": null,
+        "usage_type": "licensed"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1795286432,
+      "status": "trialing",
+      "test_clock": null,
+      "transfer_data": null,
+      "trial_end": 1795891232,
+      "trial_settings": {
+        "end_behavior": {
+          "billing_cycle_anchor": "now",
+          "missing_payment_method": "cancel"
+        }
+      },
+      "trial_start": 1795286432
+    }
+  },
+  {
+    "step": "member C: a different card",
+    "label": "browser confirms pending_setup_intent with pm_card_mastercard (c)",
+    "at": "2026-11-21T18:40:34.040Z",
+    "status": 200,
+    "body": {
+      "id": "seti_WFX00000000000000000000B",
+      "object": "setup_intent",
+      "allowed_payment_method_types": null,
+      "automatic_payment_methods": null,
+      "cancellation_reason": null,
+      "client_secret": "seti_WFX00000000000000000000B_secret_[redacted]",
+      "created": 1795286432,
+      "description": null,
+      "excluded_payment_method_types": null,
+      "last_setup_error": null,
+      "livemode": false,
+      "next_action": null,
+      "payment_method": "pm_WFX00000000000000000000I",
+      "payment_method_configuration_details": null,
+      "payment_method_types": ["amazon_pay", "card", "cashapp", "klarna", "link"],
+      "status": "succeeded",
+      "usage": "off_session"
+    }
+  }
+]

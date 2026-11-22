@@ -11,12 +11,12 @@ test("home: billboard with its actions, then the first batch of rows", async ({ 
   await expect(billboard.getByRole("button", { name: "More info" })).toBeVisible();
   await expect(billboard.getByText(/^Maturity rating/)).toBeAttached();
   await expect(row(page, /^Continue Watching for Alex$/)).toBeVisible();
-  // Continue Watching cards carry progress and the episode to resume in their names.
+  // Continue Watching cards carry the time left and the episode to resume in their names.
   await expect(
     row(page, /^Continue Watching/)
       .getByRole("link")
       .first(),
-  ).toHaveAccessibleName(/watched/);
+  ).toHaveAccessibleName(/(\d+ (hours?|minutes?|seconds?) )+left|Finished/);
 });
 
 test("home: more batches of rows load as you scroll towards the end", async ({ page }) => {
@@ -120,6 +120,70 @@ test("paging glides the whole way to the next page instead of jumping", async ({
   const progress = (halfway - from) / (to - from);
   expect(progress).toBeGreaterThan(0.05);
   expect(progress).toBeLessThan(0.98);
+});
+
+test("paging never reveals a placeholder: the next page's pictures load before the glide", async ({
+  page,
+}) => {
+  await page.goto("/browse");
+  const trending = row(page, "Trending Now");
+  await trending.scrollIntoViewIfNeeded();
+  // Seen, then idle: every card the row has rendered either side of its page loads its picture.
+  await expect
+    .poll(() =>
+      trending.evaluate((section) =>
+        [...section.querySelectorAll<HTMLImageElement>("li.wf-slider__item img")].every(
+          (image) => image.complete && image.naturalWidth > 0,
+        ),
+      ),
+    )
+    .toBe(true);
+  const next = trending.getByRole("button", { name: "More titles" });
+  await next.hover();
+  // Every frame of the glide: no card inside the row's viewport shows a placeholder.
+  const glide = trending.evaluate(
+    (section) =>
+      new Promise<string[]>((resolve) => {
+        const viewport = section.querySelector<HTMLElement>(".wf-slider__viewport");
+        if (!viewport) throw new Error("no viewport");
+        const seen: string[] = [];
+        let started = false;
+        const tick = () => {
+          const moving = section.dataset.state === "moving";
+          if (moving) started = true;
+          const box = viewport.getBoundingClientRect();
+          for (const image of section.querySelectorAll<HTMLElement>(".wf-image")) {
+            const r = image.getBoundingClientRect();
+            const inside = r.right > box.left + 1 && r.left < box.right - 1;
+            if (inside && !image.hasAttribute("data-loaded")) {
+              seen.push(image.closest("a")?.textContent?.trim() ?? "?");
+            }
+          }
+          if (started && !moving) resolve([...new Set(seen)]);
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+  );
+  await next.click();
+  expect(await glide, "cards that showed a placeholder during the glide").toEqual([]);
+});
+
+test.describe("Kids", () => {
+  test.use({ demo: "Kids" });
+
+  test("the Kids home greets its viewer and marks the Kids experience", async ({ page }) => {
+    await page.goto("/browse");
+    await expect(page.getByTestId("kids-greeting")).toContainText(/^Hi, .+!/);
+    await expect(page.getByRole("link", { name: "Webflix Kids home" })).toBeVisible();
+    await expect(page.locator("header [data-kids-rule]")).toBeVisible();
+    // Rounder cards: the card radius maps to a larger token.
+    const radius = await page
+      .locator("li.wf-slider__item a")
+      .first()
+      .evaluate((link) => Number.parseFloat(getComputedStyle(link).borderTopLeftRadius));
+    expect(radius).toBeGreaterThan(8);
+  });
 });
 
 test("Series, Movies and New & Popular are views of their own", async ({ page }) => {

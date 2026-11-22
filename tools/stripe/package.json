@@ -1,0 +1,28 @@
+{
+  "name": "@webflix/stripe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Stripe sandbox tooling: an isolated Stripe CLI profile, sandbox provisioning, a managed webhook listener, the proof run and its scrubbed fixtures.",
+  "type": "module",
+  "bin": {
+    "webflix-stripe": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "stripe-tools": "node src/cli.ts",
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@stripe/cli": "1.55.14",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "dependencies": {
+    "stripe": "23.2.0"
+  }
+}

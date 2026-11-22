@@ -117,6 +117,8 @@ export interface PlayerState {
   feedback: Feedback | null;
   announcement: { text: string; nonce: number } | null;
   advisoryVisible: boolean;
+  /** The diagnostic stats overlay (Shift+D); kept across sources. */
+  statsVisible: boolean;
   /** The host shows a blocking overlay (e.g. the session ended elsewhere). */
   blocked: boolean;
   moments: MomentsState;
@@ -159,6 +161,7 @@ export function createInitialState(
     feedback: null,
     announcement: null,
     advisoryVisible: false,
+    statsVisible: false,
     blocked: false,
     moments: INITIAL_MOMENTS,
     preferences,
@@ -201,6 +204,7 @@ export type PlayerAction =
   | { type: "ui/feedback"; feedback: Feedback | null }
   | { type: "ui/announce"; text: string }
   | { type: "ui/advisory"; visible: boolean }
+  | { type: "ui/stats"; visible: boolean }
   | { type: "ui/blocked"; value: boolean }
   | { type: "moments/tick"; elapsedMs: number }
   | { type: "moments/dismiss-credits" }
@@ -432,6 +436,8 @@ export function playerReducer(state: PlayerState, action: PlayerAction): PlayerS
       return state.advisoryVisible === action.visible
         ? state
         : { ...state, advisoryVisible: action.visible };
+    case "ui/stats":
+      return { ...state, statsVisible: action.visible };
     case "ui/blocked":
       return state.blocked === action.value
         ? state
@@ -485,10 +491,13 @@ export function bufferedEndAt(ranges: readonly BufferedRange[], time: number): n
   return 0;
 }
 
-/** True while the countdown should run: playing (or at the end) and nothing interrupts. */
+/**
+ * True while the countdown should run: playing (or at the end) and nothing interrupts. A menu
+ * or the episodes panel hides the card (`selectOffers`), so it pauses the count too.
+ */
 export function countdownRunning(state: PlayerState): boolean {
   if (state.moments.countdownMs === null || state.moments.countdownMs === 0) return false;
-  if (state.blocked || state.panel !== null || state.scrubbing) return false;
+  if (state.blocked || state.menu !== null || state.panel !== null || state.scrubbing) return false;
   return state.phase === "playing" || state.phase === "ended";
 }
 
@@ -497,4 +506,29 @@ export function selectMomentsView(state: PlayerState): MomentsView | null {
   if (state.phase === "error") return null;
   const ctx = momentsContext(state);
   return ctx ? viewMoments(state.moments, ctx) : null;
+}
+
+/** The paused overlay ("You're watching"): paused and idle, with nothing else up. */
+export function pausedOverlayVisible(state: PlayerState): boolean {
+  return (
+    state.pausedIdle &&
+    state.phase === "paused" &&
+    !state.blocked &&
+    !state.autoplayBlocked &&
+    state.menu === null &&
+    state.panel === null &&
+    (selectMomentsView(state)?.endScreen ?? null) === null
+  );
+}
+
+/**
+ * The offers in the bottom-right corner after overlay precedence (README "Overlay
+ * precedence"): the paused overlay hides both, an open menu or panel hides both, and the
+ * next-episode card wins over a skip offer. A hidden offer comes back if it still applies.
+ */
+export function selectOffers(state: PlayerState): Pick<MomentsView, "skip" | "nextUp"> {
+  const view = selectMomentsView(state);
+  if (!view || state.blocked || pausedOverlayVisible(state)) return { skip: null, nextUp: null };
+  if (state.menu !== null || state.panel !== null) return { skip: null, nextUp: null };
+  return { skip: view.nextUp ? null : view.skip, nextUp: view.nextUp };
 }

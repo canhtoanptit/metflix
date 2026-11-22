@@ -20,6 +20,7 @@ const ZOD_FREE = [
   "media-helpers.ts",
   "route-index.gen.ts",
   "route.ts",
+  "time-left.ts",
 ];
 
 const IMPORT = /^\s*import\s+(type\s+)?([\s\S]*?)\s+from\s+["']([^"']+)["']/gm;

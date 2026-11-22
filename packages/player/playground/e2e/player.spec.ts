@@ -172,8 +172,9 @@ test.describe("player (desktop)", () => {
 
     await page.getByRole("button", { name: "Quality" }).click();
     const quality = page.getByRole("menu", { name: "Quality" });
-    await expect(quality.getByRole("menuitemradio")).toHaveCount(5);
-    await quality.getByRole("menuitemradio", { name: /^1080p/ }).click();
+    // Classes, not renditions: 480p and 360p are both "SD".
+    await expect(quality.getByRole("menuitemradio")).toHaveText([/^Auto/, "Full HD", "HD", "SD"]);
+    await quality.getByRole("menuitemradio", { name: "Full HD", exact: true }).click();
     await expect
       .poll(
         async () => {
@@ -221,8 +222,7 @@ test.describe("player (desktop)", () => {
     await showControls(page);
     await page.getByRole("button", { name: "Quality" }).click();
     const quality = page.getByRole("menu", { name: "Quality" });
-    await expect(quality.getByRole("menuitemradio")).toHaveCount(4);
-    await expect(quality.getByRole("menuitemradio", { name: /^1080p/ })).toHaveCount(0);
+    await expect(quality.getByRole("menuitemradio")).toHaveText([/^Auto/, "HD", "SD"]);
     await shot(page, info, "27-quality-capped-720p");
     expect(fetched.some((path) => path.includes("/1080p/"))).toBe(false);
     expect(fetched.some((path) => path.includes("/720p/"))).toBe(true);

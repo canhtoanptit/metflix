@@ -27,11 +27,16 @@ export function useWatchLifecycle(
     const onOnline = () => lifecycle.online();
     const onPageHide = () => lifecycle.pageHide();
     const onPageShow = (event: PageTransitionEvent) => lifecycle.pageShow(event.persisted);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") lifecycle.visible();
+    };
     window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("pageshow", onPageShow);
     return () => {
       window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
       handles.leaveTimer = window.setTimeout(() => {

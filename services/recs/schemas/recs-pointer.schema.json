@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/recs-pointer/1",
+  "title": "recs/current.json: the published artefact version",
+  "description": "Written last, by one atomic object write, after the version it names was completely written and validated. Readers start here and never list `recs/`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "run",
+    "manifest",
+    "manifestSha256",
+    "publishedAt",
+    "previous"
+  ],
+  "properties": {
+    "format": { "const": "webflix.recs-pointer" },
+    "formatVersion": { "const": 1 },
+    "run": { "type": "string", "minLength": 1 },
+    "manifest": {
+      "description": "Key of the version's manifest: recs/v={run}/manifest.json.",
+      "type": "string"
+    },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "publishedAt": { "type": "string" },
+    "previous": {
+      "description": "The run this pointer replaced (for rollback), or null.",
+      "type": ["string", "null"]
+    },
+    "gate": { "type": ["object", "null"] }
+  }
+}

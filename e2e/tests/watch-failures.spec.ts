@@ -21,6 +21,18 @@ test.use({ launchOptions: { args: ["--autoplay-policy=no-user-gesture-required"]
 
 const pause = (page: Page) => page.keyboard.press("k");
 
+/** The API's heartbeat interval (30 s), plus a little for the request and the paint. */
+const HEARTBEAT_WITHIN_MS = 35_000;
+
+/** Tell the page it was hidden or shown, as the browser does when the member switches tabs. */
+async function setVisibility(page: Page, state: "hidden" | "visible"): Promise<void> {
+  await page.evaluate((next) => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => next });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => next === "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, state);
+}
+
 test("too many screens: lists the active streams, then plays once a screen is free", async ({
   newDevice,
 }) => {
@@ -60,6 +72,7 @@ test("too many screens: lists the active streams, then plays once a screen is fr
 test("signed out from another device: playback stops with a way to sign back in", async ({
   newDevice,
 }) => {
+  test.setTimeout(120_000);
   const first = await newDevice();
   const account = await createAccount(first.request, { tag: "revoke" });
   const movie = await findPlayableTitle(first.request, "movie");
@@ -80,22 +93,91 @@ test("signed out from another device: playback stops with a way to sign back in"
   await a.getByRole("alertdialog").getByRole("button", { name: "Sign out device" }).click();
   await expect(a.getByText(/was signed out/).first()).toBeVisible();
 
-  // A pause reports at once (the player sends at most one event report every 2 s).
-  const status = b.getByTestId("watch-status-signed-out");
-  await expect
-    .poll(
-      async () => {
-        await b.waitForTimeout(2_100);
-        if (await status.isVisible()) return true;
-        await pause(b);
-        return status.isVisible();
-      },
-      { timeout: 20_000, intervals: [500] },
-    )
-    .toBe(true);
+  // Nobody touches the other device: it stops at its next heartbeat, within one interval.
+  await expect(b.getByTestId("watch-status-signed-out")).toBeVisible({
+    timeout: HEARTBEAT_WITHIN_MS,
+  });
   await expect(b.getByRole("dialog", { name: "You've been signed out" })).toBeVisible();
   await b.getByRole("button", { name: "Sign in again" }).click();
   await expect(b).toHaveURL(new RegExp(`/login\\?redirect=%2Fwatch%2F${movie.id}`));
+});
+
+test("sign out of all devices stops every other player within one heartbeat: playing, paused, or in a background tab", async ({
+  newDevice,
+}) => {
+  test.setTimeout(150_000);
+  const owner = await newDevice();
+  const account = await createAccount(owner.request, { plan: "premium", tag: "everywhere" });
+  const movie = await findPlayableTitle(owner.request, "movie");
+  const watchers: Record<"playing" | "paused" | "background", Page> = {
+    playing: await watcher(),
+    paused: await watcher(),
+    background: await watcher(),
+  };
+  async function watcher(): Promise<Page> {
+    const device = await newDevice();
+    await secondDevice(device, account);
+    const page = await device.newPage();
+    await page.goto(`/watch/${movie.id}?t=0`);
+    await waitForPlayback(page, 0.5);
+    return page;
+  }
+  await pause(watchers.paused);
+  await expect
+    .poll(() => watchers.paused.evaluate(() => document.querySelector("video")?.paused))
+    .toBe(true);
+  // Headless browsers never hide a page, so the background tab is told it is hidden the way a
+  // browser tells it (the player sends its keepalive "hidden" report). Real timer throttling is
+  // not emulated: when the page shows again it reports at once (covered below).
+  await setVisibility(watchers.background, "hidden");
+
+  const page = await owner.newPage();
+  await page.goto("/account/devices");
+  await page.getByRole("button", { name: "Sign out of all devices" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Sign out of all devices?" });
+  await expect(confirm).toContainText("stops within about half a minute");
+  await confirm.getByRole("button", { name: "Sign out everywhere" }).click();
+  await expect(page).toHaveURL(/\/login/);
+  const signedOutAt = Date.now();
+
+  for (const [state, watching] of Object.entries(watchers)) {
+    await expect(watching.getByTestId("watch-status-signed-out"), state).toBeVisible({
+      timeout: Math.max(1_000, HEARTBEAT_WITHIN_MS - (Date.now() - signedOutAt)),
+    });
+    const video = await watching.evaluate(() => document.querySelector("video")?.paused ?? true);
+    expect(video, `${state}: the picture is stopped`).toBe(true);
+  }
+  test.info().annotations.push({
+    type: "signed out everywhere",
+    description: `every player stopped ${Math.round((Date.now() - signedOutAt) / 1000)} s after the sign-out`,
+  });
+
+  await setVisibility(watchers.background, "visible");
+  await expect(
+    watchers.background.getByRole("dialog", { name: "You've been signed out" }),
+  ).toBeVisible();
+});
+
+test("a background tab that comes back after a sign-out shows it at once", async ({
+  newDevice,
+}) => {
+  const owner = await newDevice();
+  const account = await createAccount(owner.request, { tag: "comeback" });
+  const movie = await findPlayableTitle(owner.request, "movie");
+  const device = await newDevice();
+  await secondDevice(device, account);
+  const b = await device.newPage();
+  await b.goto(`/watch/${movie.id}?t=0`);
+  await waitForPlayback(b, 0.5);
+  await pause(b);
+  await setVisibility(b, "hidden");
+
+  const signOut = await owner.request.post("/api/v1/auth/logout-all", { headers: CLIENT_HEADERS });
+  expect(signOut.status()).toBe(204);
+
+  // Well inside the heartbeat interval: only the return to the page can have reported.
+  await setVisibility(b, "visible");
+  await expect(b.getByTestId("watch-status-signed-out")).toBeVisible({ timeout: 5_000 });
 });
 
 test("a plan downgrade ends the newest stream; it can resume once there is room", async ({

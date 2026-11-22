@@ -39,6 +39,15 @@ export function TopNav() {
           scrolled ? "opacity-0" : "opacity-100",
         )}
       />
+      {profile.isKids ? (
+        // Kids profiles: a hairline in the brand colour under the bar on every page, so a
+        // grown-up glancing at the screen knows at once this is the Kids experience.
+        <div
+          aria-hidden
+          data-kids-rule=""
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-accent"
+        />
+      ) : null}
       <div className="relative flex h-nav items-center gap-3 px-gutter sm:gap-6 lg:gap-10">
         <Link
           to="/browse"

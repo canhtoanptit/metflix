@@ -9,8 +9,14 @@
  *                       the feature fictional movies play;
  *   - `v-<film>-epN`    text-free episode-sized chapters for fictional series; each after the
  *                       first opens with the last `RECAP_SEC` of the one before (a real recap);
- *   - `v-<film>-pvN`    a ~30 s excerpt: the preview of the film itself, or a curated match;
- *   - `v-art-<title>`   a motion-art preview tools/media renders from the title's key art.
+ *   - `v-<film>-pv<start>-<end>-<rev>` a ~30 s excerpt: the preview of the film itself, or a
+ *                       curated match; `<rev>` hashes the source, the window and
+ *                       `FOOTAGE_PREVIEW_RECIPE`;
+ *   - `v-art-<title>-<rev>` a motion-art preview tools/media renders from the title's key art;
+ *                       `<rev>` hashes `MOTION_ART_RECIPE` and the title's art direction.
+ * Preview files are public under their asset id with no version in the URL and are cached as
+ * immutable, so a preview id is derived from everything that defines its content: a different
+ * clip can never be published under an id that was used before.
  * Playback footage is chosen by medium, then genre affinity, with load balancing so a genre
  * row does not keep playing the same film.
  */
@@ -24,8 +30,10 @@ import { avatarGroups, avatars } from "./avatars.ts";
 import type { SeriesDraft, TitleDraft } from "./draft.ts";
 import {
   CURATED_PREVIEWS,
+  FOOTAGE_PREVIEW_RECIPE,
   featureCut,
   MOTION_ART_PREVIEW_SEC,
+  MOTION_ART_RECIPE,
   mediumOfGenres,
   showsSourceText,
 } from "./footage.ts";
@@ -50,8 +58,24 @@ export const episodeId = (titleId: string, season: number, episode: number) =>
 const filmAsset = (film: OpenFilm) => `v-${film.key}`;
 const cutAsset = (film: OpenFilm) => `v-${film.key}-cut`;
 const episodeAsset = (film: OpenFilm, index: number) => `v-${film.key}-ep${index + 1}`;
-const previewAsset = (film: OpenFilm, index: number) => `v-${film.key}-pv${index + 1}`;
-export const motionArtAsset = (titleId: string) => `v-art-${slugOf(titleId)}`;
+
+/** FNV-1a (32 bit) in base 36: a short, stable revision tag. */
+function revisionTag(value: unknown): string {
+  let hash = 0x811c9dc5;
+  for (const char of JSON.stringify(value ?? null)) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36).padStart(7, "0");
+}
+
+/** Footage preview id: changes with the source film, the window and the recipe revision. */
+export const footagePreviewAsset = (film: OpenFilm, window: readonly [number, number]) =>
+  `v-${film.key}-pv${window[0]}-${window[1]}-${revisionTag({ source: film.source.url, window, recipe: FOOTAGE_PREVIEW_RECIPE })}`;
+
+/** Motion-art preview id: changes with the recipe revision and the title's art direction. */
+export const motionArtAsset = (titleId: string, art: ArtDirection | undefined) =>
+  `v-art-${slugOf(titleId)}-${revisionTag({ recipe: MOTION_ART_RECIPE, art: art ?? null })}`;
 
 function downloadSource(
   film: OpenFilm,
@@ -199,7 +223,7 @@ class MediaPlanner {
         : [index];
     for (const i of indices) {
       const span = film.highlights[i];
-      const id = previewAsset(film, i);
+      const id = span ? footagePreviewAsset(film, span) : "";
       if (!span || this.highlightUse.has(id)) continue;
       this.highlightUse.add(id);
       return this.add({
@@ -219,7 +243,7 @@ class MediaPlanner {
    * A fictional title's preview: its curated match when it has one (checked for medium and
    * burned-in text here, so a bad entry fails the build), else motion art from its key art.
    */
-  previewFor(draft: TitleDraft): string {
+  previewFor(draft: TitleDraft, art: ArtDirection | undefined): string {
     const curated = CURATED_PREVIEWS[draft.id];
     if (curated) {
       const film = this.film(curated.film);
@@ -233,7 +257,7 @@ class MediaPlanner {
       return this.excerpt(film, curated.highlight);
     }
     return this.add({
-      id: motionArtAsset(draft.id),
+      id: motionArtAsset(draft.id, art),
       label: `${draft.name}: motion-art preview from its key art`,
       source: { kind: "synthetic", durationSec: MOTION_ART_PREVIEW_SEC },
       externalHlsUrl: null,
@@ -336,7 +360,9 @@ export function assembleCatalog(
   const ordered = [...drafts].sort(
     (a, b) => b.popularity - a.popularity || a.id.localeCompare(b.id),
   );
-  const previews = new Map(ordered.map((draft) => [draft.id, planner.previewFor(draft)]));
+  const previews = new Map(
+    ordered.map((draft) => [draft.id, planner.previewFor(draft, art[draft.id])]),
+  );
 
   // Fictional titles, most popular first so the titles people see most get the best fits.
   for (const draft of ordered) {

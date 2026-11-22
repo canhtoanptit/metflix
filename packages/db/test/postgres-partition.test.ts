@@ -171,8 +171,9 @@ describe.skipIf(!postgresAvailable)("Postgres behind a partition", () => {
     const waitedMs = performance.now() - started;
     expect(AppError.is(outcome, "service_unavailable")).toBe(true);
     expect(waitedMs).toBeLessThan(BUDGET.queryTimeoutMs + 1_000);
-    // The stuck connection was destroyed, not kept for the next request.
-    expect(proxy.clientCloses).toBeGreaterThanOrEqual(1);
+    // The stuck connection was destroyed (closed from the application's side while the network
+    // was still silent), not kept for the next request.
+    await expect.poll(() => proxy.clientCloses, { timeout: 1_000 }).toBe(1);
     proxy.thaw();
     expect(await repos.meta.get("before")).toBe("ok");
   });

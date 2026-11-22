@@ -26,6 +26,25 @@ data:
   # Database (the password comes from a Secret as PGPASSWORD).
   WEBFLIX_DATABASE_URL: {{ include "webflix.databaseUrl" . | quote }}
   WEBFLIX_DATABASE_POOL_MAX: {{ .Values.api.databasePoolMax | quote }}
+  {{- /* Budgets per role (the defaults live in the application, POSTGRES_ROLE_TIMEOUTS). */}}
+  {{- $defaults := dict "request" (list 5000 7000) "background" (list 60000 65000) "maintenance" (list 600000 605000) }}
+  {{- range $role, $budget := .Values.config.databaseTimeouts }}
+  {{- $budget = $budget | default dict }}
+  {{- if hasKey $budget "statementMs" }}
+  WEBFLIX_DATABASE_{{ upper $role }}_STATEMENT_TIMEOUT_MS: {{ $budget.statementMs | int64 | toString | quote }}
+  {{- end }}
+  {{- if hasKey $budget "queryMs" }}
+  WEBFLIX_DATABASE_{{ upper $role }}_QUERY_TIMEOUT_MS: {{ $budget.queryMs | int64 | toString | quote }}
+  {{- end }}
+  {{- $statement := hasKey $budget "statementMs" | ternary $budget.statementMs (index (index $defaults $role) 0) | int64 }}
+  {{- $query := hasKey $budget "queryMs" | ternary $budget.queryMs (index (index $defaults $role) 1) | int64 }}
+  {{- if and (gt $query 0) (or (eq $statement 0) (le $query $statement)) }}
+  {{- fail (printf "webflix: config.databaseTimeouts.%s.queryMs (%d) must exceed statementMs (%d), or be 0: the client-side bound fires only when the server cannot answer." $role $query $statement) }}
+  {{- end }}
+  {{- end }}
+  {{- if not (kindIs "invalid" .Values.config.databaseKeepAliveMs) }}
+  WEBFLIX_DATABASE_KEEPALIVE_MS: {{ .Values.config.databaseKeepAliveMs | int64 | toString | quote }}
+  {{- end }}
   # Shared state: cache, rate limits, stream leases, job queue.
   WEBFLIX_VALKEY_URL: {{ include "webflix.valkeyUrl" . | quote }}
   WEBFLIX_VALKEY_KEY_PREFIX: {{ .Values.config.valkeyKeyPrefix | quote }}

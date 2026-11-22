@@ -162,7 +162,8 @@ export function presentCard(
     ...(rank === null ? {} : { top10Rank: rank }),
     ...(quality === null ? {} : { bestVideoQuality: quality }),
     images: { card: title.images.card, poster: title.images.poster, logo: title.images.logo },
-    preview: title.preview,
+    // Rows seeded before previews said what they are: footage with audio.
+    preview: title.preview ? { kind: "footage", hasAudio: true, ...title.preview } : null,
     viewer: {
       inMyList: personalization.inMyList(title.id),
       rating: personalization.rating(title.id),

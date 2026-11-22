@@ -32,18 +32,29 @@ export interface OpenFilm {
   medium: Medium;
   /**
    * Every stretch with burned-in text that names the source: studio logos, "presents" cards,
-   * the title card, end credits and licence cards (read off a 3 s frame grid of the whole
-   * film). Footage lent to another title never overlaps these.
+   * the title card, end credits and licence cards, as measured: found on a 1 fps grid of the
+   * whole film, then each edge located to 1/8 s (every third frame) on a fine strip, from the
+   * first frame where any of the text is visible (fades included) to the first clean frame.
+   * Footage lent to another title, and any frame used as art, stays `TEXT_MARGIN_SEC` clear.
    */
   textSpans: readonly Span[];
+  /**
+   * On-screen text that belongs to the story (holographic UI, signs): fine in playback, but
+   * never in key art, where the title's logo is laid over the frame.
+   */
+  screenText?: readonly Span[];
   /** Opening titles (Skip Intro on the film itself). */
   intro: Span | null;
-  /** Where the end credits begin. */
+  /**
+   * Where the end credits begin: the whole second at or just before the first credit text, so
+   * text-free cuts and chapters always end before it (they carry no credits marker).
+   */
   creditsStartSec: number;
   /**
-   * Episode-sized chunks for fictional series, inside the text-free story. Each chapter after
-   * the first starts `RECAP_SEC` before the previous one ends, so its opening really is a
-   * recap of the episode before.
+   * Episode-sized chunks for fictional series, inside the text-free story (whole seconds, at
+   * least `TEXT_MARGIN_SEC` from any text span). Each chapter after the first starts
+   * `RECAP_SEC` before the previous one ends, so its opening really is a recap of the episode
+   * before.
    */
   chapters: readonly Span[];
   /**

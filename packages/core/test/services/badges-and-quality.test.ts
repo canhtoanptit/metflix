@@ -1,4 +1,5 @@
 import {
+  BADGES_PER_LIST,
   type BrowsePage,
   type BrowseView,
   type Row,
@@ -57,21 +58,25 @@ describe("badges", () => {
       expect(ranks.size).toBeGreaterThan(0);
       for (const row of page.rows) {
         const cards = cardsOf(row);
+        const badged = cards.filter((card) => card.badge !== null);
         const top10 = cards.filter((card) => card.badge === "top-10");
-        if (row.layout === "continue" || row.layout === "ranked") {
-          expect(top10, `${row.id} carries Top 10 badges`).toEqual([]);
-        } else {
-          expect(top10.length, `${row.id} Top 10 badges`).toBeLessThanOrEqual(
-            TOP_10_BADGES_PER_LIST,
-          );
-          // The badge goes to the first ranked cards of the row, in row order.
-          const ranked = cards.filter(
-            (card) => card.top10Rank !== undefined && card.badge !== "new-episodes",
-          );
-          expect(top10.map((card) => card.id)).toEqual(
-            ranked.slice(0, TOP_10_BADGES_PER_LIST).map((card) => card.id),
-          );
+        // A badge is the exception: a few per list, none on the Top 10 row (the rank is the
+        // badge), only "new episodes" in Continue Watching, no "new" in New Releases.
+        expect(badged.length, `${row.id} badges`).toBeLessThanOrEqual(BADGES_PER_LIST);
+        if (row.layout === "ranked") expect(badged, `${row.id}`).toEqual([]);
+        if (row.layout === "continue") {
+          expect(
+            badged.every((card) => card.badge === "new-episodes"),
+            row.id,
+          ).toBe(true);
         }
+        if (row.kind === "new-releases") {
+          expect(
+            badged.some((card) => card.badge === "new"),
+            row.id,
+          ).toBe(false);
+        }
+        expect(top10.length, `${row.id} Top 10 badges`).toBeLessThanOrEqual(TOP_10_BADGES_PER_LIST);
         for (const card of cards) {
           // Every rank a card states is the rank the view's Top 10 row shows.
           expect(card.top10Rank, `${row.id} ${card.id}`).toBe(ranks.get(card.id));
@@ -80,6 +85,34 @@ describe("badges", () => {
       }
     });
   }
+
+  it("never says recently added about a title the profile has played", async () => {
+    const t = await createTestServices({
+      seed: {
+        catalog: {
+          ...FIXTURE_CATALOG,
+          // Everything arrived this week: only what the profile has played may lose "new".
+          titles: FIXTURE_CATALOG.titles.map((title) => ({ ...title, addedDaysAgo: 2 })),
+        },
+        demoAccount: FIXTURE_DEMO_ACCOUNT,
+        manifest: FIXTURE_MANIFEST,
+      },
+    });
+    const viewer = await demoViewer(t);
+    const played = new Set(
+      (await t.services.library.history(viewer, undefined, 100)).items.map((item) => item.title.id),
+    );
+    expect(played.size).toBeGreaterThan(0);
+    for (const id of played) {
+      expect((await t.services.browse.getTitle(viewer, id)).badge, id).not.toBe("new");
+    }
+    const unplayed = FIXTURE_CATALOG.titles.find(
+      (title) => !played.has(title.id) && title.maturity !== "18+",
+    );
+    if (!unplayed) throw new Error("fixture");
+    const detail = await t.services.browse.getTitle(viewer, unplayed.id);
+    expect(["new", "top-10"]).toContain(detail.badge);
+  });
 
   it("never shows a Top 10 badge in Continue Watching, even for a chart-topper", async () => {
     const t = await createTestServices();

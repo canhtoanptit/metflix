@@ -5,6 +5,7 @@ import {
   GENRE_SORTS,
   ROW_KINDS,
   type RowLayout,
+  SEARCH_QUERY_INPUT_MAX_LENGTH,
   SEARCH_QUERY_MAX_LENGTH,
 } from "./constants.ts";
 import { ImageSet } from "./media.ts";
@@ -151,8 +152,18 @@ export type GenrePage = z.output<typeof GenrePage>;
 
 // --- Search -----------------------------------------------------------------------------------
 
+/**
+ * `q` is trimmed, accepted up to `SEARCH_QUERY_INPUT_MAX_LENGTH` characters and searched in its
+ * first `SEARCH_QUERY_MAX_LENGTH` (cut between code points, so no character is split): a long
+ * query is never an error. `SearchResults.query` says what was searched.
+ */
 export const SearchQuery = PageQuery.extend({
-  q: z.string().trim().min(1).max(SEARCH_QUERY_MAX_LENGTH),
+  q: z
+    .string()
+    .trim()
+    .min(1)
+    .max(SEARCH_QUERY_INPUT_MAX_LENGTH)
+    .transform((q) => Array.from(q).slice(0, SEARCH_QUERY_MAX_LENGTH).join("").trimEnd()),
 });
 export type SearchQuery = z.input<typeof SearchQuery>;
 
@@ -172,6 +183,7 @@ export type SearchSuggestion = z.output<typeof SearchSuggestion>;
  */
 export const SearchResults = z
   .object({
+    /** The query as searched: trimmed, at most `SEARCH_QUERY_MAX_LENGTH` characters. */
     query: z.string(),
     results: z.array(TitleCard),
     suggestions: z.array(SearchSuggestion),
