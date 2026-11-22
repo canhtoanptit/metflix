@@ -3,8 +3,10 @@ import {
   type Clock,
   ConfigError,
   type IdGenerator,
+  type KeyValueCache,
   type Logger,
 } from "@webflix/core";
+import type { Database } from "@webflix/db";
 import type { ApiConfig } from "../config.ts";
 
 /** What an area's composition receives in the Node runtime (dev and k8s). */
@@ -15,6 +17,10 @@ export interface AreaContext {
   logger: Logger;
   /** The mode's blob store (filesystem in dev, S3 on k8s): the event lake lives in it. */
   blobs: BlobStore;
+  /** The mode's database (SQLite in dev, PostgreSQL on k8s), for area adapters on SQL. */
+  database: Database;
+  /** The shared cache (Valkey when configured, else in process). */
+  cache: KeyValueCache;
 }
 
 /** An adapter the configuration names but its area has not built yet: fail at startup. */

@@ -1,4 +1,4 @@
-/** Tables of the billing area (migration 0003_billing). Representations: see schema.ts. */
+/** Tables of the billing area (migrations 0003_billing, 0008_billing_projection). Representations: see schema.ts. */
 
 export interface BillingCustomersTable {
   account_id: string;
@@ -25,6 +25,10 @@ export interface MembershipsTable {
   latest_invoice_id: string | null;
   payment_method_json: string | null;
   trial_redeemed_at: number | null;
+  /** 0008: the invoice whose first failed attempt started grace. */
+  grace_invoice_id: string | null;
+  /** 0008: provider time minus ours (a test clock); 0 in real time. */
+  clock_offset_ms: number | null;
   version: number;
   provider_synced_at: number;
   created_at: number;
@@ -56,6 +60,14 @@ export interface ProviderEventsTable {
   status: string;
   attempts: number;
   last_error: string | null;
+  /** 0008: the verified event's normalised ids and time. */
+  provider_customer_id: string | null;
+  provider_subscription_id: string | null;
+  provider_invoice_id: string | null;
+  provider_setup_id: string | null;
+  event_created_at: number | null;
+  /** 0008: `webhook` or `reconcile`. */
+  source: string | null;
 }
 
 export interface TrialFingerprintsTable {
@@ -138,6 +150,12 @@ export interface CheckoutsTable {
   created_at: number;
   expires_at: number;
   updated_at: number;
+  /** 0008. */
+  promotion_id: string | null;
+  promotion_json: string | null;
+  provider_payment_method_id: string | null;
+  trial_fingerprint: string | null;
+  attempt: number | null;
 }
 
 export interface PaymentMethodSetupsTable {
@@ -148,6 +166,9 @@ export interface PaymentMethodSetupsTable {
   status: string;
   created_at: number;
   updated_at: number;
+  /** 0008. */
+  provider_payment_method_id: string | null;
+  attempt: number | null;
 }
 
 export interface PaymentsFakeObjectsTable {

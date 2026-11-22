@@ -1,6 +1,14 @@
 import { EVENT_BATCH_MAX_BYTES } from "../constants.ts";
 import { EventBatch, EventBatchAck, RecentEvents, RecentEventsQuery } from "../events.ts";
-import { ConsentState, PrivacyRequest, PrivacyRequestList, UpdateConsentBody } from "../privacy.ts";
+import {
+  ConsentState,
+  DataExport,
+  DataExportParams,
+  DataExportQuery,
+  PrivacyRequest,
+  PrivacyRequestList,
+  UpdateConsentBody,
+} from "../privacy.ts";
 import { defineRoute } from "../route.ts";
 
 /**
@@ -17,12 +25,38 @@ export const eventsRoutes = {
     auth: "public",
     summary: "Behaviour events from the telemetry SDK",
     description:
-      "At most 50 events and 64 KiB. Signed out allowed. The server stamps `receivedAt` and the subject (pseudonymous keys, plan, country, restricted, consent) from the session; events without consent, and every client event of a restricted profile, are dropped (`dropped`), never an error. Limited per account, or per client address signed out (`events`).",
+      "At most 50 events and 64 KiB, all from one device. Signed out allowed. The server stamps `receivedAt` and the subject (pseudonymous keys, plan, country, restricted, consent) from the session; events without consent, and every client event of a restricted profile, are dropped (`dropped`), never an error. Every request is limited twice by the `events` policy: per account (signed out: per client address) and per device (`deviceId`).",
     body: EventBatch,
     maxBodyBytes: EVENT_BATCH_MAX_BYTES,
     response: EventBatchAck,
     successStatus: 202,
     rateLimit: "events",
+    rateLimitScope: "handler",
+    examples: {
+      request: {
+        events: [
+          {
+            eventId: "0193a1d2-7c4e-7a10-8f00-000000000001",
+            type: "impression",
+            version: 1,
+            occurredAt: "2026-11-22T10:15:30.120Z",
+            deviceId: "d7f3a91c2b6e4d08",
+            sessionSeq: 17,
+            app: { platform: "web", version: "2026.11.22" },
+            context: {
+              surface: "home",
+              rowId: "home:trending",
+              rowRank: 3,
+              rank: 2,
+              experiments: {},
+              policy: { id: "rules-v1", explore: false },
+            },
+            payload: { titleId: "t-sintel", sampleRate: 0.25 },
+          },
+        ],
+      },
+      response: { accepted: 1, dropped: 0 },
+    },
   }),
   getConsent: defineRoute({
     method: "GET",
@@ -57,6 +91,20 @@ export const eventsRoutes = {
     response: PrivacyRequest,
     successStatus: 202,
     errors: ["privacy_request_pending", "reauthentication_required", "demo_account_protected"],
+  }),
+  downloadDataExport: defineRoute({
+    method: "GET",
+    path: "/privacy/exports/:id",
+    tag: "privacy",
+    area: "events",
+    auth: "account-holder",
+    summary: "Download a completed data export (the signed link from the email)",
+    description:
+      "The link (`PrivacyRequest.downloadUrl`) carries a signed token bound to the request and the account, valid until `expiresAt`; the caller must also be signed in to that account as its holder. `not_found` for an unknown, foreign, unfinished or expired export, or a bad token.",
+    params: DataExportParams,
+    query: DataExportQuery,
+    response: DataExport,
+    errors: ["not_found"],
   }),
   listPrivacyRequests: defineRoute({
     method: "GET",

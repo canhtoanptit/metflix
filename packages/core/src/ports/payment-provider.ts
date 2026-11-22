@@ -25,6 +25,9 @@ import type {
  * - `parseWebhook` verifies the signature over the exact raw bytes (Web Crypto) with a
  *   timestamp tolerance, and returns a normalised `ProviderEvent` that survives structured
  *   cloning (queue payloads never carry provider library objects).
+ * - Time: a provider may run a customer on a test clock (the fake always can; Stripe with a full
+ *   key). `ProviderSubscription.clockNow` is that clock's reading, so Webflix judges grace and
+ *   period ends in the provider's time; null means real time.
  */
 export interface PaymentProvider {
   readonly id: PaymentProviderId;
@@ -33,6 +36,13 @@ export interface PaymentProvider {
     input: { accountId: string; email: string },
     call: ProviderCall,
   ): Promise<{ id: string }>;
+
+  /**
+   * Account deletion (§6.3): ends the customer's subscriptions and removes the customer and its
+   * cards at the provider. Invoices stay retrievable (the law keeps billing records). Deleting a
+   * customer that is already gone succeeds.
+   */
+  deleteCustomer(input: { customerId: string }, call: ProviderCall): Promise<void>;
 
   /** A setup the browser confirms with the provider's form (card first: §5.4 two-step flow). */
   createSetup(input: { customerId: string }, call: ProviderCall): Promise<ProviderSetup>;
@@ -74,6 +84,15 @@ export interface PaymentProvider {
     call: ProviderCall,
   ): Promise<ProviderSubscription>;
   cancelNow(input: { subscriptionId: string }, call: ProviderCall): Promise<ProviderSubscription>;
+  /**
+   * Moves the end of the free period (staff: extend a trial, a complimentary period). On an
+   * active subscription this starts a trial until `trialEnd` (Stripe's `trial_end` on update):
+   * nothing is charged until then.
+   */
+  setTrialEnd(
+    input: { subscriptionId: string; trialEnd: number },
+    call: ProviderCall,
+  ): Promise<ProviderSubscription>;
 
   retrieveInvoice(invoiceId: string): Promise<ProviderInvoice | null>;
   /** Newest first. */
@@ -93,9 +112,29 @@ export interface PaymentProvider {
 
   /** Throws `WebhookSignatureError` unless the signature verifies over `rawBody`. */
   parseWebhook(rawBody: Uint8Array, signatureHeader: string | null): Promise<ProviderEvent>;
-  /** Events created after `createdAfter`, oldest first (reconciliation after an outage). */
+  /**
+   * Events the provider logged after `createdAfter` (real time, epoch ms), oldest first, at most
+   * `limit` (reconciliation after an outage: the CLI listener replays nothing, docs/STRIPE.md §11).
+   */
   listEvents(input: { createdAfter: number; limit: number }): Promise<ProviderEvent[]>;
+
+  /**
+   * Providers that deliver webhooks in process (the fake) hand each signed delivery to this
+   * receiver, which verifies it like any other (`parseWebhook`); real providers POST to the
+   * webhook route instead and do not implement it. Called once, at composition.
+   */
+  attachWebhookReceiver?(receiver: WebhookReceiver): void;
+
+  /**
+   * Providers with a test clock the non-production control surface may move (the fake: one
+   * clock per customer). Advances the customer's clock by `seconds`, settles what falls due on
+   * the way (renewals, retries, expiry), and returns the clock's new reading.
+   */
+  advanceTestClock?(customerId: string, seconds: number): Promise<number>;
 }
+
+/** A signed delivery as the webhook route receives it: the raw bytes and the signature header. */
+export type WebhookReceiver = (delivery: { body: Uint8Array; signature: string }) => Promise<void>;
 
 export interface ProviderCall {
   /** ≤ 255 characters; derived from a Webflix operation id and its attempt number. */
@@ -145,8 +184,12 @@ export interface ProviderSubscription {
   endedAt: number | null;
   latestInvoiceId: string | null;
   defaultPaymentMethodId: string | null;
+  /** The default card as the provider reports it (display only: brand, last four, expiry). */
+  defaultPaymentMethod: ProviderPaymentMethod | null;
   /** While the first payment awaits the browser's confirmation (or a challenge). */
   paymentClientSecret: string | null;
+  /** The customer's test clock reading when this was read; null in real time. */
+  clockNow: number | null;
 }
 
 export type ProviderInvoiceStatus = (typeof INVOICE_STATUSES)[number];
@@ -231,7 +274,13 @@ export interface ProviderEvent {
   id: string;
   /** The provider's type, e.g. `invoice.paid` (processing never infers state from it). */
   type: string;
+  /** When the provider logged it (real time, epoch ms): the cursor of `listEvents`. */
   createdAt: number;
+  /**
+   * When it happened in the provider's time for its customer: a test clock's time for a clock
+   * customer, else `createdAt`. Grace starts at the `occurredAt` of the first failed attempt.
+   */
+  occurredAt: number;
   customerId: string | null;
   subscriptionId: string | null;
   invoiceId: string | null;

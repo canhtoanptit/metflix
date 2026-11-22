@@ -83,5 +83,63 @@ export function describeEventSinkContract(
       const [object] = await h().readBack();
       expect(JSON.stringify(object?.events)).toBe(JSON.stringify(events));
     });
+
+    it("scans stored objects of a receipt-time range, in time order, page by page", async () => {
+      const hours = ["2026-11-20T08", "2026-11-21T23", "2026-11-22T00", "2026-11-22T05"];
+      const stored = hours.map((hour) => at(`${hour}:15:00.000Z`));
+      for (const event of stored) await h().sink.append([event]);
+      const from = Date.parse("2026-11-21T23:30:00.000Z"); // inside the 23:00 hour: included
+      const to = Date.parse("2026-11-22T05:00:00.000Z"); // the 05:00 hour starts here: excluded
+      const seen: unknown[] = [];
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page = await h().sink.scan({ fromMs: from, toMs: to, cursor, limit: 1 });
+        seen.push(...page.objects.flatMap((object) => object.events));
+        cursor = page.cursor;
+        pages += 1;
+      } while (cursor !== null && pages < 50);
+      expect(seen).toEqual([stored[1], stored[2]]);
+      const wide = await h().sink.scan({ fromMs: 0, toMs: Date.parse("2027-01-01T00:00:00Z") });
+      const all = [...wide.objects];
+      let next = wide.cursor;
+      while (next !== null) {
+        const page = await h().sink.scan({
+          fromMs: 0,
+          toMs: Date.parse("2027-01-01"),
+          cursor: next,
+        });
+        all.push(...page.objects);
+        next = page.cursor;
+      }
+      expect(all.flatMap((object) => object.events)).toEqual(stored);
+    });
+
+    it("scans nothing outside the stored hours and refuses a forged cursor", async () => {
+      await h().sink.append([at("2026-11-22T10:05:00.000Z")]);
+      const empty = await h().sink.scan({
+        fromMs: Date.parse("2026-11-23T00:00:00.000Z"),
+        toMs: Date.parse("2026-11-24T00:00:00.000Z"),
+      });
+      expect(empty).toEqual({ objects: [], cursor: null });
+      await expect(
+        h().sink.scan({ fromMs: 0, toMs: Date.now(), cursor: "not-a-cursor!" }),
+      ).rejects.toThrow();
+    });
+
+    it("keeps private documents beside the lake, never under a served prefix", async () => {
+      const bytes = new Uint8Array([1, 2, 3, 250]);
+      const key = await h().sink.putDocument("exports/req-1.json.gz", bytes);
+      expect(key).toBe("privacy/exports/req-1.json.gz");
+      expect(await h().sink.getDocument(key)).toEqual(bytes);
+      await expect(h().sink.putDocument("exports/req-1.json.gz", bytes)).rejects.toThrow();
+      await expect(h().sink.putDocument("../public/x", bytes)).rejects.toThrow();
+      await expect(h().sink.getDocument("public/img/x.webp")).rejects.toThrow();
+      await h().sink.deleteDocument(key);
+      await h().sink.deleteDocument(key);
+      expect(await h().sink.getDocument(key)).toBeNull();
+      // Documents are not lake objects.
+      expect(await h().readBack()).toEqual([]);
+    });
   });
 }

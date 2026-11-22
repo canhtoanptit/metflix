@@ -215,10 +215,43 @@ export async function jwkThumbprint(jwk: Jwk): Promise<string> {
   return base64UrlEncode(await sha256(JSON.stringify(members)));
 }
 
+/**
+ * Web Crypto's type declarations differ between runtimes: the DOM/WebWorker library narrows
+ * `generateKey` and `exportKey` by their arguments, `@cloudflare/workers-types` returns the
+ * unions (`CryptoKey | CryptoKeyPair`, `ArrayBuffer | JsonWebKey`). These checks narrow at run
+ * time, so the same source typechecks (and behaves) under both.
+ */
+interface KeyPair {
+  privateKey: CryptoKey;
+  publicKey: CryptoKey;
+}
+
+function asKeyPair(generated: unknown): KeyPair {
+  if (
+    typeof generated === "object" &&
+    generated !== null &&
+    "privateKey" in generated &&
+    "publicKey" in generated
+  ) {
+    return generated as KeyPair;
+  }
+  throw new TypeError("Expected an asymmetric key pair");
+}
+
+function asArrayBuffer(exported: unknown): ArrayBuffer {
+  if (exported instanceof ArrayBuffer) return exported;
+  throw new TypeError("Expected the key exported as bytes");
+}
+
+function asJwk(exported: unknown): Jwk {
+  if (isRecord(exported) && typeof exported.kty === "string") return exported as unknown as Jwk;
+  throw new TypeError("Expected the key exported as a JWK");
+}
+
 /** A fresh private key for `alg`, with its thumbprint as `kid`. */
 export async function generateSigningJwk(alg: SigningAlgorithm): Promise<PrivateSigningJwk> {
   const usages: Array<"sign" | "verify"> = ["sign", "verify"];
-  const pair =
+  const pair = asKeyPair(
     alg === "RS256"
       ? await crypto.subtle.generateKey(
           {
@@ -230,8 +263,9 @@ export async function generateSigningJwk(alg: SigningAlgorithm): Promise<Private
           true,
           usages,
         )
-      : await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, usages);
-  const exported = (await crypto.subtle.exportKey("jwk", pair.privateKey)) as Jwk;
+      : await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, usages),
+  );
+  const exported = asJwk(await crypto.subtle.exportKey("jwk", pair.privateKey));
   const material: Jwk =
     alg === "RS256"
       ? {
@@ -254,7 +288,7 @@ export async function generateSigningJwk(alg: SigningAlgorithm): Promise<Private
 /** The public key as PEM-encoded SubjectPublicKeyInfo, with a trailing newline. */
 export async function publicKeyPem(jwk: Jwk, alg: SigningAlgorithm): Promise<string> {
   const key = await importVerificationKey(jwk, alg);
-  const der = new Uint8Array(await crypto.subtle.exportKey("spki", key));
+  const der = new Uint8Array(asArrayBuffer(await crypto.subtle.exportKey("spki", key)));
   const lines = base64Encode(der).match(/.{1,64}/g) ?? [];
   return `-----BEGIN PUBLIC KEY-----\n${lines.join("\n")}\n-----END PUBLIC KEY-----\n`;
 }

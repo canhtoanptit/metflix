@@ -32,18 +32,25 @@ export function createAreaServices(deps: ServiceDependencies): {
   const seams: AreaSeams = {
     emitServerEvent: (event) => events.emitServerEvent(event),
     assignments: (unit, context) => experiments.assignments(unit, context),
+    logExposure: (exposure) => experiments.logExposure(exposure),
+    sendEmail: (request) => areas.identity.sendEmail(request),
   };
-  const events = createEventsService(deps);
-  const experiments = createExperimentsService(deps, seams);
-  return {
-    areas: {
-      identity: createIdentityService(deps, seams),
-      billing: createBillingService(deps, seams),
-      events,
-      personalisation: createPersonalisationService(deps, seams),
-      experiments,
-      admin: createAdminService(deps, seams),
+  // The events area's privacy jobs ask the other areas for their part of an export or an
+  // erasure (`AreaModule.exportAccountData`, `eraseAccountData`), resolved when a job runs.
+  const events = createEventsService(deps, {
+    otherAreas: () => {
+      const { events: _events, ...others } = areas;
+      return others;
     },
-    seams,
+  });
+  const experiments = createExperimentsService(deps, seams);
+  const areas: AreaServices = {
+    identity: createIdentityService(deps, seams),
+    billing: createBillingService(deps, seams),
+    events,
+    personalisation: createPersonalisationService(deps, seams),
+    experiments,
+    admin: createAdminService(deps, seams),
   };
+  return { areas, seams };
 }

@@ -1,21 +1,23 @@
 import type { AccountDetails, DeviceSessionList, Membership, PlanId } from "@webflix/contracts";
+import { readAccount } from "../areas/billing/accounts.ts";
+import { accountDetails, isProviderMembership } from "../areas/billing/membership.ts";
+import { sendEmailJob, verificationEmailJob } from "../areas/identity/email.ts";
 import { getPlan } from "../domain/plans.ts";
 import { AppError } from "../errors.ts";
+import { toIsoString } from "../ports/clock.ts";
+import type { JobMessage } from "../ports/job-queue.ts";
+import { serializeError } from "../ports/logger.ts";
 import { UniqueViolationError } from "../repositories/ports.ts";
 import type { SubscriptionRecord } from "../repositories/records.ts";
 import type { AuthContext, ServiceDependencies } from "./context.ts";
 import { type ChargeCredentialCheck, createCredentialChecks } from "./credentials.ts";
-import {
-  presentAccount,
-  presentDevice,
-  presentPaymentMethod,
-  presentSubscription,
-} from "./presenters.ts";
+import { presentDevice, presentSubscription } from "./presenters.ts";
 import { requireNotDemo } from "./privileges.ts";
 import { BILLING_PERIOD_MS, type CardInput, effectiveSubscription } from "./subscriptions.ts";
 
 export interface UpdateAccountInput {
-  currentPassword: string;
+  /** Absent: the session's fresh account-holder proof stands in for it (§4.2). */
+  currentPassword?: string | undefined;
   email?: string | undefined;
   newPassword?: string | undefined;
 }
@@ -34,10 +36,53 @@ export function createAccountService(deps: ServiceDependencies) {
   const { repos, clock, passwords, billing, streamGate, logger } = deps;
   const credentials = createCredentialChecks(deps);
 
+  /** Queue an identity email; a queue outage is logged, never undoes the change. */
+  async function publish(job: JobMessage): Promise<void> {
+    try {
+      await deps.jobs.publish(job);
+    } catch (error) {
+      logger.error("account.email_not_queued", { error: serializeError(error) });
+    }
+  }
+
+  /** A security alert to the account's (previous) address (identity area, §8.2). */
+  function notify(
+    account: { id: string; email: string },
+    change: "email-changed" | "password-changed" | "password-set",
+    detail: string | null,
+    now: number,
+  ): Promise<void> {
+    return publish(
+      sendEmailJob.create({
+        to: account.email,
+        template: "security-change",
+        data: {
+          change,
+          at: toIsoString(now),
+          detail,
+          manageUrl: `${deps.config.publicOrigin}/account`,
+        },
+        key: `security:${account.id}:${change}:${now}`,
+      }),
+    );
+  }
+
+  /**
+   * Billing's: the account with milestone 1's mock membership, for the mock-billing changes
+   * below. An account created without payment has none: it starts a checkout instead.
+   */
   async function load(accountId: string) {
-    const loaded = await repos.accounts.get(accountId);
+    const loaded = await readAccount(deps, accountId);
     if (!loaded) throw new AppError("unauthenticated");
-    return loaded;
+    const { account, subscription } = loaded;
+    if (!subscription) {
+      throw new AppError("subscription_required", {
+        subscriptionStatus: "ended",
+        membershipStatus: "none",
+        detail: "This account has no membership yet: start a checkout.",
+      });
+    }
+    return { account, subscription };
   }
 
   function membership(subscription: SubscriptionRecord): Membership {
@@ -59,6 +104,20 @@ export function createAccountService(deps: ServiceDependencies) {
     return result.card;
   }
 
+  /**
+   * Billing's: the mock-billing changes below are milestone 1's and only apply to a mock
+   * membership; a provider membership changes through `services.billing` (the handlers route
+   * there), so it is never overwritten by a mock charge.
+   */
+  async function requireMockMembership(accountId: string): Promise<void> {
+    const record = await repos.billing.getMembership(accountId);
+    if (isProviderMembership(record)) {
+      throw new AppError("checkout_state_conflict", {
+        detail: "This membership is managed by the payment provider.",
+      });
+    }
+  }
+
   /** On a plan with fewer screens, end the newest streams beyond the new limit. */
   async function trimStreams(accountId: string, limit: number): Promise<void> {
     const leases = await streamGate.list(accountId);
@@ -68,14 +127,16 @@ export function createAccountService(deps: ServiceDependencies) {
   }
 
   return {
+    /**
+     * Billing's: milestone 1's view (`subscription`, `plan`, `paymentMethod`) plus the
+     * membership projection and the entitlement (§5.2, §5.6), from the provider membership
+     * when the account has one, else from the mock membership exactly as before.
+     */
     async getAccount(accountId: string): Promise<AccountDetails> {
-      const { account, subscription } = await load(accountId);
-      return {
-        account: presentAccount(account),
-        subscription: presentSubscription(subscription, clock.now()),
-        plan: getPlan(subscription.planId),
-        paymentMethod: presentPaymentMethod(subscription),
-      };
+      // An account created without payment has no milestone 1 row (`readAccount`).
+      const loaded = await readAccount(deps, accountId);
+      if (!loaded) throw new AppError("unauthenticated");
+      return accountDetails(deps, loaded, clock.now());
     },
 
     async updateAccount(
@@ -85,16 +146,22 @@ export function createAccountService(deps: ServiceDependencies) {
     ): Promise<AccountDetails> {
       const accountId = auth.session.accountId;
       requireNotDemo(accountId);
-      const { account } = await load(accountId);
-      await credentials.requirePassword(accountId, input.currentPassword, charge);
+      const account = await repos.identity.getAccount(accountId);
+      if (!account) throw new AppError("unauthenticated");
+      // The password, or a fresh proof (an account created through an issuer has no password:
+      // it confirms with a fresh sign-in instead, §4.2).
+      await credentials.requirePassword(auth, input.currentPassword, charge);
       const now = clock.now();
       if (input.email !== undefined && input.email !== account.email) {
         try {
-          await repos.accounts.updateEmail(accountId, input.email, now);
+          // The new address is unverified until its link is followed.
+          await repos.identity.changeEmail(accountId, input.email, now);
         } catch (error) {
           if (error instanceof UniqueViolationError) throw new AppError("email_already_registered");
           throw error;
         }
+        await notify(account, "email-changed", `The new address is ${input.email}.`, now);
+        await publish(verificationEmailJob.create({ accountId }));
       }
       if (input.newPassword !== undefined) {
         // Other devices lose their sessions and their streams; this one stays signed in.
@@ -108,12 +175,19 @@ export function createAccountService(deps: ServiceDependencies) {
           now,
         });
         for (const session of others) await streamGate.releaseDevice(accountId, session.id);
+        await notify(
+          { ...account, email: input.email ?? account.email },
+          account.passwordHash === null ? "password-set" : "password-changed",
+          null,
+          now,
+        );
       }
       return this.getAccount(accountId);
     },
 
     async changePlan(accountId: string, input: ChangePlanInput): Promise<Membership> {
       requireNotDemo(accountId);
+      await requireMockMembership(accountId);
       const { subscription } = await load(accountId);
       const now = clock.now();
       const current = getPlan(subscription.planId);
@@ -166,6 +240,7 @@ export function createAccountService(deps: ServiceDependencies) {
      */
     async updatePaymentMethod(accountId: string, payment: CardInput): Promise<AccountDetails> {
       requireNotDemo(accountId);
+      await requireMockMembership(accountId);
       const { subscription } = await load(accountId);
       const card = await charge(payment, 0);
       await repos.accounts.saveSubscription({ ...subscription, card, updatedAt: clock.now() });
@@ -175,6 +250,7 @@ export function createAccountService(deps: ServiceDependencies) {
 
     async cancel(accountId: string): Promise<Membership> {
       requireNotDemo(accountId);
+      await requireMockMembership(accountId);
       const { subscription } = await load(accountId);
       const now = clock.now();
       const effective = effectiveSubscription(subscription, now);
@@ -191,6 +267,7 @@ export function createAccountService(deps: ServiceDependencies) {
 
     async resume(accountId: string): Promise<Membership> {
       // Allowed on the demo account: it can only bring a membership back.
+      await requireMockMembership(accountId);
       const { subscription } = await load(accountId);
       const now = clock.now();
       const effective = effectiveSubscription(subscription, now);

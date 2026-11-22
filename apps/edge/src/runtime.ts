@@ -90,6 +90,7 @@ function buildRuntime(env: Env): Runtime {
   });
   const database = createD1Database(env.DB);
   const repos = createRepositories(database);
+  const cache = createKvCache(env.CACHE);
   const media = createR2BlobStore(env.MEDIA);
   const blobs = config.edgeCache
     ? createEdgeCachedBlobStore({
@@ -102,11 +103,11 @@ function buildRuntime(env: Env): Runtime {
 
   const services = createServices({
     // Milestone 2's ports, composed per area (src/areas/).
-    ...createAreaPorts({ env, config, clock, ids, logger, blobs }),
+    ...createAreaPorts({ env, config, clock, ids, logger, blobs, database, cache }),
     config: config.core,
     repos,
     search: createSqlSearchIndex(database),
-    cache: createKvCache(env.CACHE),
+    cache,
     streamGate: createDurableObjectStreamGate(env.STREAMS),
     jobs: createQueuesJobQueue(env.JOBS),
     passwords: createPbkdf2PasswordHasher({ iterations: config.passwordIterations }),

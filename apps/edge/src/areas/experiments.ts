@@ -1,13 +1,21 @@
-import type { AreaPorts } from "@webflix/core";
+import { type AreaPorts, createRepositoryExperiments } from "@webflix/core";
 import { MemoryExperiments } from "@webflix/core/memory";
-import { type AreaContext, notBuiltYet } from "./shared.ts";
+import { createRepositories } from "@webflix/db";
+import type { AreaContext } from "./shared.ts";
 
 /**
- * The experiments area's port in the Worker. Owned by the experiments area: it adds the D1
- * definitions with a KV cache here.
+ * The experiments area's port in the Worker: definitions in D1, read through the isolate's
+ * memory and Workers KV (one D1 read per location and minute at most).
  */
 export function createExperimentsPorts(context: AreaContext): Pick<AreaPorts, "experiments"> {
   const { experiments } = context.config.core.experiments;
-  if (experiments !== "memory") notBuiltYet("WEBFLIX_EXPERIMENTS", experiments, "experiments");
-  return { experiments: new MemoryExperiments() };
+  if (experiments === "memory") return { experiments: new MemoryExperiments() };
+  return {
+    experiments: createRepositoryExperiments({
+      repository: createRepositories(context.database).experiments,
+      cache: context.cache,
+      clock: context.clock,
+      logger: context.logger,
+    }),
+  };
 }

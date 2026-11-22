@@ -16,18 +16,19 @@ export * from "./areas/admin/config.ts";
 export type { AdminRepository } from "./areas/admin/repository.ts";
 export type { AdminService } from "./areas/admin/service.ts";
 export * from "./areas/billing/config.ts";
-export type { BillingRepository } from "./areas/billing/repository.ts";
+export type * from "./areas/billing/repository.ts";
 export type { BillingService } from "./areas/billing/service.ts";
 export type { AreaConfigInput, AreaConfigResult } from "./areas/config.ts";
 export * from "./areas/events/config.ts";
-export type { EventsRepository } from "./areas/events/repository.ts";
-export type { EventsService } from "./areas/events/service.ts";
+export * from "./areas/events/repository.ts";
+export type * from "./areas/events/service.ts";
+export * from "./areas/experiments/audit.ts";
 export * from "./areas/experiments/config.ts";
-export type { ExperimentsRepository } from "./areas/experiments/repository.ts";
+export * from "./areas/experiments/definitions.ts";
+export * from "./areas/experiments/repository.ts";
 export type { ExperimentsService } from "./areas/experiments/service.ts";
 export * from "./areas/identity/config.ts";
-export type { IdentityRepository } from "./areas/identity/repository.ts";
-export type { IdentityService } from "./areas/identity/service.ts";
+export * from "./areas/identity/public.ts";
 export type { AreaServices } from "./areas/index.ts";
 export {
   type AreaModule,
@@ -36,7 +37,8 @@ export {
   type ServerEventInput,
 } from "./areas/module.ts";
 export * from "./areas/personalisation/config.ts";
-export type { PersonalisationRepository } from "./areas/personalisation/repository.ts";
+export * from "./areas/personalisation/importer.ts";
+export * from "./areas/personalisation/repository.ts";
 export type { PersonalisationService } from "./areas/personalisation/service.ts";
 export type { AreaPorts } from "./areas/ports.ts";
 export * from "./catalog/cache.ts";

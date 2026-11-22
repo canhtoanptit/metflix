@@ -58,7 +58,9 @@ describe("routes registered but not implemented", () => {
           [name, adminRoutes[name as keyof typeof adminRoutes], ADMIN_API_BASE_PATH] as const,
       ),
     ];
-    expect(pending.length).toBeGreaterThan(50);
+    // Shrinks as the areas implement their routes (the staff API's stay pending until the admin
+    // area's wave); the uniform answer is what is checked for whichever remain.
+    expect(pending.length).toBeGreaterThan(0);
     for (const [name, route, base] of pending) {
       // Anonymous, no CSRF header, no body: still the uniform answer.
       const response = await t.request(pathOf(base, route), { method: route.method });

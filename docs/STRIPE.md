@@ -511,6 +511,19 @@ Checks that need a clock, recorded as skipped in the fixtures:
 **Observed: no 429s** in any run. The final run made 147 scenario calls plus 1 probe in 290 s,
 with 4 scenarios at a time.
 
+**Observed later (2026-11-22, the billing wave): the claimable sandbox key has its own, lower
+rate limit.** After roughly an hour of the adapter's test runs (the contract suite twice, on
+Node and in workerd, and the real-time journeys) and a burst of event listing (a reconciliation
+loop reading a day of events every second, since fixed: it now reads an hour on its first run
+and resumes from a saved cursor), every request, a single `GET /v1/customers` included,
+answered **429 `rate_limit`** with the message "Claimable sandbox request rate limit exceeded.
+Claimable sandbox API keys have lower rate limits than regular testmode keys", no
+`Stripe-Rate-Limited-Reason` header and no `Retry-After`. It still refused requests more than
+30 minutes later, with no traffic in between (the lockout's length and the limit itself are
+**not documented** and were not measured further). Budget the sandbox lane: run the contract
+suite in one runtime per session, keep reconciliation windows small, and treat a 429 storm as
+"skip with that reason", never as a pass. A claimed sandbox's regular test key lifts this.
+
 Costs of the final run (real time). The API time column is the sum of response times; calls
 overlap.
 

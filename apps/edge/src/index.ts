@@ -20,6 +20,7 @@ import { createR2BlobStore, serveBlobOrigin } from "@webflix/adapters-cloudflare
 import { createProblem } from "@webflix/contracts";
 import { ConfigError, serializeError } from "@webflix/core";
 import { problemResponse } from "@webflix/http";
+import { handleBillingRequest } from "./areas/billing.ts";
 import { handleIdentityRequest } from "./areas/identity.ts";
 import type { Env } from "./env.ts";
 import { getRuntime, type Runtime } from "./runtime.ts";
@@ -95,13 +96,11 @@ export async function handleFetch(
   if (runtime instanceof ConfigError) return configFailure();
   // Milestone 2: the development issuer (`/dev-idp/*`, never in production), ahead of the app
   // so its pages keep their own headers.
-  const { core } = runtime.config;
-  const issuer = handleIdentityRequest(request, env, {
-    environment: core.environment,
-    publicOrigin: core.publicOrigin,
-    devIdpSecret: core.identity.devIdpSecret,
-  });
+  const issuer = handleIdentityRequest(request, env, runtime.config.core);
   if (issuer !== null) return issuer;
+  // Milestone 2: the fake payment provider's form (`/_pay/*`, never in production).
+  const payment = await handleBillingRequest(request, env, runtime.config);
+  if (payment) return payment;
   return serveApp(request, env, ctx, runtime);
 }
 

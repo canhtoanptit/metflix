@@ -178,9 +178,8 @@ describeExperimentsContract("memory", () => {
 });
 
 describePaymentProviderContract("memory", async () => {
-  const provider = new MemoryPaymentProvider({
-    clock: new ManualClock(Date.UTC(2026, 10, 22, 12)),
-  });
+  const providerClock = new ManualClock(Date.UTC(2026, 10, 22, 12));
+  const provider = new MemoryPaymentProvider({ clock: providerClock });
   const prices = {
     basic: {
       lookupKey: "webflix.basic.monthly.usd",
@@ -201,6 +200,7 @@ describePaymentProviderContract("memory", async () => {
   return {
     provider,
     prices,
+    now: () => providerClock.now(),
     confirmSetup: async (setup, card) => {
       await provider.confirmSetup(setup.clientSecret ?? "", card);
     },
@@ -214,6 +214,7 @@ describePaymentProviderContract("memory", async () => {
         id: "evt_sample",
         type: "customer.created",
         createdAt: 0,
+        occurredAt: 0,
         customerId: null,
         subscriptionId: null,
         invoiceId: null,

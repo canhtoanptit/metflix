@@ -2,6 +2,7 @@ import { maturityRank } from "../domain/maturity.ts";
 import {
   type ActiveSession,
   HEARTBEAT_CARRY_SEC,
+  type OutboxEvent,
   type Repositories,
   UniqueViolationError,
 } from "../repositories/ports.ts";
@@ -69,6 +70,8 @@ export class MemoryStore {
   playback = new Map<string, PlaybackSessionRecord>();
   stats = new Map<string, TitleStatRecord>();
   meta = new Map<string, string>();
+  /** Milestone 2: the events area's `event_outbox` (playback writes it, events drains it). */
+  eventOutbox: OutboxEvent[] = [];
   /** Round trips, counted like the SQL adapters count them (tests assert query budgets). */
   queries = 0;
 
@@ -133,9 +136,9 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
     },
 
     // Milestone 2: each area's in-memory repository (memory/areas/<area>.ts).
-    identity: createMemoryIdentityRepository(),
+    identity: createMemoryIdentityRepository(store),
     billing: createMemoryBillingRepository(),
-    events: createMemoryEventsRepository(),
+    events: createMemoryEventsRepository(s),
     personalisation: createMemoryPersonalisationRepository(),
     experiments: createMemoryExperimentsRepository(),
     admin: createMemoryAdminRepository(),
@@ -443,9 +446,10 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
     },
 
     playback: {
-      async create(session) {
+      async create(session, options = {}) {
         tick();
         s.playback.set(session.id, copy(session));
+        for (const event of options.outbox ?? []) s.eventOutbox.push(copy(event));
       },
       async get(playbackSessionId) {
         tick();
@@ -458,6 +462,7 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
         const session = s.playback.get(write.playbackSessionId);
         // As in SQL: a report for a session that has ended (a release won the race) is ignored.
         if (!session || session.endedAt !== null) return;
+        for (const event of write.outbox ?? []) s.eventOutbox.push(copy(event));
         {
           // As in SQL: what the previous report's state and the credit clock allow.
           const active = session.state === "playing" || session.state === "buffering";
@@ -505,10 +510,13 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
           watchedAt: write.now,
         });
       },
-      async end(playbackSessionId, now) {
+      async end(playbackSessionId, now, options = {}) {
         tick();
         const session = s.playback.get(playbackSessionId);
-        if (session && session.endedAt === null) session.endedAt = now;
+        if (session && session.endedAt === null) {
+          session.endedAt = now;
+          for (const event of options.outbox ?? []) s.eventOutbox.push(copy(event));
+        }
       },
       async deleteStartedBefore(cutoff) {
         tick();

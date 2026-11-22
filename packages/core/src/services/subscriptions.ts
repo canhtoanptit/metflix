@@ -5,6 +5,7 @@ import {
   type Plan,
   type SubscriptionStatus,
 } from "@webflix/contracts";
+import { readMembership } from "../areas/billing/membership.ts";
 import { getPlan } from "../domain/plans.ts";
 import { AppError } from "../errors.ts";
 import type {
@@ -42,20 +43,24 @@ export function effectiveSubscription(
 
 /**
  * Whether the account may start playing now, and on which plan (its streams and quality cap):
- * the one entitlement decision playback asks for. Owned by billing: milestone 2 replaces the
- * body with the membership projection's entitlement (§5.2, reading through `deps`) without
- * touching the playback service.
+ * the one entitlement decision playback asks for (§5.2). Owned by billing: it reads the
+ * membership projection when the account has a provider membership (trial, grace and
+ * suspension included), else milestone 1's mock membership exactly as before; an account
+ * created without payment has no membership. One read of `memberships` per playback start.
  */
 export async function playbackEntitlement(
-  _deps: Pick<ServiceDependencies, "repos">,
-  account: { account: AccountRecord; subscription: SubscriptionRecord },
+  deps: Pick<ServiceDependencies, "repos" | "config">,
+  account: { account: AccountRecord; subscription: SubscriptionRecord | null },
   now: number,
 ): Promise<Plan> {
-  const membership = effectiveSubscription(account.subscription, now);
-  if (membership.status === "ended") {
-    throw new AppError("subscription_required", { subscriptionStatus: membership.status });
+  const snapshot = await readMembership(deps, account.account.id, account.subscription, now);
+  if (!snapshot.entitlement.entitled || snapshot.effective.planId === null) {
+    throw new AppError("subscription_required", {
+      subscriptionStatus: snapshot.legacy.subscription.status,
+      membershipStatus: snapshot.state.status,
+    });
   }
-  return getPlan(account.subscription.planId);
+  return getPlan(snapshot.effective.planId);
 }
 
 // --- Mock billing ---------------------------------------------------------------------------

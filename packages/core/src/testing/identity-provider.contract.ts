@@ -24,14 +24,15 @@ export interface IdentityProviderHarness extends HarnessBase {
   redirectUri: string;
   /**
    * Plays the issuer and the member: completes the sign-in `authorizationUrl` started and
-   * returns the authorisation response. Memory: `MemoryIdentityProvider.complete`; the generic
-   * OIDC adapter: the development issuer's `completeAuthorization` (its faults
-   * `wrongNonce`, `staleAuthTime`, `missingAuthTime`).
+   * returns the authorisation response (with RFC 9207's `iss` where the issuer sends it).
+   * Memory: `MemoryIdentityProvider.complete`; the generic OIDC adapter: the development
+   * issuer's `completeAuthorization` (its faults `wrongNonce`, `staleAuthTime`,
+   * `missingAuthTime`).
    */
   signIn(
     authorizationUrl: string,
     signIn: IdentitySignIn,
-  ): Promise<{ code: string; state: string }>;
+  ): Promise<{ code: string; state: string; iss?: string | null }>;
 }
 
 /** Contract every `IdentityProvider` adapter must pass. */
@@ -121,6 +122,7 @@ export function describeIdentityProviderContract(
         codeVerifier: verifier,
         redirectUri: request.redirectUri,
         nonce: request.nonce,
+        responseIssuer: response.iss ?? null,
       });
       expect(identity.provider).toBe(h().provider.id);
       expect(identity.issuer).toBe(h().provider.issuer);
@@ -139,6 +141,7 @@ export function describeIdentityProviderContract(
         codeVerifier: verifier,
         redirectUri: request.redirectUri,
         nonce: request.nonce,
+        responseIssuer: response.iss ?? null,
       });
       expect(identity.emailVerified).toBe(false);
     });
@@ -152,6 +155,7 @@ export function describeIdentityProviderContract(
           codeVerifier: verifier,
           redirectUri: request.redirectUri,
           nonce: request.nonce,
+          responseIssuer: response.iss ?? null,
         });
       };
       const first = await redeem(address);
@@ -171,6 +175,7 @@ export function describeIdentityProviderContract(
         codeVerifier: verifier,
         redirectUri: request.redirectUri,
         nonce: request.nonce,
+        responseIssuer: response.iss ?? null,
       };
       await h().provider.redeem(redemption);
       expect(await rejection(h().provider.redeem(redemption))).toBe("invalid_grant");
@@ -184,6 +189,7 @@ export function describeIdentityProviderContract(
           codeVerifier: createPkceVerifier(),
           redirectUri: request.redirectUri,
           nonce: request.nonce,
+          responseIssuer: response.iss ?? null,
         }),
       );
       expect(reason).toBe("invalid_grant");
@@ -200,9 +206,27 @@ export function describeIdentityProviderContract(
           codeVerifier: verifier,
           redirectUri: `${request.redirectUri}-elsewhere`,
           nonce: request.nonce,
+          responseIssuer: response.iss ?? null,
         }),
       );
       expect(reason).toBe("invalid_grant");
+    });
+
+    it("refuses an authorisation response another issuer sent (RFC 9207 mix-up)", async () => {
+      const { request, verifier, response } = await signInAs({
+        email: email(),
+        emailVerified: true,
+      });
+      const reason = await rejection(
+        h().provider.redeem({
+          code: response.code,
+          codeVerifier: verifier,
+          redirectUri: request.redirectUri,
+          nonce: request.nonce,
+          responseIssuer: `${h().provider.issuer}-elsewhere`,
+        }),
+      );
+      expect(reason).toBe("issuer_mismatch");
     });
 
     it("refuses an ID token whose nonce is not this transaction's", async () => {
@@ -217,6 +241,7 @@ export function describeIdentityProviderContract(
           codeVerifier: verifier,
           redirectUri: request.redirectUri,
           nonce: request.nonce,
+          responseIssuer: response.iss ?? null,
         }),
       );
       expect(reason).toBe("nonce_mismatch");
@@ -229,6 +254,7 @@ export function describeIdentityProviderContract(
         codeVerifier: fresh.verifier,
         redirectUri: fresh.request.redirectUri,
         nonce: fresh.request.nonce,
+        responseIssuer: fresh.response.iss ?? null,
         maxAgeSec: 0,
       });
       expect(identity.authTime).not.toBeNull();
@@ -244,6 +270,7 @@ export function describeIdentityProviderContract(
             codeVerifier: stale.verifier,
             redirectUri: stale.request.redirectUri,
             nonce: stale.request.nonce,
+            responseIssuer: stale.response.iss ?? null,
             maxAgeSec: 0,
           }),
         ),
@@ -262,6 +289,7 @@ export function describeIdentityProviderContract(
             codeVerifier: missing.verifier,
             redirectUri: missing.request.redirectUri,
             nonce: missing.request.nonce,
+            responseIssuer: missing.response.iss ?? null,
             maxAgeSec: 0,
           }),
         ),

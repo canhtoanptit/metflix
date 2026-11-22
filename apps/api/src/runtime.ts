@@ -28,6 +28,7 @@ import {
 import { type Context, Hono, type NotFoundHandler } from "hono";
 import { compress } from "hono/compress";
 import { createInfrastructure, type Infrastructure, type RuntimeComponent } from "./adapters.ts";
+import { mountBillingRoutes } from "./areas/billing.ts";
 import { mountIdentityRoutes } from "./areas/identity.ts";
 import { createAreaPorts } from "./areas/index.ts";
 import { type ApiConfig, BLOB_MANIFEST_PREFIX } from "./config.ts";
@@ -67,7 +68,15 @@ export function createRuntime(config: ApiConfig, component: RuntimeComponent): R
   const infra = createInfrastructure(config, { clock, ids, logger, component });
   const services = createServices({
     // Milestone 2's ports, composed per area (src/areas/).
-    ...createAreaPorts({ config, clock, ids, logger, blobs: infra.blobs }),
+    ...createAreaPorts({
+      config,
+      clock,
+      ids,
+      logger,
+      blobs: infra.blobs,
+      database: infra.database,
+      cache: infra.cache,
+    }),
     config: config.core,
     repos: infra.repos,
     search: infra.search,
@@ -208,6 +217,8 @@ export function createHttpApp(runtime: Runtime, options: { health?: Health } = {
   else root.use("*", refuseOpsPaths());
   // Milestone 2: routes an area serves outside the API (the development issuer).
   mountIdentityRoutes(root, config, runtime.logger);
+  // Milestone 2: the fake payment provider's form (`/_pay/*`, never in production).
+  mountBillingRoutes(root, config, runtime.infra.database);
   root.use("/api/*", compress());
   root.route("/", app as unknown as Hono);
   // Unmatched paths reach the root app, not the mounted one: answer with the same problem

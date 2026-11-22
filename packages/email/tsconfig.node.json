@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The SMTP sender speaks TCP (node:net, node:tls) and its tests run a local SMTP server.
+    "types": ["node"]
+  },
+  "include": ["src/smtp.ts", "test/node", "vitest.config.ts"]
+}

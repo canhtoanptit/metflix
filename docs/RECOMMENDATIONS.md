@@ -223,6 +223,108 @@ Consequences, each covered by `packages/core/test/services/continue-watching.tes
 - The billboard picks titles the profile has not **started** (no anchor), so a sampled title can
   still be featured.
 
+## Learned candidates (milestone 2)
+
+The Python pipeline (docs/RECOMMENDATIONS-ML.md, services/recs) publishes per-profile lists
+(`personal`, `top-picks`, `billboard`, `because-you-watched`) and item neighbours. The engine
+stays the authority: **the model proposes, the rules dispose**. Code:
+`packages/core/src/areas/personalisation/` (`importer.ts`, `serving.ts`) and the engine.
+
+**Publishing (the importer).** `recs/current.json` → manifest (its SHA-256 must be the
+pointer's; format `webflix.recs`, major 1) → every file checked against the manifest's byte
+count and SHA-256 as it is read → the run is begun, filled in bounded batches (neighbours; each
+profile shard one Parquet row group at a time) and activated in **one write**. Everything is
+keyed by run (`recommendation_neighbours`, `recommendation_profile_lists` on SQL;
+`recs:v1:{run}:{profileKey}` in Workers KV), so a half-imported run is never read: readers only
+ask for the active run. A failure marks the run `failed` and leaves the served one alone. The
+importer keeps two runs; **rollback** is `activate(previous)`, one write again. Lists already
+expired at import are skipped. Measured: the medium simulated run (11,198 profiles, 4,760
+neighbour rows) imports into SQLite in 0.4 s (64 round trips); the full run (83,322 profiles) in
+3.0 s (354 round trips, peak RSS 0.9 GB: a shard is read whole).
+
+On Cloudflare the switch is a D1 statement and the lists are KV keys named by run: the new run's
+keys are written beside the old ones, then D1 flips the active run, so publishing needs no
+transaction across KV and D1. KV is eventually consistent (a new key can take 60 s or more to
+reach other locations, and a miss is cached): a location that sees the activation before the
+keys serves the rule engine for those profiles meanwhile (cold start, never an error). Keys expire
+a day after their lists. Limits relied on (developers.cloudflare.com, read 2026-11-22): the KV
+binding writes one key per `put` and a Worker invocation has **1,000 KV operations**, so the
+in-Worker job suits runs of a few hundred profiles; a full run is written from outside Workers
+through the REST bulk endpoint (**10,000 pairs and 100 MB per request**,
+`createKvRestBulkWriter`); D1 allows 100 bound parameters per statement and 1,000 queries per
+invocation (a batch counts once), which the 16- and 25-row INSERTs and the batching respect.
+
+**Serving.** For each browse page (`RecommendationServing.plan`):
+
+| Situation | What the page is | `policy` |
+| --- | --- | --- |
+| Kids or lowered-ceiling profile | the rule engine; no learned data read, no experiment | `rules` |
+| No active model, or the model is past `expiresAt` | the rule engine | `rules` |
+| Store down, or slower than `WEBFLIX_RECS_READ_TIMEOUT_MS` (250 ms) | the rule engine; the store is skipped for 30 s | `rules` |
+| The experiment assigns the control variant | the rule engine | `rules` |
+| Learned, profile has fresh lists | learned candidates (below) | `learned:{run}` |
+| Learned, no lists (new profile, not in the run, lists unreadable) | the rule engine plus the model's neighbours | `learned:{run}` |
+
+With learned candidates: **Top Picks for {name}** (the model's re-ranked list in its order) comes
+after Continue Watching; the billboard is the model's first eligible pick (rotating daily among
+three); every score-ordered row (genre rows, Originals, genre pages "suggested") puts the titles
+the model scored first, by its score, then the rest by the engine's own score; Trending's taste
+term is the model's percentile; Because You Watched (sources still chosen by the engine) leads
+with the model's row for the source, then the model's neighbours, then content similarity; More
+Like This uses the model's neighbours for titles it knows and content similarity for the rest (a
+title the model has never seen gets content only). **Session re-ranking**: titles watched since the
+lists were generated (or in the last two days without lists) boost their learned neighbours at
+once. Every candidate passes the rules first: ceiling, availability, dislikes (also those made
+after the run), what was started or finished since, the view's type, badges and deduplication.
+
+**Exploration.** A deterministic share of sessions (`WEBFLIX_RECS_EXPLORE_SHARE`, 5 % in
+production; keyed by session and UTC day) gets the rows in random order (Continue Watching keeps
+its place) and the items of every non-canonical row in random order (My List, Top 10, Watch It
+Again and curated collections keep theirs), under either policy, and says so in
+`policy.explore`. Row pages agree with the page. Without this slice the ranker's position-bias
+correction cannot be estimated from real traffic.
+
+**Experiments.** `WEBFLIX_RECS_EXPERIMENT` (default `recs.learned-vs-rules`) decides the policy
+of the profiles it assigns: its control variant gets the rule engine, the others learned
+candidates; unassigned profiles get `WEBFLIX_RECS_DEFAULT_POLICY`. An `experiment.exposure` is
+logged for both arms when the treatment can apply (a fresh model is active), never on
+assignment alone, once per unit and variant (process memory, then a shared-cache marker).
+
+**Editorial.** Staff decisions (`services.personalisation`, the staff API's handlers): titles
+pinned to a view's billboard come first (under the same rules), published curated collections
+are rows (`kind: collection`) at their position in their curated order, and a title made
+unavailable (or outside its window) leaves every browse surface and search (results and title
+suggestions); a direct link to it (title detail, its episodes, More Like This) answers
+`not_found`, as if the catalogue did not have it, so nothing contradicts browse. Playback start is
+the streaming area's (`services.personalisation.isTitleUnavailable`). They are read in one batch
+and cached like the catalogue (30 s in memory, 5 min shared); a staff change invalidates them.
+
+**Account deletion.** Profile keys are the lake's own subject keys (`createSubjectKeys`, the
+events area's; the pipeline's `ids.pseudonym`). The events area's erasure job calls
+`eraseAccountData` before the account row goes: the lists of the account's profiles are deleted
+in every registered run (database rows, or the KV keys on Cloudflare) and dropped from the
+caches, at once rather than at their expiry.
+
+**Budget, measured** (database round trips per `GET /browse`; Node on SQLite in
+`apps/api/test/personalisation.test.ts`, the Worker on D1 in
+`apps/edge/test/personalisation.test.ts`):
+
+| | SQLite warm | SQLite cold | D1 warm | D1 cold |
+| --- | --- | --- | --- | --- |
+| Milestone 1 (before) | 2 | 4 | 2 | 4 |
+| Database store, no model | 2 | 7 | 2 | 7 |
+| Learned candidates | 2 | 8 | 2 (+1 KV read) | 7 |
+| An experiment running (plan-targeted on SQLite) | 2 | 8 | 2 | 7 |
+
+Cold is every shared cache dropped (catalogue, popularity, model, experiment definitions,
+editorial data, lists). The three extra cold reads are the model with its neighbours, the
+experiment definitions and the editorial data; on SQL a profile's lists are one more (KV on
+Cloudflare); a plan-targeted experiment reads the member's plan once a minute. Warm stays at the
+session lookup and the library batch: the model, the definitions and the editorial data are
+cached per process and in the shared cache (Valkey, Workers KV), a run's lists per profile (they
+never change once it is active, so a profile without lists is cached as such). A fresh process
+also pays its one-time schema check on the first request.
+
 ## Popularity: where views come from
 
 - **Real playback**: each heartbeat (and the final report a release may carry) credits watched
@@ -262,4 +364,4 @@ test in `browse.test.ts` that shows the intended effect on the fixture catalog.
   shared cache (about 270 titles), and each process/isolate loads it from the database instead.
   A large catalog would shard the snapshot or precompute rows in a job. Computing every title's
   neighbours for that catalog takes ~6 ms.
-- No A/B testing, no exploration bonus beyond the genre prior and variety rule.
+- Milestone 1 had no A/B testing or exploration; milestone 2 adds both (Learned candidates).

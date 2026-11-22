@@ -1,4 +1,4 @@
-/** Tables of the identity area (migration 0002_identity). Representations: see schema.ts. */
+/** Tables of the identity area (migrations 0002_identity, 0010_identity_claims). Representations: see schema.ts. */
 
 export interface AccountIdentitiesTable {
   provider: string;
@@ -45,11 +45,18 @@ export interface EmailSuppressionsTable {
   created_at: number;
 }
 
+/** Single-use claims (migration 0010_identity_claims): a processed OpenID callback. */
+export interface IdentityClaimsTable {
+  claim_key: string;
+  expires_at: number;
+}
+
 export interface IdentityTables {
   account_identities: AccountIdentitiesTable;
   account_tokens: AccountTokensTable;
   email_outbox: EmailOutboxTable;
   email_suppressions: EmailSuppressionsTable;
+  identity_claims: IdentityClaimsTable;
 }
 
 /** Parents first. */
@@ -58,4 +65,5 @@ export const IDENTITY_TABLES = [
   "account_tokens",
   "email_outbox",
   "email_suppressions",
+  "identity_claims",
 ] as const satisfies readonly (keyof IdentityTables)[];

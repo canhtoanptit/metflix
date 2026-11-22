@@ -187,6 +187,28 @@ export interface HeartbeatWrite {
   historyId: string;
   /** The session's final report (a release that carries its position): also end the session. */
   ends: boolean;
+  /**
+   * Milestone 2: server events this report produces (playback progress, completion,
+   * abandonment), written to the event outbox in the same batch and only while the session is
+   * live, so recording them costs no extra round trip (the events area drains the outbox).
+   */
+  outbox?: readonly OutboxEvent[];
+}
+
+/**
+ * Milestone 2: a server event waiting in the event outbox (`event_outbox`, the events area's
+ * table): written by the playback repository in the same batch as the playback write that
+ * produced it, drained to the event lake by the events area's `events.outbox` job.
+ */
+export interface OutboxEvent {
+  /** The event's own id (UUIDv7): the outbox key, and the lake's deduplication key. */
+  id: string;
+  accountId: string | null;
+  profileId: string | null;
+  /** JSON: the `events.server` job payload (see areas/events/jobs.ts). */
+  payload: string;
+  /** Epoch ms: the event's receipt time. */
+  createdAt: number;
 }
 
 /**
@@ -197,7 +219,11 @@ export interface HeartbeatWrite {
 export const HEARTBEAT_CARRY_SEC = 5;
 
 export interface PlaybackRepository {
-  create(session: PlaybackSessionRecord): Promise<void>;
+  /** With `outbox`: the session and its server events in one batch. */
+  create(
+    session: PlaybackSessionRecord,
+    options?: { outbox?: readonly OutboxEvent[] },
+  ): Promise<void>;
   get(playbackSessionId: string): Promise<PlaybackSessionRecord | null>;
   /**
    * Atomically (one batch): credit watching to the playback session, store the position and
@@ -214,8 +240,15 @@ export interface PlaybackRepository {
    * the wall-clock time it existed.
    */
   recordHeartbeat(write: HeartbeatWrite): Promise<void>;
-  /** Idempotent. */
-  end(playbackSessionId: string, now: number): Promise<void>;
+  /**
+   * Idempotent. With `outbox`: those server events are written in the same batch, only if
+   * this call is the one that ends the session.
+   */
+  end(
+    playbackSessionId: string,
+    now: number,
+    options?: { outbox?: readonly OutboxEvent[] },
+  ): Promise<void>;
   /** Housekeeping: drop sessions that started before `cutoff`. */
   deleteStartedBefore(cutoff: number): Promise<number>;
 }

@@ -3,14 +3,15 @@ import {
   type LibraryRepository,
   type MetaRepository,
   type NotificationRepository,
+  type OutboxEvent,
   type PlaybackRepository,
   type PlaybackSessionRecord,
   type StatsRepository,
   type TitleDayStats,
 } from "@webflix/core";
-import { type Compilable, sql } from "kysely";
+import { type Compilable, type SelectQueryBuilder, sql } from "kysely";
 import { chunkValues, type Database } from "../database.ts";
-import type { PlaybackSessionsTable } from "../schema.ts";
+import type { DB, PlaybackSessionsTable } from "../schema.ts";
 import { insertChunks } from "./catalog.ts";
 import { fromBool, greatest, least, parseJsonOrNull, toProgress, typed } from "./mapping.ts";
 
@@ -169,28 +170,63 @@ function toPlaybackSession(row: PlaybackSessionsTable): PlaybackSessionRecord {
 
 export function createPlaybackRepository(database: Database): PlaybackRepository {
   const { db, dialect } = database;
+
+  const outboxRow = (event: OutboxEvent) => ({
+    id: event.id,
+    account_id: event.accountId,
+    profile_id: event.profileId,
+    payload: event.payload,
+    created_at: event.createdAt,
+  });
+
+  /** Insert an outbox row only while `live` (the playback session, not ended) selects a row. */
+  function liveOutboxInsert(
+    live: SelectQueryBuilder<DB, "playback_sessions", object>,
+    event: OutboxEvent,
+  ) {
+    return db
+      .insertInto("event_outbox")
+      .columns(["id", "account_id", "profile_id", "payload", "created_at"])
+      .expression(
+        live.select([
+          typed(dialect, event.id, "text").as("id"),
+          typed(dialect, event.accountId, "text").as("account_id"),
+          typed(dialect, event.profileId, "text").as("profile_id"),
+          typed(dialect, event.payload, "text").as("payload"),
+          typed(dialect, event.createdAt, "time").as("created_at"),
+        ]),
+      );
+  }
+
   return {
-    async create(session) {
-      await db
-        .insertInto("playback_sessions")
-        .values({
-          id: session.id,
-          account_id: session.accountId,
-          profile_id: session.profileId,
-          session_id: session.sessionId,
-          title_id: session.titleId,
-          episode_id: session.episodeId,
-          asset_id: session.assetId,
-          max_video_height: session.maxVideoHeight,
-          started_at: session.startedAt,
-          last_heartbeat_at: session.lastHeartbeatAt,
-          ended_at: session.endedAt,
-          position_sec: session.positionSec,
-          duration_sec: session.durationSec,
-          watched_sec: session.watchedSec,
-          state: session.state,
-        })
-        .execute();
+    async create(session, options = {}) {
+      const insert = db.insertInto("playback_sessions").values({
+        id: session.id,
+        account_id: session.accountId,
+        profile_id: session.profileId,
+        session_id: session.sessionId,
+        title_id: session.titleId,
+        episode_id: session.episodeId,
+        asset_id: session.assetId,
+        max_video_height: session.maxVideoHeight,
+        started_at: session.startedAt,
+        last_heartbeat_at: session.lastHeartbeatAt,
+        ended_at: session.endedAt,
+        position_sec: session.positionSec,
+        duration_sec: session.durationSec,
+        watched_sec: session.watchedSec,
+        state: session.state,
+      });
+      const outbox = options.outbox ?? [];
+      if (outbox.length === 0) {
+        await insert.execute();
+        return;
+      }
+      // The server events of the start go in the same batch: no extra round trip.
+      await database.batch([
+        insert,
+        ...outbox.map((event) => db.insertInto("event_outbox").values(outboxRow(event))),
+      ]);
     },
 
     async get(playbackSessionId) {
@@ -221,6 +257,8 @@ export function createPlaybackRepository(database: Database): PlaybackRepository
           .updateTable("playback_sessions")
           .set((eb) => ({ ended_at: eb.ref("ended_at") }))
           .where("id", "=", write.playbackSessionId),
+        // Milestone 2: the report's server events, only while the session is live.
+        ...(write.outbox ?? []).map((event) => liveOutboxInsert(live, event)),
         db
           .insertInto("watch_progress")
           .columns([
@@ -306,13 +344,23 @@ export function createPlaybackRepository(database: Database): PlaybackRepository
       ]);
     },
 
-    async end(playbackSessionId, now) {
-      await db
+    async end(playbackSessionId, now, options = {}) {
+      const update = db
         .updateTable("playback_sessions")
         .set({ ended_at: now })
         .where("id", "=", playbackSessionId)
-        .where("ended_at", "is", null)
-        .execute();
+        .where("ended_at", "is", null);
+      const outbox = options.outbox ?? [];
+      if (outbox.length === 0) {
+        await update.execute();
+        return;
+      }
+      // The events first, while the session is still live: only the call that ends it writes them.
+      const live = db
+        .selectFrom("playback_sessions")
+        .where("id", "=", playbackSessionId)
+        .where("ended_at", "is", null);
+      await database.batch([...outbox.map((event) => liveOutboxInsert(live, event)), update]);
     },
 
     async deleteStartedBefore(cutoff) {

@@ -21,6 +21,8 @@ export interface Env {
   STREAMS: DurableObjectNamespace<StreamGateObject>;
   JOBS: Queue;
   ASSETS: Fetcher;
+  /** Per-profile recommendation lists (`WEBFLIX_RECOMMENDATION_STORE=kv`). */
+  RECS?: KVNamespace;
   // Vars (portable ones are documented in docs/BACKEND.md §4)
   WEBFLIX_MODE: string;
   WEBFLIX_ENV?: string;

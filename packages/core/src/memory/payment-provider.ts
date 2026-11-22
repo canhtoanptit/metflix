@@ -117,6 +117,22 @@ export class MemoryPaymentProvider implements PaymentProvider {
     });
   }
 
+  deleteCustomer(input: { customerId: string }, call: ProviderCall): Promise<void> {
+    return this.idempotent("deleteCustomer", input, call, () => {
+      for (const subscription of this.subscriptions.values()) {
+        if (subscription.customerId === input.customerId && subscription.status !== "canceled") {
+          subscription.status = "canceled";
+          subscription.endedAt = this.clock.now();
+          this.emit("customer.subscription.deleted", { subscription }, call);
+        }
+      }
+      if (this.customers.delete(input.customerId)) {
+        this.emit("customer.deleted", { customerId: input.customerId }, call);
+      }
+      return undefined;
+    });
+  }
+
   createSetup(input: { customerId: string }, call: ProviderCall): Promise<ProviderSetup> {
     return this.idempotent("createSetup", input, call, () => {
       this.customer(input.customerId);
@@ -191,7 +207,9 @@ export class MemoryPaymentProvider implements PaymentProvider {
         endedAt: null,
         latestInvoiceId: null,
         defaultPaymentMethodId: input.paymentMethodId,
+        defaultPaymentMethod: null,
         paymentClientSecret: null,
+        clockNow: null,
       };
       // Like Stripe's `default_incomplete`: a trial invoices nothing; otherwise the browser
       // confirms the first payment (where a challenge happens), whatever card is on file.
@@ -220,7 +238,7 @@ export class MemoryPaymentProvider implements PaymentProvider {
 
   async retrieveSubscription(subscriptionId: string): Promise<ProviderSubscription | null> {
     const subscription = this.subscriptions.get(subscriptionId);
-    return subscription ? structuredClone(subscription) : null;
+    return subscription ? this.publicSubscription(subscription) : null;
   }
 
   async previewPlanChange(input: {
@@ -275,6 +293,23 @@ export class MemoryPaymentProvider implements PaymentProvider {
       const subscription = this.subscription(input.subscriptionId);
       if (subscription.status === "canceled") throw new PaymentProviderError("invalid_request");
       subscription.cancelAtPeriodEnd = input.cancelAtPeriodEnd;
+      this.emit("customer.subscription.updated", { subscription }, call);
+      return subscription;
+    });
+  }
+
+  setTrialEnd(
+    input: { subscriptionId: string; trialEnd: number },
+    call: ProviderCall,
+  ): Promise<ProviderSubscription> {
+    return this.idempotent("setTrialEnd", input, call, () => {
+      const subscription = this.subscription(input.subscriptionId);
+      if (subscription.status === "canceled" || input.trialEnd <= this.clock.now()) {
+        throw new PaymentProviderError("invalid_request", "cannot move that trial end");
+      }
+      subscription.status = "trialing";
+      subscription.trialEnd = input.trialEnd;
+      subscription.currentPeriodEnd = input.trialEnd;
       this.emit("customer.subscription.updated", { subscription }, call);
       return subscription;
     });
@@ -627,7 +662,8 @@ export class MemoryPaymentProvider implements PaymentProvider {
   private discounted(amountMinor: number, promotion: Promotion | null): number {
     if (!promotion) return amountMinor;
     if (promotion.percentOff !== null)
-      return Math.round(amountMinor * (1 - promotion.percentOff / 100));
+      // Stripe rounds the discount, not the total (docs/STRIPE.md §7: 50% off 799 is 399).
+      return amountMinor - Math.round((amountMinor * promotion.percentOff) / 100);
     return Math.max(0, amountMinor - (promotion.amountOffMinor ?? 0));
   }
 
@@ -674,6 +710,17 @@ export class MemoryPaymentProvider implements PaymentProvider {
     invoice.paidAt = this.clock.now();
   }
 
+  private publicSubscription(subscription: ProviderSubscription): ProviderSubscription {
+    const method = subscription.defaultPaymentMethodId
+      ? this.methods.get(subscription.defaultPaymentMethodId)
+      : undefined;
+    const { card: _card, ...display } = method ?? { card: null };
+    return structuredClone({
+      ...subscription,
+      defaultPaymentMethod: method ? (display as ProviderPaymentMethod) : null,
+    });
+  }
+
   private publicInvoice(
     invoice: ProviderInvoice & { clientSecret: string | null },
   ): ProviderInvoice {
@@ -695,6 +742,7 @@ export class MemoryPaymentProvider implements PaymentProvider {
       id: this.newId("evt"),
       type,
       createdAt: this.clock.now(),
+      occurredAt: this.clock.now(),
       customerId: refs.customerId ?? refs.subscription?.customerId ?? null,
       subscriptionId: refs.subscription?.id ?? null,
       invoiceId: refs.invoiceId ?? null,

@@ -15,6 +15,7 @@ import {
 import type { Popularity } from "../catalog/cache.ts";
 import type { CatalogSnapshot } from "../catalog/snapshot.ts";
 import { maturityRank } from "../domain/maturity.ts";
+import type { ProfileLists } from "../ports/recommendation-store.ts";
 import type {
   EpisodeSummary,
   ProfileSignals,
@@ -22,7 +23,7 @@ import type {
   TitleRecord,
 } from "../repositories/records.ts";
 import { addScaled, dot, type FeatureVector, normalize } from "./features.ts";
-import { DAY_MS, fnv1a32, utcDay } from "./hash.ts";
+import { DAY_MS, fnv1a32, seededShuffle as shuffle, utcDay } from "./hash.ts";
 
 /**
  * Personalisation for one profile at one moment: a pure function of the catalog snapshot,
@@ -61,6 +62,14 @@ const NEW_BADGE_DAYS = 14;
 const MAX_BECAUSE_YOU_WATCHED = 3;
 /** First-page positions that count as "prominent" for cross-row variety. */
 const PROMINENT_POSITIONS = 6;
+/**
+ * Learned candidates (docs/RECOMMENDATIONS.md, "Learned candidates"). Titles the profile engaged
+ * with since its lists were generated (or in the last two days without lists) are session seeds:
+ * their learned neighbours are boosted at once, without waiting for the next batch.
+ */
+const SESSION_SEEDS = 5;
+const SESSION_WINDOW_MS = 2 * DAY_MS;
+const SESSION_BOOST_WEIGHT = 0.25;
 /** The billboard picks among this many of the best unstarted matches... */
 const BILLBOARD_POOL = 12;
 /** ...rotating daily among the top few after freshness and presentation bonuses. */
@@ -72,6 +81,44 @@ export interface PersonalizationInput {
   signals: ProfileSignals;
   profile: { id: string; name: string; maturityCeiling: MaturityLevel };
   now: number;
+  /**
+   * The learned policy's candidates (null or absent: the rule engine alone). The model
+   * proposes, the rules dispose: maturity, availability, dislikes, what was watched since, badge
+   * caps and deduplication apply to every learned candidate exactly as to the engine's own.
+   */
+  learned?: LearnedInput | null;
+  /**
+   * Exploration (milestone 2 §6.1): rows and items in a random order derived from this seed,
+   * except Continue Watching's place and the order of canonical lists.
+   */
+  exploreSeed?: string | null;
+  /** What staff decided (milestone 2 §8.3): pinned billboards, curated rows, availability. */
+  editorial?: EditorialInput | null;
+}
+
+/** Staff decisions as the engine applies them (areas/personalisation/serving.ts). */
+export interface EditorialInput {
+  /** Titles pinned to each view's billboard, in order (rotating daily among the eligible). */
+  billboards: ReadonlyMap<BrowseView, readonly string[]>;
+  /** Published collections: a row on their view at their (1-based) position. */
+  collections: readonly {
+    id: string;
+    name: string;
+    view: BrowseView;
+    position: number;
+    titleIds: readonly string[];
+  }[];
+  /** Titles staff made unavailable now: on no browse surface. */
+  unavailable: ReadonlySet<string>;
+}
+
+/** What the learned policy hands the engine (areas/personalisation/serving.ts). */
+export interface LearnedInput {
+  run: string;
+  /** Neighbours of the active run by source title, best first. */
+  neighbours: ReadonlyMap<string, readonly { neighbourId: string; score: number }[]>;
+  /** The profile's fresh lists, or null (no personal scores: neighbours only). */
+  lists: ProfileLists | null;
 }
 
 /** Where a title stands for this profile (rules: docs/RECOMMENDATIONS.md, Continue Watching). */
@@ -201,6 +248,12 @@ export class Personalization {
   private readonly scoreCache = new Map<string, number>();
   private readonly affinityReference: number;
   private readonly top10Cache = new Map<TitleType | null, string[]>();
+  /** Learned personal scores (the `personal` list), titleId → P(play | seen). */
+  private readonly personal = new Map<string, number>();
+  /** Within-profile percentile of each learned personal score, 1 = best. */
+  private readonly personalPercentile = new Map<string, number>();
+  /** Session re-ranking: titleId → best learned similarity to a title just watched. */
+  private readonly sessionBoost = new Map<string, number>();
 
   constructor(input: PersonalizationInput) {
     this.input = input;
@@ -217,6 +270,7 @@ export class Personalization {
     const affinities = this.visible.map((title) => this.affinity(title.id)).sort((a, b) => b - a);
     const reference = affinities[Math.floor(affinities.length * 0.05)] ?? 0;
     this.affinityReference = Math.max(reference, 0.05);
+    this.indexLearned();
   }
 
   get now(): number {
@@ -229,7 +283,15 @@ export class Personalization {
 
   /** Every catalog surface goes through this: maturity filtering happens here, server-side. */
   isVisible(titleId: string): boolean {
-    return this.input.snapshot.maturityRankOf(titleId) <= this.ceilingRank;
+    return (
+      this.input.snapshot.maturityRankOf(titleId) <= this.ceilingRank &&
+      !this.input.editorial?.unavailable.has(titleId)
+    );
+  }
+
+  /** Staff made the title unavailable now (it exists, but no surface may offer it). */
+  isUnavailable(titleId: string): boolean {
+    return this.input.editorial?.unavailable.has(titleId) ?? false;
   }
 
   visibleTitles(type: TitleType | null = null): TitleRecord[] {
@@ -440,19 +502,47 @@ export class Personalization {
 
   // --- Lists ---------------------------------------------------------------------------------
 
-  /** More Like This, personalised: content similarity first, taste second. */
+  /**
+   * More Like This, personalised: similarity first, taste second. With learned candidates the
+   * similarity is the model's (co-watch blended with content) for the titles it knows, followed
+   * by content similarity for the rest; a title the model has never seen gets content only.
+   */
   similar(titleId: string, limit = 12, type: TitleType | null = null): string[] {
-    return this.input.snapshot
-      .similar(titleId)
-      .filter(({ id }) => this.isVisible(id) && this.rating(id) !== "dislike")
-      .filter(({ id }) => !type || this.input.snapshot.title(id)?.type === type)
-      .map(({ id, similarity }) => ({
-        id,
-        rank: 0.75 * similarity + 0.25 * Math.max(0, this.affinity(id)),
-      }))
-      .sort((a, b) => b.rank - a.rank || a.id.localeCompare(b.id))
-      .slice(0, limit)
-      .map(({ id }) => id);
+    const allowed = (id: string) =>
+      id !== titleId &&
+      this.input.snapshot.title(id) !== undefined &&
+      this.isVisible(id) &&
+      this.rating(id) !== "dislike" &&
+      (!type || this.input.snapshot.title(id)?.type === type);
+    const ranked = (entries: { id: string; similarity: number }[]) =>
+      entries
+        .filter(({ id }) => allowed(id))
+        .map(({ id, similarity }) => ({
+          id,
+          rank: 0.75 * similarity + 0.25 * Math.max(0, this.tasteTerm(id)),
+        }))
+        .sort((a, b) => b.rank - a.rank || a.id.localeCompare(b.id))
+        .map(({ id }) => id);
+    const content = ranked([...this.input.snapshot.similar(titleId)]);
+    const learned = this.input.learned?.neighbours.get(titleId);
+    if (!learned || learned.length === 0) return content.slice(0, limit);
+    const first = ranked(
+      learned.map(({ neighbourId, score }) => ({ id: neighbourId, similarity: score })),
+    );
+    const seen = new Set(first);
+    return [...first, ...content.filter((id) => !seen.has(id))].slice(0, limit);
+  }
+
+  /**
+   * The taste term rows blend in: the learned one when the model scored this profile, else the
+   * engine's affinity; either way raised by the session boost of what was just watched.
+   */
+  private tasteTerm(id: string): number {
+    if (!this.input.learned) return this.affinity(id);
+    const boost = this.sessionBoost.get(id) ?? 0;
+    return this.personal.size > 0
+      ? Math.max(this.personalPercentile.get(id) ?? 0, boost)
+      : Math.max(this.affinity(id), boost);
   }
 
   /** Visible titles by recent views; padded with seed popularity so the row is never empty. */
@@ -508,12 +598,37 @@ export class Personalization {
   billboard(view: BrowseView): string | null {
     if (view === "new-popular") return null;
     const type = VIEW_TYPES[view];
+    const eligible = (id: string) => {
+      const title = this.input.snapshot.title(id);
+      return (
+        !!title &&
+        (!type || title.type === type) &&
+        this.isVisible(id) &&
+        title.isPlayable &&
+        this.rating(id) !== "dislike" &&
+        !this.progressByTitle.get(id)?.anchor
+      );
+    };
+    const rotation = fnv1a32(`${this.input.profile.id}:${view}:${utcDay(this.input.now)}`);
+    // Staff pins come first: an editorial decision, still under the same rules.
+    const pinned = (this.input.editorial?.billboards.get(view) ?? []).filter(eligible);
+    if (pinned.length > 0) return pinned[rotation % pinned.length] ?? null;
+    // The model's billboard (re-ranked for this profile, unstarted titles), under the same
+    // rules as the engine's own pick; rotating daily among its first few.
+    const learned = this.learnedRow("billboard")
+      .map(([id]) => id)
+      .filter(eligible)
+      .slice(0, BILLBOARD_CANDIDATES);
+    if (learned.length > 0) return learned[rotation % learned.length] ?? null;
     // A strong personal match the profile has not started: what it is watching already leads
     // Continue Watching. Among the best few, prefer fresh, original, previewable titles.
-    const pool = this.visibleTitles(type)
-      .filter((title) => title.isPlayable && this.rating(title.id) !== "dislike")
-      .filter((title) => !this.progressByTitle.get(title.id)?.anchor)
-      .sort((a, b) => this.score(b.id) - this.score(a.id) || a.id.localeCompare(b.id))
+    const pool = this.rank(
+      this.visibleTitles(type)
+        .filter((title) => eligible(title.id))
+        .map((title) => title.id),
+    )
+      .map((id) => this.input.snapshot.title(id))
+      .filter((title): title is TitleRecord => !!title)
       .slice(0, BILLBOARD_POOL);
     const candidates = pool
       .map((title, index) => ({
@@ -529,14 +644,65 @@ export class Personalization {
       .slice(0, BILLBOARD_CANDIDATES);
     if (candidates.length === 0) return null;
     // Rotates daily per profile and view, and is stable within the day.
-    const pick =
-      fnv1a32(`${this.input.profile.id}:${view}:${utcDay(this.input.now)}`) % candidates.length;
-    return candidates[pick]?.id ?? null;
+    return candidates[rotation % candidates.length]?.id ?? null;
   }
 
   rows(view: BrowseView): RowPlan[] {
     const plans = view === "new-popular" ? this.newAndPopularRows() : this.catalogRows(view);
-    return this.withVariety(plans.filter((plan) => plan.titleIds.length > 0));
+    const varied = this.withCollections(
+      view,
+      this.withVariety(plans.filter((plan) => plan.titleIds.length > 0)),
+    );
+    return this.input.exploreSeed ? this.explore(varied, this.input.exploreSeed) : varied;
+  }
+
+  /**
+   * Curated collections staff published on this view, each at its position (1-based, clamped
+   * to the end), in the curated order, less what the rules forbid for this profile.
+   */
+  private withCollections(view: BrowseView, plans: RowPlan[]): RowPlan[] {
+    const type = VIEW_TYPES[view];
+    const rows = [...plans];
+    const collections = [...(this.input.editorial?.collections ?? [])]
+      .filter((collection) => collection.view === view)
+      .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+    for (const collection of collections) {
+      const ids = [...new Set(collection.titleIds)].filter((id) => {
+        const title = this.input.snapshot.title(id);
+        return (
+          !!title &&
+          this.isVisible(id) &&
+          this.rating(id) !== "dislike" &&
+          (!type || title.type === type)
+        );
+      });
+      if (ids.length === 0) continue;
+      const plan = this.plan(view, "collection", collection.id, "standard", collection.name, ids);
+      rows.splice(Math.min(rows.length, Math.max(0, collection.position - 1)), 0, plan);
+    }
+    return rows;
+  }
+
+  /**
+   * An exploration page: the rows in a random order (Continue Watching keeps its place: it is
+   * the member's own resume list, and the ranker never learns from it) and the items of every
+   * row whose order is not the point in a random order too. Canonical lists keep theirs (My
+   * List, Top 10 and its numerals, Watch It Again). Deterministic per seed, so every page and
+   * row page of the session agrees.
+   */
+  private explore(plans: RowPlan[], seed: string): RowPlan[] {
+    const canonical = new Set<RowKind>([
+      "continue-watching",
+      "my-list",
+      "top-10",
+      "watch-again",
+      "collection",
+    ]);
+    for (const plan of plans) {
+      if (!canonical.has(plan.kind)) plan.titleIds = shuffle(plan.titleIds, `${seed}:${plan.id}`);
+    }
+    const head = plans[0]?.kind === "continue-watching" ? plans.slice(0, 1) : [];
+    return [...head, ...shuffle(plans.slice(head.length), `${seed}:rows`)];
   }
 
   /** A single row by id (for `GET /browse/rows/:rowId`), or null. */
@@ -567,6 +733,7 @@ export class Personalization {
           )
         : null,
     );
+    add(this.topPicks(view, type));
     const top10 = this.top10(type);
     add(
       top10.length >= MIN_TOP_10_ITEMS
@@ -639,6 +806,35 @@ export class Personalization {
     return rows;
   }
 
+  /**
+   * "Top Picks for {name}": the model's re-ranked list, in its order (re-sorting would undo its
+   * diversity), less what the rules forbid: above the ceiling, disliked, started or finished
+   * since the list was made, not this view's type.
+   */
+  private topPicks(view: BrowseView, type: TitleType | null): RowPlan | null {
+    const ids = this.learnedRow("top-picks")
+      .map(([id]) => id)
+      .filter((id) => {
+        const title = this.input.snapshot.title(id);
+        return (
+          !!title &&
+          (!type || title.type === type) &&
+          this.isVisible(id) &&
+          this.rating(id) !== "dislike" &&
+          !this.progressByTitle.get(id)?.anchor
+        );
+      });
+    if (ids.length < MIN_ROW_ITEMS) return null;
+    return this.plan(
+      view,
+      "top-picks",
+      null,
+      "standard",
+      `Top Picks for ${this.input.profile.name}`,
+      [...new Set(ids)],
+    );
+  }
+
   private newAndPopularRows(): RowPlan[] {
     const view = "new-popular";
     const recent = this.visible
@@ -683,9 +879,12 @@ export class Personalization {
     return candidates
       .map((title) => {
         const trend = this.input.popularity.trend(title.id);
-        const rank = this.coldStart
-          ? trend + 0.001 * title.popularity
-          : 0.75 * trend + 0.25 * Math.max(0, this.affinity(title.id)) + 0.001 * title.popularity;
+        const rank =
+          this.coldStart && this.personal.size === 0 && this.sessionBoost.size === 0
+            ? trend + 0.001 * title.popularity
+            : 0.75 * trend +
+              0.25 * Math.max(0, this.tasteTerm(title.id)) +
+              0.001 * title.popularity;
         return { id: title.id, rank, trend };
       })
       .filter((entry) => entry.trend > 0 || candidates.length < MIN_ROW_ITEMS * 2)
@@ -736,9 +935,23 @@ export class Personalization {
   private becauseRow(view: BrowseView, sourceId: string, type: TitleType | null): RowPlan | null {
     const source = this.input.snapshot.title(sourceId);
     if (!source || !this.isVisible(sourceId)) return null;
-    const items = this.similar(sourceId, ROW_MAX_ITEMS, type).filter(
-      (id) => !this.progressByTitle.get(id)?.finished,
-    );
+    // Learned: the model's own row for this source first (its scores blend similarity with this
+    // profile's taste), then the learned and content neighbours (`similar`), all under the rules.
+    const listed = this.learnedRow("because-you-watched", sourceId)
+      .map(([id]) => id)
+      .filter((id) => {
+        const title = this.input.snapshot.title(id);
+        return (
+          id !== sourceId &&
+          !!title &&
+          this.isVisible(id) &&
+          this.rating(id) !== "dislike" &&
+          (!type || title.type === type)
+        );
+      });
+    const items = [...new Set([...listed, ...this.similar(sourceId, ROW_MAX_ITEMS, type)])]
+      .filter((id) => !this.progressByTitle.get(id)?.finished)
+      .slice(0, ROW_MAX_ITEMS);
     if (items.length < MIN_ROW_ITEMS) return null;
     const plan = this.plan(
       view,
@@ -845,6 +1058,7 @@ export class Personalization {
       "watch-again",
       "because-you-watched",
       "new-releases",
+      "top-picks",
     ]);
     for (const plan of plans) {
       if (!fixed.has(plan.kind)) {
@@ -882,15 +1096,69 @@ export class Personalization {
     return plan.titleIds.length >= MIN_ROW_ITEMS ? plan : null;
   }
 
-  /** Order by personal score; finished titles sink. */
+  /**
+   * Order by personal score; finished titles sink. With learned candidates: titles the model
+   * scored (or that a title just watched makes similar) come first, by the learned score plus
+   * the session boost; the rest follow by the engine's own score (services/recs README: "titles
+   * not listed: order after listed ones by the engine's own score").
+   */
   private rank(ids: string[]): string[] {
+    if (!this.input.learned) {
+      return ids
+        .map((id) => ({
+          id,
+          rank: this.score(id) - (this.progressByTitle.get(id)?.finished ? 1 : 0),
+        }))
+        .sort((a, b) => b.rank - a.rank || a.id.localeCompare(b.id))
+        .map(({ id }) => id);
+    }
     return ids
-      .map((id) => ({
-        id,
-        rank: this.score(id) - (this.progressByTitle.get(id)?.finished ? 1 : 0),
-      }))
-      .sort((a, b) => b.rank - a.rank || a.id.localeCompare(b.id))
+      .map((id) => ({ id, ...this.learnedOrder(id) }))
+      .sort((a, b) => b.tier - a.tier || b.value - a.value || a.id.localeCompare(b.id))
       .map(({ id }) => id);
+  }
+
+  private learnedOrder(id: string): { tier: number; value: number } {
+    const boost = this.sessionBoost.get(id) ?? 0;
+    if (this.progressByTitle.get(id)?.finished) return { tier: -1, value: this.score(id) };
+    const personal = this.personal.get(id);
+    if (personal !== undefined || boost > 0) {
+      return { tier: 1, value: (personal ?? 0) + SESSION_BOOST_WEIGHT * boost };
+    }
+    return { tier: 0, value: this.score(id) };
+  }
+
+  private learnedRow(type: string, param: string | null = null): [string, number][] {
+    return (
+      this.input.learned?.lists?.rows.find((row) => row.type === type && row.param === param)
+        ?.items ?? []
+    );
+  }
+
+  /** Indexes the learned candidates: personal scores, their percentiles, session seeds. */
+  private indexLearned(): void {
+    const learned = this.input.learned;
+    if (!learned) return;
+    const personal = this.learnedRow("personal");
+    personal.forEach(([id, score], index) => {
+      if (this.personal.has(id)) return;
+      this.personal.set(id, score);
+      this.personalPercentile.set(id, 1 - index / Math.max(1, personal.length));
+    });
+    const since = learned.lists?.generatedAt ?? this.input.now - SESSION_WINDOW_MS;
+    const seeds = [...this.progressByTitle.values()]
+      .filter((progress) => progress.anchor && progress.latest.updatedAt > since)
+      .filter((progress) => this.rating(progress.titleId) !== "dislike")
+      .sort((a, b) => b.latest.updatedAt - a.latest.updatedAt || a.titleId.localeCompare(b.titleId))
+      .slice(0, SESSION_SEEDS);
+    const seedIds = new Set(seeds.map((seed) => seed.titleId));
+    for (const seed of seeds) {
+      for (const neighbour of learned.neighbours.get(seed.titleId) ?? []) {
+        if (seedIds.has(neighbour.neighbourId)) continue;
+        const best = this.sessionBoost.get(neighbour.neighbourId) ?? 0;
+        if (neighbour.score > best) this.sessionBoost.set(neighbour.neighbourId, neighbour.score);
+      }
+    }
   }
 
   private ageDays(title: TitleRecord): number {

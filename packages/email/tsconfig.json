@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Portable: everything but the SMTP sender runs on Node and on Workers (Web types only).
+    "lib": ["ES2024", "WebWorker"]
+  },
+  "include": ["src", "test"],
+  "exclude": ["src/smtp.ts", "test/node"]
+}

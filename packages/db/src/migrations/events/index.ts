@@ -1,5 +1,7 @@
 import type { SchemaMigration } from "../types.ts";
 import * as m0004 from "./0004_events.ts";
+import * as m0011 from "./0011_events_privacy_open.ts";
+import * as m0012 from "./0012_events_outbox.ts";
 
 /**
  * The events area's migrations, oldest first. Add a migration here (a new file, the next free
@@ -7,4 +9,10 @@ import * as m0004 from "./0004_events.ts";
  */
 export const EVENTS_MIGRATIONS: readonly SchemaMigration[] = [
   { name: "0004_events", source: "events/0004_events.ts", up: m0004.up },
+  {
+    name: "0011_events_privacy_open",
+    source: "events/0011_events_privacy_open.ts",
+    up: m0011.up,
+  },
+  { name: "0012_events_outbox", source: "events/0012_events_outbox.ts", up: m0012.up },
 ];

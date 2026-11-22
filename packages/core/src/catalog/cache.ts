@@ -16,7 +16,7 @@ import { CatalogSnapshot } from "./snapshot.ts";
  * re-seed) and popularity counters (minutes-old is fine). Per-profile state never does:
  * My List and ratings must be read-after-write.
  */
-class TwoLevel<T, D> {
+export class TwoLevel<T, D> {
   private value: { key: string; data: T; expiresAt: number } | undefined;
   private readonly shared: JsonCache<D>;
   private readonly options: {

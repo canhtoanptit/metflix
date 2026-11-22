@@ -1,0 +1,25 @@
+{
+  "name": "@webflix/email",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Email for Webflix: the message shape and its validation, typed templates rendered to HTML and text, an HTTP provider sender and provider webhooks (portable), and an SMTP sender (Node).",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./smtp": "./src/smtp.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . && tsc -p tsconfig.node.json",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

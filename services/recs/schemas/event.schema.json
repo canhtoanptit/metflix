@@ -411,7 +411,8 @@
               "genre",
               "watch-again",
               "originals",
-              "top-picks"
+              "top-picks",
+              "collection"
             ]
           },
           "itemCount": {

@@ -121,6 +121,8 @@ const ACCOUNT_KEYED_POLICIES: ReadonlySet<RateLimitPolicyName> = new Set([
   "profile-pin",
   "payment",
   "playback-start",
+  // Milestone 2 (billing): promo-code lookups per account (docs/BACKEND.md §3).
+  "promotion",
 ]);
 
 /**

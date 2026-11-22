@@ -19,6 +19,8 @@ export {
 export {
   type BillingRepositoryHarness,
   describeBillingRepositoryContract,
+  makeCheckoutRecord,
+  makeMembershipRecord,
 } from "./areas/billing.contract.ts";
 export {
   describeEventsRepositoryContract,
@@ -57,6 +59,7 @@ export {
   type TimeControl,
   useHarness,
 } from "./harness.ts";
+export * from "./identity-federation.suite.ts";
 export {
   describeIdentityProviderContract,
   type IdentityProviderHarness,
@@ -67,6 +70,7 @@ export {
   type JobQueueHarness,
   type JobQueueHarnessFactory,
 } from "./job-queue.contract.ts";
+export * from "./oidc-relying-party.suite.ts";
 export {
   describePasswordHasherContract,
   type PasswordHasherHarness,
@@ -81,6 +85,11 @@ export {
   type RecommendationStoreHarness,
 } from "./recommendation-store.contract.ts";
 export * from "./records.ts";
+export {
+  type RecsVersionInput,
+  type WrittenRecsVersion,
+  writeRecsVersion,
+} from "./recs-artefacts.ts";
 export {
   describeRepositoryContract,
   type RepositoryHarness,

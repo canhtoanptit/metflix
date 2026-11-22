@@ -400,8 +400,8 @@ Common moves without touching a shared file:
 | `authenticateStaff` | real: verifies with `deps.staff`; `unauthenticated` otherwise | `areas/admin/service.ts` |
 | Area ports in every mode | memory (`identityProviders` empty; the staff verifier mints only in process) | `apps/*/src/areas/<area>.ts` |
 | `WEBFLIX_EVENT_SINK=lake` | real: the lake writer over the mode's blob store | (works today) |
-| Development issuer, Node | mounted at `/dev-idp/*` outside production; its issuer URLs use `WEBFLIX_PUBLIC_ORIGIN` (`:5173` in dev), so a browser reaches it only once the Vite dev server proxies `/dev-idp` (apps/web) and, on kind, once the gateway routes `/dev-idp` to the API (deploy); server-side calls can use `devIdp.fetch` in process | identity, with the web and platform owners |
-| Development issuer, Worker | not mounted: `/dev-idp/*` reaches the app (`not_found`) | `apps/edge/src/areas/identity.ts` (`handleIdentityRequest`), after `packages/dev-idp` typechecks under `@cloudflare/workers-types` |
+| Development issuer, Node | mounted at `/dev-idp/*` outside production and called in process by the relying party (identity wave: done); its issuer URLs use `WEBFLIX_PUBLIC_ORIGIN` (`:5173` in dev), so a *browser* reaches it only once the Vite dev server proxies `/dev-idp` (apps/web) and, on kind, once the gateway routes `/dev-idp` to the API (deploy) | the web and platform owners (the proxy and the route) |
+| Development issuer, Worker | mounted at `/dev-idp/*` outside production by `handleIdentityRequest` (identity wave: done; `packages/dev-idp` now typechecks under `@cloudflare/workers-types`), single use kept in D1 | — |
 | `/_pay/*` (fake provider's form) | routed to the Worker / not mounted anywhere | billing's area composition files |
 
 ### 8.6 Decisions the blueprint left open (with the reason)
@@ -477,9 +477,9 @@ Common moves without touching a shared file:
 ### 8.7 Where the blueprint was wrong, or a track's measured facts won
 
 - §4.1 "`accounts.password_hash` becomes nullable": not safely possible on SQLite/D1 (D-M2-5).
-- §4.4 "mount the development issuer in apps/api and apps/edge": done in apps/api; in apps/edge
-  `packages/dev-idp` does not typecheck under `@cloudflare/workers-types` (two WebCrypto union
-  types in `src/jose.ts`), although its own workerd suite passes under its own types.
+- §4.4 "mount the development issuer in apps/api and apps/edge": done in both (apps/edge after
+  the identity wave made `packages/dev-idp` typecheck under `@cloudflare/workers-types`; the two
+  WebCrypto union types in `src/jose.ts` are narrowed at run time).
 - §5.2–§5.5 already carried docs/STRIPE.md's corrections; the port follows STRIPE.md where the
   blueprint is less specific: keys per (operation, attempt), declines replayed, first payment
   confirmed in the browser, refunds that leave invoices paid, retrieve-never-trust webhooks.

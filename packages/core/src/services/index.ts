@@ -58,17 +58,26 @@ export function createServices(deps: ServiceDependencies): Services {
       logger: deps.logger,
     }),
   };
-  const browse = createBrowseService(deps, state);
   const { areas, seams } = createAreaServices(deps);
+  const account = createAccountService(deps);
+  const browse = createBrowseService(deps, state, {
+    serving: areas.personalisation.serving,
+    // Experiment targeting by plan or tenure reads the account through billing's service, and
+    // only while a running experiment targets them.
+    memberFacts: async (accountId) => {
+      const details = await account.getAccount(accountId);
+      return { plan: details.plan.id, joinedAt: Date.parse(details.account.createdAt) };
+    },
+  });
   const modules = Object.values(areas);
   return {
     ...areas,
     seams,
-    auth: createAuthService(deps),
-    account: createAccountService(deps),
+    auth: createAuthService(deps, seams),
+    account,
     profiles: createProfileService(deps),
     browse,
-    search: createSearchService(deps, browse.personalize),
+    search: createSearchService(deps, browse.personalizeAvailable),
     library: createLibraryService(deps, state, browse.personalize),
     playback: createPlaybackService(deps, browse.personalize),
     seeder: createSeeder(deps, state),

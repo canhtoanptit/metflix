@@ -1,3 +1,4 @@
+import type { BlobStore } from "../ports/blob-store.ts";
 import type { EmailSender } from "../ports/email-sender.ts";
 import type { EventSink } from "../ports/event-sink.ts";
 import type { Experiments } from "../ports/experiments.ts";
@@ -22,6 +23,11 @@ export interface AreaPorts {
   eventSink: EventSink;
   /** Personalisation area. */
   recommendations: RecommendationStore;
+  /**
+   * Personalisation area: where the pipeline publishes its artefacts (`recs/current.json` and
+   * `recs/v={run}/…`), read by the importer. The mode's blob store; absent: nothing to import.
+   */
+  recommendationArtefacts?: BlobStore;
   /** Experiments area. */
   experiments: Experiments;
   /** Admin area: staff bearer tokens. */

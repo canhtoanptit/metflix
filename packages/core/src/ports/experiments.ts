@@ -23,6 +23,8 @@ import { utf8Encode } from "../encoding.ts";
 export interface Experiments {
   /** Every definition (all statuses); adapters may cache for up to a minute. */
   definitions(): Promise<ExperimentDefinition[]>;
+  /** Forget cached definitions (after a staff change): optional, for caching adapters. */
+  invalidate?(): Promise<void>;
   /** The unit's assignments: experiment key → variant. */
   assign(
     unit: ExperimentUnit,
@@ -44,6 +46,44 @@ export interface AssignmentContext {
   isNew: boolean;
   /** Restricted profiles (kids, lowered ceiling) are never in experiments (§6.3). */
   restricted: boolean;
+}
+
+/**
+ * An assignment context whose member facts (plan, new or existing) are loaded only when a
+ * running experiment for the unit's type targets them, so the hot paths (browse) pay for the
+ * lookup only while such an experiment exists.
+ */
+export interface LazyAssignmentContext {
+  restricted: boolean;
+  country: string | null;
+  member(): Promise<Pick<AssignmentContext, "plan" | "isNew">>;
+}
+
+/** Whether any running experiment for `unit`'s type targets plans or new/existing members. */
+export function needsMemberFacts(
+  definitions: readonly ExperimentDefinition[],
+  unit: ExperimentUnit,
+): boolean {
+  return definitions.some(
+    (definition) =>
+      definition.status === "running" &&
+      definition.unit === unit.type &&
+      (definition.targeting.plans.length > 0 || definition.targeting.audience !== "all"),
+  );
+}
+
+/** The full context: member facts loaded only when an experiment needs them. */
+export async function resolveAssignmentContext(
+  definitions: readonly ExperimentDefinition[],
+  unit: ExperimentUnit,
+  context: AssignmentContext | LazyAssignmentContext,
+): Promise<AssignmentContext> {
+  if (!("member" in context)) return context;
+  const base = { restricted: context.restricted, country: context.country };
+  if (context.restricted || !needsMemberFacts(definitions, unit)) {
+    return { ...base, plan: null, isNew: false };
+  }
+  return { ...base, ...(await context.member()) };
 }
 
 /** Bucket in [0, buckets) of a string: the first 32 bits of its SHA-256, reduced. */

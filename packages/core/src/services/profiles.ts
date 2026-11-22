@@ -105,7 +105,7 @@ export function createProfileService(deps: ServiceDependencies) {
       await requireAvatar(input.avatarId);
       // While parental controls are in use, a new profile would be a way around them.
       if (proof === "password") {
-        await credentials.requirePassword(accountId, input.currentPassword, charge);
+        await credentials.requirePassword(auth, input.currentPassword, charge);
       }
       const now = clock.now();
       const isKids = input.isKids ?? false;
@@ -158,9 +158,9 @@ export function createProfileService(deps: ServiceDependencies) {
         await requireAvatar(input.avatarId);
       }
       if (proof === "password") {
-        await credentials.requirePassword(accountId, input.currentPassword, charge);
+        await credentials.requirePassword(auth, input.currentPassword, charge);
       } else if (proof === "unlock") {
-        await credentials.requireUnlock(profile, input, charge);
+        await credentials.requireUnlock(auth, profile, input, charge);
       }
 
       const patch: ProfilePatch = { updatedAt: clock.now() };
@@ -202,7 +202,7 @@ export function createProfileService(deps: ServiceDependencies) {
       const accountId = auth.session.accountId;
       const profile = await requireProfile(accountId, profileId);
       if (proofForProfileDeletion(auth, profile) === "unlock") {
-        await credentials.requireUnlock(profile, input, charge);
+        await credentials.requireUnlock(auth, profile, input, charge);
       }
       const outcome = await repos.profiles.deleteUnlessLast(accountId, profileId);
       if (outcome === "not_found") throw new AppError("not_found", { detail: "No such profile" });

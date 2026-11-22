@@ -287,3 +287,130 @@ title and episode ids use the contract's `Id` pattern; client events require `de
   for a membership `none` (§5.1); extend `PAYMENT_DECLINE_REASONS` (the web switches on it
   exhaustively).
 - Identity: `SignupBody` loses `planId` (plan choice moves to checkout, §5.1).
+
+## 2026-11-22 — events area: behaviour collection, consent, export, deletion (additive)
+
+The events area implemented its routes (milestone 2 §6). Everything below is additive: no
+event type, field or code changed, and the event JSON Schema the pipeline reads is unchanged.
+
+- **New route `GET /privacy/exports/:id?token=`** (`downloadDataExport`, `account-holder`):
+  the signed link of a completed export (`PrivacyRequest.downloadUrl`), answering the new
+  `DataExport` document as an attachment (`Content-Disposition`). The token is bound to the
+  request and the account and expires with `expiresAt`; anything else is `not_found`. The
+  milestone 2 foundation had `downloadUrl` but no route serving it.
+- **New schemas** (`privacy.ts`): `DataExport` (`format: "webflix.data-export"`,
+  `formatVersion: 1`: account, membership, profiles, devices, per-profile library and history,
+  consents, privacy requests, `events: LakeEvent[]`, `areas` for the other areas' parts,
+  `notes`), `DataExportParams`, `DataExportQuery`.
+- **`POST /events`** (`ingestEvents`): `rateLimitScope: "handler"` (OpenAPI
+  `x-webflix-rate-limit-scope: handler`): the handler charges the `events` policy twice per
+  request, per account (signed out: per client address) and per device. A batch must carry one
+  `deviceId` (else `validation_failed` on `events`). Request and response examples added.
+  `503 service_unavailable` when the batch cannot be queued (retry it).
+- **Behaviour the contract leaves to the server** (docs/BACKEND.md §3, "Behaviour events and
+  privacy"): consent modes and Global Privacy Control, the export's contents, the deletion's
+  cooling-off period and what erasure keeps.
+
+## 2026-11-22 — personalisation and experiments: learned candidates, editorial rows (additive)
+
+Recommendation serving and experimentation were built (milestone 2 §7.2, §8.1; docs/RECOMMENDATIONS.md,
+"Learned candidates"). No route, field or error code changed; one constant gained a value.
+
+- **`ROW_KINDS` gains `collection`**: a curated collection staff published on a view (§8.3).
+  Informational like every kind (render rows from `layout` and the items); its row id is
+  `{view}:collection:{id}` and `GET /browse/rows/:rowId` pages it. `EVENT_ROW_KINDS` follows, so
+  the generated `services/recs/schemas/event.schema.json` accepts `row.view.rowKind:
+  "collection"` (the pipeline reads the enum from the schema; its tests pass).
+- **`BrowsePage.policy` is now always sent**: `{ id, explore }`, `id` being `rules` (the rule
+  engine built the page) or `learned:{run}` (learned candidates of the model run `run`), and
+  `explore: true` on an exploration page (rows and non-canonical items in random order). Copy it
+  verbatim into impressions and title-opens.
+- **Rows that now appear**: `top-picks` ("Top Picks for {name}", after Continue Watching) for
+  profiles the model scored, and `collection` rows where staff published them.
+- **A title staff made unavailable** (or outside its availability window) is in no browse row,
+  billboard or genre page, and not in search results or title suggestions; `GET /titles/:id`,
+  its episodes and More Like This answer `not_found` for it (the code a link to a title the
+  catalogue never had gets). No new code: clients already handle `not_found` on a stale link.
+- Unchanged for clients: the staff routes for experiments, editorial data and recommendation
+  status still answer `501` until the admin area wires them to the service methods.
+
+## 2026-11-22 — identity area: federated sign-in, the account-holder proof, email (backward compatible)
+
+The identity area implemented its thirteen milestone 2 routes (§4, §8.2) and changed four of its
+own declarations. A client built against the foundation keeps working: every request it sends
+is still accepted and answered as before; what is new is optional or an extra error code.
+
+- **`SignupBody.planId` and `SignupBody.payment` are optional, together** (`validation_failed`
+  on `planId` when only one is sent). Without them (§5.1) sign-up creates the account and a
+  session with **no membership**; the response is unchanged in shape: until billing makes
+  `AuthenticatedSession.subscription`/`plan` nullable (its planned breaking change), such an
+  account is presented as an `ended` membership on the `basic` plan, from the moment it was
+  created. With both, milestone 1's sign-up is unchanged. Either way a verification link is
+  emailed.
+- **`UpdateAccountBody.currentPassword` is optional**: without it, a fresh account-holder proof
+  held by the session (§4.2: `POST /session/elevation`, or a fresh sign-in with a linked issuer)
+  is required instead; neither → **`password_required`** (now in `updateAccount.errors`). An
+  account created through an issuer has no password and sets its first one this way. A new
+  address is unverified until its link is followed; email and password changes send a security
+  alert.
+- **`startOidc.errors` gains** `reauthentication_required` (`intent=link` without a fresh proof),
+  `profile_required` and `unrestricted_profile_required` (`intent=link` needs an account holder)
+  and `demo_account_protected`. An issuer that cannot be reached is not an error: the browser is
+  sent back to `returnTo?oidc=failed`.
+- **Served now** (were "absent until identity serves it"): `Account.emailVerified` and
+  `Account.hasPassword` on the session and the sign-in and sign-up responses.
+- **Implemented** (no schema change): `GET /auth/oidc/:provider/start`, both callbacks (always a
+  303 to `returnTo?oidc=<OIDC_OUTCOMES>`), `GET`/`DELETE /account/identities`, `GET`/`POST
+  /session/elevation` (each attempt counts against `profile-pin`), `POST
+  /auth/email-verification` and `/confirm`, `POST /auth/password-reset` (always 204) and
+  `/confirm`, `POST /webhooks/email/:provider` (`resend`: Svix signature over the raw body),
+  `GET /diagnostics/mailbox`. Email links put the token in the URL **fragment**:
+  `{origin}/verify-email#token=…`, `{origin}/reset-password#token=…` (the web reads it and
+  posts it to the confirm route).
+- **Behaviour the contract leaves to the server**: the linking rule, the proof, tokens, the
+  mailbox and the stand-in membership are in docs/BACKEND.md §3 ("Sign-in, milestone 2").
+- **Not changed**: `OIDC_OUTCOMES`, `REAUTH_METHODS`, error codes (none added), the callback
+  and webhook schemas.
+
+## 2026-11-22 — billing (milestone 2 wave): the membership is served; all additive
+
+No route, schema field or error code was renamed or removed; a client built against the
+foundation's contract keeps working. Milestone 1's card fields (`SignupBody.payment`,
+`ChangePlanBody.payment`, `UpdatePaymentMethodBody`) stay until the web checkout replaces them
+(`LEGACY_CARD_FIELDS` unchanged).
+
+- **`AuthenticatedSession.membership?` and `.entitlement?`** (new, optional): the same
+  `MembershipState` and `Entitlement` as `GET /account`. **The shape of "no membership"**
+  (decided here, replacing the identity area's stand-in): `membership.status: "none"`,
+  `entitlement: { entitled: false, reason: "no_membership" }`, while the still-required
+  `subscription` and `plan` show an **ended Basic membership since the account was created**
+  (`startedAt` = `currentPeriodEnd` = `canceledAt` = the account's creation). Making
+  `subscription`/`plan` nullable stays the planned breaking change of the web adoption; new
+  clients should read `membership`.
+- **Served now** (were "absent until billing serves it"): `AccountDetails.membership` and
+  `.entitlement` for every account (a milestone 1 mock membership reads `provider: null`,
+  `active` or `canceled`); `Plan.trial` (`{ days: 7 }` on every plan; one trial per account and
+  per card, decided at checkout confirmation); `subscription_required.membershipStatus`.
+- **Implemented** (no schema change): `GET /billing/config`, `POST /billing/checkout`, `GET
+  /billing/checkout/:id`, `POST /billing/checkout/:id/confirm`, `POST
+  /billing/subscription/preview`, `POST /billing/payment-method/setup`, `GET
+  /billing/payment-method/setup/:id`, `GET /billing/invoices`, `POST
+  /billing/promotions/validate`, `POST /webhooks/payments/:provider` (the `Stripe-Signature`
+  header, for the fake provider too), `POST /diagnostics/billing/clock`.
+- **Behaviour of milestone 1's membership routes**: for an account whose membership is the
+  provider's, `PUT /account/subscription` changes plan at the provider (with `previewToken`:
+  exactly as previewed; a decline is `payment_declined` and changes nothing), `DELETE` sets
+  cancel-at-period-end and `POST …/resume` undoes it (an ended membership answers
+  `checkout_state_conflict`: restart with a checkout). `PUT /account/payment-method` answers
+  `checkout_state_conflict` for such an account (use the setup flow). For an account without a
+  membership the mock-billing routes answer `subscription_required`. Accounts on the mock
+  membership: unchanged.
+  Their `errors` lists gain those codes (`subscription_required`, `checkout_state_conflict`),
+  so the OpenAPI document says so.
+- **`GET /plans`** reads the plan prices from Webflix's price table (seeded with the same
+  amounts; staff can change them).
+- **Promo codes**: a percentage discount is rounded on the discount, as Stripe does (50% off
+  799 is 399, docs/STRIPE.md §7). The `promotion` rate limit is keyed per account (it was keyed
+  per client address by default), as docs/BACKEND.md §3 documents.
+- **Not changed**: `PAYMENT_DECLINE_REASONS` (a provider's other decline codes map to
+  `card_declined`, `insufficient_funds` or `expired_card`), `CHECKOUT_STATUSES`, every error code.

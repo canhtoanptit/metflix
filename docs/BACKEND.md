@@ -11,7 +11,7 @@ web app can rely on. Companion documents: `docs/DECISIONS.md` (why things are th
 | --- | --- | --- |
 | `packages/core` | Application services (`createServices`), repository ports, recommendation engine, catalog/popularity caches, mock billing, seeder, jobs and scheduler, in-memory repositories (`@webflix/core/memory`), contract suites and test harness (`@webflix/core/testing`) | portable (Web APIs only) |
 | `packages/db` | Kysely schema, migrations (authored once), repositories, SQL search index. Entry points: `@webflix/db` (portable), `@webflix/db/sqlite` (node:sqlite), `@webflix/db/postgres` (pg), `@webflix/db/d1` (D1 binding, portable). Generated D1 SQL in `packages/db/migrations/d1/` | portable + Node-only subpaths |
-| `packages/http` | `createApp(container)`: the 78 member routes and the 32-route staff API (milestone 2's not yet built answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
+| `packages/http` | `createApp(container)`: the 79 member routes and the 32-route staff API (milestone 2's not yet built answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
 | `apps/api` | Node entrypoint: `serve`, `worker`, `migrate`, `seed`; composition of adapters from env | Node |
 
 ## 2. Running the API
@@ -132,6 +132,18 @@ ratings so the home page is full on first load.
   (`@webflix/contracts`), never more than the plan allows.
 - **Payment method**: `PUT /account/payment-method` `{payment}` replaces the card (verified like
   sign-up; a decline changes nothing) and answers `AccountDetails`.
+- **Billing (milestone 2)**: an account signed up without payment has membership `none`
+  (`GET /session` and `GET /account` carry `membership` and `entitlement`; their required
+  `subscription`/`plan` show an ended Basic membership). Checkout: `POST /billing/checkout`
+  (`requires_setup` + client secret) → the provider's form confirms the card (Stripe's Payment
+  Element with `GET /billing/config`'s publishable key, or the fake's form at `/_pay/form?secret=…`)
+  → `POST /billing/checkout/:id/confirm` (trial: `processing`; no trial: `requires_payment`, the
+  form confirms the first payment, 3-D Secure included) → poll `GET /billing/checkout/:id` until
+  `complete` (it reads the provider, so it completes even without webhooks). One trial per
+  account and per card. Plan changes: `POST /billing/subscription/preview`, then
+  `PUT /account/subscription` with its `previewToken` (charged exactly as previewed). Card
+  replacement: `POST /billing/payment-method/setup`, confirm in the form, poll the setup.
+  Accounts on milestone 1's mock membership keep milestone 1's behaviour on every route.
 - **Signed-out artwork**: `GET /showcase` (no session) lists up to 40 titles rated 13+ at most
   with their versioned `ImageSet`s; it is public and cacheable (`Cache-Control: public`, ETag).
 - **Rate limits.** Every 429 is `rate_limited` with `retryAfterSec` and `Retry-After`. Client
@@ -145,13 +157,13 @@ ratings so the home page is full on first load.
   | `auth-email` | email address | 10/900 s | 10/900 s | `POST /auth/login`, unless the browser signed in to that account before (its `webflix_device` cookie) or it is the demo account |
   | `signup` | client address | 5/60 s | 60/60 s | `POST /auth/signup` |
   | `email-lookup` | client address | 20/60 s | 300/60 s | `GET /auth/email-status` |
-  | `profile-pin` | account | 5/60 s | 60/60 s | every PIN or password check after sign-in: a PIN for a locked profile (`PUT /session/profile`), `PATCH /account`, and `POST /profiles`, `PATCH`/`DELETE /profiles/:id` when they verify a PIN or the password. Switching to an unlocked profile never counts |
+  | `profile-pin` | account | 5/60 s | 60/60 s | every PIN or password check after sign-in: a PIN for a locked profile (`PUT /session/profile`), `PATCH /account`, `POST /session/elevation` (milestone 2, every attempt), and `POST /profiles`, `PATCH`/`DELETE /profiles/:id` when they verify a PIN or the password. Switching to an unlocked profile never counts |
   | `payment` | account | 10/600 s | 10/600 s | card verifications: `PUT /account/payment-method`, a plan change that carries a card |
   | `playback-start` | account | 60/60 s | 60/60 s | `POST /playback/sessions` |
   | `oidc` (milestone 2) | client address | 30/60 s | 300/60 s | `GET /auth/oidc/:provider/start`, both callbacks |
   | `email-send` (milestone 2) | client address | 10/900 s | 120/60 s | `POST /auth/email-verification`, `POST /auth/password-reset` |
   | `email-send-recipient` (milestone 2) | recipient address | 5/900 s | 5/900 s | the same requests, charged by the handler once it knows the address |
-  | `events` (milestone 2) | account (signed out: client address) | 120/60 s | 600/60 s | `POST /events` |
+  | `events` (milestone 2) | account (signed out: client address), and separately the batch's device | 120/60 s | 600/60 s | `POST /events` (each request charges both keys) |
   | `promotion` (milestone 2) | account | 10/600 s | 10/600 s | `POST /billing/promotions/validate` |
 
   The relaxed profile raises `auth`, `signup`, `email-lookup`, `profile-pin` and milestone 2's
@@ -160,6 +172,44 @@ ratings so the home page is full on first load.
   429 handling in dev, set e.g. `WEBFLIX_RATE_LIMIT_AUTH=3/60`. Sign-up and sign-in set
   the `webflix_device` cookie (`__Host-` on https; HttpOnly, a year, stateless): it only exempts
   that browser from the per-email limit.
+- **Sign-in, milestone 2 (identity area; docs/BLUEPRINT-M2.md §4).**
+  - *Federated sign-in* is a browser navigation: `GET /api/v1/auth/oidc/{google|apple}/start?intent=signin|link|reauth&returnTo=/path`
+    (302 to the issuer; an issuer that cannot be reached sends the browser straight back with
+    `?oidc=failed`). The callback redirects to `returnTo` with `?oidc=<outcome>`
+    (`OIDC_OUTCOMES`): `signed-in`, `signed-up` (a new account, no membership, no password),
+    `linked`, `reauthenticated`, `link-required` (an account has this address but may not be
+    linked automatically: sign in to it, then link from Account), `identity-in-use`,
+    `cancelled`, `failed` (never more detail; the server logs `identity.oidc_failed` with the
+    reason). The transaction is a sealed cookie (`webflix_oidc_<provider>`, `__Host-` on https,
+    ten minutes, `SameSite=None` for Apple's cross-site form post).
+  - *Linking rule*: an issuer identity is keyed by (issuer, subject). It signs in to an existing
+    account by address only when the issuer verified the address **and** the account verified
+    it (never the demo account); a new account is created only for an address the issuer
+    verified. `intent=link` needs an account holder holding a fresh proof
+    (`reauthentication_required` otherwise) and an issuer-verified address; one identity per
+    issuer per account. Unlinking needs a fresh proof and refuses the last way to sign in
+    (`identity_last_sign_in_method`).
+  - *Account-holder proof* ("Confirm it's you"): `POST /session/elevation {password}` or a fresh
+    sign-in (`intent=reauth`, `max_age=0`, judged by `auth_time`) sets the session's proof for
+    five minutes (`GET /session/elevation` → `elevatedUntil`, `methods`). While it lasts it
+    stands in for `currentPassword` everywhere one is asked for (account changes, loosening a
+    profile, unlocking one); a wrong password is still refused. `Account.hasPassword` and
+    `Account.emailVerified` are served on the session.
+  - *Accounts without a password* (created through an issuer) store the empty string: no
+    password ever signs in to or proves anything for them; they set one with a fresh proof
+    (`PATCH /account {newPassword}`).
+  - *Email links* (`/verify-email#token=…`, `/reset-password#token=…`: the token is in the
+    fragment, never sent to a server) are single-use, stored as SHA-256 hashes, 24 hours and 30
+    minutes, and die if the address changes. `POST /auth/password-reset` always answers 204:
+    the lookup and the email happen in a job. A completed reset signs out every device, marks
+    the address verified, drops issuer identities linked under another address, and sends a
+    security alert. Email and password changes alert the (previous) address; a new address must
+    be verified again.
+  - *Sign-up without a card*: `POST /auth/signup {email, password}` creates the account with no
+    membership. Until billing serves `membership: none`, the session presents it as an `ended`
+    Basic membership (a stand-in; `GET /account` needs billing's projection).
+  - *Local mailbox*: `GET /api/v1/diagnostics/mailbox?to=` (memory or outbox sender, never in
+    production) returns the messages and their links, for the suites.
 - **Durations**: wherever a title or episode has packaged media, every duration the API returns
   for it is that stream's playable duration, in seconds: `TitleCard.runtimeSec` (movies),
   `EpisodeSummary.runtimeSec`, `NextEpisode.runtimeSec`, `PlaybackSession.durationSec`, and the
@@ -186,6 +236,69 @@ ratings so the home page is full on first load.
   Without packaged media they 404; `dominantColor` is always set.
 - **Diagnostics** (not in production): `GET /titles/:id/popularity` returns a title's stored
   daily counters (baseline and playback views, credited seconds, profiles) for the last 7 days.
+
+### Behaviour events and privacy (milestone 2 §6)
+
+- **Sending events.** Use `@webflix/telemetry` (`createTelemetry({ app })`): it builds
+  `ClientEventInput`s (UUIDv7 ids, the anonymous `deviceId` kept in `localStorage`, a
+  `sessionSeq` per app session), batches at most 50 events and 64 KiB per `POST /events`, sends
+  with `keepalive` when the page is hidden, retries 429/5xx/network errors with backoff, drops a
+  batch the server refuses as invalid, samples impressions and row views per app session, and
+  counts an impression once a card has been half visible for a second (`observeImpression`).
+  Copy `BrowsePage.policy` and the card's `rowRank`/`rank` into impressions **and** the
+  title-open that follows; copy `GET /session`'s experiment assignments with `setDefaults`.
+  Call `setEnabled(false)` while a kids or restricted profile is active (the server drops their
+  events anyway). Never send identity: the server stamps the subject and a client-supplied one
+  is `validation_failed`.
+- **`POST /events`** answers `202 { accepted, dropped }`; `dropped` (consent, restricted
+  profile, `off` mode) is never an error. All events of a batch come from one device. Limited
+  per account (signed out: per address) and per device (`events`). `503` means the batch could
+  not be queued: send it again (the lake deduplicates by `eventId`).
+- **Consent** is per account; the latest answer wins. `GET /privacy/consent` (signed in or not)
+  says what applies and whether to ask (`promptRequired`: opt-in mode and no explicit answer);
+  `PUT /privacy/consent` records an answer from a banner or settings (`unrestricted_profile_required`
+  from a kids or restricted profile). A signed-out device sends its own banner answer as
+  `EventBatch.consent`. `Sec-GPC: 1` is honoured as a withdrawal: in opt-out mode, for a purpose
+  the member never answered explicitly, a `gpc` withdrawal is recorded (so server events stop
+  too); an explicit later grant wins.
+- **Download your data.** `POST /privacy/export` needs a fresh account-holder proof
+  (`reauthentication_required`: send the member through `POST /session/elevation`), one export
+  at a time (`privacy_request_pending`), not on the demo account. The job builds one JSON
+  document (account, membership, profiles, devices, each profile's list, ratings, progress and
+  history, consents, privacy requests, every lake event of the account, the other areas' parts)
+  and emails the link; `GET /privacy/requests` lists it with `downloadUrl` until `expiresAt`.
+  The link (`GET /privacy/exports/:id?token=`) works only for its account, signed in as the
+  account holder; it answers the document as an attachment.
+- **Delete account.** `POST /account/deletion` (fresh proof, not the demo account) schedules
+  the erasure after `WEBFLIX_DELETION_COOLING_OFF_SEC`; `DELETE /account/deletion` cancels it
+  meanwhile. The erasure then lists the account's and profiles' pseudonymous keys for the lake's
+  compaction (`compact --erase`, `services.events.staff.pendingErasures`), runs every area's
+  `eraseAccountData`, frees the streams, deletes the account's export documents and the account
+  row (sessions, profiles and their library, membership, consents, linked identities and tokens
+  cascade); billing records and the record of the request itself are kept (D-M2-6).
+- **Server events.** Other areas call `emitServerEvent` (never throws; one queue message per
+  event, stamped by the consumer with the consent in force at receipt). Playback produces
+  `playback.start`, `progress` at each quarter of credited watching, `complete` at 95% or the
+  end, and `abandon` (`closed`, `replaced`, `stalled`), with ids derived from the session and
+  milestone so a repeat is the same event. They are written to the event outbox
+  (`event_outbox`) in the same batch as the playback write that produced them, so the playback
+  routes answer and cost exactly what they did (no extra round trip, no queue message: apps/edge
+  `test/budgets.test.ts`). The `events.outbox` job, published on every scheduler tick, drains
+  the outbox to the lake; the read-back and the export drain it first. A session closed without
+  a release (a killed tab) gets no `abandon` today.
+- **The privacy rules and the tests that guard them** (each was checked by breaking the code and
+  watching its test fail):
+
+  | Rule | Guard (test) |
+  | --- | --- |
+  | A kids or restricted profile produces no behavioural events, by any path | `core test/events/privacy-rules.test.ts` (client, server, real playback); `http test/events.test.ts` |
+  | Identities come from the server; a client-supplied subject is refused | `ClientEventInput` is closed; `http test/events.test.ts` "refuses a client-supplied identity" |
+  | Consent per account, latest stamp wins; nothing kept without a consented purpose | `privacy-rules.test.ts` (consent cases, stamp as of receipt) |
+  | `consent.change` is emitted and kept even when everything is withdrawn | `privacy-rules.test.ts` "emits a consent.change server event" |
+  | Modes: opt-in withholds, off collects nothing, GPC withdraws | `privacy-rules.test.ts` (modes) |
+  | Export needs a fresh proof, completes, is complete, is served only to its account | `core test/events/member-rights.test.ts`, `http test/events.test.ts` |
+  | Deletion waits out its cooling-off period, removes what must go, keeps billing records, lists the subject for compaction | `member-rights.test.ts`, `db test/events-erasure.test.ts` |
+  | Lake keys are the pipeline's pseudonyms | `core test/events/lake.test.ts`, `services/recs/tests/test_ingested_lake.py` |
 
 ## 4. Configuration reference
 
@@ -219,20 +332,40 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 
 | Variable | Default | Area | Meaning |
 | --- | --- | --- | --- |
-| `WEBFLIX_IDENTITY_PROVIDER` | `memory` | identity | `memory` or `oidc` (the generic relying party) |
-| `WEBFLIX_OIDC_PROVIDERS` | `google,apple` | identity | Consumer issuers offered, in button order (`google`, `apple`, `keycloak`) |
-| `WEBFLIX_EMAIL_SENDER` | `memory` | identity | `memory` (dev mailbox), `smtp`, `http`, `outbox` (D1) |
-| `WEBFLIX_EMAIL_FROM` | `Webflix <no-reply@webflix.dev>` | identity | Sender of every message |
-| `WEBFLIX_DEV_IDP_SECRET` | unset (random per instance) | identity | Seals the development issuer's codes and sessions (32+ chars); every replica or isolate must share it |
-| `WEBFLIX_PAYMENT_PROVIDER` | `memory` | billing | `memory`, `fake`, `stripe` |
-| `WEBFLIX_BILLING_GRACE_SEC` | `604800` (7 days) | billing | `past_due` stays entitled this long after the first failed renewal |
-| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | billing | Required for `stripe`; the names `tools/stripe` writes to `.cache/stripe/stripe.env`. Never logged |
-| `WEBFLIX_EVENT_SINK` | `memory` | events | `memory` or `lake` (the event lake in the mode's blob store: works today) |
-| `WEBFLIX_CONSENT_MODE` | `opt-in` | events | `opt-in`, `opt-out` or `off` (§6.3) |
-| `WEBFLIX_PSEUDONYM_KEY` | development key | events | HMAC key of the pseudonymous subject keys (32+ chars); required in production once events are stored |
-| `WEBFLIX_EVENTS_RETENTION_DAYS` / `WEBFLIX_AGGREGATES_RETENTION_DAYS` | `396` / `1126` | events | Raw events 13 months, aggregates 37 months |
-| `WEBFLIX_RECOMMENDATION_STORE` | `memory` | personalisation | `memory`, `database` (SQLite, PostgreSQL), `kv` (Cloudflare) |
-| `WEBFLIX_EXPERIMENTS` | `memory` | experiments | `memory` or `database` |
+| `WEBFLIX_IDENTITY_PROVIDER` | `oidc` | identity | `oidc`: the generic OpenID relying party, one per offered issuer; outside production Google and Apple without a client of their own use the development issuer mounted at `/dev-idp/*`, called in process (no proxy needed for the server's calls). `memory`: no federated sign-in (tests inject a `MemoryIdentityProvider`) |
+| `WEBFLIX_OIDC_PROVIDERS` | `google,apple` | identity | Consumer issuers offered, in button order (`google`, `apple`, `keycloak`). In production an issuer without a client is not offered (logged as `identity.providers_not_offered`); one named here explicitly without a client fails startup |
+| `WEBFLIX_OIDC_GOOGLE_CLIENT_ID`, `_CLIENT_SECRET` | unset | identity | A real Google client (secret 16+ chars). `WEBFLIX_OIDC_GOOGLE_ISSUER` defaults to `https://accounts.google.com`. Wiring the owner's client is configuration only |
+| `WEBFLIX_OIDC_APPLE_CLIENT_ID`, `_TEAM_ID`, `_KEY_ID`, `_PRIVATE_KEY` | unset | identity | Sign in with Apple: the Services ID, team, key id and the `.p8` key (PKCS#8 PEM; literal `\n` accepted); the client secret is an ES256 JWT minted per token request. `WEBFLIX_OIDC_APPLE_ISSUER` defaults to `https://appleid.apple.com` |
+| `WEBFLIX_OIDC_KEYCLOAK_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET` | unset | identity | Keycloak as a consumer issuer (no secret: a public client with PKCE) |
+| `WEBFLIX_OIDC_<PROVIDER>_REPORTS_AUTH_TIME` | `false` (Keycloak `true`) | identity | Offer a fresh sign-in with that issuer as the account-holder proof (`Elevation.methods`). A proof is judged by `auth_time` alone and fails closed without it; leave `false` until the issuer's behaviour under `max_age=0` is checked (Google does not promise `auth_time`) |
+| `WEBFLIX_OIDC_TIMEOUT_MS` | `5000` | identity | Deadline of each call to an issuer (discovery, JWKS, token) |
+| `WEBFLIX_OIDC_JWKS_REFETCH_COOLDOWN_SEC` | `10` | identity | An ID token signed by an unknown key refetches the JWKS only when the last fetch is at least this old (`0`: always once) |
+| `WEBFLIX_EMAIL_SENDER` | `memory` | identity | `memory` (dev mailbox, one process), `smtp` (Node only: Mailpit on kind), `http` (an HTTP provider), `outbox` (the database outbox: D1 on local Cloudflare, every isolate sees it; also the database on Node). `memory` and `outbox` deliver nothing: production logs `identity.email_not_delivered` |
+| `WEBFLIX_EMAIL_FROM` | `Webflix <no-reply@webflix.dev>` | identity | Sender of every message (`Name <address>` or an address) |
+| `WEBFLIX_EMAIL_HTTP_API_KEY`, `WEBFLIX_EMAIL_HTTP_URL`, `WEBFLIX_EMAIL_HTTP_PROVIDER` | unset, `https://api.resend.com/emails`, `resend` | identity | The `http` sender: Resend's REST API (bearer key, `Idempotency-Key`). Never logged |
+| `WEBFLIX_EMAIL_WEBHOOK_SECRET` | unset | identity | Verifies `POST /api/v1/webhooks/email/resend` (Svix-signed, five-minute tolerance); unset: the webhook answers `not_found` |
+| `WEBFLIX_SMTP_HOST`, `_PORT`, `_TLS`, `_USERNAME`, `_PASSWORD` | unset, `1025` (`465` with TLS), `none` | identity | The `smtp` sender. `_TLS`: `none` (Mailpit) or `implicit`; credentials are refused without TLS |
+| `WEBFLIX_DEV_IDP_SECRET` | derived from the first `WEBFLIX_MEDIA_TOKEN_KEYS` secret | identity | Seals the development issuer's codes and sessions (32+ chars); every replica or isolate must share it, which the derived default already does. Its single-use markers live in the identity area's claims table (shared across replicas and isolates) |
+| `WEBFLIX_PAYMENT_PROVIDER` | `fake` outside production; `memory` in production | billing | `fake` (packages/payments-fake: state in the mode's database, its form at `/_pay/*`, refused in production), `stripe` (packages/adapters-stripe), `memory` (in-process reference, no form: a production deployment that names no provider can never complete a checkout) |
+| `WEBFLIX_BILLING_GRACE_SEC` | `604800` (7 days) | billing | `past_due` stays entitled this long after the first failed renewal attempt (judged in the provider's time); then `suspended` (`grace_expired`), whether or not the provider still retries |
+| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | billing | Required for `stripe`; the names `tools/stripe` writes to `.cache/stripe/stripe.env`. Never logged. A test secret key in production is refused |
+| `WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET` | development constant | billing | The fake provider's webhook signing secret (24+ chars); every replica or isolate must share it |
+| `WEBFLIX_PAYMENTS_FAKE_DELIVERY` | `orderly` | billing | How the fake delivers its webhooks at start: `orderly`, `unruly` (any order, some twice, some up to 2 s late) or `outage` (none; reconciliation recovers). Changeable at run time: `PUT /_pay/api/delivery` |
+| `WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED` | `unpaid` | billing | What the fake does when a renewal's retries (3, 5 and 8 days after the first failure) all fail: `unpaid` (recoverable by paying, §5.2's recommended setting) or `cancel` (Stripe's implied default) |
+| `WEBFLIX_EVENT_SINK` | `memory` | events | `memory` (in process: tests, and nothing to keep) or `lake` (gzip NDJSON under `events/dt=…/hh=…/` in the mode's blob store: `.data/blobs` in dev, S3 on k8s, R2 on Cloudflare). A Worker's memory sink is per isolate: use `lake` there |
+| `WEBFLIX_CONSENT_MODE` | `opt-in` | events | `opt-in` (nothing collected until a purpose is granted), `opt-out` (collected until withdrawn; Global Privacy Control records a withdrawal) or `off` (nothing collected, server events included) (§6.3) |
+| `WEBFLIX_PSEUDONYM_KEY` | development key | events | HMAC key of the pseudonymous subject keys (32+ chars); required in production once events are stored. Serving derives profile keys with it (`createSubjectKeys`), so every process that reads recommendations needs the same value |
+| `WEBFLIX_EVENTS_RETENTION_DAYS` / `WEBFLIX_AGGREGATES_RETENTION_DAYS` | `396` / `1126` | events | Raw events 13 months, aggregates 37 months; the data export reads raw events this far back |
+| `WEBFLIX_DELETION_COOLING_OFF_SEC` | `1209600` (14 days) | events | A requested account deletion waits this long (cancellable) before the erasure job runs |
+| `WEBFLIX_EXPORT_LINK_TTL_SEC` | `604800` (7 days) | events | How long a data export's signed link and its document stay available (then the sweep deletes the document) |
+| `WEBFLIX_RELEASE` | `dev` | events | `app.version` of server events (1-40 of `[A-Za-z0-9._+-]`): set it to the deployed release |
+| `WEBFLIX_RECOMMENDATION_STORE` | `database` | personalisation | Where imported models live: `database` (SQLite in dev, PostgreSQL on k8s, D1 for everything on Cloudflare), `kv` (Cloudflare only: per-profile lists in Workers KV `RECS`, models and neighbours in D1; wrangler.jsonc sets it), `memory` (tests) |
+| `WEBFLIX_RECS_DEFAULT_POLICY` | `learned` | personalisation | Ranking policy of profiles no experiment assigns: `learned` (learned candidates where a fresh model has them, the rule engine elsewhere) or `rules` |
+| `WEBFLIX_RECS_EXPERIMENT` | `recs.learned-vs-rules` | personalisation | The experiment that picks the policy: its control variant gets the rule engine, every other variant learned candidates |
+| `WEBFLIX_RECS_EXPLORE_SHARE` | `0.05` in production, else `0` | personalisation | Share of sessions (by session and UTC day) shown rows and items in random order (`BrowsePage.policy.explore`); 0 keeps local suites that assert row order deterministic |
+| `WEBFLIX_RECS_READ_TIMEOUT_MS` | `250` | personalisation | A recommendation-store read slower than this counts as unavailable: the page is the rule engine's, and the store is skipped for 30 s |
+| `WEBFLIX_EXPERIMENTS` | `database` | experiments | `database` (definitions in the experiments table, read through process memory 30 s and the shared cache 60 s) or `memory` (tests) |
+| `WEBFLIX_EXPERIMENTS_NEW_MEMBER_DAYS` | `30` | experiments | A member counts as "new" for experiment targeting this many days after joining |
 | `WEBFLIX_STAFF_VERIFIER` | `memory` | admin | `memory` (tokens mintable only in process) or `oidc` (the staff issuer's JWKS) |
 | `WEBFLIX_STAFF_ISSUER` | unset | admin | The staff issuer (required for `oidc`) |
 | `WEBFLIX_STAFF_AUDIENCE` / `WEBFLIX_STAFF_CLIENT_ID` | `webflix-admin-api` / `webflix-admin` | admin | The admin API's audience; the client whose roles count |
@@ -275,6 +408,20 @@ them).
 
 The Worker reads the portable variables above as vars and secrets, plus its own
 `WEBFLIX_PASSWORD_ITERATIONS` and `WEBFLIX_EDGE_CACHE` (docs/CLOUDFLARE.md §6 and §3).
+Milestone 2 binds a second KV namespace, `RECS`, for per-profile recommendation lists
+(`WEBFLIX_RECOMMENDATION_STORE=kv`, set in wrangler.jsonc); production needs its real id (the
+provisioning script does not create it yet).
+
+### Recommendation importer (Node)
+
+`node apps/api/src/recs.ts import [--run <run>] [--from <dir>]` publishes the pipeline's run
+(`recs/current.json` in the mode's blob store, or `--from` a pipeline store directory such as
+`.cache/recs/medium/store`) into the recommendation store; `rollback` serves the previous run
+again (one write); `status` prints the served model and the last import. Same environment as the
+API (it opens the database with the `worker` role). The staff API's
+`POST /system/recommendations/import` queues the same import as a job
+(`recommendations.import`). Scheduling it (a CronJob, a Cron Trigger) is wiring: it is cheap when
+nothing new was published (one pointer and one manifest read).
 
 ## 5. Composition and plugging in adapters
 
@@ -483,7 +630,11 @@ packaged assets play from the blob store.
 - LIKE patterns ≤ 50 bytes: suggestion tokens keep at most 47 UTF-8 bytes, cut between code
   points, on every dialect (DECISIONS.md D3).
 - Hot paths are bounded: a warm browse page is **2 round trips** (session lookup + one batch for
-  the profile's library); cold ≤ 4; title detail 2; search ≤ 4; a heartbeat, and a release that
+  the profile's library), learned candidates and experiments included (their reads are cached;
+  per-profile lists are a Workers KV read on Cloudflare); cold ≤ 4 with milestone 1's caches,
+  7 once the recommendation model, the experiment definitions and the editorial data are cold
+  too (8 on SQL with a profile's lists: docs/RECOMMENDATIONS.md, "Learned candidates"); title
+  detail 2; search ≤ 4; a heartbeat, and a release that
   carries the final position, write in **one batch**. Asserted in
   `apps/api/test/app.test.ts` (SQLite) and `packages/db/test/workerd/app.test.ts` (D1).
 - FTS5 works on D1 (search index); foreign keys are enforced (profile deletion cascades).

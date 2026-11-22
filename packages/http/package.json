@@ -21,6 +21,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@webflix/dev-idp": "workspace:^",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

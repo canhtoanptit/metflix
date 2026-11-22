@@ -1,0 +1,29 @@
+{
+  "name": "@webflix/payments-fake",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Stateful fake payment provider: the PaymentProvider port with per-customer test clocks, every decline, a challenge step, unruly webhook delivery on request, state in the database, and its own payment form under /_pay/*. Never in production.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . && tsc -p tsconfig.node.json && tsc -p test/workerd",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*",
+    "@webflix/core": "workspace:*",
+    "@webflix/db": "workspace:*",
+    "kysely": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

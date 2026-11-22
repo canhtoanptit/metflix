@@ -520,7 +520,8 @@ export const handlers: MockHandlers = {
     if (body.email.trim().toLowerCase() === state.account.email && state.profiles.length > 0) {
       throw new MockProblem("email_already_registered");
     }
-    if (body.payment.cardNumber.replaceAll(/\D/g, "") === "4000000000000002") {
+    // Milestone 2: `payment` and `planId` are optional (sign-up before checkout).
+    if (body.payment?.cardNumber.replaceAll(/\D/g, "") === "4000000000000002") {
       throw new MockProblem("payment_declined", { declineReason: "card_declined" });
     }
     state.signedIn = true;
@@ -529,7 +530,7 @@ export const handlers: MockHandlers = {
       email: body.email.trim().toLowerCase(),
       password: body.password,
     };
-    state.planId = body.planId;
+    if (body.planId) state.planId = body.planId;
     state.profiles = [];
     state.activeProfileId = null;
     return persist(state, authenticated(state));

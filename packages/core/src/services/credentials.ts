@@ -1,6 +1,6 @@
 import { AppError } from "../errors.ts";
 import type { ProfileRow } from "../repositories/records.ts";
-import type { ServiceDependencies } from "./context.ts";
+import type { AuthContext, ServiceDependencies } from "./context.ts";
 
 /**
  * Charges one credential check against the account's budget before any hashing (HTTP: the
@@ -8,14 +8,26 @@ import type { ServiceDependencies } from "./context.ts";
  */
 export type ChargeCredentialCheck = () => Promise<void>;
 
+/** Who is proving what: the account, and the session whose proof (`elevated_until`) counts. */
+type Prover = Pick<AuthContext, "session">;
+
 /**
- * The only way a service checks the account password or a profile PIN after sign-in. Every check
- * is charged first, so guessing is bounded by one per-account budget whichever route it comes
- * through (docs/DECISIONS.md D25); a test enumerates the call sites of `PasswordHasher.verify`
- * to keep it that way.
+ * The only way a service checks the account password or a profile PIN after sign-in, and the
+ * only place the account-holder proof (§4.2) is granted and honoured. Every check is charged
+ * first, so guessing is bounded by one per-account budget whichever route it comes through
+ * (docs/DECISIONS.md D25); a test enumerates the call sites of `PasswordHasher.verify` to keep it
+ * that way.
+ *
+ * The proof is the password, or a fresh sign-in with a linked issuer: either sets the session's
+ * `elevated_until` for `ELEVATION_TTL_SEC`, and while it lasts it stands in for the password.
+ * An account created through an issuer has no password (stored as the empty string, read as
+ * null): nothing here ever compares a candidate with it, so no password, of any value, ever
+ * matches such an account.
  */
-export function createCredentialChecks(deps: Pick<ServiceDependencies, "repos" | "passwords">) {
-  const { repos, passwords } = deps;
+export function createCredentialChecks(
+  deps: Pick<ServiceDependencies, "repos" | "passwords" | "clock">,
+) {
+  const { repos, passwords, clock } = deps;
 
   async function passwordMatches(
     accountId: string,
@@ -23,20 +35,57 @@ export function createCredentialChecks(deps: Pick<ServiceDependencies, "repos" |
     charge: ChargeCredentialCheck,
   ): Promise<boolean> {
     await charge();
-    const loaded = await repos.accounts.get(accountId);
-    if (!loaded) throw new AppError("unauthenticated");
-    return (await passwords.verify(candidate, loaded.account.passwordHash)).valid;
+    const account = await repos.identity.getAccount(accountId);
+    if (!account) throw new AppError("unauthenticated");
+    // No password set: there is nothing a candidate could match (never hash against "").
+    if (account.passwordHash === null) return false;
+    return (await passwords.verify(candidate, account.passwordHash)).valid;
   }
 
-  return {
-    /** `password_required` without a candidate, `current_password_invalid` when it is wrong. */
+  /** True while the session holds a fresh account-holder proof. */
+  async function isElevated(prover: Prover): Promise<boolean> {
+    const now = clock.now();
+    const found = await repos.identity.getSession(prover.session.id, now);
+    return (
+      found !== null &&
+      found.session.accountId === prover.session.accountId &&
+      found.elevatedUntil !== null &&
+      found.elevatedUntil > now
+    );
+  }
+
+  const checks = {
+    isElevated,
+
+    /**
+     * The password, or (when none is sent) a fresh proof held by the session.
+     * `password_required` without either, `current_password_invalid` when a sent one is wrong
+     * (a proof never excuses a wrong password).
+     */
     async requirePassword(
-      accountId: string,
+      prover: Prover,
       candidate: string | undefined,
       charge: ChargeCredentialCheck,
     ): Promise<void> {
-      if (candidate === undefined) throw new AppError("password_required");
-      if (!(await passwordMatches(accountId, candidate, charge))) {
+      if (candidate === undefined) {
+        if (await isElevated(prover)) return;
+        throw new AppError("password_required");
+      }
+      if (!(await passwordMatches(prover.session.accountId, candidate, charge))) {
+        throw new AppError("current_password_invalid");
+      }
+    },
+
+    /**
+     * The account-holder proof by password (`POST /session/elevation`): charged like every
+     * password check. Returns normally only for the right password of an account that has one.
+     */
+    async provePassword(
+      prover: Prover,
+      candidate: string,
+      charge: ChargeCredentialCheck,
+    ): Promise<void> {
+      if (!(await passwordMatches(prover.session.accountId, candidate, charge))) {
         throw new AppError("current_password_invalid");
       }
     },
@@ -54,21 +103,25 @@ export function createCredentialChecks(deps: Pick<ServiceDependencies, "repos" |
     },
 
     /**
-     * Unlock a locked profile for a change: its PIN or the account password, whichever was sent
-     * (`profile_unlock_required` when neither).
+     * Unlock a locked profile for a change: its PIN or the account password, whichever was sent,
+     * or the session's fresh account-holder proof (`profile_unlock_required` when none).
      */
     async requireUnlock(
+      prover: Prover,
       profile: Pick<ProfileRow, "accountId" | "pinHash">,
       proof: { currentPin?: string | undefined; currentPassword?: string | undefined },
       charge: ChargeCredentialCheck,
     ): Promise<void> {
-      if (proof.currentPin !== undefined) return this.requirePin(profile, proof.currentPin, charge);
+      if (proof.currentPin !== undefined)
+        return checks.requirePin(profile, proof.currentPin, charge);
       if (proof.currentPassword !== undefined) {
-        return this.requirePassword(profile.accountId, proof.currentPassword, charge);
+        return checks.requirePassword(prover, proof.currentPassword, charge);
       }
+      if (await isElevated(prover)) return;
       throw new AppError("profile_unlock_required");
     },
   };
+  return checks;
 }
 
 export type CredentialChecks = ReturnType<typeof createCredentialChecks>;

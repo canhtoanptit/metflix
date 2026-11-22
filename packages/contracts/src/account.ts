@@ -147,6 +147,15 @@ export const AuthenticatedSession = z
     /** Bound server-side to the session cookie; null until a profile is selected. */
     activeProfile: Profile.nullable(),
     /**
+     * Milestone 2 (§5.2, billing): the membership projection, as `GET /account` has it. An
+     * account created without payment is `none` here, while `subscription` and `plan` (still
+     * required, for milestone 1's clients) show an ended Basic membership since the account was
+     * created. Absent from older servers.
+     */
+    membership: MembershipState.optional(),
+    /** Milestone 2 (§5.2, billing): whether the account may play, and why not. */
+    entitlement: Entitlement.optional(),
+    /**
      * Milestone 2 (§8.1): experiment assignments of the active profile (of the device at the
      * profile gate), key → variant. Absent until experiments serve it.
      */
@@ -190,12 +199,22 @@ export const EmailStatus = z
   .meta({ id: "EmailStatus" });
 export type EmailStatus = z.output<typeof EmailStatus>;
 
+/**
+ * Milestone 2 (§5.1): without `planId` and `payment`, sign-up creates the account and a session
+ * with no membership (`none`); the plan is chosen and paid at checkout. Milestone 1's body (both,
+ * the mock card charged at once) keeps working until billing removes the card fields. `planId`
+ * alone is refused: there is nothing to apply it to.
+ */
 export const SignupBody = z
   .object({
     email: EmailAddress,
     password: Password,
-    planId: PlanId,
-    payment: MockCardPayment,
+    planId: PlanId.optional(),
+    payment: MockCardPayment.optional(),
+  })
+  .refine((body) => (body.planId === undefined) === (body.payment === undefined), {
+    message: "Send planId and payment together, or neither",
+    path: ["planId"],
   })
   .meta({ id: "SignupBody" });
 export type SignupBody = z.input<typeof SignupBody>;
@@ -210,10 +229,15 @@ export const LoginBody = z
   .meta({ id: "LoginBody" });
 export type LoginBody = z.input<typeof LoginBody>;
 
-/** Changing email or password requires the current password. At least one change is required. */
+/**
+ * Changing email or password requires the current password, or (milestone 2, §4.2) a fresh
+ * account-holder proof held by the session (`POST /session/elevation` or a fresh sign-in with a
+ * linked issuer): an account created through an issuer has no password to send. At least one
+ * change is required.
+ */
 export const UpdateAccountBody = z
   .object({
-    currentPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH),
+    currentPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH).optional(),
     email: EmailAddress.optional(),
     newPassword: Password.optional(),
   })

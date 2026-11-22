@@ -1,4 +1,4 @@
-/** Tables of the events area (migration 0004_events). Representations: see schema.ts. */
+/** Tables of the events area (migrations 0004, 0011, 0012). Representations: see schema.ts. */
 
 export interface ConsentsTable {
   id: string;
@@ -41,11 +41,22 @@ export interface AnalyticsDailyTable {
   updated_at: number;
 }
 
+/** Server events waiting for the lake (migration 0012_events_outbox). */
+export interface EventOutboxTable {
+  id: string;
+  account_id: string | null;
+  profile_id: string | null;
+  /** JSON: the `events.server` job payload. */
+  payload: string;
+  created_at: number;
+}
+
 export interface EventsTables {
   consents: ConsentsTable;
   privacy_requests: PrivacyRequestsTable;
   privacy_erasures: PrivacyErasuresTable;
   analytics_daily: AnalyticsDailyTable;
+  event_outbox: EventOutboxTable;
 }
 
 /** Parents first. */
@@ -54,4 +65,5 @@ export const EVENTS_TABLES = [
   "privacy_requests",
   "privacy_erasures",
   "analytics_daily",
+  "event_outbox",
 ] as const satisfies readonly (keyof EventsTables)[];

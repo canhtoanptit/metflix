@@ -33,6 +33,11 @@ export interface PaymentProviderHarness extends HarnessBase {
   webhook(options?: {
     ageSec?: number;
   }): Promise<{ body: Uint8Array; signature: string; id: string }>;
+  /**
+   * The provider's real time (epoch ms), so event listing can look back a few minutes instead
+   * of over the whole account (a real sandbox holds thousands of events). Absent: list from 0.
+   */
+  now?(): number;
 }
 
 /** Contract every `PaymentProvider` adapter must pass (the Stripe sandbox lane and the fake). */
@@ -310,7 +315,10 @@ export function describePaymentProviderContract(
         key(),
       );
       const invoice = await h().provider.retrieveInvoice(created.latestInvoiceId ?? "");
-      expect(invoice?.amountDueMinor).toBe(Math.round(h().prices.basic.amountMinor / 2));
+      // Stripe rounds the discount, not the total: 50% off 799 is 799 - 400 = 399
+      // (docs/STRIPE.md §7, observed).
+      const price = h().prices.basic.amountMinor;
+      expect(invoice?.amountDueMinor).toBe(price - Math.round(price * 0.5));
       expect(await h().provider.validatePromotionCode({ code, priceLookupKey: lookupKey })).toEqual(
         {
           valid: false,
@@ -343,14 +351,57 @@ export function describePaymentProviderContract(
 
     it("lists the events its calls caused, tied to their idempotency keys", async () => {
       const { provider } = h();
+      const since = h().now ? (h().now?.() ?? 0) - 5 * 60_000 : 0;
       const call = key();
       const customer = await provider.createCustomer(
         { accountId: `acct-${operation()}`, email: `member-${operation()}@example.test` },
         call,
       );
-      const events = await provider.listEvents({ createdAfter: 0, limit: 1000 });
-      const created = events.find((event) => event.customerId === customer.id);
+      // Real providers log events asynchronously (Stripe: about a second): look a few times.
+      let created: Awaited<ReturnType<typeof provider.listEvents>>[number] | undefined;
+      for (let attempt = 0; attempt < 10 && !created; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const events = await provider.listEvents({ createdAfter: since, limit: 1000 });
+        created = events.find((event) => event.customerId === customer.id);
+      }
       expect(created?.idempotencyKey).toBe(call.idempotencyKey);
+    });
+
+    it("answers null for a subscription, invoice or setup it does not know", async () => {
+      const { provider } = h();
+      expect(await provider.retrieveSubscription("sub_WFXunknown0000000000")).toBeNull();
+      expect(await provider.retrieveInvoice("in_WFXunknown0000000000")).toBeNull();
+      expect(await provider.retrieveSetup("seti_WFXunknown0000000000")).toBeNull();
+    });
+
+    it("moves the end of the free period of an active subscription (a trial until then)", async () => {
+      const { subscription } = await activeSubscription();
+      const trialEnd = (subscription.currentPeriodStart ?? 0) + 3 * 24 * 3_600_000;
+      const moved = await h().provider.setTrialEnd(
+        { subscriptionId: subscription.id, trialEnd },
+        key(),
+      );
+      expect(moved.status).toBe("trialing");
+      expect(Math.abs((moved.trialEnd ?? 0) - trialEnd)).toBeLessThan(2_000);
+    });
+
+    it("deletes a customer: its subscription ends, its invoices stay, a second delete is fine", async () => {
+      const { customer, subscription } = await activeSubscription();
+      await h().provider.deleteCustomer({ customerId: customer.id }, key());
+      expect((await h().provider.retrieveSubscription(subscription.id))?.status).toBe("canceled");
+      expect((await h().provider.retrieveInvoice(subscription.latestInvoiceId ?? ""))?.status).toBe(
+        "paid",
+      );
+      await h().provider.deleteCustomer({ customerId: customer.id }, key());
+    });
+
+    it("reports the default card for display and the clock it reads time from", async () => {
+      const { subscription } = await activeSubscription();
+      expect(subscription.defaultPaymentMethod).toMatchObject({ brand: "visa" });
+      expect(subscription.defaultPaymentMethod?.last4).toMatch(/^\d{4}$/);
+      expect(subscription.clockNow === null || typeof subscription.clockNow === "number").toBe(
+        true,
+      );
     });
   });
 }

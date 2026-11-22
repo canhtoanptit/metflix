@@ -131,8 +131,9 @@ describe("API description", () => {
     expect(operations).toHaveLength(Object.keys(routes).length + Object.keys(adminRoutes).length);
     expect(document.components.securitySchemes.sessionCookie.name).toBe("webflix_session");
     // Registered but not implemented yet: marked pending; implemented routes are not.
-    expect(document.paths["/api/v1/billing/config"].get["x-webflix-implementation"]).toBe(
-      "pending",
+    expect(document.paths["/api/admin/v1/plans"].get["x-webflix-implementation"]).toBe("pending");
+    expect(document.paths["/api/v1/billing/config"].get).not.toHaveProperty(
+      "x-webflix-implementation",
     );
     expect(document.paths["/api/v1/account"].get).not.toHaveProperty("x-webflix-implementation");
   });

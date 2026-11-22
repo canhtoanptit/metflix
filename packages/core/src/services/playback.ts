@@ -6,6 +6,16 @@ import {
   type PlaybackState,
   videoQualityForHeight,
 } from "@webflix/contracts";
+import { isRestrictedProfile, toOutboxEvent } from "../areas/events/collector.ts";
+import {
+  type AbandonReason,
+  heartbeatCredit,
+  isCompleted,
+  type PlaybackEventType,
+  type PlaybackSnapshot,
+  playbackEvent,
+  quartersCrossed,
+} from "../areas/events/playback-events.ts";
 import { AppError } from "../errors.ts";
 import { toIsoString } from "../ports/clock.ts";
 import { serializeError } from "../ports/logger.ts";
@@ -16,6 +26,7 @@ import {
   resumePositionOf,
 } from "../recommendations/engine.ts";
 import { utcDay } from "../recommendations/hash.ts";
+import type { OutboxEvent } from "../repositories/ports.ts";
 import type { EpisodeSummary, PlaybackSessionRecord } from "../repositories/records.ts";
 import type { ServiceDependencies, Viewer } from "./context.ts";
 import { statsRollupJob } from "./jobs.ts";
@@ -65,12 +76,67 @@ function presentActiveStream(lease: StreamLease): ActiveStream {
  * its stream slot. A copied URL therefore stops working for new players and rendition
  * switches as soon as the slot is gone, while segment requests (the bulk of traffic) never
  * touch the database or the gate.
+ *
+ * Milestone 2: playback produces the server events `playback.start`, `progress`, `complete`
+ * and `abandon` (areas/events/playback-events.ts). They are written to the event outbox in the
+ * same batch as the playback write that produced them (`outbox` on the repository calls), and
+ * the events area drains the outbox to the lake: what the routes return, their database round
+ * trips and their binding calls are exactly what they were (apps/edge test/budgets.test.ts).
+ * A kids or restricted profile's playback writes none.
  */
 export function createPlaybackService(
   deps: ServiceDependencies,
   personalize: (viewer: Viewer) => Promise<Personalization>,
 ) {
   const { repos, clock, ids, streamGate, mediaTokens, config, logger, jobs } = deps;
+
+  /** One playback event as an outbox row; null when there is none to write (or it is invalid). */
+  async function outboxEvent<T extends PlaybackEventType>(
+    type: T,
+    milestone: string,
+    snapshot: PlaybackSnapshot,
+    extra: Parameters<typeof playbackEvent<T>>[3],
+    now: number,
+  ): Promise<OutboxEvent | null> {
+    try {
+      const event = await playbackEvent(type, milestone, snapshot, extra, now);
+      return event ? toOutboxEvent(event, now) : null;
+    } catch (error) {
+      // A behaviour event must never fail playback.
+      logger.warn("playback.event_failed", { type, error: serializeError(error) });
+      return null;
+    }
+  }
+
+  /** The abandonment of a session that ends without having completed its item. */
+  async function abandonment(
+    record: PlaybackSessionRecord,
+    reason: AbandonReason,
+    now: number,
+  ): Promise<OutboxEvent[]> {
+    if (isCompleted(record.state, record.positionSec, record.durationSec)) return [];
+    const event = await outboxEvent(
+      "playback.abandon",
+      "abandon",
+      {
+        record,
+        positionSec: record.positionSec,
+        durationSec: record.durationSec,
+        watchedSec: record.watchedSec,
+      },
+      { reason },
+      now,
+    );
+    return event ? [event] : [];
+  }
+
+  /**
+   * Whether a session's events may be written: never for a kids or restricted profile. Known
+   * when the session is the viewer's own profile; otherwise the events area's drain decides.
+   */
+  function collects(viewer: Viewer, record: Pick<PlaybackSessionRecord, "profileId">): boolean {
+    return record.profileId !== viewer.profile.id || !isRestrictedProfile(viewer.profile);
+  }
 
   async function publishRollup(startedAt: number): Promise<void> {
     try {
@@ -100,18 +166,48 @@ export function createPlaybackService(
     record: PlaybackSessionRecord,
     input: HeartbeatInput,
     ends: boolean,
+    collect: boolean,
   ): Promise<void> {
     if (record.endedAt !== null) throw new AppError("playback_session_ended");
     const lease = await streamGate.renew(record.accountId, record.id, config.playback.leaseTtlSec);
     const now = clock.now();
     if (!lease) {
       // Revoked (sign-out, plan change, another device took the slot) or expired.
-      await repos.playback.end(record.id, now);
+      await repos.playback.end(record.id, now, {
+        outbox: collect ? await abandonment(record, "stalled", now) : [],
+      });
       await publishRollup(record.startedAt);
       throw new AppError("playback_session_ended");
     }
     const durationSec = input.durationSec > 0 ? input.durationSec : record.durationSec;
     const positionSec = Math.min(input.positionSec, durationSec || input.positionSec);
+    const completed =
+      input.state === "ended" || (durationSec > 0 && positionSec >= durationSec * COMPLETION_RATIO);
+    // A late heartbeat is still credited (up to the wall-clock bound); a lost minute is not.
+    const maxCreditSec = config.playback.heartbeatIntervalSec * 3;
+    // The credit this write applies, computed from the same previous values the repository
+    // uses (no read): the milestones the report crosses go in the same batch.
+    const watchedSec = record.watchedSec + heartbeatCredit(record, positionSec, now, maxCreditSec);
+    const outbox: OutboxEvent[] = [];
+    if (collect) {
+      const snapshot = { record, positionSec, durationSec, watchedSec };
+      const milestones: Promise<OutboxEvent | null>[] = quartersCrossed(
+        record.watchedSec,
+        watchedSec,
+        durationSec,
+      ).map((quarter) =>
+        outboxEvent("playback.progress", `progress:${quarter}`, snapshot, {}, now),
+      );
+      const wasCompleted = isCompleted(record.state, record.positionSec, record.durationSec);
+      if (completed && !wasCompleted) {
+        milestones.push(outboxEvent("playback.complete", "complete", snapshot, {}, now));
+      } else if (ends && !completed && !wasCompleted) {
+        milestones.push(
+          outboxEvent("playback.abandon", "abandon", snapshot, { reason: "closed" }, now),
+        );
+      }
+      for (const event of await Promise.all(milestones)) if (event) outbox.push(event);
+    }
     await repos.playback.recordHeartbeat({
       playbackSessionId: record.id,
       profileId: record.profileId,
@@ -120,14 +216,12 @@ export function createPlaybackService(
       positionSec,
       durationSec,
       state: input.state,
-      completed:
-        input.state === "ended" ||
-        (durationSec > 0 && positionSec >= durationSec * COMPLETION_RATIO),
+      completed,
       now,
-      // A late heartbeat is still credited (up to the wall-clock bound); a lost minute is not.
-      maxCreditSec: config.playback.heartbeatIntervalSec * 3,
+      maxCreditSec,
       historyId: ids.next(),
       ends,
+      ...(outbox.length > 0 ? { outbox } : {}),
     });
   }
 
@@ -225,11 +319,25 @@ export function createPlaybackService(
         state: "playing",
       };
       let replaced: PlaybackSessionRecord | null = null;
+      const startEvent = isRestrictedProfile(viewer.profile)
+        ? null
+        : await outboxEvent(
+            "playback.start",
+            "start",
+            { record, positionSec: resumePositionSec, durationSec, watchedSec: 0 },
+            {},
+            now,
+          );
       try {
-        await repos.playback.create(record);
+        await repos.playback.create(record, startEvent ? { outbox: [startEvent] } : {});
         if (lease.replaced) {
           replaced = await repos.playback.get(lease.replaced);
-          await repos.playback.end(lease.replaced, now);
+          await repos.playback.end(lease.replaced, now, {
+            outbox:
+              replaced && collects(viewer, replaced)
+                ? await abandonment(replaced, "replaced", now)
+                : [],
+          });
         }
       } catch (error) {
         await streamGate.release(accountId, playbackSessionId);
@@ -327,7 +435,8 @@ export function createPlaybackService(
       playbackSessionId: string,
       input: HeartbeatInput,
     ): Promise<HeartbeatAck> {
-      await applyReport(await ownSession(viewer, playbackSessionId), input, false);
+      const record = await ownSession(viewer, playbackSessionId);
+      await applyReport(record, input, false, collects(viewer, record));
       return { heartbeatIntervalSec: config.playback.heartbeatIntervalSec };
     },
 
@@ -342,7 +451,7 @@ export function createPlaybackService(
       if (final) {
         const record = await ownSession(viewer, playbackSessionId);
         try {
-          await applyReport(record, final, true);
+          await applyReport(record, final, true, collects(viewer, record));
         } finally {
           await streamGate.release(record.accountId, record.id);
         }
@@ -353,7 +462,10 @@ export function createPlaybackService(
       if (!record || record.accountId !== viewer.session.accountId) return;
       await streamGate.release(record.accountId, record.id);
       if (record.endedAt === null) {
-        await repos.playback.end(record.id, clock.now());
+        const now = clock.now();
+        await repos.playback.end(record.id, now, {
+          outbox: collects(viewer, record) ? await abandonment(record, "closed", now) : [],
+        });
         await publishRollup(record.startedAt);
       }
     },

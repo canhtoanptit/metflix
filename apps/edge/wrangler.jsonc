@@ -90,7 +90,9 @@
     "WEBFLIX_RATE_LIMIT_PROFILE_PIN": "60/60",
     "WEBFLIX_RATE_LIMIT_OIDC": "300/60",
     "WEBFLIX_RATE_LIMIT_EMAIL_SEND": "120/60",
-    "WEBFLIX_RATE_LIMIT_EVENTS": "600/60"
+    "WEBFLIX_RATE_LIMIT_EVENTS": "600/60",
+    // Per-profile recommendation lists in KV (RECS), models and neighbours in D1.
+    "WEBFLIX_RECOMMENDATION_STORE": "kv"
   },
   // `make cf-dev` writes a random per-clone key to .dev.vars (git-ignored).
   "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
@@ -103,7 +105,10 @@
       "migrations_dir": "../../packages/db/migrations/d1"
     }
   ],
-  "kv_namespaces": [{ "binding": "CACHE", "id": "webflix-local-cache" }],
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "webflix-local-cache" },
+    { "binding": "RECS", "id": "webflix-local-recs" }
+  ],
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "webflix-media" }],
   "durable_objects": {
     "bindings": [
@@ -178,7 +183,8 @@
         "WEBFLIX_RATE_LIMIT_PROFILE_PIN": "",
         "WEBFLIX_RATE_LIMIT_OIDC": "",
         "WEBFLIX_RATE_LIMIT_EMAIL_SEND": "",
-        "WEBFLIX_RATE_LIMIT_EVENTS": ""
+        "WEBFLIX_RATE_LIMIT_EVENTS": "",
+        "WEBFLIX_RECOMMENDATION_STORE": "kv"
       },
       // `wrangler deploy` refuses to deploy while one of these is unset (cf-provision sets them).
       "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
@@ -190,7 +196,10 @@
           "migrations_dir": "../../packages/db/migrations/d1"
         }
       ],
-      "kv_namespaces": [{ "binding": "CACHE", "id": "00000000000000000000000000000000" }],
+      "kv_namespaces": [
+        { "binding": "CACHE", "id": "00000000000000000000000000000000" },
+        { "binding": "RECS", "id": "00000000000000000000000000000001" }
+      ],
       "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "webflix-media" }],
       "durable_objects": {
         "bindings": [

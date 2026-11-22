@@ -5,14 +5,16 @@ import {
   type EmailMessage,
   type EmailSender,
   type EmailSendResult,
+  type LocalMailbox,
 } from "../ports/email-sender.ts";
 import { createUuidV7Generator, type IdGenerator } from "../ports/ids.ts";
 
 /**
  * In-process `EmailSender`: an outbox the local mailbox API reads (`GET /diagnostics/mailbox`).
- * Holds the most recent `capacity` messages; idempotency keys are remembered for as long.
+ * Holds the most recent `capacity` messages; idempotency keys are remembered for as long. One
+ * process (or one Workers isolate) only: the D1 outbox serves every isolate.
  */
-export class MemoryEmailSender implements EmailSender {
+export class MemoryEmailSender implements EmailSender, LocalMailbox {
   private readonly delivered: DeliveredEmail[] = [];
   private readonly byKey = new Map<string, string>();
   private readonly clock: Clock;
@@ -47,6 +49,10 @@ export class MemoryEmailSender implements EmailSender {
       if (dropped) this.byKey.delete(dropped.idempotencyKey);
     }
     return { messageId, deduplicated: false };
+  }
+
+  async listDelivered(to: string, since = 0): Promise<DeliveredEmail[]> {
+    return this.mailbox(to).filter((message) => message.sentAt >= since);
   }
 
   /** Delivered messages, oldest first, optionally for one recipient (case-insensitive). */

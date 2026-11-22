@@ -1,0 +1,120 @@
+{
+  "producedBy": "packages/core createBlobLakeEventSink, through the dev API (POST /events, playback, consent, sign-in) with WEBFLIX_EVENT_SINK=lake, 2026-11-22",
+  "pseudonymKey": "dev-only-insecure-pseudonym-key-do-not-deploy",
+  "accountId": "demo-account",
+  "objects": [
+    {
+      "file": "00.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4b5-77a0-879c-9088a86af09d.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "auth.signin": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "01.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20219-f983-71fb-bf30-8868bcfe1430.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "auth.signin": 1
+      },
+      "anonymous": true
+    },
+    {
+      "file": "02.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20219-f742-74a1-8899-b603d3cbad7b.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "auth.signup": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "03.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20219-f74e-77cc-a7a3-57995d7ee78c.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "auth.signup": 1
+      },
+      "anonymous": true
+    },
+    {
+      "file": "04.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4bf-76fb-b7ff-840254c1766e.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "consent.change": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "05.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4c2-7410-aeea-738255626440.ndjson.gz",
+      "lines": 12,
+      "types": {
+        "impression": 6,
+        "signup.step": 6
+      },
+      "anonymous": true
+    },
+    {
+      "file": "06.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4b9-77a3-b48c-20ea01a509f1.ndjson.gz",
+      "lines": 50,
+      "types": {
+        "impression": 44,
+        "title.open": 6
+      },
+      "anonymous": false
+    },
+    {
+      "file": "07.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4be-7361-8c5e-63c4758ee2fd.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "playback.abandon": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "08.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a2021a-0771-73aa-8072-db90eec8f93e.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "playback.complete": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "09.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a2021a-e2a8-7399-9d55-98af1fedbe9a.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "playback.progress": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "10.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4bd-75a3-99ca-0fa8f3b60a1a.ndjson.gz",
+      "lines": 1,
+      "types": {
+        "playback.start": 1
+      },
+      "anonymous": false
+    },
+    {
+      "file": "11.ndjson.gz",
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4bc-71f9-98ac-f77fa770cf6d.ndjson.gz",
+      "lines": 14,
+      "types": {
+        "search.click": 6,
+        "list.add": 6,
+        "rating.set": 1,
+        "row.view": 1
+      },
+      "anonymous": false
+    }
+  ]
+}

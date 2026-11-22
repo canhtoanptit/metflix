@@ -33,6 +33,7 @@ export function createSearchService(
               limit: SUGGESTION_LIMIT,
             }),
       ]);
+      // Visible: within the ceiling (the index filtered that) and not made unavailable by staff.
       const ids = page.hits.map((hit) => hit.id).filter((id) => personalization.isVisible(id));
       return {
         query: query.q,
@@ -41,12 +42,14 @@ export function createSearchService(
           ids,
           personalization.cardSurface(ids, "home", "list"),
         ),
-        suggestions: suggestions.map(
-          (hit): SearchSuggestion =>
-            hit.kind === "genre"
-              ? { kind: "genre", slug: hit.id, name: hit.label }
-              : { kind: hit.kind, id: hit.id, name: hit.label },
-        ),
+        suggestions: suggestions
+          .filter((hit) => hit.kind !== "title" || personalization.isVisible(hit.id))
+          .map(
+            (hit): SearchSuggestion =>
+              hit.kind === "genre"
+                ? { kind: "genre", slug: hit.id, name: hit.label }
+                : { kind: hit.kind, id: hit.id, name: hit.label },
+          ),
         nextCursor: page.nextCursor,
       };
     },

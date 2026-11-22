@@ -1,0 +1,27 @@
+{
+  "name": "@webflix/adapters-stripe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Stripe adapter of the PaymentProvider port: fetch and Web Crypto only (no SDK), so it runs on Node and on Workers. Pinned to Stripe API 2026-11-18.endive (docs/STRIPE.md).",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . && tsc -p tsconfig.node.json && tsc -p test/workerd",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*",
+    "@webflix/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

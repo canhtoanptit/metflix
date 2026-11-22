@@ -244,7 +244,9 @@ export function startTestIssuer(options: TestIssuerOptions = {}): TestIssuer {
     input: Request | string | URL,
     init?: RequestInitLike,
   ): Promise<Response> => {
-    const request = input instanceof Request ? input : new Request(input, init);
+    // `RequestInit` names the init with the runtime's default request properties, so the
+    // constructed request has the same type as the one passed in (Workers' types are generic).
+    const request = input instanceof Request ? input : new Request(input, init as RequestInit);
     if (new URL(request.url).origin !== origin) {
       throw new TypeError(`The in-process issuer serves ${origin} only, not ${request.url}`);
     }

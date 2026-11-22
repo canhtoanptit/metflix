@@ -1,0 +1,24 @@
+{
+  "name": "@webflix/telemetry",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Web event SDK: builds client behaviour events, batches them and sends them to POST /events (docs/BLUEPRINT-M2.md §6).",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webflix/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "jsdom": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

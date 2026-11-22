@@ -72,7 +72,12 @@ describe("Node API on SQLite", () => {
     await api.login({ body: { email: "demo@webflix.dev", password: "webflix-demo" } });
     await api.selectProfile({ body: { profileId: "pr-demo" } });
 
-    // Cold: session + library batch + catalog snapshot batch + popularity.
+    // Fully cold (a fresh process): milestone 1's four, plus the recommendation model with its
+    // neighbours, the experiment definitions and the editorial data (and a profile's lists once
+    // a model is served): docs/RECOMMENDATIONS.md, "Learned candidates"; each cached once read.
+    expect(await roundTrips(() => api.getBrowse())).toBeLessThanOrEqual(7);
+    // Cold as milestone 1 measured it: session + library batch + catalog snapshot batch +
+    // popularity.
     await runtime.services.state.catalog.invalidate();
     await runtime.services.state.popularity.invalidate();
     expect(await roundTrips(() => api.getBrowse())).toBeLessThanOrEqual(4);

@@ -33,6 +33,8 @@ export {
   migrationProvider,
   type SchemaMigration,
 } from "./migrations/index.ts";
+export { createIdentityRepository } from "./repositories/areas/identity.ts";
+export { createDatabaseRecommendationStore } from "./repositories/areas/personalisation.ts";
 export { CATALOG_VERSION_KEY } from "./repositories/catalog.ts";
 export { createRepositories, resetDatabase } from "./repositories/index.ts";
 export type { DB } from "./schema.ts";

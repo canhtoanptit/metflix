@@ -10,6 +10,7 @@
  * | `RateLimiter` | Durable Object per `policy:key` (`RateLimiterObject`) |
  * | `StreamGate` | Durable Object per account (`StreamGateObject`) |
  * | `JobQueue` | Queues producer + `queue()` consumer (`createQueuesJobQueue`, `createQueueConsumer`) |
+ * | `RecommendationStore` | KV for per-profile lists over the D1 store (`createKvRecommendationStore`) |
  *
  * The Durable Object classes must be exported from the Worker's main module.
  */
@@ -34,6 +35,17 @@ export {
   type DurableObjectRateLimiterOptions,
   RateLimiterObject,
 } from "./rate-limiter.ts";
+export {
+  bindingBulkWriter,
+  createKvRecommendationStore,
+  createKvRestBulkWriter,
+  KV_REST_BULK_MAX_BYTES,
+  KV_REST_BULK_MAX_PAIRS,
+  type KvBulkWriter,
+  type KvPair,
+  type KvRecommendationStoreOptions,
+  type KvRestBulkWriterOptions,
+} from "./recommendation-store.ts";
 export {
   createDurableObjectStreamGate,
   type DurableObjectStreamGateOptions,

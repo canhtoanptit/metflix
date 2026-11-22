@@ -175,6 +175,7 @@ describe("route table", () => {
       "GET /privacy/consent",
       "PUT /privacy/consent",
       "POST /privacy/export",
+      "GET /privacy/exports/:id",
       "GET /privacy/requests",
       "POST /account/deletion",
       "DELETE /account/deletion",

@@ -97,6 +97,8 @@ export const ROW_KINDS = [
   "originals",
   // Milestone 2: the learned "Top Picks" row (docs/BLUEPRINT-M2.md §7.2).
   "top-picks",
+  // Milestone 2: a curated collection staff publish on a view (§8.3, editorial rows).
+  "collection",
 ] as const;
 /**
  * How a row is drawn. The item shape is determined by the layout:
