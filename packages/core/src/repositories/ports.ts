@@ -1,4 +1,10 @@
 import type { PlaybackState, RatingValue } from "@webflix/contracts";
+import type { AdminRepository } from "../areas/admin/repository.ts";
+import type { BillingRepository } from "../areas/billing/repository.ts";
+import type { EventsRepository } from "../areas/events/repository.ts";
+import type { ExperimentsRepository } from "../areas/experiments/repository.ts";
+import type { IdentityRepository } from "../areas/identity/repository.ts";
+import type { PersonalisationRepository } from "../areas/personalisation/repository.ts";
 import type {
   AccountRecord,
   AccountWrite,
@@ -280,6 +286,13 @@ export interface Repositories {
   notifications: NotificationRepository;
   meta: MetaRepository;
   seed: SeedRepository;
+  // Milestone 2: one repository per area, each owned by its area (areas/<area>/repository.ts).
+  identity: IdentityRepository;
+  billing: BillingRepository;
+  events: EventsRepository;
+  personalisation: PersonalisationRepository;
+  experiments: ExperimentsRepository;
+  admin: AdminRepository;
   /** Readiness probe: one trivial round trip. */
   ping(): Promise<void>;
 }

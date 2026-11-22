@@ -121,12 +121,15 @@ Requirements are detected from outside, never assumed from the mode name:
 - Packaged-media checks keep one playback session alive with heartbeats for the duration of the
   run and stop it at the end.
 
-## Check catalogue (95)
+## Check catalogue (96)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
-**ops (11)**: `ops.health` liveness/readiness when exposed · `ops.openapi` OpenAPI 3.1 lists every
-route of the contract · `ops.docs-page` docs load only same-origin scripts; CSP allows no foreign
+**ops (12)**: `ops.health` liveness/readiness when exposed · `ops.openapi` OpenAPI 3.1 lists every
+route of the contract (member and staff API) · `ops.pending-routes` every operation the deployed
+document marks `x-webflix-implementation: pending` (registered, not implemented yet: milestone 2
+lands area by area) answers `501 not_implemented` naming its operation and area, to an anonymous
+request without the client header; the pending operations are listed per area as notes · `ops.docs-page` docs load only same-origin scripts; CSP allows no foreign
 script origin · `ops.security-headers` nosniff, frame DENY, referrer policy, COOP/CORP, CSP, HSTS on
 https, `no-store` and `Vary: Cookie` on the API · `ops.request-id` echoed when valid, replaced when
 invalid, equal to `problem.requestId` · `ops.problem.unknown-route` unknown API routes are a

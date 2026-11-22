@@ -29,7 +29,11 @@
       "/media/*",
       "/cdn/*",
       "/healthz",
-      "/readyz"
+      "/readyz",
+      // Milestone 2: the development issuer (answers 404 in production) and the fake
+      // provider's payment form (billing area).
+      "/dev-idp/*",
+      "/_pay/*"
     ]
   },
 
@@ -83,7 +87,10 @@
     "WEBFLIX_RATE_LIMIT_AUTH": "60/60",
     "WEBFLIX_RATE_LIMIT_SIGNUP": "60/60",
     "WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP": "300/60",
-    "WEBFLIX_RATE_LIMIT_PROFILE_PIN": "60/60"
+    "WEBFLIX_RATE_LIMIT_PROFILE_PIN": "60/60",
+    "WEBFLIX_RATE_LIMIT_OIDC": "300/60",
+    "WEBFLIX_RATE_LIMIT_EMAIL_SEND": "120/60",
+    "WEBFLIX_RATE_LIMIT_EVENTS": "600/60"
   },
   // `make cf-dev` writes a random per-clone key to .dev.vars (git-ignored).
   "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
@@ -146,7 +153,9 @@
           "/media/*",
           "/cdn/*",
           "/healthz",
-          "/readyz"
+          "/readyz",
+          "/dev-idp/*",
+          "/_pay/*"
         ]
       },
       // Guard rail against runaway CPU. The heaviest legitimate request is a sign-in for an
@@ -166,7 +175,10 @@
         "WEBFLIX_RATE_LIMIT_AUTH": "",
         "WEBFLIX_RATE_LIMIT_SIGNUP": "",
         "WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP": "",
-        "WEBFLIX_RATE_LIMIT_PROFILE_PIN": ""
+        "WEBFLIX_RATE_LIMIT_PROFILE_PIN": "",
+        "WEBFLIX_RATE_LIMIT_OIDC": "",
+        "WEBFLIX_RATE_LIMIT_EMAIL_SEND": "",
+        "WEBFLIX_RATE_LIMIT_EVENTS": ""
       },
       // `wrangler deploy` refuses to deploy while one of these is unset (cf-provision sets them).
       "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },

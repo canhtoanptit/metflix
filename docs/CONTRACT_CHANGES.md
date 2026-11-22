@@ -168,3 +168,122 @@ default 60/60). `PASSWORD_MAX_BYTES` (1024) is new.
   title the profile has played (RECOMMENDATIONS.md, Badges).
 - **Notifications** (behaviour): a new profile's arrivals from before it was created come read
   (at most three); `unreadCount` counts only later ones.
+
+## 2026-11-22 — milestone 2 foundation (all additive; no client has to change)
+
+The contract of milestone 2 (docs/BLUEPRINT-M2.md), registered and documented ahead of its
+implementation. Every change is additive: milestone 1's routes, fields, codes and constants keep
+their meaning and every milestone 1 client works unchanged. A route listed here that its area has
+not built yet answers **`501 not_implemented`** (`operationId`, `area`) to everyone, before
+authentication and validation; the served OpenAPI document marks it
+`x-webflix-implementation: pending` (docs/FOUNDATION.md §8). Do not build UI against a pending
+route's success path yet; its schemas are the contract its area implements.
+
+**Route table mechanics** (`src/route.ts`)
+
+- Every route names its `area` (`ROUTE_AREAS`: identity, billing, events, personalisation,
+  experiments, admin, streaming); the member table is split into one file per area under
+  `src/routes/` and composed in `src/routes.ts` (same `routes` object, same operation ids).
+- New `RouteSpec` fields: `redirect` (302/303: a browser navigation; the handler returns
+  `{ location }`), `bodyEncoding` (`json` | `form` for an issuer's form post | `raw` bytes for a
+  signed webhook), `csrf: "none"` (callers that cannot send `X-Webflix-Client`: form posts and
+  webhooks, authenticated otherwise), `maxBodyBytes`, `auth: "staff"` with `staffRole`.
+- Redirect, form and raw routes are not methods of the typed client (`IsClientRoute`,
+  `ClientRoutes`); `navigationUrl("startOidc", …)` builds the URL of a navigation.
+- **The staff API**: `adminRoutes` under `ADMIN_API_BASE_PATH` (`/api/admin/v1`), bearer tokens
+  (`Authorization: Bearer`), typed client `createAdminApiClient({ accessToken })`. One OpenAPI
+  document covers both APIs (`buildOpenApiDocument()` defaults to `API_MOUNTS`), with a
+  `staffBearer` security scheme and `x-webflix-area` / `x-webflix-staff-role` on operations.
+- `ROUTE_INDEX` holds client routes only; `NAVIGATION_ROUTE_INDEX` and `ADMIN_ROUTE_INDEX` are new
+  (all generated, zod-free).
+- Rate-limit policies added: `oidc`, `email-send`, `email-send-recipient`, `events`, `promotion`
+  (limits in docs/BACKEND.md §3).
+- Route tags added: `billing`, `events`, `privacy`, `webhooks`, `diagnostics`, `admin`.
+
+**Member routes added (32; the table now has 78)**
+
+- Identity (§4): `GET /auth/oidc/:provider/start` (302), `GET` and `POST
+  /auth/oidc/:provider/callback` (303 to `returnTo?oidc=<OIDC_OUTCOMES>`; POST is Apple's form
+  post), `GET /account/identities`, `DELETE /account/identities/:provider`, `GET` and `POST
+  /session/elevation` (the account-holder proof), `POST /auth/email-verification`, `POST
+  /auth/email-verification/confirm`, `POST /auth/password-reset`, `POST
+  /auth/password-reset/confirm`, `POST /webhooks/email/:provider` (raw), `GET
+  /diagnostics/mailbox` (not in production).
+- Billing (§5): `GET /billing/config`, `POST /billing/checkout`, `GET /billing/checkout/:id`,
+  `POST /billing/checkout/:id/confirm` (the two-step flow), `POST /billing/subscription/preview`,
+  `POST /billing/payment-method/setup`, `GET /billing/payment-method/setup/:id`, `GET
+  /billing/invoices`, `POST /billing/promotions/validate`, `POST /webhooks/payments/:provider`
+  (raw), `POST /diagnostics/billing/clock` (not in production).
+- Events and privacy (§6): `POST /events` (202, at most 50 events and 64 KiB), `GET` and `PUT
+  /privacy/consent`, `POST /privacy/export`, `GET /privacy/requests`, `POST` and `DELETE
+  /account/deletion`, `GET /diagnostics/events` (not in production).
+
+**Staff routes added (32)** (§8.3): `GET /me`; members (`GET /members`, `GET
+/members/:accountId`, sign out everywhere, send a password reset, remove a PIN); billing actions
+(refund, cancel, extend a trial, complimentary period); plans and prices (`GET /plans`, `PUT
+/plans/:planId/prices/:currency`, `POST /plans/sync`); editorial (billboards per view, curated
+collections, title availability); experiments (list, create, get, update, status, results);
+system (health, dead letters with replay, recommendation status and import); the audit log.
+Every mutating staff route takes a `reason`.
+
+**Changed routes (backward compatible)**
+
+- `GET /session` accepts an optional `deviceId` query (the experiment unit before sign-in).
+- `PUT /account/subscription`: `ChangePlanBody.previewToken` (optional) applies a plan change
+  exactly as previewed.
+
+**DTO fields (all optional; absent until their area serves them)**
+
+- `Account.emailVerified`, `Account.hasPassword` (identity).
+- `AccountDetails.membership` (`MembershipState`: the §5.2 projection) and
+  `AccountDetails.entitlement` (`Entitlement`) (billing).
+- `AnonymousSession.experiments`, `AuthenticatedSession.experiments` (`ExperimentAssignments`).
+- `BrowsePage.policy` (`RankingPolicy { id, explore }`): copy it into impressions and
+  title-opens.
+- `Plan.trial` (`PlanTrial | null`): absent until billing offers trials (milestone 1's sign-up
+  charges at once, so none may be advertised before then).
+- `subscription_required` problems gain an optional `membershipStatus`.
+
+**New schemas**: `billing.ts`, `identity.ts`, `events.ts`, `privacy.ts`, `experiments.ts`,
+`admin.ts` (see each module's doc comment); `SignedMoney`, `PlanTrial`, `RankingPolicy`,
+`DeviceId`, `SessionQuery`.
+
+**Error codes added**: `not_implemented` (501; `operationId`, `area`),
+`reauthentication_required` (403), `verification_token_invalid` (400),
+`identity_already_linked` (409), `identity_last_sign_in_method` (409),
+`promotion_code_invalid` (422; `promotionReason`), `payment_action_required` (402;
+`clientSecret`), `checkout_state_conflict` (409), `webhook_signature_invalid` (400),
+`privacy_request_pending` (409), `experiment_conflict` (409), `staff_role_required` (403;
+`requiredRole`).
+
+**Constants added** (`constants.ts`, zod-free): OIDC providers, intents, outcomes and
+`OIDC_RESULT_PARAM`; `REAUTH_METHODS`, `ELEVATION_TTL_SEC`, email token lifetimes; payment
+providers, `MEMBERSHIP_STATUSES`, `SUSPENDED_REASONS`, `ENTITLEMENT_REASONS`, `TRIAL_DAYS`,
+checkout, invoice, setup and promotion vocabularies; event types (client and server), sources,
+platforms, surfaces, row kinds, batch limits, `EVENT_LAKE_PREFIX`; consent purposes, sources and
+modes; privacy request kinds and statuses; experiment statuses, metrics, audiences,
+`EXPERIMENT_BUCKETS`; `STAFF_ROLES`, `STAFF_CLIENT_ID`, `STAFF_API_AUDIENCE`, audit actor types;
+email templates and suppression reasons. `ROW_KINDS` gains `top-picks` (informational: the web
+never switches on `kind`).
+
+**Behaviour events** (`events.ts`, the single source): `LakeEvent` (stored), `ClientEventInput`
+(what `POST /events` accepts: no `source`, `receivedAt` or `subject`, and a client-supplied
+identity is refused rather than ignored), `EventBatch`, `EventBatchAck`, one payload schema per
+type. `@webflix/contracts/event-schema` exports the JSON Schema the pipeline reads;
+`pnpm --filter @webflix/contracts generate` writes `services/recs/schemas/event.schema.json`.
+Adopted from the pipeline's provisional schema and its fifteen decisions, with three corrections:
+title and episode ids use the contract's `Id` pattern; client events require `deviceId`,
+`sessionSeq` and a client platform while server events have the `server` platform and a null
+`sessionSeq`; `auth.signin` and `auth.signup` carry no profile.
+
+**Fixtures**: `makeLakeEvent(type)`, `makeClientEventInput(type)`, `SAMPLE_EVENT_PAYLOADS`.
+
+**Planned breaking changes (not made here; each owner makes them with the web adoption)**
+
+- Billing: remove the card fields (`SignupBody.payment`, `ChangePlanBody.payment`,
+  `UpdatePaymentMethodBody`) and empty `LEGACY_CARD_FIELDS` in
+  `packages/contracts/test/no-card-data.test.ts`, which fails on any other card field; make
+  `AuthenticatedSession.subscription`/`plan` and `AccountDetails.subscription`/`plan` nullable
+  for a membership `none` (§5.1); extend `PAYMENT_DECLINE_REASONS` (the web switches on it
+  exhaustively).
+- Identity: `SignupBody` loses `planId` (plan choice moves to checkout, §5.1).

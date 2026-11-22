@@ -27,7 +27,7 @@ export default defineConfig({
           cloudflareTest(async () => ({
             miniflare: {
               compatibilityDate: "2026-11-01",
-              d1Databases: ["DB"],
+              d1Databases: ["DB", "DB_UPGRADE"],
               bindings: { TEST_MIGRATIONS: await readD1Migrations(d1MigrationsDir) },
             },
           })),

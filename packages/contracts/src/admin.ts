@@ -1,0 +1,384 @@
+/**
+ * The staff (admin) API (docs/BLUEPRINT-M2.md §8.3): request and response schemas of
+ * `adminRoutes`. Every mutating action carries a `reason`, written to the audit log in the same
+ * batch as the change.
+ */
+import * as z from "zod";
+import { Entitlement, Invoice, MembershipState, MembershipStatus } from "./billing.ts";
+import { BrowseView } from "./browse.ts";
+import { Cursor, Id, IsoDateTime, JsonValue, page } from "./common.ts";
+import {
+  AUDIT_ACTOR_TYPES,
+  EXPERIMENT_STATUSES,
+  MAX_PAGE_SIZE,
+  STAFF_ROLES,
+  VIDEO_QUALITIES,
+} from "./constants.ts";
+import { experimentDefinitionFields } from "./experiments.ts";
+import { LinkedIdentity } from "./identity.ts";
+import { MaturityLevel } from "./maturity.ts";
+import { Money, PlanId } from "./plans.ts";
+
+export const StaffRoleSchema = z.enum(STAFF_ROLES).meta({ id: "StaffRole" });
+
+/** Who is calling, as the staff verifier mapped the token (roles of the `webflix-admin` client). */
+export const StaffIdentity = z
+  .object({
+    subject: z.string(),
+    name: z.string().nullable(),
+    email: z.string().nullable(),
+    roles: z.array(StaffRoleSchema),
+  })
+  .meta({ id: "StaffIdentity" });
+export type StaffIdentity = z.output<typeof StaffIdentity>;
+
+/** Why staff did it: required on every mutating action and kept in the audit log. */
+export const AuditReason = z.string().trim().min(3).max(500);
+
+export const ReasonBody = z.object({ reason: AuditReason }).meta({ id: "ReasonBody" });
+export type ReasonBody = z.input<typeof ReasonBody>;
+
+const AdminPageQuery = {
+  cursor: Cursor.optional(),
+  limit: z.coerce.number<number>().int().min(1).max(MAX_PAGE_SIZE).optional(),
+};
+
+// --- Members ----------------------------------------------------------------------------------
+
+export const AccountIdParams = z.object({ accountId: Id });
+
+export const MemberSearchQuery = z.object({
+  /** An email address (or a prefix of one) or an account id. */
+  q: z.string().trim().min(1).max(254),
+  ...AdminPageQuery,
+});
+export type MemberSearchQuery = z.input<typeof MemberSearchQuery>;
+
+export const MemberSummary = z
+  .object({
+    accountId: Id,
+    email: z.string(),
+    createdAt: IsoDateTime,
+    membershipStatus: MembershipStatus,
+    planId: PlanId.nullable(),
+    isDemo: z.boolean(),
+  })
+  .meta({ id: "MemberSummary" });
+export type MemberSummary = z.output<typeof MemberSummary>;
+
+export const MemberSearchPage = page(MemberSummary).meta({ id: "MemberSearchPage" });
+export type MemberSearchPage = z.output<typeof MemberSearchPage>;
+
+export const MemberDetail = z
+  .object({
+    account: z.object({
+      id: Id,
+      email: z.string(),
+      emailVerified: z.boolean(),
+      hasPassword: z.boolean(),
+      createdAt: IsoDateTime,
+      isDemo: z.boolean(),
+    }),
+    identities: z.array(LinkedIdentity),
+    membership: MembershipState,
+    entitlement: Entitlement,
+    profiles: z.array(
+      z.object({
+        id: Id,
+        name: z.string(),
+        isKids: z.boolean(),
+        maturityCeiling: MaturityLevel,
+        locked: z.boolean(),
+      }),
+    ),
+    /** Signed-in devices right now. */
+    activeDevices: z.number().int().nonnegative(),
+    recentInvoices: z.array(Invoice),
+  })
+  .meta({ id: "MemberDetail" });
+export type MemberDetail = z.output<typeof MemberDetail>;
+
+export const MemberProfileParams = z.object({ accountId: Id, profileId: Id });
+
+// --- Billing actions --------------------------------------------------------------------------
+
+export const RefundBody = z
+  .object({
+    invoiceId: Id,
+    /** Omitted: refund what remains of the invoice. */
+    amount: Money.optional(),
+    reason: AuditReason,
+  })
+  .meta({ id: "RefundBody" });
+export type RefundBody = z.input<typeof RefundBody>;
+
+export const Refund = z
+  .object({
+    id: Id,
+    invoiceId: Id,
+    amount: Money,
+    status: z.enum(["pending", "succeeded", "failed"]),
+    createdAt: IsoDateTime,
+  })
+  .meta({ id: "Refund" });
+export type Refund = z.output<typeof Refund>;
+
+export const CancelMemberSubscriptionBody = z
+  .object({
+    /** `now` ends it immediately; `period_end` lets it run out. */
+    when: z.enum(["now", "period_end"]),
+    /** With `now`: refund the unused time of the current period. */
+    refundUnused: z.boolean().optional(),
+    reason: AuditReason,
+  })
+  .meta({ id: "CancelMemberSubscriptionBody" });
+export type CancelMemberSubscriptionBody = z.input<typeof CancelMemberSubscriptionBody>;
+
+export const ExtendTrialBody = z
+  .object({ days: z.number().int().min(1).max(30), reason: AuditReason })
+  .meta({ id: "ExtendTrialBody" });
+export type ExtendTrialBody = z.input<typeof ExtendTrialBody>;
+
+export const ComplimentaryPeriodBody = z
+  .object({ days: z.number().int().min(1).max(366), reason: AuditReason })
+  .meta({ id: "ComplimentaryPeriodBody" });
+export type ComplimentaryPeriodBody = z.input<typeof ComplimentaryPeriodBody>;
+
+// --- Plans and prices (§5.4) ------------------------------------------------------------------
+
+export const PlanPrice = z
+  .object({
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    amountMinor: z.number().int().nonnegative(),
+    /** The provider-side lookup key, e.g. `webflix.basic.monthly.usd`. */
+    lookupKey: z.string(),
+    active: z.boolean(),
+    /** When this price was last synchronised to the configured provider; null: never. */
+    syncedAt: IsoDateTime.nullable(),
+  })
+  .meta({ id: "PlanPrice" });
+
+export const AdminPlan = z
+  .object({
+    id: PlanId,
+    name: z.string(),
+    maxStreams: z.number().int().positive(),
+    maxQuality: z.enum(VIDEO_QUALITIES),
+    trialDays: z.number().int().nonnegative(),
+    prices: z.array(PlanPrice),
+  })
+  .meta({ id: "AdminPlan" });
+export type AdminPlan = z.output<typeof AdminPlan>;
+
+export const AdminPlanList = z.object({ items: z.array(AdminPlan) }).meta({ id: "AdminPlanList" });
+export type AdminPlanList = z.output<typeof AdminPlanList>;
+
+export const PlanPriceParams = z.object({
+  planId: PlanId,
+  currency: z.string().regex(/^[A-Z]{3}$/),
+});
+
+export const SetPlanPriceBody = z
+  .object({ amountMinor: z.number().int().positive(), reason: AuditReason })
+  .meta({ id: "SetPlanPriceBody" });
+export type SetPlanPriceBody = z.input<typeof SetPlanPriceBody>;
+
+export const PlanSyncResult = z
+  .object({
+    provider: z.string(),
+    created: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    archived: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    syncedAt: IsoDateTime,
+  })
+  .meta({ id: "PlanSyncResult" });
+export type PlanSyncResult = z.output<typeof PlanSyncResult>;
+
+// --- Editorial (§8.3) -------------------------------------------------------------------------
+
+export const BillboardParams = z.object({ view: BrowseView });
+
+/** Titles staff pin to a view's billboard, in order; empty: the engine chooses. */
+export const EditorialBillboard = z
+  .object({
+    view: BrowseView,
+    titleIds: z.array(Id),
+    updatedAt: IsoDateTime.nullable(),
+  })
+  .meta({ id: "EditorialBillboard" });
+export type EditorialBillboard = z.output<typeof EditorialBillboard>;
+
+export const SetBillboardBody = z
+  .object({ titleIds: z.array(Id).max(10), reason: AuditReason })
+  .meta({ id: "SetBillboardBody" });
+export type SetBillboardBody = z.input<typeof SetBillboardBody>;
+
+const collectionFields = {
+  name: z.string().trim().min(1).max(80),
+  description: z.string().max(500).nullable(),
+  view: BrowseView,
+  /** Row position on the view (1-based) when published. */
+  position: z.number().int().min(1).max(50),
+  titleIds: z.array(Id).min(1).max(40),
+  status: z.enum(["draft", "published"]),
+};
+
+export const EditorialCollection = z
+  .object({ id: Id, ...collectionFields, updatedAt: IsoDateTime })
+  .meta({ id: "EditorialCollection" });
+export type EditorialCollection = z.output<typeof EditorialCollection>;
+
+export const EditorialCollectionList = z
+  .object({ items: z.array(EditorialCollection) })
+  .meta({ id: "EditorialCollectionList" });
+export type EditorialCollectionList = z.output<typeof EditorialCollectionList>;
+
+export const CollectionBody = z
+  .object({ ...collectionFields, reason: AuditReason })
+  .meta({ id: "CollectionBody" });
+export type CollectionBody = z.input<typeof CollectionBody>;
+
+export const TitleIdParam = z.object({ titleId: Id });
+
+/** A staff override of a title's availability; survives re-seeding the catalogue. */
+export const TitleAvailability = z
+  .object({
+    titleId: Id,
+    available: z.boolean(),
+    availableFrom: IsoDateTime.nullable(),
+    availableUntil: IsoDateTime.nullable(),
+    updatedAt: IsoDateTime.nullable(),
+  })
+  .meta({ id: "TitleAvailability" });
+export type TitleAvailability = z.output<typeof TitleAvailability>;
+
+export const SetTitleAvailabilityBody = z
+  .object({
+    available: z.boolean(),
+    availableFrom: IsoDateTime.nullable().optional(),
+    availableUntil: IsoDateTime.nullable().optional(),
+    reason: AuditReason,
+  })
+  .meta({ id: "SetTitleAvailabilityBody" });
+export type SetTitleAvailabilityBody = z.input<typeof SetTitleAvailabilityBody>;
+
+// --- Experiments (§8.1) -----------------------------------------------------------------------
+
+/** A new experiment is a `draft`; its salt is generated. */
+export const CreateExperimentBody = z
+  .object({ ...experimentDefinitionFields, reason: AuditReason })
+  .meta({ id: "CreateExperimentBody" });
+export type CreateExperimentBody = z.input<typeof CreateExperimentBody>;
+
+/** Only a `draft` may change its design; a running experiment may change its end date. */
+export const UpdateExperimentBody = z
+  .object(experimentDefinitionFields)
+  .omit({ key: true })
+  .partial()
+  .extend({ reason: AuditReason })
+  .meta({ id: "UpdateExperimentBody" });
+export type UpdateExperimentBody = z.input<typeof UpdateExperimentBody>;
+
+export const SetExperimentStatusBody = z
+  .object({ status: z.enum(EXPERIMENT_STATUSES), reason: AuditReason })
+  .meta({ id: "SetExperimentStatusBody" });
+export type SetExperimentStatusBody = z.input<typeof SetExperimentStatusBody>;
+
+// --- System (§8.3) ----------------------------------------------------------------------------
+
+export const SystemHealth = z
+  .object({
+    dependencies: z.array(
+      z.object({
+        name: z.string(),
+        up: z.boolean(),
+        checkedAt: IsoDateTime.nullable(),
+        detail: z.string().nullable(),
+      }),
+    ),
+    jobs: z.object({
+      /** Waiting jobs; null where the queue cannot report it (Cloudflare Queues). */
+      depth: z.number().int().nonnegative().nullable(),
+      deadLetters: z.number().int().nonnegative(),
+    }),
+    checkedAt: IsoDateTime,
+  })
+  .meta({ id: "SystemHealth" });
+export type SystemHealth = z.output<typeof SystemHealth>;
+
+export const DeadLetter = z
+  .object({
+    id: Id,
+    jobType: z.string(),
+    attempts: z.number().int().nonnegative(),
+    lastError: z.string().nullable(),
+    failedAt: IsoDateTime,
+    replayedAt: IsoDateTime.nullable(),
+  })
+  .meta({ id: "DeadLetter" });
+export type DeadLetter = z.output<typeof DeadLetter>;
+
+export const DeadLetterQuery = z.object({ ...AdminPageQuery });
+export const DeadLetterPage = page(DeadLetter).meta({ id: "DeadLetterPage" });
+export type DeadLetterPage = z.output<typeof DeadLetterPage>;
+
+/** The served recommendation model (§7.2). */
+export const RecommendationStatus = z
+  .object({
+    activeModel: z
+      .object({
+        run: z.string(),
+        asOf: IsoDateTime,
+        expiresAt: IsoDateTime,
+        importedAt: IsoDateTime,
+      })
+      .nullable(),
+    lastImport: z
+      .object({
+        run: z.string(),
+        status: z.enum(["running", "succeeded", "failed"]),
+        startedAt: IsoDateTime,
+        finishedAt: IsoDateTime.nullable(),
+        error: z.string().nullable(),
+      })
+      .nullable(),
+  })
+  .meta({ id: "RecommendationStatus" });
+export type RecommendationStatus = z.output<typeof RecommendationStatus>;
+
+// --- Audit log --------------------------------------------------------------------------------
+
+export const AuditQuery = z.object({
+  actorId: z.string().min(1).max(255).optional(),
+  targetType: z
+    .string()
+    .regex(/^[a-z][a-z_-]{0,31}$/)
+    .optional(),
+  targetId: z.string().min(1).max(255).optional(),
+  ...AdminPageQuery,
+});
+export type AuditQuery = z.input<typeof AuditQuery>;
+
+export const AuditEntry = z
+  .object({
+    id: Id,
+    actor: z.object({
+      type: z.enum(AUDIT_ACTOR_TYPES),
+      id: z.string(),
+      name: z.string().nullable(),
+    }),
+    /** Dotted, e.g. `billing.refund`, `member.pin_removed`. */
+    action: z.string(),
+    target: z.object({ type: z.string(), id: z.string() }),
+    before: JsonValue.nullable(),
+    after: JsonValue.nullable(),
+    reason: z.string().nullable(),
+    requestId: z.string().nullable(),
+    createdAt: IsoDateTime,
+  })
+  .meta({ id: "AuditEntry" });
+export type AuditEntry = z.output<typeof AuditEntry>;
+
+export const AuditPage = page(AuditEntry).meta({ id: "AuditPage" });
+export type AuditPage = z.output<typeof AuditPage>;

@@ -1,0 +1,190 @@
+import * as z from "zod";
+import { ContinueWatchingList } from "../browse.ts";
+import { Id, PageQuery } from "../common.ts";
+import {
+  HistoryPage,
+  MarkNotificationsReadBody,
+  MyListPage,
+  NotificationList,
+  RateTitleBody,
+} from "../library.ts";
+import {
+  CreatePlaybackSessionBody,
+  HeartbeatAck,
+  HeartbeatBody,
+  PlaybackSession,
+} from "../playback.ts";
+import { defineRoute } from "../route.ts";
+
+const IdParams = z.object({ id: Id });
+const TitleIdParams = z.object({ titleId: Id });
+
+/**
+ * Routes of the `streaming` area. Library, notifications and playback (milestone 1), which no
+ * milestone 2 area owns. Part of `routes` (src/routes.ts): the key is the operation id and the
+ * client method name.
+ */
+export const streamingRoutes = {
+  getMyList: defineRoute({
+    method: "GET",
+    path: "/my-list",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "My List, most recently added first",
+    query: PageQuery,
+    response: MyListPage,
+  }),
+  addToMyList: defineRoute({
+    method: "PUT",
+    path: "/my-list/:titleId",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Add a title to My List (idempotent)",
+    params: TitleIdParams,
+    response: null,
+    errors: ["not_found", "maturity_restricted"],
+  }),
+  removeFromMyList: defineRoute({
+    method: "DELETE",
+    path: "/my-list/:titleId",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Remove a title from My List (idempotent)",
+    params: TitleIdParams,
+    response: null,
+  }),
+  rateTitle: defineRoute({
+    method: "PUT",
+    path: "/ratings/:titleId",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Rate a title",
+    params: TitleIdParams,
+    body: RateTitleBody,
+    response: null,
+    errors: ["not_found", "maturity_restricted"],
+  }),
+  clearRating: defineRoute({
+    method: "DELETE",
+    path: "/ratings/:titleId",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Remove a rating (idempotent)",
+    params: TitleIdParams,
+    response: null,
+  }),
+  getContinueWatching: defineRoute({
+    method: "GET",
+    path: "/continue-watching",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Titles in progress, most recent first",
+    response: ContinueWatchingList,
+  }),
+  removeFromContinueWatching: defineRoute({
+    method: "DELETE",
+    path: "/continue-watching/:titleId",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Hide a title from Continue Watching (idempotent)",
+    params: TitleIdParams,
+    response: null,
+  }),
+  getHistory: defineRoute({
+    method: "GET",
+    path: "/history",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Viewing activity, most recent first",
+    query: PageQuery,
+    response: HistoryPage,
+  }),
+  removeHistoryEntry: defineRoute({
+    method: "DELETE",
+    path: "/history/:id",
+    tag: "library",
+    area: "streaming",
+    auth: "profile",
+    summary: "Remove one entry from viewing activity",
+    params: IdParams,
+    response: null,
+    errors: ["not_found"],
+  }),
+  listNotifications: defineRoute({
+    method: "GET",
+    path: "/notifications",
+    tag: "notifications",
+    area: "streaming",
+    auth: "profile",
+    summary: "Recent notifications and the unread count",
+    response: NotificationList,
+  }),
+  markNotificationsRead: defineRoute({
+    method: "POST",
+    path: "/notifications/read",
+    tag: "notifications",
+    area: "streaming",
+    auth: "profile",
+    summary: "Mark notifications read (all when `ids` is omitted)",
+    body: MarkNotificationsReadBody,
+    response: null,
+  }),
+  createPlaybackSession: defineRoute({
+    method: "POST",
+    path: "/playback/sessions",
+    tag: "playback",
+    area: "streaming",
+    auth: "profile",
+    summary: "Start playback: signed manifest, tracks, markers, resume point",
+    description:
+      "Limited per account (`playback-start`), well above what watching needs. The manifest token is bound to the plan's height cap: renditions above it are refused (`media_quality_restricted`), not only left out of the master playlist.",
+    body: CreatePlaybackSessionBody,
+    response: PlaybackSession,
+    successStatus: 201,
+    errors: [
+      "not_found",
+      "maturity_restricted",
+      "subscription_required",
+      "stream_limit_reached",
+      "media_unavailable",
+    ],
+    rateLimit: "playback-start",
+  }),
+  sendHeartbeat: defineRoute({
+    method: "POST",
+    path: "/playback/sessions/:id/heartbeat",
+    tag: "playback",
+    area: "streaming",
+    auth: "profile",
+    summary: "Report progress and keep the stream slot alive",
+    description:
+      "`playback_session_ended` means the slot was revoked (sign-out, plan change): stop playback.",
+    params: IdParams,
+    body: HeartbeatBody,
+    response: HeartbeatAck,
+    errors: ["not_found", "playback_session_ended"],
+  }),
+  endPlaybackSession: defineRoute({
+    method: "DELETE",
+    path: "/playback/sessions/:id",
+    tag: "playback",
+    area: "streaming",
+    auth: "profile",
+    summary: "Stop playback and free the stream slot",
+    description:
+      "Without a body: idempotent, and any profile of the account may release the slot. With a body (the final heartbeat): the session's own profile records its final position under every heartbeat rule, then the slot is freed, in one request; `not_found` and `playback_session_ended` mean the position was not recorded.",
+    params: IdParams,
+    body: HeartbeatBody.optional(),
+    response: null,
+    errors: ["not_found", "playback_session_ended"],
+    examples: { request: { positionSec: 1312.4, durationSec: 5400, state: "paused" } },
+  }),
+} as const;

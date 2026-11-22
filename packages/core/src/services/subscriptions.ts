@@ -2,9 +2,18 @@ import {
   MOCK_CARDS,
   type MockCardPayment,
   type PAYMENT_DECLINE_REASONS,
+  type Plan,
   type SubscriptionStatus,
 } from "@webflix/contracts";
-import type { CardBrand, StoredCard, SubscriptionRecord } from "../repositories/records.ts";
+import { getPlan } from "../domain/plans.ts";
+import { AppError } from "../errors.ts";
+import type {
+  AccountRecord,
+  CardBrand,
+  StoredCard,
+  SubscriptionRecord,
+} from "../repositories/records.ts";
+import type { ServiceDependencies } from "./context.ts";
 
 /** Mock billing periods are 30 days. */
 export const BILLING_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
@@ -29,6 +38,24 @@ export function effectiveSubscription(
     status: now < subscription.currentPeriodEnd ? "canceling" : "ended",
     currentPeriodEnd: subscription.currentPeriodEnd,
   };
+}
+
+/**
+ * Whether the account may start playing now, and on which plan (its streams and quality cap):
+ * the one entitlement decision playback asks for. Owned by billing: milestone 2 replaces the
+ * body with the membership projection's entitlement (§5.2, reading through `deps`) without
+ * touching the playback service.
+ */
+export async function playbackEntitlement(
+  _deps: Pick<ServiceDependencies, "repos">,
+  account: { account: AccountRecord; subscription: SubscriptionRecord },
+  now: number,
+): Promise<Plan> {
+  const membership = effectiveSubscription(account.subscription, now);
+  if (membership.status === "ended") {
+    throw new AppError("subscription_required", { subscriptionStatus: membership.status });
+  }
+  return getPlan(account.subscription.planId);
 }
 
 // --- Mock billing ---------------------------------------------------------------------------

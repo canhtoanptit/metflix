@@ -6,6 +6,12 @@
 /** Every JSON API route lives under this prefix. Route paths in the route table are relative to it. */
 export const API_BASE_PATH = "/api/v1";
 
+/**
+ * The staff (admin) API (milestone 2 §8.3). Paths in `adminRoutes` are relative to it. Bearer
+ * tokens from the staff issuer, never the member session cookie.
+ */
+export const ADMIN_API_BASE_PATH = "/api/admin/v1";
+
 /** OpenAPI document and its rendered docs UI (outside the versioned prefix). */
 export const OPENAPI_PATH = "/api/openapi.json";
 export const API_DOCS_PATH = "/api/docs";
@@ -28,6 +34,8 @@ export const REQUEST_ID_HEADER = "X-Request-Id";
 
 export const JSON_CONTENT_TYPE = "application/json";
 export const PROBLEM_CONTENT_TYPE = "application/problem+json";
+/** An issuer's `form_post` callback (Apple). */
+export const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type HttpMethod = (typeof HTTP_METHODS)[number];

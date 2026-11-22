@@ -32,6 +32,12 @@ export const DOCUMENTED_LIMITS: Record<
     payment: { limit: 10, windowSec: 600 },
     "auth-email": { limit: 10, windowSec: 900 },
     "playback-start": { limit: 60, windowSec: 60 },
+    // Milestone 2's policies (docs/BACKEND.md §3); no check measures them yet.
+    oidc: { limit: 30, windowSec: 60 },
+    "email-send": { limit: 10, windowSec: 900 },
+    "email-send-recipient": { limit: 5, windowSec: 900 },
+    events: { limit: 120, windowSec: 60 },
+    promotion: { limit: 10, windowSec: 600 },
   },
   // Dev relaxes what e2e suites sharing one address and the demo account would trip; budgets
   // per account or per email (cards, sign-ins to one account, playback starts) stay strict.
@@ -43,6 +49,11 @@ export const DOCUMENTED_LIMITS: Record<
     payment: { limit: 10, windowSec: 600 },
     "auth-email": { limit: 10, windowSec: 900 },
     "playback-start": { limit: 60, windowSec: 60 },
+    oidc: { limit: 300, windowSec: 60 },
+    "email-send": { limit: 120, windowSec: 60 },
+    "email-send-recipient": { limit: 5, windowSec: 900 },
+    events: { limit: 600, windowSec: 60 },
+    promotion: { limit: 10, windowSec: 600 },
   },
 };
 

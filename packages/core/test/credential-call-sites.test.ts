@@ -20,8 +20,11 @@ const sources = {
   }),
 };
 
-/** `.verify(` receivers that are token signatures, not secrets a person typed. */
-const SIGNATURE_VERIFIERS = /\b(?:signer|deviceSigner|mediaTokens|subtle)\.verify\(/;
+/**
+ * `.verify(` receivers that are token signatures, not secrets a person typed (`staff`: the staff
+ * bearer token's `StaffVerifier`, milestone 2).
+ */
+const SIGNATURE_VERIFIERS = /\b(?:signer|deviceSigner|mediaTokens|subtle|staff)\.verify\(/;
 
 /** The only places a password or PIN is compared, and why each is safe. */
 const ALLOWED: Record<string, { calls: number; why: string }> = {

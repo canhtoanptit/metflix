@@ -133,6 +133,14 @@ deleteProfile: defineRoute({
 4. Update the blueprint-surface list in `packages/contracts/test/route-table.test.ts`. It fails on purpose until the table and that list agree.
 5. Implement the handler on the server (§3). The client method and the OpenAPI entry exist automatically.
 
+Milestone 2 additions (§8): every route names its `area` and lives in that area's file under
+`src/routes/` (composed in `src/routes.ts`); `redirect`, `bodyEncoding: "form" | "raw"`,
+`csrf: "none"` and `maxBodyBytes` describe browser navigations, issuer form posts and signed
+webhooks (none of which is a client method); the staff API is `adminRoutes` under
+`ADMIN_API_BASE_PATH` with `auth: "staff"` and a `staffRole`, called with
+`createAdminApiClient({ accessToken })`. Run `pnpm --filter @webflix/contracts generate` after any
+route or event schema change: it also regenerates `services/recs/schemas/event.schema.json`.
+
 ### Using the client
 
 ```ts
@@ -182,6 +190,13 @@ bindRoutes(app, routes, handlers, {
 
 `packages/http/test/client-roundtrip.test.ts` is the reference. It binds the whole table and calls every route through the client.
 
+Milestone 2: handlers live in one module per area (`src/handlers/<area>.ts`, typed
+`AreaHandlers<"<area>">` so a missing or extra handler is a compile error there) and are composed
+by `createHandlers`; the staff API's are `createAdminHandlers`. A route an area has not built yet
+is `notImplemented()`: it answers `501 not_implemented` before the guard (§8.2). The guard also
+enforces `auth: "staff"` (bearer token through the `StaffVerifier`, then the role) and skips the
+client header for `csrf: "none"` routes. `packages/http/test/milestone2.test.ts` covers both.
+
 ---
 
 ## 4. Ports (`@webflix/core`)
@@ -199,6 +214,22 @@ Ports are interfaces in `packages/core/src/ports/`. Portable implementations shi
 | `PasswordHasher` | `algorithm`, `supports`, `hash`, `verify` → `{valid, needsRehash}` | PHC strings. `createPasswordHasherChain(primary, ...legacy)` upgrades old hashes on login. Portable: `createPbkdf2PasswordHasher()` (600k iterations). Node: `createScryptPasswordHasher()`. |
 | `TokenSigner` | `sign(claims)`, `verify(token, purpose)` | HMAC-SHA256 with key rotation (`kid`), URL-path-safe output. `createMediaTokens` binds media tokens to an asset. |
 | `Clock` / `IdGenerator` / `Logger` | `now()` / `next()` / `info(msg, fields)…child()` | `systemClock` and `ManualClock`; `createUuidV7Generator` (monotonic); `createJsonLogger` (one JSON line per record via `console`); `MemoryLogger`. |
+
+Milestone 2's ports (docs/BLUEPRINT-M2.md §3), same pattern (port, `@webflix/core/memory`, `@webflix/core/testing`):
+
+| Port | Shape | Semantics every adapter must keep |
+| --- | --- | --- |
+| `IdentityProvider` | `authorizationUrl(request)`, `redeem(redemption)` → `VerifiedIdentity` | Code flow with PKCE S256, exact redirect URI, single-use codes, nonce equal to the transaction's, `max_age` → fresh `auth_time` or `auth_time_missing` (fails closed), `email_verified` as a boolean, identities keyed by (issuer, subject). Rejections are `IdentityProviderError(reason)`. Helpers: `assertAuthorizationRequest`, `createPkceVerifier`, `pkceChallenge`, `normaliseEmailVerified`. |
+| `PaymentProvider` | customers, setups, subscriptions, previews, plan changes, cancel, invoices, refunds, promo validation, catalogue sync, `parseWebhook`, `listEvents` | Idempotency per key (declines replayed; other parameters `idempotency_conflict`; `billingIdempotencyKey(operation, attempt)`); the provider is the source of truth (`retrieve*`); same card, same fingerprint; a change applied with a preview's `prorationDate` is invoiced as previewed; refunds leave the invoice paid; signatures over the exact raw bytes within `WEBHOOK_TOLERANCE_SEC`; events normalised to ids (structured-clone safe). Test cards: `PAYMENT_TEST_CARDS`. |
+| `EmailSender` | `send(message, { idempotencyKey })` | At most once per key (`deduplicated: true` on a repeat); no header injection (`assertEmailMessage`); UTF-8 intact. `emailLinks` extracts links for the mailbox API. |
+| `EventSink` | `append(events)` → `{ objects }` | Durable before it resolves; `events/dt=YYYY-MM-DD/hh=HH/{uuid}.ndjson.gz` by receipt hour, a batch split across hours, never an overwrite, at least once. `createBlobLakeEventSink({ blobs, ids })` is the lake writer over any `BlobStore`; `encodeLakeObject` / `decodeLakeObject` pin the format the pipeline reads. |
+| `RecommendationStore` | `activeModel`, `neighbours(titleIds)`, `profileLists(key, now)`; importer: `beginImport`, `putNeighbours`, `putProfileLists`, `activate`, `deleteRun`, `deleteProfileLists` | Only the activated run is served; neighbours by rank, ≤ 40 per title, ≤ 25 titles per lookup; one read per profile, last write wins, expired lists are not served; idempotent imports in bounded statements. |
+| `Experiments` | `definitions()`, `assign(unit, context, now)` | `assignVariants` is the one portable assignment (SHA-256 buckets): deterministic, running and in dates only, unit type, targeting, mutual exclusion by allocation within a layer, weights, salt reshuffles, never a restricted profile. `overlappingAllocations` finds conflicts. |
+| `StaffVerifier` | `verify(token)` → `StaffIdentity` | Signature, issuer, audience `webflix-admin-api`, time (small skew), access-token type (not an ID token); roles from `resource_access["webflix-admin"].roles` filtered to `STAFF_ROLES` (`mapStaffRoles`); `staffHasRole` (admin passes every check). Rejections are `StaffTokenError(reason)`. |
+
+`createMemoryAreaPorts()` builds all seven in memory (the default of every mode until each area
+composes its adapters). `createTestServices()` exposes them as `ports` (the mailbox, the fake
+payment provider's test helpers, the staff verifier's `mint`).
 
 Also in core: `loadCoreConfig(env)` (typed config; see `config.ts` for the `WEBFLIX_*` variables and dev defaults), `AppError`, maturity helpers (`isWithinMaturityCeiling`, `maturityLevelsUpTo`, `resolveMaturityCeiling`), `PLAN_CATALOG` and `getPlan`, cursors (`encodeCursor`, `decodeCursor(cursor, schema)`), `parseHttpRange` and `scopeBlobStore`.
 
@@ -246,3 +277,216 @@ The factory returns a fresh harness for each test. Add `time: { advance(ms) }` w
 - Workers KV's minimum TTL is 60 s. The cache port enforces that floor in every mode.
 - On macOS the filesystem `BlobStore` percent-encodes names (case-insensitive FS) and suffixes object files with `~`, so `a/b` and `a/b/c` can coexist. Write through the port (e.g. an upload command), not into its directory by hand.
 - Turborepo runs with `envMode: loose`. Variables affecting test results belong in `globalEnv` (`WEBFLIX_*`, `CI` are already there).
+
+---
+
+## 8. Milestone 2: the foundation and the hand-off
+
+Written 2026-11-22 at the end of step 1 of docs/BLUEPRINT-M2.md §11. Everything milestone 2
+needs to build on in parallel is in place and every gate is green; no business behaviour is
+implemented. Milestone 1 behaves exactly as before.
+
+### 8.1 How the pieces fit
+
+- **Contracts.** Every milestone 2 route, schema, event type and error code is in
+  `@webflix/contracts` (docs/CONTRACT_CHANGES.md, 2026-11-22). Each route names its `area`; the
+  member table is one file per area under `src/routes/`; the staff API is `src/admin-routes.ts`.
+- **Ports.** The seven ports of §3 are in `packages/core/src/ports/`, each with a memory
+  implementation and a contract suite (§4 above). `AreaPorts` groups them; `ServiceDependencies`
+  extends it.
+- **Areas in core.** `packages/core/src/areas/<area>/` holds each area's `service.ts` (built by
+  `createServices`, exposed as `services.<area>`), `repository.ts` (its repository port,
+  `repos.<area>`) and `config.ts` (its environment variables, parsed by `loadCoreConfig` into
+  `config.<area>`). An area service is an `AreaModule`: its `jobs` join the one job processor
+  and its `scheduled(now)` jobs the scheduler tick, without touching `services/jobs.ts`.
+- **Seams between areas** (`areas/module.ts`, `AreaSeams`, passed to every area service):
+  `emitServerEvent` (the events area's; drops events with a debug log until events implements
+  it, so callers can call it now) and `assignments` (the experiments area's). Billing owns
+  `playbackEntitlement` (services/subscriptions.ts), the one entitlement decision playback asks.
+- **Database.** Each area has its migrations in `packages/db/src/migrations/<area>/`, its table
+  types in `src/tables/<area>.ts` (composed into `DB` and `TABLES`) and its repository in
+  `src/repositories/areas/<area>.ts` (composed by `createRepositories`). Memory:
+  `packages/core/src/memory/areas/<area>.ts`. Suites: `describe<Area>RepositoryContract`
+  (`packages/core/src/testing/areas/`), already run against memory, SQLite, PostgreSQL (when
+  available) and D1 (`packages/db/test/areas.test.ts`, `test/workerd/areas.test.ts`).
+- **HTTP.** `packages/http/src/handlers/<area>.ts` per area, `admin.ts` for the staff API.
+- **Composition.** `apps/api/src/areas/<area>.ts` and `apps/edge/src/areas/<area>.ts` build each
+  area's ports from its configuration; in memory by default. An adapter name the configuration
+  allows but nobody has built yet (`WEBFLIX_PAYMENT_PROVIDER=stripe`, …) fails at startup with a
+  `ConfigError` naming the area. The development issuer is mounted at `/dev-idp/*` in the Node
+  runtime outside production.
+
+### 8.2 Routes that are registered but not implemented
+
+A route its area has not built has `notImplemented()` as its handler. It answers every request,
+**before** the guard, validation and rate limits, with:
+
+```
+501 application/problem+json
+{ "type": "urn:webflix:problem:not_implemented", "title": "Not implemented yet", "status": 501,
+  "code": "not_implemented", "operationId": "startCheckout", "area": "billing",
+  "detail": "POST /api/v1/billing/checkout (startCheckout) is part of the contract, but the billing area has not implemented it yet." }
+```
+
+The same answer to every caller (signed in or not, with or without the client header, with any
+body), so the conformance suite recognises it from one anonymous request; the served OpenAPI
+document marks exactly these operations `x-webflix-implementation: pending` with a 501
+response; the conformance check `ops.pending-routes` reads that mark, probes each one and lists
+them per area (63 today: identity 13, billing 11, events 8, admin 31). Implementing a route is
+replacing `notImplemented()` in your handler file: the mark, the 501 and the probe go away by
+themselves. Of the staff API only `GET /me` is implemented (the guard and the verified
+identity, nothing more).
+
+### 8.3 Hand-off: who owns what
+
+Six engineers: identity (with email and the development issuer), billing (with the fake provider
+and the Stripe adapter), events (with the lake and privacy), the Python pipeline
+(`services/recs`, unchanged by this step apart from its event schema), experimentation with
+recommendation serving (the `experiments` and `personalisation` areas), and the admin API.
+"Owns" means create and change freely; everything else is shared (§8.4).
+
+| Area | Owned files | Routes | Ports | Tables |
+| --- | --- | --- | --- | --- |
+| **identity** | contracts `identity.ts`, `routes/identity.ts`, and in `account.ts` the account, session, auth and device declarations; core `areas/identity/**`, `ports/identity-provider.ts`, `ports/email-sender.ts`, their memory adapters and suites, `memory/areas/identity.ts`, `testing/areas/identity.contract.ts`, milestone 1's `services/auth.ts`, `credentials.ts`, `privileges.ts`, `device.ts`, `profiles.ts` and, in `services/account.ts`, `updateAccount`, `listDevices`, `revokeDevice`; db `migrations/identity/**`, `tables/identity.ts`, `repositories/areas/identity.ts`, milestone 1's `repositories/identity.ts`; http `handlers/identity.ts`; apps `areas/identity.ts` (api and edge); packages `dev-idp`, new `packages/email` | milestone 1: sign-up, sign-in, sign-out, session, profile selection, account details, devices, profiles, avatars (16); milestone 2: OIDC start and callbacks, identities, elevation, email verification, password reset, email webhook, mailbox (13) | `IdentityProvider`, `EmailSender` | `account_identities`, `account_tokens`, `email_outbox`, `email_suppressions`, `accounts.email_verified_at`, `sessions.elevated_until`; milestone 1's `accounts`, `sessions`, `profiles` |
+| **billing** | contracts `billing.ts`, `routes/billing.ts`, `plans.ts`, and in `account.ts` the subscription, payment-method, membership and card declarations; core `areas/billing/**`, `ports/payment-provider.ts` with its memory adapter and suite, area memory and suite files, milestone 1's `services/subscriptions.ts` (incl. `playbackEntitlement`), `domain/plans.ts` and, in `services/account.ts`, `getAccount`, `changePlan`, `updatePaymentMethod`, `cancel`, `resume`; db `migrations/billing/**`, `tables/billing.ts`, `repositories/areas/billing.ts`; http `handlers/billing.ts`; apps `areas/billing.ts`; packages `payments-fake`, `adapters-stripe` (new), `tools/stripe`; `packages/contracts/test/no-card-data.test.ts`'s `LEGACY_CARD_FIELDS` | milestone 1: account, plans, plan change, card, cancel, resume (6); milestone 2: billing config, checkout (3), plan-change preview, card setup (2), invoices, promo validation, payment webhook, billing clock (11) | `PaymentProvider` | `memberships`, `billing_customers`, `billing_operations`, `provider_events`, `trial_fingerprints`, `invoices`, `refunds`, `plan_prices`, `provider_prices`, `checkouts`, `payment_method_setups`, `payments_fake_objects`, `payments_fake_idempotency`, `payments_fake_clocks`; milestone 1's `subscriptions` |
+| **events** | contracts `events.ts`, `event-schema.ts`, `privacy.ts`, `routes/events.ts`, `fixtures/events.ts` (and through the generator `services/recs/schemas/event.schema.json`); core `areas/events/**` (the `emitServerEvent` seam), `ports/event-sink.ts` with memory adapter and suite, area memory and suite files; custodian of milestone 1's streaming surface: `services/playback.ts` (playback events), `services/library.ts`, `routes/streaming.ts`, `handlers/streaming.ts`; db `migrations/events/**`, `tables/events.ts`, `repositories/areas/events.ts`, milestone 1's `repositories/activity.ts`; http `handlers/events.ts`; apps `areas/events.ts`; new `packages/telemetry` | milestone 2: events, consent (2), export, privacy requests, account deletion (2), events read-back (8); custodian of the 14 streaming routes | `EventSink` | `consents`, `privacy_requests`, `privacy_erasures`, `analytics_daily` (events themselves: the lake, in the blob store) |
+| **personalisation** (experiments engineer) | contracts `routes/personalisation.ts`, `browse.ts`, `titles.ts`; core `areas/personalisation/**`, `ports/recommendation-store.ts` with memory adapter and suite, area memory and suite files, milestone 1's `services/browse.ts`, `services/search.ts`, `recommendations/**`, `catalog/**`; db `migrations/personalisation/**`, `tables/personalisation.ts`, `repositories/areas/personalisation.ts`, milestone 1's `repositories/catalog.ts`, `search.ts`; http `handlers/personalisation.ts`; apps `areas/personalisation.ts` | milestone 1: browse, rows, genres, showcase, titles, episodes, popularity, similar, search (10) | `RecommendationStore` | `recommendation_models`, `recommendation_neighbours`, `recommendation_profiles`, `editorial_billboards`, `editorial_collections`, `editorial_collection_items`, `title_availability` |
+| **experiments** | contracts `experiments.ts`; core `areas/experiments/**`, `ports/experiments.ts` with memory adapter and suite, area memory and suite files; db `migrations/experiments/**`, `tables/experiments.ts`, `repositories/areas/experiments.ts`; http `handlers/experiments.ts`; apps `areas/experiments.ts` | none (assignments travel in `GET /session`; its staff routes are the admin area's handlers) | `Experiments` | `experiments`, `experiment_results` |
+| **admin** | contracts `admin.ts`, `admin-routes.ts`; core `areas/admin/**`, `ports/staff-verifier.ts` with memory adapter and suite, area memory and suite files; db `migrations/admin/**`, `tables/admin.ts`, `repositories/areas/admin.ts`; http `handlers/admin.ts`; apps `areas/admin.ts`; new `apps/admin` | the 32 staff routes (`GET /me` implemented, 31 pending) | `StaffVerifier` | `audit_log`, `job_dead_letters` |
+
+The Python pipeline owns `services/recs` except `schemas/event.schema.json` (generated from
+contracts: change `packages/contracts/src/events.ts`, run the generator) and keeps reading it
+through `src/webflix_recs/schemas.py`.
+
+### 8.4 Shared files and how to change them
+
+Shared (foundation's; change additively, with the Edit tool's exact replacements, never a
+rewrite, and say so in your report): contracts `route.ts`, `routes.ts` (composition only),
+`constants.ts` (append in your area's section), `error-codes.ts` and `errors.ts` (append codes
+and extension shapes; never rename one), `http.ts`, `client.ts`, `openapi.ts`, `index.ts`,
+`account.ts` (identity's and billing's declarations side by side), `scripts/`; core
+`areas/{module,index,ports,config}.ts`, `config.ts`, `services/{index,context,jobs,presenters}.ts`,
+`repositories/ports.ts`, `memory/repositories.ts`, `memory/area-ports.ts`, `index.ts`; db
+`schema.ts`, `migrations/{index,types}.ts`, `repositories/{index,mapping}.ts`; http `app.ts`,
+`routing.ts`, `session.ts`, `container.ts`, `ops.ts`, `handlers/{index,types}.ts`; apps
+`runtime.ts`, `areas/{index,shared}.ts`, `config.ts`, `env.ts`, `wrangler.jsonc` (a new binding,
+var or secret goes in the local and the production sections alike: a test compares them).
+
+Common moves without touching a shared file:
+
+- **A route**: change its entry in `src/routes/<area>.ts` (or `admin-routes.ts`), run
+  `pnpm --filter @webflix/contracts generate`, implement it in `handlers/<area>.ts`, record it in
+  docs/CONTRACT_CHANGES.md. The route-table surface test lists every route on purpose: update it.
+- **A table or column**: a new migration file in `migrations/<area>/` named with the next free
+  number (`NNNN_<area>_<change>`), listed in that directory's `index.ts`; its types in
+  `tables/<area>.ts`; `pnpm --filter @webflix/db generate`. ADD COLUMN only, nullable or with a
+  default; never rebuild a table that others reference (§8.6, D-M2-5). If your dev database then
+  refuses with "corrupted migrations" because another area's migration landed with a lower
+  number meanwhile, delete `.data/` (dev only).
+- **A setting**: in `areas/<area>/config.ts` (portable) or your `apps/*/src/areas/<area>.ts`
+  (mode-specific). Document it in docs/BACKEND.md §4.
+- **A job or a periodic job**: `jobs` / `scheduled` of your area service.
+- **Another area's data**: call its service (or a seam); never its repository.
+
+### 8.5 What is stubbed, and how each stub answers
+
+| What | Today | Where it is replaced |
+| --- | --- | --- |
+| 63 routes (§8.2) | `501 not_implemented` before the guard | the area's handler file |
+| `services.<area>` | no methods (jobs: none) | `areas/<area>/service.ts` |
+| `repos.<area>` | empty object | memory, db and suite files of the area |
+| `emitServerEvent` seam | logs `events.server_event_dropped` at debug, drops | `areas/events/service.ts` |
+| `assignments` seam | real: `deps.experiments.assign` (memory definitions: none, so `{}`) | `areas/experiments/service.ts` |
+| `authenticateStaff` | real: verifies with `deps.staff`; `unauthenticated` otherwise | `areas/admin/service.ts` |
+| Area ports in every mode | memory (`identityProviders` empty; the staff verifier mints only in process) | `apps/*/src/areas/<area>.ts` |
+| `WEBFLIX_EVENT_SINK=lake` | real: the lake writer over the mode's blob store | (works today) |
+| Development issuer, Node | mounted at `/dev-idp/*` outside production; its issuer URLs use `WEBFLIX_PUBLIC_ORIGIN` (`:5173` in dev), so a browser reaches it only once the Vite dev server proxies `/dev-idp` (apps/web) and, on kind, once the gateway routes `/dev-idp` to the API (deploy); server-side calls can use `devIdp.fetch` in process | identity, with the web and platform owners |
+| Development issuer, Worker | not mounted: `/dev-idp/*` reaches the app (`not_found`) | `apps/edge/src/areas/identity.ts` (`handleIdentityRequest`), after `packages/dev-idp` typechecks under `@cloudflare/workers-types` |
+| `/_pay/*` (fake provider's form) | routed to the Worker / not mounted anywhere | billing's area composition files |
+
+### 8.6 Decisions the blueprint left open (with the reason)
+
+- **D-M2-1 Uniform stub** (§8.2): 501 before the guard, so one anonymous probe recognises it and
+  an unbuilt route consumes no rate limit or session lookup.
+- **D-M2-2 Areas on routes**: each route names the handler module that implements it, so
+  handler ownership is compile-checked. Milestone 1's catalogue, library and playback routes are
+  the `streaming` area (no milestone 2 owner; events is custodian); browse, titles and search are
+  personalisation's.
+- **D-M2-3 Route kinds**: browser navigations (`redirect`), issuer form posts (`form`) and signed
+  webhooks (`raw`, `csrf: "none"`) are first-class routes (validated, documented) but not client
+  methods; `navigationUrl` builds a navigation.
+- **D-M2-4 Staff API**: its own table and base path; `staffRole: "any"` for `GET /me` (a staff
+  member without a role must still learn so); `admin` passes every role check; every mutating
+  staff route requires `reason`.
+- **D-M2-5 `accounts.password_hash` stays NOT NULL** (the blueprint says nullable): SQLite and D1
+  cannot drop NOT NULL without rebuilding the table, and dropping `accounts` cascades deletes to
+  every profile, session and subscription even with `defer_foreign_keys` (measured on SQLite
+  3.53). A passwordless account stores the empty string; the identity owner maps it to `null` in
+  `AccountRecord` when making `passwordHash` nullable. The same rule bans rebuilding any table
+  that others reference (a migration test fails on DROP TABLE or RENAME).
+- **D-M2-6 Billing records keep `account_id` without a foreign key** (customers, operations,
+  provider events, invoices, refunds, trial fingerprints): deleting an account must not delete
+  what the law requires to be kept (§6.3). The projection, checkouts and setups cascade.
+- **D-M2-7 The fake provider's state** is three generic tables (versioned JSON documents,
+  idempotency records, per-customer clocks: a clock per customer, as Stripe's test clocks, so
+  parallel suites do not move each other's time). Billing may replace them with its own
+  migration.
+- **D-M2-8 Checkout API**: start (`requires_setup` + client secret), confirm (server reads the
+  card's fingerprint, decides the trial, creates the subscription; `requires_payment` when the
+  first payment needs the browser), status; a member's plan change is previewed and applied with
+  the preview's opaque `previewToken` (same proration date). Immediate downgrade credit versus a
+  scheduled downgrade (docs/STRIPE.md §7) is billing's decision.
+- **D-M2-9 PaymentProvider shape**: a subscription without a trial is always `incomplete` until
+  the browser confirms the first payment (Stripe's `default_incomplete`, docs/STRIPE.md §7);
+  reconciliation reads `listEvents` after an outage (the CLI listener replays nothing, §11).
+- **D-M2-10 Event schema**: the pipeline's schema adopted with three corrections
+  (docs/CONTRACT_CHANGES.md); exported in the pipeline's own `if/then` dispatch layout (a
+  validator checks one constant per rule instead of trying 22 `oneOf` branches on tens of
+  millions of events) and generated straight into `services/recs/schemas/`, whose Dockerfile
+  packages that directory; `ClientEventInput` refuses a client-supplied identity (§6.1 says
+  "ignored"; with closed schemas, refusing is the honest form of ignoring).
+- **D-M2-11 Consent and pseudonyms**: consent mode defaults to `opt-in` (the strictest; nothing
+  is shown before the web adopts it); `WEBFLIX_PSEUDONYM_KEY` has a development default refused
+  in production once events are stored (`WEBFLIX_EVENT_SINK` other than memory).
+- **D-M2-12 Rate limits**: five new policies (docs/BACKEND.md §3). Address-keyed ones (`oidc`,
+  `email-send`, `events`) are relaxed in dev and Cloudflare local exactly like milestone 1's
+  (suites share 127.0.0.1); per-recipient and per-account ones stay strict.
+- **D-M2-13 Experiments**: units hash into 10 000 buckets per layer; experiments of a layer own
+  disjoint `allocation` ranges (explicit, so adding an experiment never reshuffles another's
+  units); SHA-256 via Web Crypto so every runtime agrees; restricted profiles are never
+  assigned.
+- **D-M2-14 RecommendationStore**: expired lists are not returned (`profileLists(key, now)`);
+  profiles absent from a new run are deleted explicitly (`deleteProfileLists`), which works for
+  SQL and KV alike.
+- **D-M2-15 The lake writer is in core** (`createBlobLakeEventSink`), so the object format is
+  pinned once to what the pipeline reads (`lake.py`): gzip, one JSON event per line, by receipt
+  hour.
+- **D-M2-16 Configuration per area**, with adapter names reserved now (`memory` default) and
+  unbuilt ones failing at startup; Stripe variables use the names `tools/stripe` writes
+  (`STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`).
+- **D-M2-17 Diagnostics routes** (`/diagnostics/mailbox`, `/diagnostics/billing/clock`,
+  `/diagnostics/events`) sit in the member table like milestone 1's popularity diagnostics and
+  answer `not_found` in production; the billing clock is per account (per customer).
+- **D-M2-18 `GET /session?deviceId=`** carries the anonymous experiment unit; `Plan.trial` stays
+  absent until billing offers trials (advertising a trial the milestone 1 sign-up does not give
+  would change what a member sees); `PAYMENT_DECLINE_REASONS` is not extended yet (the web
+  switches on it exhaustively).
+- **D-M2-19 Email**: a `data-export-ready` template joins §8.2's list (the export link is
+  emailed, §6.3).
+
+### 8.7 Where the blueprint was wrong, or a track's measured facts won
+
+- §4.1 "`accounts.password_hash` becomes nullable": not safely possible on SQLite/D1 (D-M2-5).
+- §4.4 "mount the development issuer in apps/api and apps/edge": done in apps/api; in apps/edge
+  `packages/dev-idp` does not typecheck under `@cloudflare/workers-types` (two WebCrypto union
+  types in `src/jose.ts`), although its own workerd suite passes under its own types.
+- §5.2–§5.5 already carried docs/STRIPE.md's corrections; the port follows STRIPE.md where the
+  blueprint is less specific: keys per (operation, attempt), declines replayed, first payment
+  confirmed in the browser, refunds that leave invoices paid, retrieve-never-trust webhooks.
+- §6.1 the envelope follows services/recs's fifteen decisions (subject block, `consent.change`,
+  positions, policy), which the blueprint had folded in; "client-supplied identities are
+  ignored" became "refused" (D-M2-10).
+- packages/dev-idp's fixed facts are contract constants: callbacks
+  `/api/v1/auth/oidc/{provider}/callback`, client `webflix-admin`, audience `webflix-admin-api`,
+  roles from `resource_access["webflix-admin"].roles`, Apple's form post (a `form` route with
+  `csrf: "none"`).

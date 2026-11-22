@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./openapi": "./src/openapi.ts",
+    "./event-schema": "./src/event-schema.ts",
     "./fixtures": "./src/fixtures/index.ts"
   },
   "scripts": {

@@ -4,6 +4,8 @@ import {
   type AuthContext,
   requireAccountHolder as assertAccountHolder,
   type ChargeCredentialCheck,
+  type StaffIdentity,
+  staffHasRole,
   type Viewer,
 } from "@webflix/core";
 import type { Context } from "hono";
@@ -176,8 +178,42 @@ export function createGuard(container: AppContainer) {
     if (route.auth === "account") await requireAccount(container, c);
     if (route.auth === "profile") await requireViewer(container, c);
     if (route.auth === "account-holder") await requireAccountHolder(container, c);
+    if (route.auth === "staff") await requireStaffRole(container, c, route);
     if (route.rateLimit && route.rateLimitScope !== "handler") {
       await enforceRateLimit(container, c, route.rateLimit);
     }
   };
+}
+
+/**
+ * The staff identity of an admin API request (`Authorization: Bearer <token>`), verified once
+ * per request by the `StaffVerifier`. Never a member session: the session cookie is ignored.
+ */
+export function requireStaff(container: AppContainer, c: AppContext): Promise<StaffIdentity> {
+  const memo = c.get("staff");
+  if (memo) return memo;
+  const header = c.req.header("Authorization") ?? "";
+  const match = /^Bearer\s+(\S+)$/i.exec(header);
+  const promise = match?.[1]
+    ? container.services.admin.authenticateStaff(match[1])
+    : Promise.reject(new AppError("unauthenticated", { detail: "Send a staff bearer token" }));
+  // Handled where it is awaited; a rejection must not surface as unhandled meanwhile.
+  promise.catch(() => {});
+  c.set("staff", promise);
+  return promise;
+}
+
+/** `auth: "staff"`: a verified token carrying the route's role (`admin` passes every check). */
+async function requireStaffRole(
+  container: AppContainer,
+  c: AppContext,
+  route: RouteSpec,
+): Promise<void> {
+  const identity = await requireStaff(container, c);
+  const required = route.staffRole ?? "admin";
+  if (!staffHasRole(identity, required)) {
+    throw new AppError("staff_role_required", {
+      requiredRole: required === "any" ? "admin" : required,
+    });
+  }
 }

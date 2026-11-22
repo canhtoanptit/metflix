@@ -1,4 +1,5 @@
 import * as z from "zod";
+import type { AreaModule } from "../areas/module.ts";
 import type { CatalogCache, PopularityCache } from "../catalog/cache.ts";
 import {
   createJobProcessor,
@@ -6,6 +7,7 @@ import {
   handleJob,
   type JobBinding,
   type JobProcessor,
+  MAX_JOB_BATCH_SIZE,
 } from "../ports/job-queue.ts";
 import { addDays, DAY_MS, dayStart, hash01, utcDay } from "../recommendations/hash.ts";
 import type { TitleRecord, TitleStatRecord } from "../repositories/records.ts";
@@ -105,8 +107,16 @@ export function createJobBindings(deps: ServiceDependencies, state: JobState): J
   ];
 }
 
-export function createProcessor(deps: ServiceDependencies, state: JobState): JobProcessor {
-  return createJobProcessor({ jobs: createJobBindings(deps, state), logger: deps.logger });
+/** The one processor: milestone 1's job handlers plus every area's (`AreaModule.jobs`). */
+export function createProcessor(
+  deps: ServiceDependencies,
+  state: JobState,
+  areaJobs: readonly JobBinding[] = [],
+): JobProcessor {
+  return createJobProcessor({
+    jobs: [...createJobBindings(deps, state), ...areaJobs],
+    logger: deps.logger,
+  });
 }
 
 /**
@@ -114,17 +124,26 @@ export function createProcessor(deps: ServiceDependencies, state: JobState): Job
  * in-process in dev), a Cron Trigger on Cloudflare. It only publishes jobs, so it is cheap
  * and safe to run from several replicas at once (every job is idempotent).
  */
-export function createScheduler(deps: ServiceDependencies) {
+export function createScheduler(
+  deps: ServiceDependencies,
+  areas: readonly Pick<AreaModule, "scheduled">[] = [],
+) {
   return {
     async tick(): Promise<void> {
-      const today = utcDay(deps.clock.now());
-      await deps.jobs.publishBatch([
+      const now = deps.clock.now();
+      const today = utcDay(now);
+      const jobs = [
         statsBaselineJob.create({ day: today }),
         statsRollupJob.create({ day: today }),
         statsRollupJob.create({ day: addDays(today, -1) }),
         playbackCleanupJob.create({ olderThanDays: PLAYBACK_RETENTION_DAYS }),
         sessionCleanupJob.create({}),
-      ]);
+        ...areas.flatMap((area) => area.scheduled(now)),
+      ];
+      // A batch holds at most MAX_JOB_BATCH_SIZE jobs.
+      for (let start = 0; start < jobs.length; start += MAX_JOB_BATCH_SIZE) {
+        await deps.jobs.publishBatch(jobs.slice(start, start + MAX_JOB_BATCH_SIZE));
+      }
     },
   };
 }

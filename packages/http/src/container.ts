@@ -7,6 +7,7 @@ import type {
   Logger,
   RateLimiter,
   Services,
+  StaffIdentity,
 } from "@webflix/core";
 import type { Context } from "hono";
 import type { MetricsRegistry } from "./metrics.ts";
@@ -56,6 +57,8 @@ export interface AppVariables {
   requestId: string;
   /** The resolved session, memoised per request (see `resolveAuth`). */
   auth: Promise<AuthContext | null>;
+  /** The staff identity of an admin API request, memoised per request (see `requireStaff`). */
+  staff: Promise<StaffIdentity>;
 }
 
 export type AppEnv = { Variables: AppVariables };

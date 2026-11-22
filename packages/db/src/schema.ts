@@ -10,12 +10,25 @@
  * - JSON: `text` everywhere, encoded/decoded by `json`/`parseJson` in the repositories.
  */
 
+import { ADMIN_TABLES, type AdminTables } from "./tables/admin.ts";
+import { BILLING_TABLES, type BillingTables } from "./tables/billing.ts";
+import { EVENTS_TABLES, type EventsTables } from "./tables/events.ts";
+import { EXPERIMENTS_TABLES, type ExperimentsTables } from "./tables/experiments.ts";
+import { IDENTITY_TABLES, type IdentityTables } from "./tables/identity.ts";
+import { PERSONALISATION_TABLES, type PersonalisationTables } from "./tables/personalisation.ts";
+
 export interface AccountsTable {
   id: string;
   email: string;
+  /**
+   * PHC string. Milestone 2: the empty string for an account without a password (created through
+   * an issuer); the column stays NOT NULL (migration 0002_identity says why).
+   */
   password_hash: string;
   created_at: number;
   updated_at: number;
+  /** Milestone 2 (identity, 0002). */
+  email_verified_at: number | null;
 }
 
 export interface SubscriptionsTable {
@@ -42,6 +55,8 @@ export interface SessionsTable {
   created_at: number;
   last_seen_at: number;
   expires_at: number;
+  /** Milestone 2 (identity, 0002): the account-holder proof holds until then. */
+  elevated_until: number | null;
 }
 
 export interface ProfilesTable {
@@ -278,7 +293,17 @@ export interface SearchLabelsTable {
   popularity: number;
 }
 
-export interface DB {
+/**
+ * Every table. Milestone 2's areas declare theirs in `tables/<area>.ts` (with their migrations
+ * under `migrations/<area>/`), so an area changes its tables without touching another's.
+ */
+export interface DB
+  extends IdentityTables,
+    BillingTables,
+    EventsTables,
+    PersonalisationTables,
+    ExperimentsTables,
+    AdminTables {
   accounts: AccountsTable;
   subscriptions: SubscriptionsTable;
   sessions: SessionsTable;
@@ -337,4 +362,10 @@ export const TABLES = [
   "notification_reads",
   "search_documents",
   "search_labels",
+  ...IDENTITY_TABLES,
+  ...BILLING_TABLES,
+  ...EVENTS_TABLES,
+  ...PERSONALISATION_TABLES,
+  ...EXPERIMENTS_TABLES,
+  ...ADMIN_TABLES,
 ] as const satisfies readonly (keyof DB)[];

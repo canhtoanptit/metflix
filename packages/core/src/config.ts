@@ -1,5 +1,15 @@
 import { RATE_LIMIT_POLICY_NAMES, type RateLimitPolicyName } from "@webflix/contracts";
 import * as z from "zod";
+import { type AdminAreaConfig, loadAdminConfig } from "./areas/admin/config.ts";
+import { type BillingAreaConfig, loadBillingConfig } from "./areas/billing/config.ts";
+import type { AreaConfigInput } from "./areas/config.ts";
+import { type EventsAreaConfig, loadEventsConfig } from "./areas/events/config.ts";
+import { type ExperimentsAreaConfig, loadExperimentsConfig } from "./areas/experiments/config.ts";
+import { type IdentityAreaConfig, loadIdentityConfig } from "./areas/identity/config.ts";
+import {
+  loadPersonalisationConfig,
+  type PersonalisationAreaConfig,
+} from "./areas/personalisation/config.ts";
 import { LOG_LEVELS, type LogLevel } from "./ports/logger.ts";
 import { assertRateLimitPolicy, type RateLimitPolicy } from "./ports/rate-limiter.ts";
 import { MIN_SIGNING_SECRET_LENGTH, type SigningKey } from "./ports/token-signer.ts";
@@ -33,6 +43,18 @@ export const DEFAULT_RATE_LIMITS: Readonly<Record<RateLimitPolicyName, RateLimit
   "auth-email": { name: "auth-email", limit: 10, windowSec: 900 },
   // Playback sessions started per account: zapping between titles stays far below it.
   "playback-start": { name: "playback-start", limit: 60, windowSec: 60 },
+  // Milestone 2. Federated sign-ins started or completed per client address: two requests
+  // each (start, callback), so a household signing in on several devices stays far below it.
+  oidc: { name: "oidc", limit: 30, windowSec: 60 },
+  // Requests that send a verification or reset email, per client address and per recipient
+  // (§4.3): a member who mistyped stays inside them; mail-bombing an address does not.
+  "email-send": { name: "email-send", limit: 10, windowSec: 900 },
+  "email-send-recipient": { name: "email-send-recipient", limit: 5, windowSec: 900 },
+  // Event batches per account (signed out: per address). The SDK flushes every few seconds per
+  // device; a household's devices together stay below it.
+  events: { name: "events", limit: 120, windowSec: 60 },
+  // Promo-code lookups per account: enough to correct a typo, too few to enumerate codes.
+  promotion: { name: "promotion", limit: 10, windowSec: 600 },
 };
 
 /** What is wrong with a rate-limit table: a policy the contract names but the table lacks. */
@@ -86,6 +108,13 @@ export interface CoreConfig {
   media: { tokenKeys: SigningKey[]; tokenTtlSec: number };
   playback: { heartbeatIntervalSec: number; leaseTtlSec: number };
   rateLimits: Record<RateLimitPolicyName, RateLimitPolicy>;
+  // Milestone 2: one block per area, parsed by the area's own loader (areas/<area>/config.ts).
+  identity: IdentityAreaConfig;
+  billing: BillingAreaConfig;
+  events: EventsAreaConfig;
+  personalisation: PersonalisationAreaConfig;
+  experiments: ExperimentsAreaConfig;
+  admin: AdminAreaConfig;
 }
 
 export class ConfigError extends Error {
@@ -160,7 +189,8 @@ function rateLimitEnvName(name: RateLimitPolicyName): string {
  *
  * Variables: WEBFLIX_MODE (required), WEBFLIX_ENV, WEBFLIX_PUBLIC_ORIGIN, WEBFLIX_LOG_LEVEL,
  * WEBFLIX_MEDIA_TOKEN_KEYS, WEBFLIX_MEDIA_TOKEN_TTL_SEC, WEBFLIX_SESSION_TTL_DAYS,
- * WEBFLIX_HEARTBEAT_INTERVAL_SEC, WEBFLIX_RATE_LIMIT_<POLICY> ("limit/windowSec").
+ * WEBFLIX_HEARTBEAT_INTERVAL_SEC, WEBFLIX_RATE_LIMIT_<POLICY> ("limit/windowSec"), and each
+ * milestone 2 area's own (areas/<area>/config.ts; docs/BACKEND.md §4).
  */
 export function loadCoreConfig(env: Readonly<Record<string, unknown>>): CoreConfig {
   const strings = Object.fromEntries(
@@ -197,6 +227,20 @@ export function loadCoreConfig(env: Readonly<Record<string, unknown>>): CoreConf
   }
 
   issues.push(...rateLimitTableIssues(rateLimits));
+
+  const areaInput: AreaConfigInput = {
+    vars: strings as Record<string, string>,
+    environment: vars.WEBFLIX_ENV,
+  };
+  const identity = loadIdentityConfig(areaInput);
+  const billing = loadBillingConfig(areaInput);
+  const events = loadEventsConfig(areaInput);
+  const personalisation = loadPersonalisationConfig(areaInput);
+  const experiments = loadExperimentsConfig(areaInput);
+  const admin = loadAdminConfig(areaInput);
+  for (const area of [identity, billing, events, personalisation, experiments, admin]) {
+    issues.push(...area.issues);
+  }
   if (issues.length > 0) throw new ConfigError(issues);
 
   const publicOrigin = new URL(vars.WEBFLIX_PUBLIC_ORIGIN).origin;
@@ -217,5 +261,11 @@ export function loadCoreConfig(env: Readonly<Record<string, unknown>>): CoreConf
     // Two missed heartbeats plus grace before a stream slot frees up.
     playback: { heartbeatIntervalSec: heartbeat, leaseTtlSec: heartbeat * 2 + 15 },
     rateLimits,
+    identity: identity.config,
+    billing: billing.config,
+    events: events.config,
+    personalisation: personalisation.config,
+    experiments: experiments.config,
+    admin: admin.config,
   };
 }

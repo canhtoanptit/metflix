@@ -1,5 +1,5 @@
 /** Ops endpoints, cross-cutting headers, metrics and the API reference. */
-import { routes } from "@webflix/contracts";
+import { adminRoutes, routes } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
 import { createMetricsRegistry } from "../src/index.ts";
 import { createTestApp } from "./support.ts";
@@ -127,8 +127,14 @@ describe("API description", () => {
     const operations = Object.values(document.paths as Record<string, object>).flatMap((path) =>
       Object.keys(path),
     );
-    expect(operations).toHaveLength(Object.keys(routes).length);
+    // The member API and the staff API.
+    expect(operations).toHaveLength(Object.keys(routes).length + Object.keys(adminRoutes).length);
     expect(document.components.securitySchemes.sessionCookie.name).toBe("webflix_session");
+    // Registered but not implemented yet: marked pending; implemented routes are not.
+    expect(document.paths["/api/v1/billing/config"].get["x-webflix-implementation"]).toBe(
+      "pending",
+    );
+    expect(document.paths["/api/v1/account"].get).not.toHaveProperty("x-webflix-implementation");
   });
 
   it("renders the docs UI from same-origin resources only, under a strict CSP", async () => {

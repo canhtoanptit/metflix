@@ -1,3 +1,5 @@
+import { type AreaServices, createAreaServices } from "../areas/index.ts";
+import type { AreaSeams } from "../areas/module.ts";
 import { CatalogCache, PopularityCache, ShowcaseCache } from "../catalog/cache.ts";
 import type { JobProcessor } from "../ports/job-queue.ts";
 import { type AccountService, createAccountService } from "./account.ts";
@@ -11,8 +13,8 @@ import { createProfileService, type ProfileService } from "./profiles.ts";
 import { createSearchService, type SearchService } from "./search.ts";
 import { createSeeder, type Seeder } from "./seed.ts";
 
-/** Every application service, wired to one set of ports. */
-export interface Services {
+/** Every application service, wired to one set of ports (milestone 2's areas included). */
+export interface Services extends AreaServices {
   auth: AuthService;
   account: AccountService;
   profiles: ProfileService;
@@ -26,6 +28,8 @@ export interface Services {
   /** Consumes jobs; hand it to the `JobQueue` adapter (memory, Valkey Streams, Queues). */
   processor: JobProcessor;
   state: ServiceState;
+  /** What the areas offer each other (server events, experiment assignments). */
+  seams: AreaSeams;
 }
 
 /**
@@ -55,7 +59,11 @@ export function createServices(deps: ServiceDependencies): Services {
     }),
   };
   const browse = createBrowseService(deps, state);
+  const { areas, seams } = createAreaServices(deps);
+  const modules = Object.values(areas);
   return {
+    ...areas,
+    seams,
     auth: createAuthService(deps),
     account: createAccountService(deps),
     profiles: createProfileService(deps),
@@ -64,8 +72,12 @@ export function createServices(deps: ServiceDependencies): Services {
     library: createLibraryService(deps, state, browse.personalize),
     playback: createPlaybackService(deps, browse.personalize),
     seeder: createSeeder(deps, state),
-    scheduler: createScheduler(deps),
-    processor: createProcessor(deps, state),
+    scheduler: createScheduler(deps, modules),
+    processor: createProcessor(
+      deps,
+      state,
+      modules.flatMap((module) => module.jobs),
+    ),
     state,
   };
 }

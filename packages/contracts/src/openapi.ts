@@ -8,12 +8,15 @@
  * input variant is published as `<Id>Input`.
  */
 import * as z from "zod";
+import { adminRoutes } from "./admin-routes.ts";
 import { ERROR_CATALOG, type ErrorCode } from "./error-codes.ts";
 import { Problem } from "./errors.ts";
 import {
+  ADMIN_API_BASE_PATH,
   API_BASE_PATH,
   CLIENT_HEADER,
   CLIENT_HEADER_VALUE,
+  FORM_CONTENT_TYPE,
   isSafeMethod,
   JSON_CONTENT_TYPE,
   PROBLEM_CONTENT_TYPE,
@@ -51,7 +54,24 @@ export interface OpenApiOptions {
   servers?: { url: string; description?: string }[];
   /** Name of the session cookie, for the security scheme. */
   sessionCookieName?: string;
+  /**
+   * Operation ids the serving deployment registers but has not implemented yet: marked
+   * `x-webflix-implementation: pending` with their `501 not_implemented` response.
+   */
+  pending?: ReadonlySet<string>;
 }
+
+/** A route table and the prefix it is served under. */
+export interface RouteMount {
+  table: RouteTable;
+  basePath: string;
+}
+
+/** Everything the API serves: the member API and the staff API. */
+export const API_MOUNTS: readonly RouteMount[] = [
+  { table: defaultRoutes, basePath: API_BASE_PATH },
+  { table: adminRoutes, basePath: ADMIN_API_BASE_PATH },
+];
 
 const TAG_DESCRIPTIONS: Record<RouteTag, string> = {
   auth: "Sign up, sign in and the session bootstrap.",
@@ -63,9 +83,16 @@ const TAG_DESCRIPTIONS: Record<RouteTag, string> = {
   library: "My List, ratings, Continue Watching and viewing activity.",
   notifications: "In-app notifications.",
   playback: "Playback sessions and progress heartbeats.",
+  billing: "Checkout, plan changes, payment methods, invoices and promo codes.",
+  events: "Behaviour events from the telemetry SDK.",
+  privacy: "Consent, data export and account deletion.",
+  webhooks: "Signed callbacks from payment and email providers.",
+  diagnostics: "Test surfaces of local modes (never in production).",
+  admin: "The staff API (bearer tokens from the staff issuer).",
 };
 
 const SESSION_SCHEME = "sessionCookie";
+const STAFF_SCHEME = "staffBearer";
 const DEFS_PREFIX = "#/$defs/";
 const COMPONENTS_PREFIX = "#/components/schemas/";
 
@@ -191,9 +218,11 @@ function objectProperties(root: JsonSchema): {
   };
 }
 
-function errorResponses(route: RouteSpec): Record<string, JsonSchema> {
+function errorResponses(route: RouteSpec, pending: boolean): Record<string, JsonSchema> {
   const byStatus = new Map<number, ErrorCode[]>();
-  for (const code of routeErrorCodes(route)) {
+  const codes = routeErrorCodes(route);
+  if (pending) codes.push("not_implemented");
+  for (const code of codes) {
     const status = ERROR_CATALOG[code].status;
     byStatus.set(status, [...(byStatus.get(status) ?? []), code]);
   }
@@ -207,26 +236,94 @@ function errorResponses(route: RouteSpec): Record<string, JsonSchema> {
   return responses;
 }
 
-/** Build the OpenAPI 3.1 document for a route table (the full API by default). */
+function requestBodyOf(
+  route: RouteSpec,
+  body: Conversion | null,
+  rewrite: (value: unknown, io: Io) => JsonSchema,
+): JsonSchema | null {
+  if (route.bodyEncoding === "raw") {
+    return {
+      required: true,
+      description:
+        "Verified over the exact bytes received (the provider's signature header) before it is parsed.",
+      content: { [JSON_CONTENT_TYPE]: { schema: {} } },
+    };
+  }
+  if (!body) return null;
+  const contentType = route.bodyEncoding === "form" ? FORM_CONTENT_TYPE : JSON_CONTENT_TYPE;
+  return {
+    required: !isBodyOptional(route),
+    content: {
+      [contentType]: {
+        schema: rewrite(body.root, "input"),
+        ...(route.examples?.request === undefined ? {} : { example: route.examples.request }),
+      },
+    },
+  };
+}
+
+function successResponse(
+  route: RouteSpec,
+  response: Conversion | null,
+  rewrite: (value: unknown, io: Io) => JsonSchema,
+): JsonSchema {
+  if (route.redirect !== undefined) {
+    return {
+      description: "Redirect (a browser navigation)",
+      headers: { Location: { required: true, schema: { type: "string" } } },
+    };
+  }
+  if (!response) return { description: "No content" };
+  return {
+    description: "Success",
+    content: {
+      [JSON_CONTENT_TYPE]: {
+        schema: rewrite(response.root, "output"),
+        ...(route.examples?.response === undefined ? {} : { example: route.examples.response }),
+      },
+    },
+  };
+}
+
+function securityOf(route: RouteSpec): JsonSchema[] {
+  if (route.auth === "public") return [];
+  return [{ [route.auth === "staff" ? STAFF_SCHEME : SESSION_SCHEME]: [] }];
+}
+
+/**
+ * Build the OpenAPI 3.1 document: by default everything the API serves (`API_MOUNTS`); a single
+ * table is documented under `API_BASE_PATH`.
+ */
 export function buildOpenApiDocument(
-  table: RouteTable = defaultRoutes,
+  tables: RouteTable | readonly RouteMount[] = API_MOUNTS,
   options: OpenApiOptions = {},
 ): OpenApiDocument {
+  const mounts: readonly RouteMount[] = Array.isArray(tables)
+    ? (tables as readonly RouteMount[])
+    : [{ table: tables as RouteTable, basePath: API_BASE_PATH }];
   const registry = new ComponentRegistry();
   registry.add(Problem, "output");
 
-  const prepared = Object.entries(table).map(([operationId, route]) => ({
-    operationId,
-    route,
-    params: route.params ? registry.add(route.params, "input") : null,
-    query: route.query ? registry.add(route.query, "input") : null,
-    body: route.body ? registry.add(route.body, "input") : null,
-    response: route.response ? registry.add(route.response, "output") : null,
-  }));
+  const seen = new Set<string>();
+  const prepared = mounts.flatMap(({ table, basePath }) =>
+    Object.entries(table).map(([operationId, route]) => {
+      if (seen.has(operationId)) throw new Error(`Duplicate operation id "${operationId}"`);
+      seen.add(operationId);
+      return {
+        operationId,
+        route,
+        basePath,
+        params: route.params ? registry.add(route.params, "input") : null,
+        query: route.query ? registry.add(route.query, "input") : null,
+        body: route.body ? registry.add(route.body, "input") : null,
+        response: route.response ? registry.add(route.response, "output") : null,
+      };
+    }),
+  );
   const { schemas, rewrite } = registry.finalize();
 
   const paths: OpenApiDocument["paths"] = {};
-  for (const { operationId, route, params, query, body, response } of prepared) {
+  for (const { operationId, route, basePath, params, query, body, response } of prepared) {
     const parameters: JsonSchema[] = [];
     for (const [location, conversion] of [
       ["path", params],
@@ -245,7 +342,7 @@ export function buildOpenApiDocument(
         });
       }
     }
-    if (!isSafeMethod(route.method)) {
+    if (!isSafeMethod(route.method) && route.csrf !== "none") {
       parameters.push({
         name: CLIENT_HEADER,
         in: "header",
@@ -256,52 +353,32 @@ export function buildOpenApiDocument(
     }
 
     const status = successStatus(route);
+    const pending = options.pending?.has(operationId) === true;
+    const requestBody = requestBodyOf(route, body, rewrite);
     const operation: JsonSchema = {
       operationId,
       tags: [route.tag],
       summary: route.summary,
       ...(route.description ? { description: route.description } : {}),
       ...(parameters.length > 0 ? { parameters } : {}),
-      ...(body
-        ? {
-            requestBody: {
-              required: !isBodyOptional(route),
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: rewrite(body.root, "input"),
-                  ...(route.examples?.request === undefined
-                    ? {}
-                    : { example: route.examples.request }),
-                },
-              },
-            },
-          }
-        : {}),
+      ...(requestBody ? { requestBody } : {}),
       responses: {
-        [String(status)]: response
-          ? {
-              description: "Success",
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: rewrite(response.root, "output"),
-                  ...(route.examples?.response === undefined
-                    ? {}
-                    : { example: route.examples.response }),
-                },
-              },
-            }
-          : { description: "No content" },
-        ...errorResponses(route),
+        [String(status)]: successResponse(route, response, rewrite),
+        ...errorResponses(route, pending),
       },
-      security: route.auth === "public" ? [] : [{ [SESSION_SCHEME]: [] }],
+      security: securityOf(route),
       "x-webflix-auth": route.auth,
+      "x-webflix-area": route.area,
+      ...(route.staffRole ? { "x-webflix-staff-role": route.staffRole } : {}),
       ...(route.rateLimit ? { "x-webflix-rate-limit": route.rateLimit } : {}),
       ...(route.rateLimit && route.rateLimitScope === "handler"
         ? { "x-webflix-rate-limit-scope": "handler" }
         : {}),
+      ...(route.csrf === "none" ? { "x-webflix-csrf": "none" } : {}),
+      ...(pending ? { "x-webflix-implementation": "pending" } : {}),
     };
 
-    const path = `${API_BASE_PATH}${toOpenApiPath(route.path)}`;
+    const path = `${basePath}${toOpenApiPath(route.path)}`;
     paths[path] = { ...paths[path], [route.method.toLowerCase()]: operation };
   }
 
@@ -323,6 +400,13 @@ export function buildOpenApiDocument(
           in: "cookie",
           name: options.sessionCookieName ?? "webflix_session",
           description: "Opaque httpOnly session cookie set by sign-up and sign-in.",
+        },
+        [STAFF_SCHEME]: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+          description:
+            "A staff access token from the staff issuer (audience `webflix-admin-api`, roles of the `webflix-admin` client).",
         },
       },
     },

@@ -5,9 +5,11 @@
 import {
   API_BASE_PATH,
   ApiError,
+  adminRoutes,
   createApiClient,
   createRouteClient,
   type FetchLike,
+  isClientRoute,
   OPENAPI_PATH,
   type RouteSpec,
   routes,
@@ -266,7 +268,7 @@ describe("route table → Hono → typed client", () => {
     const response = await app.request(OPENAPI_PATH);
     const document = (await response.json()) as { paths: Record<string, Record<string, unknown>> };
     const operations = Object.values(document.paths).flatMap((methods) => Object.keys(methods));
-    expect(operations).toHaveLength(Object.keys(routes).length);
+    expect(operations).toHaveLength(Object.keys(routes).length + Object.keys(adminRoutes).length);
   });
 });
 
@@ -289,9 +291,21 @@ describe("the whole route table binds and is reachable through the client", () =
 
     const api = createApiClient({ fetch: async (url, init) => app.request(url, init) });
     const input = {
-      params: { id: "x1", rowId: "r1", slug: "drama", titleId: "t1", seasonNumber: 1 },
+      params: {
+        id: "x1",
+        rowId: "r1",
+        slug: "drama",
+        titleId: "t1",
+        seasonNumber: 1,
+        provider: "google",
+      },
     };
-    for (const [name, route] of Object.entries(routes) as [string, RouteSpec][]) {
+    // Redirect, form and raw-body routes are served but are not client methods.
+    const clientRoutes = (Object.entries(routes) as [string, RouteSpec][]).filter(([, route]) =>
+      isClientRoute(route),
+    );
+    expect(Object.keys(api).sort()).toEqual(clientRoutes.map(([name]) => name).sort());
+    for (const [name, route] of clientRoutes) {
       const call = api[name as keyof typeof api] as (input: unknown) => Promise<unknown>;
       const error = await call(route.params ? input : {}).catch((caught: unknown) => caught);
       expect(ApiError.is(error, "service_unavailable"), name).toBe(true);

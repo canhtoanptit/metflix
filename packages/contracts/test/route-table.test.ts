@@ -1,11 +1,14 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 import {
+  adminRoutes,
   buildPath,
   ERROR_CATALOG,
   ERROR_CODES,
+  isClientRoute,
   type Problem,
   pathParamNames,
+  ROUTE_AREAS,
   type RouteInput,
   type RouteOutput,
   type RouteRequest,
@@ -16,12 +19,45 @@ import {
   toOpenApiPath,
 } from "../src/index.ts";
 
-const entries: [string, RouteSpec][] = Object.entries(routes);
+const memberEntries: [string, RouteSpec][] = Object.entries(routes);
+const adminEntries: [string, RouteSpec][] = Object.entries(adminRoutes);
+const entries: [string, RouteSpec][] = [...memberEntries, ...adminEntries];
 
 describe("route table", () => {
-  it("has one route per method and path", () => {
-    const keys = entries.map(([, route]) => `${route.method} ${route.path}`);
-    expect(new Set(keys).size).toBe(keys.length);
+  it("has one route per method and path in each table, and unique operation ids", () => {
+    for (const table of [memberEntries, adminEntries]) {
+      const keys = table.map(([, route]) => `${route.method} ${route.path}`);
+      expect(new Set(keys).size).toBe(keys.length);
+    }
+    const names = entries.map(([name]) => name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it.each(entries)("%s names a known area", (_name, route) => {
+    expect(ROUTE_AREAS).toContain(route.area);
+  });
+
+  it.each(entries)(
+    "%s is consistent about redirects, encodings, CSRF and staff roles",
+    (_name, route) => {
+      if (route.redirect !== undefined) expect(route.response).toBeNull();
+      if (route.bodyEncoding === "raw") expect(route.body).toBeUndefined();
+      if (route.bodyEncoding === "form") expect(route.body).toBeDefined();
+      // Only callers that cannot send the client header are exempt from it.
+      if (route.csrf === "none") {
+        expect(route.bodyEncoding === "raw" || route.bodyEncoding === "form").toBe(true);
+      }
+      expect(route.staffRole !== undefined).toBe(route.auth === "staff");
+    },
+  );
+
+  it("serves the staff API with staff auth only, and the member API never with it", () => {
+    for (const [, route] of adminEntries) {
+      expect(route.auth).toBe("staff");
+      expect(route.area).toBe("admin");
+      expect(isClientRoute(route)).toBe(true);
+    }
+    for (const [, route] of memberEntries) expect(route.auth).not.toBe("staff");
   });
 
   it.each(entries)("%s declares exactly its path parameters", (_name, route) => {
@@ -60,7 +96,7 @@ describe("route table", () => {
     },
   );
 
-  it("covers exactly the surface of blueprint §6", () => {
+  it("covers exactly the surface of blueprint §6 (milestone 1) and milestone 2", () => {
     const blueprint = [
       "GET /auth/email-status",
       "POST /auth/signup",
@@ -109,8 +145,90 @@ describe("route table", () => {
       "POST /playback/sessions/:id/heartbeat",
       "DELETE /playback/sessions/:id",
     ];
-    const actual = entries.map(([, route]) => `${route.method} ${route.path}`);
-    expect(actual.sort()).toEqual(blueprint.sort());
+    // Milestone 2 (docs/BLUEPRINT-M2.md §4-§6, §8; docs/CONTRACT_CHANGES.md).
+    const milestone2 = [
+      "GET /auth/oidc/:provider/start",
+      "GET /auth/oidc/:provider/callback",
+      "POST /auth/oidc/:provider/callback",
+      "GET /account/identities",
+      "DELETE /account/identities/:provider",
+      "GET /session/elevation",
+      "POST /session/elevation",
+      "POST /auth/email-verification",
+      "POST /auth/email-verification/confirm",
+      "POST /auth/password-reset",
+      "POST /auth/password-reset/confirm",
+      "POST /webhooks/email/:provider",
+      "GET /diagnostics/mailbox",
+      "GET /billing/config",
+      "POST /billing/checkout",
+      "GET /billing/checkout/:id",
+      "POST /billing/checkout/:id/confirm",
+      "POST /billing/subscription/preview",
+      "POST /billing/payment-method/setup",
+      "GET /billing/payment-method/setup/:id",
+      "GET /billing/invoices",
+      "POST /billing/promotions/validate",
+      "POST /webhooks/payments/:provider",
+      "POST /diagnostics/billing/clock",
+      "POST /events",
+      "GET /privacy/consent",
+      "PUT /privacy/consent",
+      "POST /privacy/export",
+      "GET /privacy/requests",
+      "POST /account/deletion",
+      "DELETE /account/deletion",
+      "GET /diagnostics/events",
+    ];
+    const actual = memberEntries.map(([, route]) => `${route.method} ${route.path}`);
+    expect(actual.sort()).toEqual([...blueprint, ...milestone2].sort());
+  });
+
+  it("covers the staff API of milestone 2 §8.3", () => {
+    const staff = [
+      "GET /me",
+      "GET /members",
+      "GET /members/:accountId",
+      "POST /members/:accountId/sign-out",
+      "POST /members/:accountId/password-reset",
+      "DELETE /members/:accountId/profiles/:profileId/pin",
+      "POST /members/:accountId/refunds",
+      "POST /members/:accountId/subscription/cancel",
+      "POST /members/:accountId/subscription/extend-trial",
+      "POST /members/:accountId/subscription/complimentary",
+      "GET /plans",
+      "PUT /plans/:planId/prices/:currency",
+      "POST /plans/sync",
+      "GET /editorial/billboards/:view",
+      "PUT /editorial/billboards/:view",
+      "GET /editorial/collections",
+      "POST /editorial/collections",
+      "PUT /editorial/collections/:id",
+      "DELETE /editorial/collections/:id",
+      "PUT /titles/:titleId/availability",
+      "GET /experiments",
+      "POST /experiments",
+      "GET /experiments/:key",
+      "PATCH /experiments/:key",
+      "PUT /experiments/:key/status",
+      "GET /experiments/:key/results",
+      "GET /system/health",
+      "GET /system/dead-letters",
+      "POST /system/dead-letters/:id/replay",
+      "GET /system/recommendations",
+      "POST /system/recommendations/import",
+      "GET /audit",
+    ];
+    const actual = adminEntries.map(([, route]) => `${route.method} ${route.path}`);
+    expect(actual.sort()).toEqual(staff.sort());
+  });
+
+  it("takes a reason on every mutating staff route (the audit log needs one)", () => {
+    for (const [name, route] of adminEntries) {
+      if (route.method === "GET") continue;
+      const shape = (route.body as { shape?: Record<string, unknown> } | undefined)?.shape;
+      expect(shape?.reason, name).toBeDefined();
+    }
   });
 
   it("maps every error code to a 4xx/5xx status", () => {

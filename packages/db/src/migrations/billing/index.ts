@@ -1,0 +1,10 @@
+import type { SchemaMigration } from "../types.ts";
+import * as m0003 from "./0003_billing.ts";
+
+/**
+ * The billing area's migrations, oldest first. Add a migration here (a new file, the next free
+ * `NNNN_billing_<change>` name) and run `pnpm --filter @webflix/db generate` for D1.
+ */
+export const BILLING_MIGRATIONS: readonly SchemaMigration[] = [
+  { name: "0003_billing", source: "billing/0003_billing.ts", up: m0003.up },
+];

@@ -24,6 +24,7 @@
     "@webflix/contracts": "workspace:*",
     "@webflix/core": "workspace:*",
     "@webflix/db": "workspace:*",
+    "@webflix/dev-idp": "workspace:*",
     "@webflix/http": "workspace:*",
     "hono": "catalog:",
     "kysely": "catalog:",

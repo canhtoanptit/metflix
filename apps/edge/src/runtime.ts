@@ -23,6 +23,7 @@ import {
 import { createRepositories, createSqlSearchIndex } from "@webflix/db";
 import { createD1Database } from "@webflix/db/d1";
 import { createApp } from "@webflix/http";
+import { createAreaPorts } from "./areas/index.ts";
 import { type EdgeConfig, type Env, JOBS_MAX_ATTEMPTS, loadEdgeConfig } from "./env.ts";
 import { mediaGeneration } from "./media-generation.ts";
 
@@ -100,6 +101,8 @@ function buildRuntime(env: Env): Runtime {
     : media;
 
   const services = createServices({
+    // Milestone 2's ports, composed per area (src/areas/).
+    ...createAreaPorts({ env, config, clock, ids, logger, blobs }),
     config: config.core,
     repos,
     search: createSqlSearchIndex(database),

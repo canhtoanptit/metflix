@@ -4,9 +4,11 @@
  * does not ship zod. Response validation is opt-in through `createRouteClient(routes, ...)`.
  */
 import type { z } from "zod";
+import type { AdminRoutes } from "./admin-routes.ts";
 import { type ErrorCode, isErrorCode } from "./error-codes.ts";
 import type { Problem } from "./errors.ts";
 import {
+  ADMIN_API_BASE_PATH,
   API_BASE_PATH,
   CLIENT_HEADER,
   CLIENT_HEADER_VALUE,
@@ -17,13 +19,15 @@ import {
 } from "./http.ts";
 import {
   buildPath,
+  type ClientRoutes,
+  type NavigationRoutes,
   type RouteInput,
   type RouteInputOptional,
   type RouteOutput,
   type RouteSpec,
   type RouteTable,
 } from "./route.ts";
-import { ROUTE_INDEX } from "./route-index.gen.ts";
+import { ADMIN_ROUTE_INDEX, NAVIGATION_ROUTE_INDEX, ROUTE_INDEX } from "./route-index.gen.ts";
 import type { Routes } from "./routes.ts";
 
 /** Errors produced by the client itself rather than returned by the server. */
@@ -117,6 +121,11 @@ export type FetchLike = (input: string, init: ClientRequestInit) => Promise<Resp
 
 export interface ApiClientOptions {
   /**
+   * Prefix every route path is relative to. Defaults to `API_BASE_PATH` (`ADMIN_API_BASE_PATH`
+   * for `createAdminApiClient`).
+   */
+  basePath?: string;
+  /**
    * Origin (and optional prefix) to call, e.g. `http://localhost:4000`. Defaults to "" so the
    * browser calls its own origin. Required outside the browser unless `fetch` handles
    * relative URLs (as Hono's `app.request` does).
@@ -151,10 +160,21 @@ export type RouteMethod<R extends RouteSpec> =
     ? (input?: RouteInput<R>, options?: RequestOptions) => Promise<RouteOutput<R>>
     : (input: RouteInput<R>, options?: RequestOptions) => Promise<RouteOutput<R>>;
 
-export type ApiClientFor<T extends RouteTable> = { readonly [K in keyof T]: RouteMethod<T[K]> };
+/**
+ * A client for a route table: one method per client route (redirect, form and raw-body routes
+ * are served and documented but are not `fetch` calls; see `IsClientRoute`).
+ */
+export type ApiClientFor<T extends RouteTable> = {
+  readonly [K in keyof ClientRoutes<T>]: ClientRoutes<T>[K] extends RouteSpec
+    ? RouteMethod<ClientRoutes<T>[K]>
+    : never;
+};
 
-/** Typed client for the whole Webflix API. Method names are the route table keys. */
+/** Typed client for the whole Webflix member API. Method names are the route table keys. */
 export type ApiClient = ApiClientFor<Routes>;
+
+/** Typed client for the staff API (`adminRoutes`). */
+export type AdminApiClient = ApiClientFor<AdminRoutes>;
 
 /** What the transport needs per route; `response` only when validating. */
 interface RuntimeRoute {
@@ -165,6 +185,7 @@ interface RuntimeRoute {
 
 interface ResolvedOptions {
   baseUrl: string;
+  basePath: string;
   fetch: FetchLike;
   headers: ApiClientOptions["headers"];
   credentials: FetchCredentials | undefined;
@@ -177,6 +198,7 @@ const runtimeSupportsCredentials =
 function resolveOptions(options: RouteClientOptions): ResolvedOptions {
   return {
     baseUrl: (options.baseUrl ?? "").replace(/\/+$/, ""),
+    basePath: options.basePath ?? API_BASE_PATH,
     fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     headers: options.headers,
     credentials: runtimeSupportsCredentials ? (options.credentials ?? "include") : undefined,
@@ -202,6 +224,51 @@ function buildClient(
  */
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   return buildClient(ROUTE_INDEX, resolveOptions(options)) as ApiClient;
+}
+
+export interface AdminApiClientOptions extends Omit<ApiClientOptions, "basePath"> {
+  /**
+   * The staff access token for `Authorization: Bearer`, read before every request (so a
+   * refreshed token is picked up). Staff identity never becomes a member session.
+   */
+  accessToken: () => string | Promise<string>;
+}
+
+/** Typed client for the staff API, zod-free like `createApiClient`. */
+export function createAdminApiClient(options: AdminApiClientOptions): AdminApiClient {
+  const { accessToken, headers, ...rest } = options;
+  return buildClient(
+    ADMIN_ROUTE_INDEX,
+    resolveOptions({
+      ...rest,
+      basePath: ADMIN_API_BASE_PATH,
+      headers: async () => {
+        const merged = new Headers(typeof headers === "function" ? await headers() : headers);
+        merged.set("Authorization", `Bearer ${await accessToken()}`);
+        return merged;
+      },
+    }),
+  ) as AdminApiClient;
+}
+
+/**
+ * The URL of a browser navigation (a redirect route such as `startOidc`): assign it to
+ * `window.location`, never `fetch` it (the issuer's page is cross-origin).
+ */
+export function navigationUrl<K extends keyof NavigationRoutes<Routes>>(
+  name: K,
+  input: NavigationRoutes<Routes>[K] extends RouteSpec
+    ? RouteInput<NavigationRoutes<Routes>[K]>
+    : never,
+  options: { baseUrl?: string } = {},
+): string {
+  const route = NAVIGATION_ROUTE_INDEX[name as keyof typeof NAVIGATION_ROUTE_INDEX];
+  return buildUrl(
+    route,
+    input as AnyRouteInput,
+    (options.baseUrl ?? "").replace(/\/+$/, ""),
+    API_BASE_PATH,
+  );
 }
 
 /**
@@ -239,8 +306,13 @@ interface AnyRouteInput {
   body?: unknown;
 }
 
-function buildUrl(route: RuntimeRoute, input: AnyRouteInput, baseUrl: string): string {
-  let url = `${baseUrl}${API_BASE_PATH}${buildPath(route.path, input.params)}`;
+function buildUrl(
+  route: Pick<RuntimeRoute, "path">,
+  input: AnyRouteInput,
+  baseUrl: string,
+  basePath: string,
+): string {
+  let url = `${baseUrl}${basePath}${buildPath(route.path, input.params)}`;
   if (input.query) {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(input.query)) {
@@ -286,7 +358,7 @@ async function performRequest(
   requestOptions: RequestOptions,
   options: ResolvedOptions,
 ): Promise<unknown> {
-  const url = buildUrl(route, input, options.baseUrl);
+  const url = buildUrl(route, input, options.baseUrl, options.basePath);
   const hasBody = input.body !== undefined;
   const init: ClientRequestInit = {
     method: route.method,

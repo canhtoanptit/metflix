@@ -28,6 +28,8 @@ import {
 import { type Context, Hono, type NotFoundHandler } from "hono";
 import { compress } from "hono/compress";
 import { createInfrastructure, type Infrastructure, type RuntimeComponent } from "./adapters.ts";
+import { mountIdentityRoutes } from "./areas/identity.ts";
+import { createAreaPorts } from "./areas/index.ts";
 import { type ApiConfig, BLOB_MANIFEST_PREFIX } from "./config.ts";
 import {
   createHealth,
@@ -64,6 +66,8 @@ export function createRuntime(config: ApiConfig, component: RuntimeComponent): R
   const ids = createUuidV7Generator({ clock });
   const infra = createInfrastructure(config, { clock, ids, logger, component });
   const services = createServices({
+    // Milestone 2's ports, composed per area (src/areas/).
+    ...createAreaPorts({ config, clock, ids, logger, blobs: infra.blobs }),
     config: config.core,
     repos: infra.repos,
     search: infra.search,
@@ -202,6 +206,8 @@ export function createHttpApp(runtime: Runtime, options: { health?: Health } = {
   root.use("*", retryAfterOn503());
   if (config.opsPort === null) registerOpsRoutes(root, runtime, health);
   else root.use("*", refuseOpsPaths());
+  // Milestone 2: routes an area serves outside the API (the development issuer).
+  mountIdentityRoutes(root, config, runtime.logger);
   root.use("/api/*", compress());
   root.route("/", app as unknown as Hono);
   // Unmatched paths reach the root app, not the mounted one: answer with the same problem

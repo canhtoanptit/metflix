@@ -6,7 +6,6 @@ import {
   type PlaybackState,
   videoQualityForHeight,
 } from "@webflix/contracts";
-import { getPlan } from "../domain/plans.ts";
 import { AppError } from "../errors.ts";
 import { toIsoString } from "../ports/clock.ts";
 import { serializeError } from "../ports/logger.ts";
@@ -21,7 +20,7 @@ import type { EpisodeSummary, PlaybackSessionRecord } from "../repositories/reco
 import type { ServiceDependencies, Viewer } from "./context.ts";
 import { statsRollupJob } from "./jobs.ts";
 import { presentEpisodeRef } from "./presenters.ts";
-import { effectiveSubscription } from "./subscriptions.ts";
+import { playbackEntitlement } from "./subscriptions.ts";
 
 export interface StartPlaybackInput {
   titleId: string;
@@ -150,10 +149,8 @@ export function createPlaybackService(
         });
       }
       const now = clock.now();
-      const membership = effectiveSubscription(account.subscription, now);
-      if (membership.status === "ended") {
-        throw new AppError("subscription_required", { subscriptionStatus: membership.status });
-      }
+      // Billing decides (milestone 2: the membership projection's entitlement, §5.2).
+      const plan = await playbackEntitlement(deps, account, now);
 
       let episode: EpisodeSummary | undefined;
       if (title.type === "series") {
@@ -182,7 +179,6 @@ export function createPlaybackService(
       const asset = media.asset;
       if (!asset || asset.kind === "unavailable") throw new AppError("media_unavailable");
 
-      const plan = getPlan(account.subscription.planId);
       const playbackSessionId = ids.next();
       const lease = await streamGate.acquire({
         accountId,

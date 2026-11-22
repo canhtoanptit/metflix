@@ -3,7 +3,8 @@
  *
  * - Ports (interfaces) for every infrastructure dependency: `BlobStore`, `KeyValueCache`,
  *   `RateLimiter`, `StreamGate`, `JobQueue`, `SearchIndex`, `PasswordHasher`, `TokenSigner`,
- *   `Clock`, `IdGenerator`, `Logger`.
+ *   `Clock`, `IdGenerator`, `Logger`; milestone 2's `IdentityProvider`, `PaymentProvider`,
+ *   `EmailSender`, `EventSink`, `RecommendationStore`, `Experiments`, `StaffVerifier`.
  * - Portable implementations that run in every mode: system clock, UUIDv7 ids, JSON logger,
  *   HMAC token signer, media tokens, PBKDF2 password hasher.
  * - Domain helpers: maturity, plans, cursors, `AppError`, config.
@@ -11,6 +12,33 @@
  * In-memory adapters: `@webflix/core/memory`. Contract suites: `@webflix/core/testing`.
  */
 
+export * from "./areas/admin/config.ts";
+export type { AdminRepository } from "./areas/admin/repository.ts";
+export type { AdminService } from "./areas/admin/service.ts";
+export * from "./areas/billing/config.ts";
+export type { BillingRepository } from "./areas/billing/repository.ts";
+export type { BillingService } from "./areas/billing/service.ts";
+export type { AreaConfigInput, AreaConfigResult } from "./areas/config.ts";
+export * from "./areas/events/config.ts";
+export type { EventsRepository } from "./areas/events/repository.ts";
+export type { EventsService } from "./areas/events/service.ts";
+export * from "./areas/experiments/config.ts";
+export type { ExperimentsRepository } from "./areas/experiments/repository.ts";
+export type { ExperimentsService } from "./areas/experiments/service.ts";
+export * from "./areas/identity/config.ts";
+export type { IdentityRepository } from "./areas/identity/repository.ts";
+export type { IdentityService } from "./areas/identity/service.ts";
+export type { AreaServices } from "./areas/index.ts";
+export {
+  type AreaModule,
+  type AreaSeams,
+  NO_JOBS,
+  type ServerEventInput,
+} from "./areas/module.ts";
+export * from "./areas/personalisation/config.ts";
+export type { PersonalisationRepository } from "./areas/personalisation/repository.ts";
+export type { PersonalisationService } from "./areas/personalisation/service.ts";
+export type { AreaPorts } from "./areas/ports.ts";
 export * from "./catalog/cache.ts";
 export * from "./catalog/snapshot.ts";
 export * from "./config.ts";
@@ -22,12 +50,19 @@ export * from "./errors.ts";
 export * from "./ports/blob-store.ts";
 export * from "./ports/cache.ts";
 export * from "./ports/clock.ts";
+export * from "./ports/email-sender.ts";
+export * from "./ports/event-sink.ts";
+export * from "./ports/experiments.ts";
+export * from "./ports/identity-provider.ts";
 export * from "./ports/ids.ts";
 export * from "./ports/job-queue.ts";
 export * from "./ports/logger.ts";
 export * from "./ports/password-hasher.ts";
+export * from "./ports/payment-provider.ts";
 export * from "./ports/rate-limiter.ts";
+export * from "./ports/recommendation-store.ts";
 export * from "./ports/search-index.ts";
+export * from "./ports/staff-verifier.ts";
 export * from "./ports/stream-gate.ts";
 export * from "./ports/token-signer.ts";
 export * from "./recommendations/engine.ts";
@@ -102,4 +137,5 @@ export {
   createMockBillingProvider,
   type DeclineReason,
   effectiveSubscription,
+  playbackEntitlement,
 } from "./services/subscriptions.ts";

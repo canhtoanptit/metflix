@@ -16,17 +16,30 @@ import { type Migration, type MigrationProvider, Migrator } from "kysely/migrati
 import type { Database } from "../database.ts";
 import type { SqlDialect } from "../dialect.ts";
 import * as initial from "./0001_initial.ts";
+import { ADMIN_MIGRATIONS } from "./admin/index.ts";
+import { BILLING_MIGRATIONS } from "./billing/index.ts";
+import { EVENTS_MIGRATIONS } from "./events/index.ts";
+import { EXPERIMENTS_MIGRATIONS } from "./experiments/index.ts";
+import { IDENTITY_MIGRATIONS } from "./identity/index.ts";
+import { PERSONALISATION_MIGRATIONS } from "./personalisation/index.ts";
+import type { SchemaMigration } from "./types.ts";
 
-/** A schema change authored once for every dialect. */
-export interface SchemaMigration {
-  /** Sortable, e.g. `0001_initial`. Also the D1 file name. */
-  name: string;
-  // biome-ignore lint/suspicious/noExplicitAny: migrations run against the schema as it was.
-  up(db: Kysely<any>, dialect: SqlDialect): Promise<void>;
-}
+export type { SchemaMigration } from "./types.ts";
 
-/** Every migration, oldest first. Append; never edit one that has shipped. */
-export const MIGRATIONS: readonly SchemaMigration[] = [{ name: "0001_initial", up: initial.up }];
+/**
+ * Every migration, oldest first (by name). Milestone 2's areas each list theirs in
+ * `migrations/<area>/index.ts`, so areas add migrations without touching each other's files.
+ * Append; never edit one that has shipped.
+ */
+export const MIGRATIONS: readonly SchemaMigration[] = [
+  { name: "0001_initial", up: initial.up },
+  ...IDENTITY_MIGRATIONS,
+  ...BILLING_MIGRATIONS,
+  ...EVENTS_MIGRATIONS,
+  ...PERSONALISATION_MIGRATIONS,
+  ...EXPERIMENTS_MIGRATIONS,
+  ...ADMIN_MIGRATIONS,
+].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
 /** Kysely migration provider for a dialect (Node: SQLite and Postgres). */
 export function migrationProvider(dialect: SqlDialect): MigrationProvider {
@@ -214,7 +227,7 @@ export async function compileMigration(
 export async function d1MigrationFile(migration: SchemaMigration): Promise<string> {
   const statements = await compileMigration(migration, "d1");
   return [
-    `-- GENERATED from packages/db/src/migrations/${migration.name}.ts. Do not edit.`,
+    `-- GENERATED from packages/db/src/migrations/${migration.source ?? `${migration.name}.ts`}. Do not edit.`,
     "-- Regenerate with `pnpm --filter @webflix/db generate`; apply with `wrangler d1 migrations apply`.",
     "",
     ...statements.map((statement) => `${statement.replace(/\s+\n/g, "\n")};`),

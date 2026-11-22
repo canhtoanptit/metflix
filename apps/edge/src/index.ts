@@ -20,6 +20,7 @@ import { createR2BlobStore, serveBlobOrigin } from "@webflix/adapters-cloudflare
 import { createProblem } from "@webflix/contracts";
 import { ConfigError, serializeError } from "@webflix/core";
 import { problemResponse } from "@webflix/http";
+import { handleIdentityRequest } from "./areas/identity.ts";
 import type { Env } from "./env.ts";
 import { getRuntime, type Runtime } from "./runtime.ts";
 import { routeRequest, serveShell } from "./spa.ts";
@@ -92,6 +93,15 @@ export async function handleFetch(
   if (routeRequest(request) === "shell") return serveShell(request, env.ASSETS);
   const runtime = compose(env, "fetch", build);
   if (runtime instanceof ConfigError) return configFailure();
+  // Milestone 2: the development issuer (`/dev-idp/*`, never in production), ahead of the app
+  // so its pages keep their own headers.
+  const { core } = runtime.config;
+  const issuer = handleIdentityRequest(request, env, {
+    environment: core.environment,
+    publicOrigin: core.publicOrigin,
+    devIdpSecret: core.identity.devIdpSecret,
+  });
+  if (issuer !== null) return issuer;
   return serveApp(request, env, ctx, runtime);
 }
 

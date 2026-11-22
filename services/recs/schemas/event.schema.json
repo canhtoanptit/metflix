@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://webflix.dev/schemas/event/1",
   "title": "Webflix behaviour event (envelope version 1)",
-  "description": "One event as stored in the event lake (docs/BLUEPRINT-M2.md §6.1). Provisional: authored by services/recs until packages/contracts exports the authoritative JSON Schema. Every decision the blueprint left open is listed in services/recs/README.md (Event schema decisions). Closed at every level: a new optional field is a new `version` of its type.",
+  "description": "One event as stored in the event lake (docs/BLUEPRINT-M2.md §6.1). GENERATED from packages/contracts/src/events.ts by `pnpm --filter @webflix/contracts generate`; do not edit. Closed at every level: a new optional field is a new `version` of its type.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "eventId": {
-      "description": "UUIDv7, generated where the event is created (client or server). The deduplication key of the lake.",
+      "description": "UUIDv7, generated where the event is created. The lake's deduplication key.",
       "$ref": "#/$defs/uuidv7"
     },
     "type": {
@@ -33,19 +33,19 @@
       "const": 1
     },
     "source": {
-      "description": "Who produced the event: `client` events are untrusted (clock, ids); `server` events are emitted by Webflix services.",
+      "description": "`client` events come from the telemetry SDK (untrusted clock and ids); `server` events from Webflix services.",
       "enum": ["client", "server"]
     },
     "occurredAt": {
-      "description": "When it happened, by the producer's clock (the client clock for client events).",
+      "description": "When it happened, by the producer's clock.",
       "$ref": "#/$defs/timestamp"
     },
     "receivedAt": {
-      "description": "When the ingestion endpoint accepted it (server clock). The lake partition is derived from this.",
+      "description": "When ingestion accepted it (server clock). The lake partition comes from this.",
       "$ref": "#/$defs/timestamp"
     },
     "deviceId": {
-      "description": "Anonymous, client-generated device id. Null on server events that are not tied to a device.",
+      "description": "Anonymous device id; null on server events not tied to a device.",
       "anyOf": [
         {
           "$ref": "#/$defs/opaqueId"
@@ -56,7 +56,7 @@
       ]
     },
     "sessionSeq": {
-      "description": "Per-device counter of events within the current app session (resets at app start): ordering and loss detection. Null on server events.",
+      "description": "Per-device counter within the app session; null on server events.",
       "anyOf": [
         {
           "type": "integer",
@@ -69,10 +69,9 @@
     },
     "app": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["platform", "version"],
       "properties": {
         "platform": {
+          "type": "string",
           "enum": ["web", "ios", "android", "tv", "server"]
         },
         "version": {
@@ -80,7 +79,9 @@
           "minLength": 1,
           "maxLength": 40
         }
-      }
+      },
+      "required": ["platform", "version"],
+      "additionalProperties": false
     },
     "context": {
       "$ref": "#/$defs/context"
@@ -192,7 +193,6 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
     "timestamp": {
-      "description": "RFC 3339 UTC instant with millisecond precision, as produced by Date.prototype.toISOString().",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
     },
@@ -204,22 +204,19 @@
     },
     "titleId": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 64
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
     },
     "pseudonym": {
-      "description": "Keyed hash (HMAC-SHA256, base64url, first 22 characters = 128 bits) of an internal id. See README: Pseudonymous keys.",
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{22}$"
     },
     "context": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["surface", "rowId", "rowRank", "rank", "experiments", "policy"],
       "properties": {
         "surface": {
           "anyOf": [
             {
+              "type": "string",
               "enum": [
                 "home",
                 "series",
@@ -241,7 +238,6 @@
           ]
         },
         "rowId": {
-          "description": "Row id as the engine names it (`home:genre:thriller`); `{view}:billboard` for the billboard.",
           "anyOf": [
             {
               "type": "string",
@@ -254,11 +250,11 @@
           ]
         },
         "rowRank": {
-          "description": "1-based vertical position of the module on the page (the billboard, when shown, is 1).",
           "anyOf": [
             {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
             },
             {
               "type": "null"
@@ -266,11 +262,11 @@
           ]
         },
         "rank": {
-          "description": "1-based position of the card within its row.",
           "anyOf": [
             {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
             },
             {
               "type": "null"
@@ -278,24 +274,21 @@
           ]
         },
         "experiments": {
-          "description": "Experiment assignments in force for the unit: experiment key -> variant.",
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
           "additionalProperties": {
             "type": "string",
             "minLength": 1,
             "maxLength": 64
-          },
-          "propertyNames": {
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
           }
         },
         "policy": {
-          "description": "Which ranking policy produced the page, and whether its order was randomised for exploration (needed for unbiased learning and off-policy evaluation). Null when no ranked page is involved.",
           "anyOf": [
             {
               "type": "object",
-              "additionalProperties": false,
-              "required": ["id", "explore"],
               "properties": {
                 "id": {
                   "type": "string",
@@ -305,26 +298,27 @@
                 "explore": {
                   "type": "boolean"
                 }
-              }
+              },
+              "required": ["id", "explore"],
+              "additionalProperties": false
             },
             {
               "type": "null"
             }
           ]
         }
-      }
+      },
+      "required": ["surface", "rowId", "rowRank", "rank", "experiments", "policy"],
+      "additionalProperties": false
     },
     "subject": {
-      "description": "Added by the server from the session; client-supplied identities are ignored (blueprint §6.1).",
       "type": "object",
-      "additionalProperties": false,
-      "required": ["account", "profile", "plan", "country", "restricted", "consent"],
       "properties": {
         "account": {
-          "description": "Pseudonymous subject: keyed hash of the account id. Null for signed-out events.",
           "anyOf": [
             {
-              "$ref": "#/$defs/pseudonym"
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
             },
             {
               "type": "null"
@@ -332,10 +326,10 @@
           ]
         },
         "profile": {
-          "description": "Keyed hash of the active profile id. Null at the profile gate or when signed out. Recommendation artefacts are keyed by it.",
           "anyOf": [
             {
-              "$ref": "#/$defs/pseudonym"
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
             },
             {
               "type": "null"
@@ -345,6 +339,7 @@
         "plan": {
           "anyOf": [
             {
+              "type": "string",
               "enum": ["basic", "standard", "premium"]
             },
             {
@@ -364,14 +359,10 @@
           ]
         },
         "restricted": {
-          "description": "True for a kids profile or a profile with a lowered maturity ceiling (standingOf() in packages/core). Such events are excluded from training, analytics and experiments.",
           "type": "boolean"
         },
         "consent": {
-          "description": "Consent in force for the subject when the event was received (blueprint §6.3).",
           "type": "object",
-          "additionalProperties": false,
-          "required": ["analytics", "personalisation"],
           "properties": {
             "analytics": {
               "type": "boolean"
@@ -379,78 +370,36 @@
             "personalisation": {
               "type": "boolean"
             }
-          }
+          },
+          "required": ["analytics", "personalisation"],
+          "additionalProperties": false
         }
-      }
-    },
-    "membershipState": {
-      "enum": ["none", "incomplete", "trialing", "active", "past_due", "suspended", "canceled"]
-    },
-    "playbackItem": {
-      "type": "object",
-      "required": [
-        "playbackSessionId",
-        "titleId",
-        "episodeId",
-        "positionSec",
-        "durationSec",
-        "watchedSec"
-      ],
-      "properties": {
-        "playbackSessionId": {
-          "$ref": "#/$defs/opaqueId"
-        },
-        "titleId": {
-          "$ref": "#/$defs/titleId"
-        },
-        "episodeId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/titleId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "positionSec": {
-          "type": "number",
-          "minimum": 0
-        },
-        "durationSec": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "watchedSec": {
-          "description": "Seconds of watching credited to this playback session so far (the server's credit clock).",
-          "type": "number",
-          "minimum": 0
-        }
-      }
+      },
+      "required": ["account", "profile", "plan", "country", "restricted", "consent"],
+      "additionalProperties": false
     },
     "payloads": {
       "impression": {
-        "description": "A card visible for at least 1 s. Sampled per app session: every impression of a sampled session is logged, so pages stay whole.",
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId", "sampleRate"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           },
           "sampleRate": {
             "type": "number",
             "exclusiveMinimum": 0,
             "maximum": 1
           }
-        }
+        },
+        "required": ["titleId", "sampleRate"],
+        "additionalProperties": false
       },
       "row.view": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["rowKind", "itemCount", "sampleRate"],
         "properties": {
           "rowKind": {
+            "type": "string",
             "enum": [
               "billboard",
               "continue-watching",
@@ -467,54 +416,57 @@
           },
           "itemCount": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9007199254740991
           },
           "sampleRate": {
             "type": "number",
             "exclusiveMinimum": 0,
             "maximum": 1
           }
-        }
+        },
+        "required": ["rowKind", "itemCount", "sampleRate"],
+        "additionalProperties": false
       },
       "title.open": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           }
-        }
+        },
+        "required": ["titleId"],
+        "additionalProperties": false
       },
       "preview.start": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           }
-        }
+        },
+        "required": ["titleId"],
+        "additionalProperties": false
       },
       "preview.complete": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId", "watchedSec"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           },
           "watchedSec": {
             "type": "number",
             "minimum": 0
           }
-        }
+        },
+        "required": ["titleId", "watchedSec"],
+        "additionalProperties": false
       },
       "search.query": {
-        "description": "The query text is not collected: its length and the result count are enough for search analytics here.",
         "type": "object",
-        "additionalProperties": false,
-        "required": ["queryLength", "resultCount"],
         "properties": {
           "queryLength": {
             "type": "integer",
@@ -523,89 +475,99 @@
           },
           "resultCount": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9007199254740991
           }
-        }
+        },
+        "required": ["queryLength", "resultCount"],
+        "additionalProperties": false
       },
       "search.click": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId", "resultRank", "queryLength"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           },
           "resultRank": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "maximum": 9007199254740991
           },
           "queryLength": {
             "type": "integer",
             "minimum": 0,
             "maximum": 100
           }
-        }
+        },
+        "required": ["titleId", "resultRank", "queryLength"],
+        "additionalProperties": false
       },
       "list.add": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           }
-        }
+        },
+        "required": ["titleId"],
+        "additionalProperties": false
       },
       "list.remove": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           }
-        }
+        },
+        "required": ["titleId"],
+        "additionalProperties": false
       },
       "rating.set": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId", "value"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           },
           "value": {
+            "type": "string",
             "enum": ["dislike", "like", "love"]
           }
-        }
+        },
+        "required": ["titleId", "value"],
+        "additionalProperties": false
       },
       "rating.clear": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["titleId"],
         "properties": {
           "titleId": {
-            "$ref": "#/$defs/titleId"
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
           }
-        }
+        },
+        "required": ["titleId"],
+        "additionalProperties": false
       },
       "signup.step": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["step", "outcome"],
         "properties": {
           "step": {
+            "type": "string",
             "enum": ["email", "plan", "payment", "profiles", "complete"]
           },
           "outcome": {
+            "type": "string",
             "enum": ["viewed", "completed", "failed"]
           }
-        }
+        },
+        "required": ["step", "outcome"],
+        "additionalProperties": false
       },
       "client.error": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["code", "fatal"],
         "properties": {
           "code": {
             "type": "string",
@@ -615,46 +577,234 @@
           "fatal": {
             "type": "boolean"
           }
-        }
+        },
+        "required": ["code", "fatal"],
+        "additionalProperties": false
       },
       "playback.start": {
-        "$ref": "#/$defs/playbackItem",
-        "unevaluatedProperties": false
+        "type": "object",
+        "properties": {
+          "playbackSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "titleId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "episodeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "positionSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "durationSec": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "watchedSec": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "playbackSessionId",
+          "titleId",
+          "episodeId",
+          "positionSec",
+          "durationSec",
+          "watchedSec"
+        ],
+        "additionalProperties": false
       },
       "playback.progress": {
-        "description": "Emitted by the server as credited watching crosses each quarter of the item's duration.",
-        "$ref": "#/$defs/playbackItem",
-        "unevaluatedProperties": false
+        "type": "object",
+        "properties": {
+          "playbackSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "titleId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "episodeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "positionSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "durationSec": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "watchedSec": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "playbackSessionId",
+          "titleId",
+          "episodeId",
+          "positionSec",
+          "durationSec",
+          "watchedSec"
+        ],
+        "additionalProperties": false
       },
       "playback.complete": {
-        "description": "The item reached the completion ratio (95%) or ended.",
-        "$ref": "#/$defs/playbackItem",
-        "unevaluatedProperties": false
+        "type": "object",
+        "properties": {
+          "playbackSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "titleId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "episodeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "positionSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "durationSec": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "watchedSec": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "playbackSessionId",
+          "titleId",
+          "episodeId",
+          "positionSec",
+          "durationSec",
+          "watchedSec"
+        ],
+        "additionalProperties": false
       },
       "playback.abandon": {
-        "$ref": "#/$defs/playbackItem",
-        "unevaluatedProperties": false,
-        "required": ["reason"],
+        "type": "object",
         "properties": {
+          "playbackSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "titleId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "episodeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "positionSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "durationSec": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "watchedSec": {
+            "type": "number",
+            "minimum": 0
+          },
           "reason": {
+            "type": "string",
             "enum": ["closed", "error", "stalled", "replaced"]
           }
-        }
+        },
+        "required": [
+          "playbackSessionId",
+          "titleId",
+          "episodeId",
+          "positionSec",
+          "durationSec",
+          "watchedSec",
+          "reason"
+        ],
+        "additionalProperties": false
       },
       "billing.transition": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["from", "to", "planId"],
         "properties": {
           "from": {
-            "$ref": "#/$defs/membershipState"
+            "type": "string",
+            "enum": [
+              "none",
+              "incomplete",
+              "trialing",
+              "active",
+              "past_due",
+              "suspended",
+              "canceled"
+            ]
           },
           "to": {
-            "$ref": "#/$defs/membershipState"
+            "type": "string",
+            "enum": [
+              "none",
+              "incomplete",
+              "trialing",
+              "active",
+              "past_due",
+              "suspended",
+              "canceled"
+            ]
           },
           "planId": {
             "anyOf": [
               {
+                "type": "string",
                 "enum": ["basic", "standard", "premium"]
               },
               {
@@ -662,39 +812,42 @@
               }
             ]
           }
-        }
+        },
+        "required": ["from", "to", "planId"],
+        "additionalProperties": false
       },
       "auth.signin": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["method", "outcome"],
         "properties": {
           "method": {
+            "type": "string",
             "enum": ["password", "oidc"]
           },
           "outcome": {
+            "type": "string",
             "enum": ["success", "failure"]
           }
-        }
+        },
+        "required": ["method", "outcome"],
+        "additionalProperties": false
       },
       "auth.signup": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["method", "outcome"],
         "properties": {
           "method": {
+            "type": "string",
             "enum": ["password", "oidc"]
           },
           "outcome": {
+            "type": "string",
             "enum": ["success", "failure"]
           }
-        }
+        },
+        "required": ["method", "outcome"],
+        "additionalProperties": false
       },
       "experiment.exposure": {
-        "description": "Logged when the treatment is experienced, not when assigned (blueprint §8.1).",
         "type": "object",
-        "additionalProperties": false,
-        "required": ["experimentKey", "variant", "unitType"],
         "properties": {
           "experimentKey": {
             "type": "string",
@@ -706,26 +859,30 @@
             "maxLength": 64
           },
           "unitType": {
+            "type": "string",
             "enum": ["profile", "device"]
           }
-        }
+        },
+        "required": ["experimentKey", "variant", "unitType"],
+        "additionalProperties": false
       },
       "consent.change": {
-        "description": "The account's consent for one purpose changed (blueprint §6.3). The subject stamp of this event carries the new state, so consumers that honour the latest stamp see a withdrawal even when the member never comes back.",
         "type": "object",
-        "additionalProperties": false,
-        "required": ["purpose", "granted", "source"],
         "properties": {
           "purpose": {
+            "type": "string",
             "enum": ["analytics", "personalisation"]
           },
           "granted": {
             "type": "boolean"
           },
           "source": {
+            "type": "string",
             "enum": ["banner", "settings", "gpc", "support"]
           }
-        }
+        },
+        "required": ["purpose", "granted", "source"],
+        "additionalProperties": false
       }
     },
     "dispatch": {
@@ -744,6 +901,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/impression"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -763,6 +934,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/row.view"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -782,6 +967,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/title.open"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -801,6 +1000,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/preview.start"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -820,6 +1033,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/preview.complete"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -839,6 +1066,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/search.query"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -858,6 +1099,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/search.click"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -877,6 +1132,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/list.add"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -896,6 +1165,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/list.remove"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -915,6 +1198,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/rating.set"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -934,6 +1231,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/rating.clear"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -953,6 +1264,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/signup.step"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -972,6 +1297,20 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/client.error"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/opaqueId"
+            },
+            "sessionSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "enum": ["web", "ios", "android", "tv"]
+                }
+              }
             }
           }
         }
@@ -991,6 +1330,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/playback.start"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }
@@ -1010,6 +1359,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/playback.progress"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }
@@ -1029,6 +1388,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/playback.complete"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }
@@ -1048,6 +1417,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/playback.abandon"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }
@@ -1067,6 +1446,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/billing.transition"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }
@@ -1086,6 +1475,23 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/auth.signin"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
+            },
+            "subject": {
+              "properties": {
+                "profile": {
+                  "type": "null"
+                }
+              }
             }
           }
         }
@@ -1105,6 +1511,23 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/auth.signup"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
+            },
+            "subject": {
+              "properties": {
+                "profile": {
+                  "type": "null"
+                }
+              }
             }
           }
         }
@@ -1124,6 +1547,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/experiment.exposure"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }
@@ -1143,6 +1576,16 @@
             },
             "payload": {
               "$ref": "#/$defs/payloads/consent.change"
+            },
+            "sessionSeq": {
+              "type": "null"
+            },
+            "app": {
+              "properties": {
+                "platform": {
+                  "const": "server"
+                }
+              }
             }
           }
         }

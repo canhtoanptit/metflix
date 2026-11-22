@@ -20,6 +20,7 @@ import {
   type StreamGate,
   systemClock,
 } from "@webflix/core";
+import { createMemoryAreaPorts } from "@webflix/core/memory";
 import { createRepositories, createSqlSearchIndex } from "@webflix/db";
 import { createD1Database } from "@webflix/db/d1";
 import type { Env } from "../../src/env.ts";
@@ -95,6 +96,8 @@ export async function seed(
   const database = createD1Database(env.DB);
   const cache = createKvCache(env.CACHE);
   const services = createServices({
+    // Seeding uses none of milestone 2's ports.
+    ...createMemoryAreaPorts({ clock }),
     config: config.core,
     repos: createRepositories(database),
     search: createSqlSearchIndex(database),

@@ -117,7 +117,8 @@ export function toSession(row: SessionsTable): SessionRecord {
   };
 }
 
-export function fromSession(record: SessionRecord): SessionsTable {
+/** A new session's row. Milestone 2's `elevated_until` starts NULL: a new session holds no proof. */
+export function fromSession(record: SessionRecord): Omit<SessionsTable, "elevated_until"> {
   return {
     id: record.id,
     token_hash: record.tokenHash,

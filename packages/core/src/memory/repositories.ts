@@ -29,6 +29,12 @@ import type {
   TitleStatRecord,
   VideoAssetRecord,
 } from "../repositories/records.ts";
+import { createMemoryAdminRepository } from "./areas/admin.ts";
+import { createMemoryBillingRepository } from "./areas/billing.ts";
+import { createMemoryEventsRepository } from "./areas/events.ts";
+import { createMemoryExperimentsRepository } from "./areas/experiments.ts";
+import { createMemoryIdentityRepository } from "./areas/identity.ts";
+import { createMemoryPersonalisationRepository } from "./areas/personalisation.ts";
 
 const copy = <T>(value: T): T => structuredClone(value);
 const key = (...parts: string[]) => parts.join("\u0000");
@@ -125,6 +131,14 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
     async ping() {
       tick();
     },
+
+    // Milestone 2: each area's in-memory repository (memory/areas/<area>.ts).
+    identity: createMemoryIdentityRepository(),
+    billing: createMemoryBillingRepository(),
+    events: createMemoryEventsRepository(),
+    personalisation: createMemoryPersonalisationRepository(),
+    experiments: createMemoryExperimentsRepository(),
+    admin: createMemoryAdminRepository(),
 
     accounts: {
       async emailExists(email) {

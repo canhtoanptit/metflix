@@ -12,7 +12,10 @@ import { PlaybackSession } from "../playback.ts";
 import { Avatar, Profile } from "../profiles.ts";
 import { Episode, Progress, TitleCard, TitleDetail } from "../titles.ts";
 
+import { resetEventFixtures } from "./events.ts";
+
 export { createProblem as makeProblem } from "../errors.ts";
+export { makeClientEventInput, makeLakeEvent, SAMPLE_EVENT_PAYLOADS } from "./events.ts";
 
 const FIXTURE_TIME = "2026-01-15T12:00:00.000Z";
 
@@ -38,6 +41,7 @@ let sequence = 0;
 /** Reset id and name sequences (use in `beforeEach` for deterministic output). */
 export function resetFixtures(): void {
   sequence = 0;
+  resetEventFixtures();
 }
 
 function next(): number {

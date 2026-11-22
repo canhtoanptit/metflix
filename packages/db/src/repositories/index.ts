@@ -9,6 +9,12 @@ import {
   createPlaybackRepository,
   createStatsRepository,
 } from "./activity.ts";
+import { createAdminRepository } from "./areas/admin.ts";
+import { createBillingRepository } from "./areas/billing.ts";
+import { createEventsRepository } from "./areas/events.ts";
+import { createExperimentsRepository } from "./areas/experiments.ts";
+import { createIdentityRepository } from "./areas/identity.ts";
+import { createPersonalisationRepository } from "./areas/personalisation.ts";
 import { createCatalogRepository, createSeedRepository } from "./catalog.ts";
 import {
   createAccountRepository,
@@ -32,6 +38,13 @@ export function createRepositories(database: Database): Repositories {
     notifications: withUnavailableErrors(createNotificationRepository(database)),
     meta: withUnavailableErrors(createMetaRepository(database)),
     seed: withUnavailableErrors(createSeedRepository(database)),
+    // Milestone 2: one repository per area (repositories/areas/<area>.ts).
+    identity: withUnavailableErrors(createIdentityRepository(database)),
+    billing: withUnavailableErrors(createBillingRepository(database)),
+    events: withUnavailableErrors(createEventsRepository(database)),
+    personalisation: withUnavailableErrors(createPersonalisationRepository(database)),
+    experiments: withUnavailableErrors(createExperimentsRepository(database)),
+    admin: withUnavailableErrors(createAdminRepository(database)),
     async ping() {
       await sql`SELECT 1`.execute(database.db);
     },

@@ -12,6 +12,12 @@ export type {
   ReadinessCheck,
 } from "./container.ts";
 export {
+  type AdminHandlers,
+  type AreaHandlers,
+  createAdminHandlers,
+  createHandlers,
+} from "./handlers/index.ts";
+export {
   type Counter,
   createMetricsRegistry,
   DEFAULT_LATENCY_BUCKETS,
@@ -35,8 +41,11 @@ export {
   type BindOptions,
   bindRoute,
   bindRoutes,
+  isNotImplemented,
+  notImplemented,
+  pendingOperations,
   type RouteHandler,
   type RouteHandlers,
   requireClientHeader,
 } from "./routing.ts";
-export { defaultClientIp } from "./session.ts";
+export { defaultClientIp, requireStaff } from "./session.ts";

@@ -11,7 +11,7 @@ web app can rely on. Companion documents: `docs/DECISIONS.md` (why things are th
 | --- | --- | --- |
 | `packages/core` | Application services (`createServices`), repository ports, recommendation engine, catalog/popularity caches, mock billing, seeder, jobs and scheduler, in-memory repositories (`@webflix/core/memory`), contract suites and test harness (`@webflix/core/testing`) | portable (Web APIs only) |
 | `packages/db` | Kysely schema, migrations (authored once), repositories, SQL search index. Entry points: `@webflix/db` (portable), `@webflix/db/sqlite` (node:sqlite), `@webflix/db/postgres` (pg), `@webflix/db/d1` (D1 binding, portable). Generated D1 SQL in `packages/db/migrations/d1/` | portable + Node-only subpaths |
-| `packages/http` | `createApp(container)`: all 46 routes, guard (session, active profile, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
+| `packages/http` | `createApp(container)`: the 78 member routes and the 32-route staff API (milestone 2's not yet built answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
 | `apps/api` | Node entrypoint: `serve`, `worker`, `migrate`, `seed`; composition of adapters from env | Node |
 
 ## 2. Running the API
@@ -148,8 +148,14 @@ ratings so the home page is full on first load.
   | `profile-pin` | account | 5/60 s | 60/60 s | every PIN or password check after sign-in: a PIN for a locked profile (`PUT /session/profile`), `PATCH /account`, and `POST /profiles`, `PATCH`/`DELETE /profiles/:id` when they verify a PIN or the password. Switching to an unlocked profile never counts |
   | `payment` | account | 10/600 s | 10/600 s | card verifications: `PUT /account/payment-method`, a plan change that carries a card |
   | `playback-start` | account | 60/60 s | 60/60 s | `POST /playback/sessions` |
+  | `oidc` (milestone 2) | client address | 30/60 s | 300/60 s | `GET /auth/oidc/:provider/start`, both callbacks |
+  | `email-send` (milestone 2) | client address | 10/900 s | 120/60 s | `POST /auth/email-verification`, `POST /auth/password-reset` |
+  | `email-send-recipient` (milestone 2) | recipient address | 5/900 s | 5/900 s | the same requests, charged by the handler once it knows the address |
+  | `events` (milestone 2) | account (signed out: client address) | 120/60 s | 600/60 s | `POST /events` |
+  | `promotion` (milestone 2) | account | 10/600 s | 10/600 s | `POST /billing/promotions/validate` |
 
-  The relaxed profile raises `auth`, `signup`, `email-lookup` and `profile-pin`, which the e2e
+  The relaxed profile raises `auth`, `signup`, `email-lookup`, `profile-pin` and milestone 2's
+  `oidc`, `email-send` and `events`, which the e2e
   suites and people sharing 127.0.0.1 and the demo account would otherwise trip. To exercise
   429 handling in dev, set e.g. `WEBFLIX_RATE_LIMIT_AUTH=3/60`. Sign-up and sign-in set
   the `webflix_device` cookie (`__Host-` on https; HttpOnly, a year, stateless): it only exempts
@@ -202,6 +208,34 @@ every problem listed). **Dev mode needs none.**
 | `WEBFLIX_RATE_LIMIT_PAYMENT` | `10/600` (every mode) | Card verifications per account (`limit/windowSec`) |
 | `WEBFLIX_RATE_LIMIT_AUTH_EMAIL` | `10/900` (every mode) | Sign-ins per email address from browsers the account does not know |
 | `WEBFLIX_RATE_LIMIT_PLAYBACK_START` | `60/60` (every mode) | Playback sessions started per account |
+| `WEBFLIX_RATE_LIMIT_OIDC` / `_EMAIL_SEND` / `_EVENTS` | `30/60`, `10/900`, `120/60` (relaxed in dev, §3) | Milestone 2: federated sign-ins, emailed links and event batches |
+| `WEBFLIX_RATE_LIMIT_EMAIL_SEND_RECIPIENT` / `_PROMOTION` | `5/900`, `10/600` (every mode) | Milestone 2: emails to one address, promo-code lookups per account |
+
+### Milestone 2 (portable; one loader per area, `packages/core/src/areas/<area>/config.ts`)
+
+Every adapter variable defaults to `memory`. The other values are reserved for the adapter its
+area builds; until then a deployment that names one fails at startup with a `ConfigError`
+naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
+
+| Variable | Default | Area | Meaning |
+| --- | --- | --- | --- |
+| `WEBFLIX_IDENTITY_PROVIDER` | `memory` | identity | `memory` or `oidc` (the generic relying party) |
+| `WEBFLIX_OIDC_PROVIDERS` | `google,apple` | identity | Consumer issuers offered, in button order (`google`, `apple`, `keycloak`) |
+| `WEBFLIX_EMAIL_SENDER` | `memory` | identity | `memory` (dev mailbox), `smtp`, `http`, `outbox` (D1) |
+| `WEBFLIX_EMAIL_FROM` | `Webflix <no-reply@webflix.dev>` | identity | Sender of every message |
+| `WEBFLIX_DEV_IDP_SECRET` | unset (random per instance) | identity | Seals the development issuer's codes and sessions (32+ chars); every replica or isolate must share it |
+| `WEBFLIX_PAYMENT_PROVIDER` | `memory` | billing | `memory`, `fake`, `stripe` |
+| `WEBFLIX_BILLING_GRACE_SEC` | `604800` (7 days) | billing | `past_due` stays entitled this long after the first failed renewal |
+| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | billing | Required for `stripe`; the names `tools/stripe` writes to `.cache/stripe/stripe.env`. Never logged |
+| `WEBFLIX_EVENT_SINK` | `memory` | events | `memory` or `lake` (the event lake in the mode's blob store: works today) |
+| `WEBFLIX_CONSENT_MODE` | `opt-in` | events | `opt-in`, `opt-out` or `off` (§6.3) |
+| `WEBFLIX_PSEUDONYM_KEY` | development key | events | HMAC key of the pseudonymous subject keys (32+ chars); required in production once events are stored |
+| `WEBFLIX_EVENTS_RETENTION_DAYS` / `WEBFLIX_AGGREGATES_RETENTION_DAYS` | `396` / `1126` | events | Raw events 13 months, aggregates 37 months |
+| `WEBFLIX_RECOMMENDATION_STORE` | `memory` | personalisation | `memory`, `database` (SQLite, PostgreSQL), `kv` (Cloudflare) |
+| `WEBFLIX_EXPERIMENTS` | `memory` | experiments | `memory` or `database` |
+| `WEBFLIX_STAFF_VERIFIER` | `memory` | admin | `memory` (tokens mintable only in process) or `oidc` (the staff issuer's JWKS) |
+| `WEBFLIX_STAFF_ISSUER` | unset | admin | The staff issuer (required for `oidc`) |
+| `WEBFLIX_STAFF_AUDIENCE` / `WEBFLIX_STAFF_CLIENT_ID` | `webflix-admin-api` / `webflix-admin` | admin | The admin API's audience; the client whose roles count |
 
 ### Node (`apps/api`)
 
@@ -249,6 +283,8 @@ Everything is built from ports:
 ```ts
 const services = createServices({            // @webflix/core
   config, repos, search, cache, streamGate, jobs, passwords, mediaTokens, billing, clock, ids, logger,
+  // Milestone 2 (`AreaPorts`): built per area by apps/*/src/areas/<area>.ts, memory by default.
+  identityProviders, email, payments, eventSink, recommendations, experiments, staff,
 });
 const app = createApp({                      // @webflix/http
   config, services, blobs, rateLimiter, clock, ids, logger,
@@ -391,8 +427,16 @@ columns, type families and nullability.
 
 ### Migrations
 
-- Authored once in TypeScript: `packages/db/src/migrations/NNNN_name.ts`, listed in
-  `migrations/index.ts`. Never edit a shipped migration; add one.
+- Authored once in TypeScript: `packages/db/src/migrations/0001_initial.ts`, and from milestone 2
+  one directory per area (`migrations/<area>/NNNN_<area>[_<change>].ts`, listed in that
+  directory's `index.ts`; `migrations/index.ts` sorts them all by name). Never edit a shipped
+  migration; add one.
+- Milestone 2 (0002–0007) only creates tables and adds nullable columns to milestone 1's
+  (`accounts.email_verified_at`, `sessions.elevated_until`). Never rebuild a table others
+  reference: on SQLite and D1 dropping the parent cascades deletes into every child, even with
+  `defer_foreign_keys` (a migration test refuses DROP TABLE and RENAME). Tests prove the upgrade
+  of a populated milestone 1 database on SQLite (`packages/db/test/migrations.test.ts`) and on
+  D1 with the generated files (`test/workerd/upgrade.test.ts`).
 - Node: `webflix-api migrate` (Kysely migrator, lock table; safe with concurrent pods). Dev runs
   it on start.
 - **D1: run `pnpm --filter @webflix/db generate` after changing migrations**; it writes
@@ -492,3 +536,13 @@ pnpm --filter @webflix/api test         # Node composition on SQLite: query budg
 
 `@webflix/core/testing` exports `createTestServices()` (memory ports, manual clock, fixture
 catalog with a demo account) and the fixture catalog/manifest for other packages' tests.
+
+Milestone 2: the seven port suites (`describeIdentityProviderContract`,
+`describePaymentProviderContract`, `describeEmailSenderContract`, `describeEventSinkContract`,
+`describeRecommendationStoreContract`, `describeExperimentsContract`,
+`describeStaffVerifierContract`) run against memory in `packages/core/test/contracts.test.ts`
+(the event sink also over a blob store); each adapter runs its suite in the runtime it ships to.
+The area repository suites (`describe<Area>RepositoryContract`) run on memory, SQLite,
+PostgreSQL and D1. `packages/http/test/milestone2.test.ts` covers the uniform 501, the staff
+guard and the new route kinds; `packages/contracts/test/no-card-data.test.ts` refuses card
+fields outside `LEGACY_CARD_FIELDS`.

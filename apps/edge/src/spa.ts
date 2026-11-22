@@ -16,7 +16,17 @@
  */
 
 /** Must equal the positive entries of `assets.run_worker_first` (a test checks). */
-export const SERVER_PATHS = ["/api/*", "/media/*", "/cdn/*", "/healthz", "/readyz"] as const;
+export const SERVER_PATHS = [
+  "/api/*",
+  "/media/*",
+  "/cdn/*",
+  "/healthz",
+  "/readyz",
+  // Milestone 2: the development issuer (not in production) and the fake provider's payment
+  // form (`/_pay/*`, billing area) are served by the Worker, never the SPA shell.
+  "/dev-idp/*",
+  "/_pay/*",
+] as const;
 
 export function isServerPath(pathname: string): boolean {
   return SERVER_PATHS.some((rule) =>

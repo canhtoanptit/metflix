@@ -249,6 +249,7 @@ describe("createRouteClient", () => {
         method: "POST",
         path: "/echo/:id",
         tag: "titles",
+        area: "streaming",
         auth: "public",
         summary: "echo",
         params: z.object({ id: z.string() }),

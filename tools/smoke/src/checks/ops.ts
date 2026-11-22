@@ -1,7 +1,10 @@
 import {
+  ADMIN_API_BASE_PATH,
   API_DOCS_PATH,
+  adminRoutes,
   OPENAPI_PATH,
   REQUEST_ID_HEADER,
+  type RouteSpec,
   routes,
   toOpenApiPath,
 } from "@webflix/contracts";
@@ -85,21 +88,84 @@ export const opsChecks: CheckDefinition[] = [
         },
       );
       const missing: string[] = [];
-      for (const [name, route] of Object.entries(routes)) {
-        const path = `${API}${toOpenApiPath(route.path)}`;
-        if (!document.paths?.[path]?.[route.method.toLowerCase()])
-          missing.push(`${route.method} ${path} (${name})`);
+      const tables = [
+        [routes, API],
+        [adminRoutes, ADMIN_API_BASE_PATH],
+      ] as const;
+      for (const [table, base] of tables) {
+        for (const [name, route] of Object.entries(table) as [string, RouteSpec][]) {
+          const path = `${base}${toOpenApiPath(route.path)}`;
+          if (!document.paths?.[path]?.[route.method.toLowerCase()])
+            missing.push(`${route.method} ${path} (${name})`);
+        }
       }
       check(
         missing.length === 0,
         "the deployed OpenAPI document lacks routes of this suite's contract",
         {
-          expected: `${Object.keys(routes).length} operations`,
+          expected: `${Object.keys(routes).length + Object.keys(adminRoutes).length} operations`,
           observed: `${missing.length} missing`,
           details: missing,
           exchange: result.exchange,
         },
       );
+    },
+  },
+  {
+    id: "ops.pending-routes",
+    area: "ops",
+    title:
+      "Routes the contract has but the deployment has not implemented answer 501 not_implemented, uniformly",
+    async run(ctx: CheckContext) {
+      // Milestone 2 lands area by area: the deployed OpenAPI document marks what is registered
+      // but not implemented (`x-webflix-implementation: pending`). Each must answer the one
+      // uniform problem to an anonymous request without the client header, naming itself; the
+      // rest of the suite covers what is implemented. Pending routes are listed as notes.
+      const agent = ctx.agent("ops");
+      const result = await agent.fetch(OPENAPI_PATH);
+      status(result, 200, `GET ${OPENAPI_PATH}`);
+      const document = result.json<{
+        paths?: Record<
+          string,
+          Record<
+            string,
+            { operationId?: string; "x-webflix-area"?: string; "x-webflix-implementation"?: string }
+          >
+        >;
+      }>();
+      const pending = Object.entries(document.paths ?? {}).flatMap(([path, methods]) =>
+        Object.entries(methods)
+          .filter(([, operation]) => operation["x-webflix-implementation"] === "pending")
+          .map(([method, operation]) => ({
+            method: method.toUpperCase(),
+            // Any value fills a parameter: the answer comes before validation.
+            path: path.replaceAll(/\{[^}]+\}/g, "smoke-param"),
+            operationId: operation.operationId ?? "?",
+            area: operation["x-webflix-area"] ?? "?",
+          })),
+      );
+      if (pending.length === 0) {
+        ctx.note("every route of the contract is implemented");
+        return;
+      }
+      const byArea = new Map<string, string[]>();
+      for (const route of pending) {
+        const answer = problem(
+          await agent.fetch(route.path, { method: route.method, retryOn429: false }),
+          "not_implemented",
+          `${route.method} ${route.path} (${route.operationId})`,
+        );
+        equal(answer.operationId, route.operationId, `${route.operationId}: operationId`);
+        equal(answer.area, route.area, `${route.operationId}: area`);
+        byArea.set(route.area, [...(byArea.get(route.area) ?? []), route.operationId]);
+      }
+      const areas = [...byArea].sort(([a], [b]) => a.localeCompare(b));
+      ctx.note(
+        `${pending.length} operations pending: ${areas.map(([area, names]) => `${area} ${names.length}`).join(", ")}`,
+      );
+      for (const [area, names] of areas) {
+        ctx.note(`pending in ${area} (${names.length}): ${names.join(", ")}`);
+      }
     },
   },
   {

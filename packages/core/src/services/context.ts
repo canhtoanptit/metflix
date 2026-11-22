@@ -1,3 +1,4 @@
+import type { AreaPorts } from "../areas/ports.ts";
 import type { CatalogCache, PopularityCache, ShowcaseCache } from "../catalog/cache.ts";
 import type { CoreConfig } from "../config.ts";
 import type { KeyValueCache } from "../ports/cache.ts";
@@ -13,8 +14,11 @@ import type { Repositories } from "../repositories/ports.ts";
 import type { ProfileRecord, SessionRecord } from "../repositories/records.ts";
 import type { BillingProvider } from "./subscriptions.ts";
 
-/** Everything the application services need: ports only, no runtime or driver. */
-export interface ServiceDependencies {
+/**
+ * Everything the application services need: ports only, no runtime or driver. Milestone 2's
+ * ports come from `AreaPorts` (in-memory by default: `createMemoryAreaPorts`).
+ */
+export interface ServiceDependencies extends AreaPorts {
   config: CoreConfig;
   repos: Repositories;
   search: SearchIndex;

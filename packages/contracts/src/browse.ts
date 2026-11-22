@@ -25,6 +25,16 @@ export type BrowseView = z.output<typeof BrowseView>;
 export const RowKind = z.enum(ROW_KINDS).meta({ id: "RowKind" });
 export type RowKind = z.output<typeof RowKind>;
 
+/**
+ * The ranking policy that composed a page (milestone 2 §6.1, services/recs/README.md decision
+ * 6): its id and whether this page's order was randomised for exploration. Events carry it
+ * verbatim, so off-policy evaluation can tell the slices apart.
+ */
+export const RankingPolicy = z
+  .object({ id: z.string().min(1).max(64), explore: z.boolean() })
+  .meta({ id: "RankingPolicy" });
+export type RankingPolicy = z.output<typeof RankingPolicy>;
+
 export const RankedItem = z
   .object({ rank: z.number().int().positive(), title: TitleCard })
   .meta({ id: "RankedItem" });
@@ -124,6 +134,12 @@ export const BrowsePage = z
     rows: z.array(Row),
     /** Cursor for the next batch of rows (lazy-loaded as the user scrolls). */
     nextCursor: Cursor.nullable(),
+    /**
+     * Milestone 2 (§6.1): which ranking policy built this page and whether its order was
+     * randomised for exploration. The web copies it into every impression and title-open
+     * (`context.policy`). Absent until personalisation serves it.
+     */
+    policy: RankingPolicy.optional(),
   })
   .meta({ id: "BrowsePage" });
 export type BrowsePage = z.output<typeof BrowsePage>;

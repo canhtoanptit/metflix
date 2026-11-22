@@ -1,15 +1,21 @@
-import { API_BASE_PATH, REQUEST_ID_HEADER, routes } from "@webflix/contracts";
+import {
+  ADMIN_API_BASE_PATH,
+  API_BASE_PATH,
+  adminRoutes,
+  REQUEST_ID_HEADER,
+  routes,
+} from "@webflix/contracts";
 import { assertRateLimitTable } from "@webflix/core";
 import { type Context, Hono } from "hono";
 import { etag } from "hono/etag";
 import { routePath } from "hono/route";
 import type { AppContainer, AppEnv } from "./container.ts";
-import { createHandlers } from "./handlers.ts";
+import { createAdminHandlers, createHandlers } from "./handlers/index.ts";
 import { registerMediaRoutes } from "./media.ts";
 import { registerOpsRoutes } from "./ops.ts";
 import { problemErrorHandler, problemNotFoundHandler } from "./problem.ts";
 import { redactPath } from "./redact.ts";
-import { bindRoutes } from "./routing.ts";
+import { bindRoutes, pendingOperations } from "./routing.ts";
 import { createGuard } from "./session.ts";
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
@@ -65,6 +71,10 @@ export function createApp(container: AppContainer): Hono<AppEnv> {
       // that are public by design (the showcase), which say so and do not vary by cookie.
       if (!headers.has("Cache-Control")) headers.set("Cache-Control", "no-store");
       if (!headers.get("Cache-Control")?.startsWith("public")) headers.append("Vary", "Cookie");
+    } else if (path.startsWith(`${ADMIN_API_BASE_PATH}/`)) {
+      // The staff API depends on the bearer token, never on cookies; nothing of it is stored.
+      headers.set("Cache-Control", "no-store");
+      headers.append("Vary", "Authorization");
     }
 
     const route = routePath(c, -1) || "unmatched";
@@ -89,11 +99,20 @@ export function createApp(container: AppContainer): Hono<AppEnv> {
 
   // Conditional requests for the public showcase (its handler sets the ETag): 304 when unchanged.
   app.use(`${API_BASE_PATH}${routes.getShowcase.path}`, etag());
-  bindRoutes(app, routes, createHandlers(container), {
-    guard: createGuard(container),
-    validateResponses: config.environment !== "production",
+  const guard = createGuard(container);
+  const validateResponses = config.environment !== "production";
+  const handlers = createHandlers(container);
+  const adminHandlers = createAdminHandlers(container);
+  bindRoutes(app, routes, handlers, { guard, validateResponses });
+  bindRoutes(app, adminRoutes, adminHandlers, {
+    guard,
+    validateResponses,
+    basePath: ADMIN_API_BASE_PATH,
   });
   registerMediaRoutes(app, container);
-  registerOpsRoutes(app, container);
+  registerOpsRoutes(app, container, {
+    // Routes registered but not implemented yet: marked in the served OpenAPI document.
+    pending: new Set([...pendingOperations(handlers), ...pendingOperations(adminHandlers)]),
+  });
   return app;
 }

@@ -1,10 +1,13 @@
 """The one place that knows the event schema and the other document formats.
 
-`packages/contracts` will own the event schema (zod, exported as JSON Schema). Until it does, the
-JSON Schema files under `services/recs/schemas/` are the provisional source of truth, and every
-other module reaches them through this module only: the event types, the validators and the
-columnar projection the lake reader uses. Reconciling with the contracts export is then a change
-to the schema files and, at most, to this module.
+`packages/contracts` owns the event schema: `schemas/event.schema.json` is generated from its zod
+definitions (`packages/contracts/src/events.ts`, `pnpm --filter @webflix/contracts generate`; a
+contracts test fails while the file is stale) and must never be edited here. The other JSON
+Schema files under `services/recs/schemas/` are this pipeline's own document formats. Every other
+module reaches all of them through this module only: the event types, the validators and the
+columnar projection the lake reader uses. The event vocabulary below (types, sources, row kinds,
+version) is read from the generated schema, so a contract change reaches the pipeline without a
+code change here unless a field the projection reads is renamed.
 """
 
 from __future__ import annotations

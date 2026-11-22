@@ -1,11 +1,74 @@
 import { compileErrors, validate } from "@readme/openapi-parser";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { API_BASE_PATH, defineRoute, routes, toOpenApiPath } from "../src/index.ts";
+import {
+  ADMIN_API_BASE_PATH,
+  API_BASE_PATH,
+  adminRoutes,
+  defineRoute,
+  routes,
+  toOpenApiPath,
+} from "../src/index.ts";
 import { buildOpenApiDocument } from "../src/openapi.ts";
 
 describe("buildOpenApiDocument", () => {
   const document = buildOpenApiDocument(routes, { version: "test" });
+  const full = buildOpenApiDocument(undefined, {
+    version: "test",
+    pending: new Set(["getMember"]),
+  });
+
+  it("documents the member and staff APIs together by default, as valid OpenAPI 3.1", async () => {
+    const result = await validate(structuredClone(full) as never);
+    if (!result.valid) throw new Error(compileErrors(result));
+    for (const [table, base] of [
+      [routes, API_BASE_PATH],
+      [adminRoutes, ADMIN_API_BASE_PATH],
+    ] as const) {
+      for (const [operationId, route] of Object.entries(table)) {
+        const operation = full.paths[`${base}${toOpenApiPath(route.path)}`]?.[
+          route.method.toLowerCase()
+        ] as { operationId?: string; "x-webflix-area"?: string } | undefined;
+        expect(operation?.operationId, `${route.method} ${route.path}`).toBe(operationId);
+        expect(operation?.["x-webflix-area"]).toBe(route.area);
+      }
+    }
+  });
+
+  it("secures staff routes with the bearer scheme and names their role", () => {
+    const member = full.paths[`${ADMIN_API_BASE_PATH}/members/{accountId}`]?.get as Record<
+      string,
+      unknown
+    >;
+    expect(member.security).toEqual([{ staffBearer: [] }]);
+    expect(member["x-webflix-staff-role"]).toBe("support");
+    expect(Object.keys(member.responses as object)).toEqual(
+      expect.arrayContaining(["200", "401", "403", "404", "501"]),
+    );
+    expect(member["x-webflix-implementation"]).toBe("pending");
+    expect(full.components.securitySchemes).toHaveProperty("staffBearer");
+  });
+
+  it("documents redirects, form posts and raw signed bodies", () => {
+    const start = full.paths[`${API_BASE_PATH}/auth/oidc/{provider}/start`]?.get as {
+      responses: Record<string, { headers?: Record<string, unknown> }>;
+    };
+    expect(start.responses["302"]?.headers).toHaveProperty("Location");
+    const formCallback = full.paths[`${API_BASE_PATH}/auth/oidc/{provider}/callback`]?.post as {
+      requestBody: { content: Record<string, unknown> };
+      parameters: unknown[];
+      "x-webflix-csrf"?: string;
+    };
+    expect(Object.keys(formCallback.requestBody.content)).toEqual([
+      "application/x-www-form-urlencoded",
+    ]);
+    expect(JSON.stringify(formCallback.parameters)).not.toContain("X-Webflix-Client");
+    expect(formCallback["x-webflix-csrf"]).toBe("none");
+    const webhook = full.paths[`${API_BASE_PATH}/webhooks/payments/{provider}`]?.post as {
+      requestBody: { description?: string };
+    };
+    expect(webhook.requestBody.description).toMatch(/exact bytes/);
+  });
 
   it("produces a valid OpenAPI 3.1 document", async () => {
     // The validator mutates (dereferences) its input; give it a copy.
@@ -87,6 +150,7 @@ describe("buildOpenApiDocument", () => {
         method: "PUT",
         path: "/things",
         tag: "titles",
+        area: "streaming",
         auth: "public",
         summary: "put",
         body: Thing,

@@ -1,5 +1,6 @@
 import type { CatalogSeed, DemoAccountSeed, MediaManifest } from "@webflix/contracts";
 import { type CoreConfig, loadCoreConfig } from "../config.ts";
+import { createMemoryAreaPorts, type MemoryAreaPorts } from "../memory/area-ports.ts";
 import { MemoryKeyValueCache } from "../memory/cache.ts";
 import { MemoryJobQueue } from "../memory/job-queue.ts";
 import { createMemoryRepositories } from "../memory/repositories.ts";
@@ -23,6 +24,8 @@ export const TEST_NOW = Date.UTC(2026, 5, 15, 12, 0, 0);
 export interface TestServices {
   services: Services;
   deps: ServiceDependencies;
+  /** Milestone 2's ports, in memory, with their test handles (mailbox, fake provider...). */
+  ports: MemoryAreaPorts;
   clock: ManualClock;
   queue: MemoryJobQueue;
   gate: MemoryStreamGate;
@@ -59,7 +62,10 @@ export async function createTestServices(options: TestServicesOptions = {}): Pro
   });
   const queue = new MemoryJobQueue({ clock, logger });
   const gate = new MemoryStreamGate({ clock });
+  const ids = createUuidV7Generator({ clock });
+  const ports = createMemoryAreaPorts({ clock, ids });
   const deps: ServiceDependencies = {
+    ...ports,
     config,
     repos: options.repos ?? createMemoryRepositories(),
     search: options.search ?? new MemorySearchIndex(),
@@ -73,7 +79,7 @@ export async function createTestServices(options: TestServicesOptions = {}): Pro
     ),
     billing: createMockBillingProvider(),
     clock,
-    ids: createUuidV7Generator({ clock }),
+    ids,
     logger,
   };
   const services = createServices(deps);
@@ -87,5 +93,5 @@ export async function createTestServices(options: TestServicesOptions = {}): Pro
       },
     );
   }
-  return { services, deps, clock, queue, gate, logger };
+  return { services, deps, ports, clock, queue, gate, logger };
 }

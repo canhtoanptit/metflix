@@ -58,6 +58,39 @@ export const ERROR_CATALOG = {
   rate_limited: { status: 429, title: "Too many requests" },
   internal_error: { status: 500, title: "Something went wrong" },
   service_unavailable: { status: 503, title: "Service temporarily unavailable" },
+
+  // --- Milestone 2 (docs/BLUEPRINT-M2.md; docs/CONTRACT_CHANGES.md) ---------------------------
+  /**
+   * The route is registered, typed and documented but its area has not implemented it yet.
+   * Answered before authentication, validation and rate limits, the same way to everyone, so
+   * a conformance suite recognises it from one anonymous request (`operationId`, `area`).
+   */
+  not_implemented: { status: 501, title: "Not implemented yet" },
+  /** A sensitive change needs a fresh proof: the password or a fresh sign-in (§4.2). */
+  reauthentication_required: { status: 403, title: "Confirm it's you to continue" },
+  /** An email link that is unknown, used or expired; deliberately not told apart (§4.3). */
+  verification_token_invalid: { status: 400, title: "This link is invalid or has expired" },
+  /** The issuer identity belongs to another Webflix account (§4.1). */
+  identity_already_linked: {
+    status: 409,
+    title: "This sign-in is already linked to another account",
+  },
+  /** Unlinking would leave the account without any way to sign in (§4.1). */
+  identity_last_sign_in_method: { status: 409, title: "Keep at least one way to sign in" },
+  /** A promo code that cannot be applied, with the reason (§5.4). */
+  promotion_code_invalid: { status: 422, title: "This promo code can't be used" },
+  /** The payment needs the member's action (3-D Secure): confirm with `clientSecret`. */
+  payment_action_required: { status: 402, title: "Confirm the payment to continue" },
+  /** A checkout or setup step was called out of order (e.g. confirmed twice). */
+  checkout_state_conflict: { status: 409, title: "This checkout can't do that right now" },
+  /** A webhook whose signature does not verify over its raw body (§5.3). */
+  webhook_signature_invalid: { status: 400, title: "Webhook signature verification failed" },
+  /** An export or deletion of this kind is already pending (§6.3). */
+  privacy_request_pending: { status: 409, title: "A request like this is already in progress" },
+  /** An experiment change that conflicts with its state or its layer's allocation (§8.1). */
+  experiment_conflict: { status: 409, title: "That change conflicts with the experiment" },
+  /** A valid staff token without the role the route needs (§8.3). */
+  staff_role_required: { status: 403, title: "Your staff role does not allow this" },
 } as const satisfies Record<string, ErrorSpec>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

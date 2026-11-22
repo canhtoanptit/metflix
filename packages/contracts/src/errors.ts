@@ -1,8 +1,11 @@
 import * as z from "zod";
 import { SubscriptionStatus } from "./account.ts";
+import { MembershipStatus } from "./billing.ts";
+import { PAYMENT_DECLINE_REASONS, PROMOTION_FAILURE_REASONS, STAFF_ROLES } from "./constants.ts";
 import { ERROR_CATALOG, ERROR_CODES, type ErrorCode, problemType } from "./error-codes.ts";
 import { MaturityLevel } from "./maturity.ts";
 import { ActiveStream } from "./playback.ts";
+import { ROUTE_AREAS } from "./route.ts";
 
 export const ErrorCodeSchema = z.enum(ERROR_CODES).meta({ id: "ErrorCode" });
 
@@ -19,12 +22,6 @@ export const ValidationIssue = z
   .meta({ id: "ValidationIssue" });
 export type ValidationIssue = z.output<typeof ValidationIssue>;
 
-export const PAYMENT_DECLINE_REASONS = [
-  "card_declined",
-  "insufficient_funds",
-  "expired_card",
-] as const;
-
 /** Extra members carried by specific problem codes (RFC 9457 extension members). */
 const PROBLEM_EXTENSION_SHAPES = {
   validation_failed: { issues: z.array(ValidationIssue) },
@@ -33,10 +30,18 @@ const PROBLEM_EXTENSION_SHAPES = {
     limit: z.number().int().positive(),
     activeStreams: z.array(ActiveStream),
   },
-  subscription_required: { subscriptionStatus: SubscriptionStatus },
+  subscription_required: {
+    subscriptionStatus: SubscriptionStatus,
+    /** Milestone 2: the membership projection's state (§5.2), once billing serves it. */
+    membershipStatus: MembershipStatus.optional(),
+  },
   maturity_restricted: { maturity: MaturityLevel, profileMaturityCeiling: MaturityLevel },
   payment_declined: { declineReason: z.enum(PAYMENT_DECLINE_REASONS) },
   range_not_satisfiable: { size: z.number().int().nonnegative() },
+  not_implemented: { operationId: z.string(), area: z.enum(ROUTE_AREAS) },
+  promotion_code_invalid: { promotionReason: z.enum(PROMOTION_FAILURE_REASONS) },
+  payment_action_required: { clientSecret: z.string().min(1) },
+  staff_role_required: { requiredRole: z.enum(STAFF_ROLES) },
 } satisfies Partial<Record<ErrorCode, z.ZodRawShape>>;
 
 type ExtensionShapes = typeof PROBLEM_EXTENSION_SHAPES;

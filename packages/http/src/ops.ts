@@ -1,5 +1,5 @@
 import { Scalar } from "@scalar/hono-api-reference";
-import { API_DOCS_PATH, OPENAPI_PATH, routes } from "@webflix/contracts";
+import { API_DOCS_PATH, OPENAPI_PATH } from "@webflix/contracts";
 import { buildOpenApiDocument } from "@webflix/contracts/openapi";
 import { AppError, base64Encode, randomBytes, serializeError } from "@webflix/core";
 import type { Context, Hono } from "hono";
@@ -49,7 +49,11 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Pr
   }
 }
 
-export function registerOpsRoutes(app: Hono<AppEnv>, container: AppContainer): void {
+export function registerOpsRoutes(
+  app: Hono<AppEnv>,
+  container: AppContainer,
+  options: { pending?: ReadonlySet<string> } = {},
+): void {
   // Liveness: the process answers. Never depends on downstream services, or an outage there
   // would make the orchestrator restart healthy pods.
   app.get("/healthz", (c) => c.json({ status: "ok" }));
@@ -88,10 +92,12 @@ export function registerOpsRoutes(app: Hono<AppEnv>, container: AppContainer): v
 
   let openApi: ReturnType<typeof buildOpenApiDocument> | undefined;
   app.get(OPENAPI_PATH, (c) => {
-    openApi ??= buildOpenApiDocument(routes, {
+    // Every API this deployment serves: the member API and the staff API (`/api/admin/v1`).
+    openApi ??= buildOpenApiDocument(undefined, {
       sessionCookieName: container.config.cookies.sessionCookieName,
       description:
-        "The Webflix HTTP API. Sessions are cookies; mutations need `X-Webflix-Client: web`.",
+        "The Webflix HTTP API. Member sessions are cookies and mutations need `X-Webflix-Client: web`; the staff API takes a staff bearer token. Operations marked `x-webflix-implementation: pending` are part of the contract but answer `501 not_implemented` in this deployment.",
+      ...(options.pending ? { pending: options.pending } : {}),
     });
     return c.json(openApi);
   });

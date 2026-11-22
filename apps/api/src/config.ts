@@ -105,6 +105,11 @@ const DEV_RATE_LIMITS = {
   WEBFLIX_RATE_LIMIT_SIGNUP: "60/60",
   WEBFLIX_RATE_LIMIT_EMAIL_LOOKUP: "300/60",
   WEBFLIX_RATE_LIMIT_PROFILE_PIN: "60/60",
+  // Milestone 2's budgets keyed by client address (or busy by design): the suites sign in
+  // through the issuer, send emails and post events from one address.
+  WEBFLIX_RATE_LIMIT_OIDC: "300/60",
+  WEBFLIX_RATE_LIMIT_EMAIL_SEND: "120/60",
+  WEBFLIX_RATE_LIMIT_EVENTS: "600/60",
 };
 
 function firstExisting(paths: string[]): string | null {

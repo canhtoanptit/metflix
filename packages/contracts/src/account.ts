@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { Entitlement, MembershipState } from "./billing.ts";
 import { Id, IsoDateTime } from "./common.ts";
 import {
   CARD_BRANDS,
@@ -8,6 +9,7 @@ import {
   PASSWORD_MIN_LENGTH,
   SUBSCRIPTION_STATUSES,
 } from "./constants.ts";
+import { ExperimentAssignments } from "./experiments.ts";
 import { Plan, PlanId } from "./plans.ts";
 import { Profile } from "./profiles.ts";
 
@@ -58,6 +60,16 @@ export const Account = z
      * (`demo_account_protected`). Absent on other accounts.
      */
     isDemo: z.literal(true).optional(),
+    /**
+     * Milestone 2 (§4.3): whether the email address was verified (automatic linking of an
+     * issuer identity depends on it). Absent until identity serves it.
+     */
+    emailVerified: z.boolean().optional(),
+    /**
+     * Milestone 2 (§4.1): false for an account created through an issuer that never set a
+     * password ("Confirm it's you" then offers a fresh sign-in). Absent until identity serves it.
+     */
+    hasPassword: z.boolean().optional(),
   })
   .meta({ id: "Account" });
 export type Account = z.output<typeof Account>;
@@ -101,6 +113,13 @@ export const AccountDetails = z
     subscription: Subscription,
     plan: Plan,
     paymentMethod: PaymentMethod.nullable(),
+    /**
+     * Milestone 2 (§5.2, §5.6): the membership projection, driven by provider events. The web
+     * waits on it after checkout. Absent until billing serves it.
+     */
+    membership: MembershipState.optional(),
+    /** Milestone 2 (§5.2): whether the account may play, and why not. Absent until billing serves it. */
+    entitlement: Entitlement.optional(),
   })
   .meta({ id: "AccountDetails" });
 export type AccountDetails = z.output<typeof AccountDetails>;
@@ -108,7 +127,14 @@ export type AccountDetails = z.output<typeof AccountDetails>;
 // --- Session bootstrap ------------------------------------------------------------------------
 
 export const AnonymousSession = z
-  .object({ authenticated: z.literal(false) })
+  .object({
+    authenticated: z.literal(false),
+    /**
+     * Milestone 2 (§8.1): experiment assignments of this device (the unit before sign-in),
+     * key → variant. Absent until experiments serve it.
+     */
+    experiments: ExperimentAssignments.optional(),
+  })
   .meta({ id: "AnonymousSession" });
 
 export const AuthenticatedSession = z
@@ -120,6 +146,11 @@ export const AuthenticatedSession = z
     profiles: z.array(Profile),
     /** Bound server-side to the session cookie; null until a profile is selected. */
     activeProfile: Profile.nullable(),
+    /**
+     * Milestone 2 (§8.1): experiment assignments of the active profile (of the device at the
+     * profile gate), key → variant. Absent until experiments serve it.
+     */
+    experiments: ExperimentAssignments.optional(),
   })
   .meta({ id: "AuthenticatedSession" });
 export type AuthenticatedSession = z.output<typeof AuthenticatedSession>;
@@ -132,6 +163,21 @@ export const SessionState = z
   .discriminatedUnion("authenticated", [AnonymousSession, AuthenticatedSession])
   .meta({ id: "SessionState" });
 export type SessionState = z.output<typeof SessionState>;
+
+/**
+ * Anonymous, client-generated id of a browser or app install (the telemetry SDK's `deviceId`):
+ * the experiment unit before sign-in (milestone 2 §6.1, §8.1). Never an identity.
+ */
+export const DeviceId = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,64}$/, "Invalid device id")
+  .meta({ id: "DeviceId" });
+
+export const SessionQuery = z.object({
+  /** Milestone 2: the device whose experiment assignments to return before sign-in. */
+  deviceId: DeviceId.optional(),
+});
+export type SessionQuery = z.input<typeof SessionQuery>;
 
 // --- Auth requests ----------------------------------------------------------------------------
 
@@ -182,6 +228,11 @@ export const ChangePlanBody = z
     planId: PlanId,
     /** Required when resuming an ended membership without a stored card. */
     payment: MockCardPayment.optional(),
+    /**
+     * Milestone 2 (§12): the token of the `POST /billing/subscription/preview` the member
+     * accepted, so the change is applied exactly as previewed (same proration date).
+     */
+    previewToken: z.string().min(1).max(2048).optional(),
   })
   .meta({ id: "ChangePlanBody" });
 export type ChangePlanBody = z.input<typeof ChangePlanBody>;

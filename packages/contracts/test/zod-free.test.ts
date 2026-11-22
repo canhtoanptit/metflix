@@ -4,7 +4,17 @@
  * each zod-free module transitively and fails on any path that reaches "zod".
  */
 import { describe, expect, it } from "vitest";
-import { ROUTE_INDEX, routeIndexOf, routes } from "../src/index.ts";
+import {
+  ADMIN_ROUTE_INDEX,
+  adminRoutes,
+  isClientRoute,
+  isNavigationRoute,
+  NAVIGATION_ROUTE_INDEX,
+  ROUTE_INDEX,
+  type RouteTable,
+  routeIndexOf,
+  routes,
+} from "../src/index.ts";
 
 const sources = import.meta.glob<string>("../src/**/*.ts", {
   query: "?raw",
@@ -70,8 +80,13 @@ describe("zod-free runtime modules", () => {
   });
 });
 
+const pick = (table: RouteTable, keep: (route: RouteTable[string]) => boolean) =>
+  Object.fromEntries(Object.entries(table).filter(([, route]) => keep(route)));
+
 describe("generated route index", () => {
-  it("matches the route table (run `pnpm --filter @webflix/contracts generate`)", () => {
-    expect(ROUTE_INDEX).toEqual(routeIndexOf(routes));
+  it("matches the route tables (run `pnpm --filter @webflix/contracts generate`)", () => {
+    expect(ROUTE_INDEX).toEqual(routeIndexOf(pick(routes, isClientRoute)));
+    expect(NAVIGATION_ROUTE_INDEX).toEqual(routeIndexOf(pick(routes, isNavigationRoute)));
+    expect(ADMIN_ROUTE_INDEX).toEqual(routeIndexOf(pick(adminRoutes, isClientRoute)));
   });
 });
