@@ -8,31 +8,51 @@
  *   node scripts/ops.ts seed     [--target …] [--force] [--no-demo]
  *   node scripts/ops.ts prepare  [--target …] [--profile …]     media (if packaged) then seed
  *   node scripts/ops.ts status   [--target …]
+ *   node scripts/ops.ts dev-vars                               complete .dev.vars (local secrets)
+ *   node scripts/ops.ts lake pull   --store <dir>              event lake (R2) → pipeline store
+ *   node scripts/ops.ts recs push   --store <dir> [--run <r>]  pipeline artefacts → R2
+ *   node scripts/ops.ts recs import [--run <r>] [--from <dir>] import a run from outside the Worker
+ *   node scripts/ops.ts recs status | recs rollback
  *
  * Every command is idempotent. See docs/CLOUDFLARE.md for how they fit together.
  */
-import { resolve } from "node:path";
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { unstable_readConfig } from "wrangler";
 import { GENERATION_PROPAGATION_MS, MEDIA_GENERATION_KEY } from "../src/media-generation.ts";
 import { stageAssets } from "./lib/assets.ts";
 import { publishMedia } from "./lib/generation.ts";
 import { mediaStore, mediaUpToDate, pickProfile, uploadMedia } from "./lib/media.ts";
 import {
   DEFAULT_INSTANCE,
+  EDGE_DIR,
   type LocalInstance,
   openPlatform,
   type Platform,
   parseTarget,
   type Target,
+  WRANGLER_CONFIG,
 } from "./lib/platform.ts";
+import { importRun, personalisationService, pullLake, pushRecs } from "./lib/recs.ts";
+import { completeDevVars, isGenerated } from "./lib/secrets.ts";
 import { MANIFEST_KEY, readManifestText, seed, seedsDemo } from "./lib/seed.ts";
 
-const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status> [options]
+const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status|dev-vars|lake|recs> [options]
+
+  lake pull                   copy the event lake (R2 events/) into --store, incrementally
+  recs push                   copy a scored run from --store into R2 (pointer last; --run: no pointer)
+  recs import                 import the run R2's recs/current.json names (or --run, or --from a
+                              pipeline store) into D1 and KV, from outside the Worker
+  recs status | recs rollback the served model / serve the previous run again
 
   --target local|production   bindings to use (default local: the wrangler dev state)
   --state <dir>               local: the instance's state directory (default .wrangler/state)
   --port <n>                  local: the port its dev server uses (default 8787)
   --out <dir>                 assets: where to stage (default dist/public or dist/production-assets)
+  --payment-provider <name>   assets: stage the headers for this provider instead of the
+                              environment's (stripe adds Stripe.js's origins to the CSP; for a
+                              local Stripe lane run with --var WEBFLIX_PAYMENT_PROVIDER:stripe)
   --profile fast|full         media profile to upload (default: the first one packaged)
   --prune                     media: delete stored objects the profile no longer has (after
                               the new media was uploaded and seeded)
@@ -41,6 +61,10 @@ const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status> [op
   --force                     media: re-check every object; seed: re-apply even if unchanged
                               (resets the demo account)
   --demo | --no-demo          seed: the demo account (default: locally yes, in production no)
+  --store <dir>               lake, recs push: a pipeline store directory (filesystem BlobStore
+                              layout, e.g. .cache/recs/<preset>/store)
+  --run <run>                 recs: a version (recs/v=<run>/) instead of the published pointer
+  --from <dir>                recs import: read artefacts from a pipeline store, not R2
   --no-media                  seed: ignore packaged media (every title plays the external
                               HLS fallback); seed again without it to switch back
 `;
@@ -144,6 +168,28 @@ async function seedCommand(
   );
 }
 
+/**
+ * `.dev.vars` with every secret wrangler.jsonc requires (lib/secrets.ts): written once per clone
+ * and completed when the list grows; existing values are never changed.
+ */
+async function devVars(): Promise<void> {
+  const path = join(EDGE_DIR, ".dev.vars");
+  const required = unstable_readConfig({ config: WRANGLER_CONFIG }, { hideWarnings: true }).secrets
+    ?.required;
+  if (!required) throw new Error("wrangler.jsonc declares no secrets.required");
+  const existing = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
+  const { text, added } = completeDevVars(existing, required);
+  if (added.length === 0) return;
+  await writeFile(path, text, { mode: 0o600 });
+  await chmod(path, 0o600);
+  say(
+    `wrote ${added.join(", ")} to ${relative(process.cwd(), path)} (${added.filter(isGenerated).length} generated, the rest empty = unset)`,
+  );
+}
+
 async function status(platform: Platform) {
   const { env } = platform;
   const hash = await env.DB.prepare("SELECT value FROM meta WHERE key = 'seed.hash'")
@@ -163,6 +209,60 @@ async function status(platform: Platform) {
   say(`KV: media cache generation ${generation ?? "unset"}`);
 }
 
+function usage(detail: string): number {
+  console.error(`Usage: node scripts/ops.ts ${detail}\n\n${USAGE}`);
+  return 1;
+}
+
+async function recsCommand(
+  sub: string | undefined,
+  target: Target,
+  instance: LocalInstance,
+  values: { store?: string | undefined; run?: string | undefined; from?: string | undefined },
+): Promise<number> {
+  switch (sub) {
+    case "push": {
+      if (!values.store) return usage("recs push --store <dir> [--run <run>]");
+      const store = resolve(values.store);
+      await withPlatform(target, instance, async (platform) => {
+        const report = await pushRecs(platform, store, values.run);
+        say(
+          `recs ${report.run} → R2 (${platform.target}): ${report.copied} files copied (${(report.bytes / 1e6).toFixed(2)} MB), ${report.skipped} already there${report.pointer ? ", pointer recs/current.json written last" : ", no pointer (import with --run)"}`,
+        );
+      });
+      return 0;
+    }
+    case "import":
+      await withPlatform(target, instance, async (platform) => {
+        const started = Date.now();
+        const result = await importRun(platform, {
+          ...(values.run ? { run: values.run } : {}),
+          ...(values.from ? { from: resolve(values.from) } : {}),
+        });
+        say(
+          `recs import (${platform.target}, ${Date.now() - started} ms): ${JSON.stringify(result)}`,
+        );
+      });
+      return 0;
+    case "status":
+      await withPlatform(target, instance, async (platform) => {
+        say(
+          `recs: ${JSON.stringify(await personalisationService(platform).recommendationStatus())}`,
+        );
+      });
+      return 0;
+    case "rollback":
+      await withPlatform(target, instance, async (platform) => {
+        say(
+          `recs rollback: ${JSON.stringify(await personalisationService(platform).rollbackRecommendations())}`,
+        );
+      });
+      return 0;
+    default:
+      return usage("recs <push|import|status|rollback>");
+  }
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv.filter((arg) => arg !== "--"),
@@ -179,6 +279,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       demo: { type: "boolean" },
       "no-demo": { type: "boolean", default: false },
       "no-media": { type: "boolean", default: false },
+      store: { type: "string" },
+      "payment-provider": { type: "string" },
+      run: { type: "string" },
+      from: { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -209,8 +313,15 @@ export async function main(argv: readonly string[]): Promise<number> {
     ...(values["drain-seconds"] ? { drainSec: Number(values["drain-seconds"]) } : {}),
   };
   switch (command) {
+    case "dev-vars":
+      await devVars();
+      return 0;
     case "assets": {
-      const staged = await stageAssets(target, values.out ? resolve(values.out) : undefined);
+      const staged = await stageAssets(
+        target,
+        values.out ? resolve(values.out) : undefined,
+        values["payment-provider"],
+      );
       say(`static assets staged: ${staged.files} files, ${(staged.bytes / 1e6).toFixed(1)} MB`);
       return 0;
     }
@@ -229,6 +340,19 @@ export async function main(argv: readonly string[]): Promise<number> {
     case "status":
       await withPlatform(target, instance, status);
       return 0;
+    case "lake": {
+      if (positionals[1] !== "pull" || !values.store) return usage("lake pull --store <dir>");
+      const store = resolve(values.store);
+      await withPlatform(target, instance, async (platform) => {
+        const report = await pullLake(platform, store);
+        say(
+          `lake → ${store}: ${report.copied} objects copied (${(report.bytes / 1e3).toFixed(1)} kB), ${report.skipped} already there`,
+        );
+      });
+      return 0;
+    }
+    case "recs":
+      return recsCommand(positionals[1], target, instance, values);
     default:
       console.error(`Unknown command "${command}"\n\n${USAGE}`);
       return 1;

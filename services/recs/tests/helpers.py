@@ -152,6 +152,8 @@ def make_event(
         body = {"titleId": title, "value": payload.pop("value", "like")}
     elif kind == "consent.change":
         body = {"purpose": "personalisation", "granted": personalisation, "source": "settings"}
+    elif kind in {"experiment.exposure", "billing.transition", "auth.signin", "auth.signup"}:
+        body = {}
     else:
         body = {"titleId": title}
     body.update(payload)
@@ -221,3 +223,104 @@ def put_catalog(storage: Any, document: dict[str, Any]) -> None:
             "anchor": document["anchor"],
         },
     )
+
+
+def write_version(
+    storage: Any, run: str, profiles: dict[str, list[str]], *, publish: bool = True
+) -> dict[str, Any]:
+    """A small artefact version that `artefacts.validate_version` accepts (neighbours and one
+    profiles shard), optionally pointed at by `recs/current.json`."""
+    import orjson
+
+    from webflix_recs import artefacts
+    from webflix_recs.provenance import sha256
+    from webflix_recs.storage import get_json, put_json
+
+    prefix = f"recs/v={run}/"
+    neighbours = artefacts._frame(
+        "neighbours",
+        {"title_id": ["t-1"], "rank": [1], "neighbour_id": ["t-2"], "score": [0.5], "support": [3]},
+    )
+    files = []
+    body = artefacts._parquet(neighbours)
+    storage.put(prefix + "neighbours/part-00000.parquet", body)
+    files.append(
+        artefacts._file_entry(
+            "neighbours/part-00000.parquet", "neighbours", neighbours, body, "title_id"
+        )
+    )
+    keys = sorted(profiles, key=lambda k: k.encode())
+    payloads = [
+        orjson.dumps(
+            {
+                "v": 1,
+                "profile": key,
+                "run": run,
+                "generatedAt": "2026-10-01T00:00:00.000Z",
+                "expiresAt": "2026-10-04T00:00:00.000Z",
+                "rows": [
+                    {
+                        "type": "personal",
+                        "param": None,
+                        "items": [[t, 0.9 - i / 100] for i, t in enumerate(profiles[key])],
+                    }
+                ],
+            }
+        ).decode()
+        for key in keys
+    ]
+    frame = artefacts._frame(
+        "profiles",
+        {
+            "profile_key": keys,
+            "payload": payloads,
+            "items": [len(profiles[k]) for k in keys],
+            "bytes": [len(p.encode()) for p in payloads],
+        },
+    )
+    body = artefacts._parquet(frame)
+    storage.put(prefix + "profiles/part-00000.parquet", body)
+    files.append(
+        artefacts._file_entry("profiles/part-00000.parquet", "profiles", frame, body, "profile_key")
+    )
+    manifest = {
+        "format": "webflix.recs",
+        "formatVersion": 1,
+        "formatMinor": 0,
+        "run": run,
+        "recipeHash": "0123456789abcdef",
+        "createdAt": "2026-10-01T00:00:00.000Z",
+        "asOf": "2026-10-01T00:00:00.000Z",
+        "expiresAt": "2026-10-04T00:00:00.000Z",
+        "catalogVersion": "test",
+        "code": {},
+        "data": {},
+        "evaluation": None,
+        "counts": {
+            "profiles": len(keys),
+            "titles": 2,
+            "neighbourRows": 1,
+            "profileItems": sum(len(v) for v in profiles.values()),
+        },
+        "rowTypes": list(artefacts.ROW_TYPES),
+        "tables": artefacts.TABLES,
+        "files": files,
+    }
+    put_json(storage, prefix + "manifest.json", manifest)
+    if publish:
+        previous = get_json(storage, artefacts.POINTER_KEY)
+        put_json(
+            storage,
+            artefacts.POINTER_KEY,
+            {
+                "format": "webflix.recs-pointer",
+                "formatVersion": 1,
+                "run": run,
+                "manifest": prefix + "manifest.json",
+                "manifestSha256": sha256(storage.get(prefix + "manifest.json") or b""),
+                "publishedAt": "2026-10-01T01:00:00.000Z",
+                "previous": previous["run"] if previous else None,
+                "gate": None,
+            },
+        )
+    return manifest

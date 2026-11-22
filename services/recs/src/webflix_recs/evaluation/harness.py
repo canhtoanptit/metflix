@@ -154,8 +154,22 @@ def _lists_from_ids(
     return out
 
 
-def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> dict[str, Any]:
-    started = time.perf_counter()
+@dataclass
+class EvaluationPopulation:
+    cutoff: int
+    end: int
+    eligible: list[str]
+    history_all: History
+    future: dict[str, dict[int, float]]
+    searched: dict[str, dict[int, float]]
+    available: npt.NDArray[np.bool_]
+    population: list[str]
+    history: History
+
+
+def evaluation_population(inputs: EvaluationInputs, log: Any = print) -> EvaluationPopulation:
+    """The leak checks and the evaluated population (shared by `evaluate` and by the job that
+    prepares the rule engine's input for a separate Node step)."""
     cutoff = (
         inputs.cutoff_ms
         if inputs.cutoff_ms is not None
@@ -186,6 +200,31 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
         f"[{iso_ms(cutoff)}, {iso_ms(end)})"
     )
     history = History.build(dataset, catalog, cutoff, profiles=population)
+    return EvaluationPopulation(
+        cutoff, end, eligible, history_all, future, searched, available, population, history
+    )
+
+
+def write_rule_engine_input(inputs: EvaluationInputs, work_dir: Path, log: Any = print) -> Path:
+    """The rule engine's input for the evaluated population, for a Node step run elsewhere
+    (`node scripts/rule-engine-rankings.ts --input <file> --out-dir <dir>`)."""
+    from webflix_recs.evaluation.rule_engine import engine_input  # noqa: PLC0415
+
+    selected = evaluation_population(inputs, log)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    path = work_dir / "engine-input.ndjson"
+    engine_input(selected.history, inputs.catalog, selected.population, path)
+    return path
+
+
+def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> dict[str, Any]:
+    started = time.perf_counter()
+    catalog = inputs.catalog
+    selected = evaluation_population(inputs, log)
+    cutoff, end = selected.cutoff, selected.end
+    eligible, history_all = selected.eligible, selected.history_all
+    future, searched = selected.future, selected.searched
+    available, population, history = selected.available, selected.population, selected.history
     n, t_count = len(population), len(catalog)
     universe = available[None, :] & ~history.watched
     gains = np.zeros((n, t_count))
@@ -388,7 +427,7 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
         "recipeHash": inputs.run_manifest["recipeHash"],
         "cutoff": iso_ms(cutoff),
         "testWindowEnd": iso_ms(end),
-        "datasetId": dataset.dataset_id,
+        "datasetId": inputs.dataset.dataset_id,
         "profiles": n,
         "eligibleProfiles": len(eligible),
         "slices": {name: int(mask.sum()) for name, mask in slices.items()},

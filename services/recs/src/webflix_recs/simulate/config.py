@@ -86,6 +86,13 @@ class SimConfig:
     pseudonym_key: str = "webflix-sim-pseudonym-key"
     policy_id: str = "m1-rules-sim"
     app_version: str = "2.0.0"
+    #: Lake objects: `hourly` (one per hour and shard, fast) or `writer` (shaped like the
+    #: product's lake writer: client batches, outbox drains, single server events). The events
+    #: are identical either way; only how they are grouped into objects differs.
+    object_layout: str = "hourly"
+    #: Store only what the product's collector would (emit.py). Off only to measure what the
+    #: rules remove: the stored events are otherwise identical either way.
+    collect_like_the_product: bool = True
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property

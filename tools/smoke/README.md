@@ -16,6 +16,17 @@ It only speaks HTTP: no database, no server internals, no third-party origins (a
 HLS URL is asserted, never fetched). Every response body is validated against the zod schemas
 of `@webflix/contracts`, so contract drift fails the check that observed it.
 
+Milestone 2's journeys (docs/BLUEPRINT-M2.md §12) are driven through the three local stand-ins a
+non-production deployment serves, exactly as a browser would use them: the development OpenID
+issuer at `/dev-idp/*` (its sign-in page answered with a persona or a typed address, Apple's
+auto-submitting form post replayed, faults ticked on the page), the fake payment provider's form
+at `/_pay/*` (its JSON confirmation, the same capability a client secret gives the page) with a
+test clock per customer (`POST /diagnostics/billing/clock`), and the local mailbox
+(`GET /diagnostics/mailbox`) for emailed links. Staff tokens come from the development issuer's
+staff realm through the console's authorisation code flow with PKCE. Where a deployment does not
+serve a stand-in (production configuration, Stripe instead of the fake), the journeys that need
+it skip and say what would make them runnable (below).
+
 ## Running it
 
 ```sh
@@ -54,6 +65,7 @@ Exit status: `0` nothing failed, `1` a check failed (or something was skipped wi
 | `--eventual-timeout <ms>` / `--poll-interval <ms>` | 30000 / 500 | Budget and interval for effects polled with `eventually` |
 | `--demo-email`, `--demo-password` | documented demo | The seeded demo account (read-only checks) |
 | `--media-title <id>` | discovered | Title for the packaged-media checks |
+| `--promo-code <code>` | none | A promo code the deployment honours for the Standard plan (`billing.promo-code.applied`) |
 | `--verbose`, `--no-color`, `--run-id <id>` | | Every request, plain output, tag for emails and request ids |
 
 As a library:
@@ -93,6 +105,15 @@ Requirements are detected from outside, never assumed from the mode name:
 | Rate-limit profile | a concurrent burst of PIN attempts on a locked profile of a fresh account (`profile-pin` is keyed by account, so measuring it affects nobody else; locking the profile spent one unit, a password check, which is counted) compared with the documented values: strict 5/min, dev 60/min. `payment` (10 per 10 min), `auth-email` (10 per 15 min) and `playback-start` (60/min) are the same in both profiles | `ratelimit.strict-defaults`, `consistency.rate-limit-exact`, `plans.payment-method`, `ratelimit.playback-start`, `ratelimit.auth-email` |
 | Popularity diagnostics | `GET /titles/:id/popularity` answers (absent when `WEBFLIX_ENV=production`, which the OpenAPI document tells apart from a missing route) | `pipeline.credit-bounded`, `pipeline.popularity-view` |
 | Probes exposed | `/healthz` answers (k8s routing keeps probes internal: skipped there) | `ops.health` |
+| Development issuer | `GET /auth/providers` offers the provider and `/dev-idp/{provider}/.well-known/openid-configuration` answers; a start that redirects to a real issuer skips the journey | `identity.oidc.*`, `identity.password-reset.drops-identities`, `billing.member-journey` |
+| Local mailbox | `GET /diagnostics/mailbox` answers (memory or outbox sender, not in production) | `identity.verify-email`, `identity.password-reset*`, `identity.oidc.auto-link` (and the emails the billing, export and support checks assert when it is there) |
+| Fake payment provider | `GET /billing/config` names `fake` and `/_pay/api/cards` answers | every `billing.*`, `staff.refund` |
+| Staff issuer | `/dev-idp/staff` discovery answers and the staff API accepts its token (`GET /me`) | every `staff.*`, `experiments.*` |
+| Events read-back | `GET /diagnostics/events` answers for a signed-in account | `privacy.events`, `privacy.kids-profile`, `privacy.consent` |
+| Consent mode | `GET /privacy/consent` → `mode`; the consent check asserts the mode the deployment runs | `privacy.consent` (and `privacy.events`, `privacy.kids-profile` skip in `off`) |
+| Cooling-off | the `scheduledFor` of the check's own deletion request; above 60 s it is cancelled and the check skips | `privacy.deletion.erasure` |
+| Trials left | each card that can carry a trial is tried in turn; one trial per card fingerprint, deployment-wide | `billing.trial-converts`, `billing.trial-cancelled`, `billing.checkout-abandoned`, `billing.checkout-expired` |
+| Recommendation run | `GET /system/recommendations` (`activeModel`) | `experiments.recommendation-status` |
 
 ## Effect on the target
 
@@ -120,8 +141,58 @@ Requirements are detected from outside, never assumed from the mode name:
   Use `--no-ip-exhaustion` if other people share that address.
 - Packaged-media checks keep one playback session alive with heartbeats for the duration of the
   run and stop it at the end.
+- Milestone 2 checks add about 45 accounts per run (most signed up without a card, a dozen
+  through the development issuer with typed addresses `smoke-<run>-…@smoke.webflix.test`), a
+  customer at the fake provider for each checkout, and messages in the local mailbox for those
+  addresses. Time passes only on each customer's own test clock, so no other account (the demo
+  account included) sees it move.
+- Three of them change deployment-wide state for a few seconds and therefore run `exclusive`
+  (alone, after everything else, before the IP-exhausting checks): `billing.provider-events`
+  sets the fake provider's webhook delivery policy (unruly, then outage) and restores what it
+  found; `staff.curated-row` publishes a collection on the home page and deletes it;
+  `experiments.assignment` starts two experiments in layers of their own and completes them when
+  the run ends. Two suites must not run at once against one deployment (the delivery policy is
+  shared).
+- **Trials are spent for good.** One trial per card fingerprint (§5.4), and the fake provider
+  gives every customer the same fingerprint per test card, so the five cards that can carry a
+  trial grant five trials per deployment, ever. The first run on a fresh database proves the
+  trial journeys; later runs skip them with that reason (finding M2-F2).
+- Federated sign-ins are paced within the `oidc` budget (the start and the callback each count):
+  a strict deployment (30 per minute per address) gets at most 14 sign-ins a minute from the
+  suite, because a callback refused by the limit can only redirect with `?oidc=failed`.
+  Password resets and verification requests spend the `email-send` budget (strict: 10 per 15
+  minutes per address): a second strict run within 15 minutes waits.
 
-## Check catalogue (96)
+## What a deployment must provide for nothing to be skipped
+
+For the platform engineers who run the suite against the Worker and kind. Each item is what the
+suite detects; without it the named checks skip with this reason, never pass.
+
+| Setting | Why | Checks that skip without it |
+| --- | --- | --- |
+| `WEBFLIX_ENV` other than `production` (`development`) | mounts `/dev-idp/*`, `/_pay/*` and the diagnostics routes (mailbox, events read-back, billing clock); a production configuration answers `not_found` there | almost every milestone 2 check |
+| `WEBFLIX_PAYMENT_PROVIDER=fake` (the default outside production) | test cards, the challenge page and the per-customer clock; the Stripe lane is `tools/stripe` | `billing.*`, `staff.refund` |
+| `WEBFLIX_EMAIL_SENDER=memory` (one process) or `outbox` (several replicas or isolates: the database outbox every instance reads) | the mailbox read-back; `memory` behind more than one replica or isolate shows each instance's own mail only | `identity.verify-email`, `identity.password-reset*`, `identity.oidc.auto-link` |
+| No `WEBFLIX_OIDC_GOOGLE_*` / `WEBFLIX_OIDC_APPLE_*` client; `WEBFLIX_OIDC_PROVIDERS` including `google,apple` | the development issuer stands in only for a provider without a real client | `identity.oidc.*`, `billing.member-journey` |
+| `WEBFLIX_STAFF_VERIFIER=oidc` with the development staff issuer (no `WEBFLIX_STAFF_ISSUER`, or the development one) | staff tokens the suite can mint | `staff.*`, `experiments.*` |
+| `WEBFLIX_PUBLIC_ORIGIN` on the same host as the base URL (any port) | the issuer and the callbacks are built from it; the suite follows another port of the same host (a browser shares cookies across ports) but not another host | federated checks |
+| A shared `WEBFLIX_DEV_IDP_SECRET` across replicas and isolates (the derived default is shared) | codes minted by one instance are redeemed by another | federated checks fail (not skip) without it |
+| `WEBFLIX_DELETION_COOLING_OFF_SEC` ≤ 30 and a scheduler tick ≤ 30 s (`WEBFLIX_SCHEDULER_INTERVAL_SEC` on Node, minimum 5; the Worker's cron, and on `wrangler dev` its scheduled handler triggered) | the erasure runs on the scheduler's sweep after the cooling-off period | `privacy.deletion.erasure` |
+| A fresh database (or never-trialled test cards) | trials are one per card, deployment-wide (finding M2-F2) | `billing.trial-*`; `billing.checkout-abandoned` and `billing.checkout-expired` need the opposite (a card already trialled), which other checks of the same run usually provide |
+| A promo code for the Standard plan, passed as `--promo-code` | none can be created on a fake-provider deployment today (finding M2-F1) | `billing.promo-code.applied` |
+| An imported recommendation run (`make recs`, then `node apps/api/src/recs.ts import`) | the served model's status | `experiments.recommendation-status` |
+| `WEBFLIX_CONSENT_MODE` | the consent check proves the configured mode only: run once per mode to prove all three (`opt-in` default, `opt-out`, `off`) | `privacy.events` and `privacy.kids-profile` skip in `off` |
+
+A dev API configured for the whole suite (on a port of your own):
+
+```sh
+PORT=5750 WEBFLIX_PUBLIC_ORIGIN=http://localhost:5750 WEBFLIX_DATABASE_URL=sqlite:/tmp/smoke/webflix.sqlite \
+  WEBFLIX_BLOB_DIR=/tmp/smoke/blobs WEBFLIX_DELETION_COOLING_OFF_SEC=10 WEBFLIX_SCHEDULER_INTERVAL_SEC=5 \
+  node apps/api/src/main.ts serve
+make smoke BASE_URL=http://localhost:5750
+```
+
+## Check catalogue (131)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
@@ -271,6 +342,108 @@ a release with the final position: the title's views for the day move by exactly
 60 s to the elapsed time credited. Both read `GET /titles/:id/popularity` and skip in
 production.
 
+**identity, milestone 2 (10)**: `identity.oidc.google-signup` providers listed (public,
+cacheable); the start is a code flow with S256 PKCE, state and nonce and the exact callback; an
+HttpOnly transaction cookie (`__Host-`, Secure on https); `signed-up` back at `returnTo`, a
+session for an account with no password, a verified address and membership `none`; the
+callback replayed from another browser fails and signs nobody in; a password never signs in to
+it; the next Google sign-in finds the same account · `identity.oidc.apple-form-post` Apple's
+form post (no client header) signs up; `email_verified` sent as the string `"true"` counts;
+SameSite=None; Secure on https; a rewritten `user` field (unsigned) changes neither the
+account's address nor creates one for the address it names; a tampered state fails · `identity.oidc.linking` the address of
+an unverified account (and the demo account's) is `link-required`; linking needs a fresh proof
+(`reauthentication_required`, wrong password refused, the proof lasts 5 minutes); `linked`; the
+identity then signs in to that account; `identity-in-use` for another account; unlinking leaves
+the password working and the identity signing up anew; the only way in of a Google-only account
+cannot be unlinked · `identity.oidc.unlink-sticks` [finding M2-F5] Google unlinked from an
+account with the same verified address does not sign in or relink itself on its next sign-in ·
+`identity.oidc.reauth` a Google-only account is offered Google and not the
+password; no password proves anything; the start asks `max_age=0`; a stale or missing
+`auth_time` and another identity fail; a fresh sign-in (the page shown despite the issuer's
+session) proves it for 5 minutes and stands in for the password (a first password set with it) ·
+`identity.oidc.faults` eleven faults of the issuer's catalogue (alg none, HMAC key confusion,
+embedded JWK, wrong issuer, audience, expired, nonce, tampered state, PKCE mismatch, a code of
+another client, an unverified address) all `failed`, nobody signed in, no account created;
+Cancel is `cancelled` · `identity.verify-email` the link's token is in the fragment, single use,
+a forged one refused · `identity.oidc.auto-link` both sides verified: the Google sign-in links
+itself · `identity.password-reset` the same 204 for an unknown address, a single-use link, every
+device signed out, the old password refused, the address verified, a security alert ·
+`identity.password-reset.drops-identities` a reset drops an identity linked under another
+address.
+
+**billing (13)**, the fake provider and its clock: `billing.checkout` refused playback (402
+naming `none`), a kids profile cannot start one, the provider's form serves the secret,
+confirming before the card is refused, the trial or the first payment, `complete`, entitled
+with the plan's streams and quality, plays, a paid invoice of the plan's price, no second
+checkout · `billing.challenge` a challenge must be completed; failed, it declines and a new
+setup is offered; completed, the membership starts · `billing.declined` declined, insufficient
+funds, expired: each `declineReason`, nothing starts, the checkout takes another card ·
+`billing.checkout-abandoned` [finding M2-F3] another plan chosen before the first payment
+leaves membership `none` · `billing.checkout-expired` [finding M2-F4] an unconfirmed first
+payment expires after 23 h on the clock: membership `none` with no plan, provider or period, the
+checkout expired, nothing left open (both need a card whose trial is spent) · `billing.promo-code.refused` an unknown code (`unknown`), at
+validation and checkout · `billing.promo-code.applied` (needs `--promo-code`) quoted, then
+charged as quoted · `billing.trial-converts` entitled, nothing charged, then the plan's price
+charged at the trial end · `billing.trial-cancelled` cancelled, resumed, cancelled: entitled
+until the trial end, then `canceled`, refused playback, nothing charged or owed, no resume ·
+`billing.plan-change` an upgrade invoiced exactly as previewed, a preview of one plan refused for
+another, no double charge on replay, a downgrade credits, and the next renewal bills what the
+preview said · `billing.member-journey` Google sign-up, pay, watch, cancel, resume, cancel, end,
+resubscribe without a second trial, watch · `billing.dunning` a failing renewal: `past_due`
+with `graceEndsAt`, still playing, an open invoice, the payment-failed email, a failed retry;
+`suspended (grace_expired)` after grace, refused playback, no new checkout; a new card pays the
+open invoice and playback returns · `billing.provider-events` [x] forged and unsigned events
+refused; with every event delivered twice, late and shuffled the membership is the provider's
+and each email went once; during an outage the checkout and a card change still complete.
+
+**privacy (6)**: `privacy.events` a batch accepted, read back with the client's ids, times,
+payloads and positions, stamped by the server (receipt time, pseudonymous 22-character subject
+keys, plan, consent); a client-supplied subject, two devices in a batch, 51 events, over 64 KiB
+refused; a signed-out device's own consent; read-back is per account · `privacy.kids-profile` client
+events dropped and playback leaving nothing for a kids profile, while the adult profile's are
+kept · `privacy.consent` the configured mode (opt-in: withheld until granted, withdrawn again,
+`consent.change` per answer; opt-out: collected, Global Privacy Control withdraws, an explicit
+grant wins; off: nothing), GPC detected, a kids profile cannot answer · `privacy.export` a fresh
+proof, one export at a time (two concurrent requests: exactly one), completed with a link
+(emailed), an attachment matching `DataExport` with the account, profiles, events, consents and
+each area's part; another account, a signed-out browser and a tampered token get nothing ·
+`privacy.deletion` a fresh proof, one at a time, scheduled after a cooling-off period,
+cancellable · `privacy.deletion.erasure` the account erased when the period ends (sessions end,
+the address is free).
+
+**staff (4)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
+role, none, another client's admin): allowed exactly for the role and admin, otherwise
+`staff_role_required` naming the role; no token, a forged one, an ID token, a member's cookie
+are `unauthenticated`; a mutation without the client header is refused; a staff token opens no
+member route · `staff.refund` a partial refund, its retry answered with the same refund, the key
+with another amount or another staff member `staff_action_conflict`, refunded once on the
+invoice, the rest refunded, nothing more; both audited · `staff.support-audit` reading a member
+(no password hash), removing a PIN, recording consent, sending a reset (the email), signing out
+everywhere (both devices out): each audited with its request id, reason and actor ·
+`staff.curated-row` [x] a published collection appears on a member's home page in order and goes
+when deleted; both audited.
+
+**experiments (2)**: `experiments.assignment` [x] two experiments the suite starts (profile and
+device units): a profile's variant is stable across devices and requests, never given to a kids
+profile; a device's is stable and 32 devices spread over both variants; a profile experiment
+does not assign anonymous devices; creating and starting are audited ·
+`experiments.recommendation-status` admin only (other roles refused); with a run imported, its
+dates hold and a new profile gets the rule engine (cold start).
+
+## Known findings
+
+Product defects the suite found, reported to their owners. The checks stay in place, asserting
+what the design calls for; a check marked with a finding reports `XFAIL` while it fails and
+`XPASS` once fixed (then remove its `knownFinding`).
+
+| Id | Owner | Finding | Check |
+| --- | --- | --- | --- |
+| M2-F1 | billing | No promo code can exist on a deployment with the fake provider: codes are defined only in process (`definePromotion`), with no seed, setting or route, so the §12 promo-code journey cannot be driven anywhere but against Stripe | `billing.promo-code.applied` skips |
+| M2-F2 | billing (payments-fake) | One trial per card fingerprint, and the fake gives every customer the same fingerprint per test card: each deployment grants five trials, ever, so trial journeys pass once per database, not three runs in a row | `billing.trial-*` skip after the first run |
+| M2-F3 | billing | A checkout abandoned before its first payment (another plan chosen) projects to `canceled` / `ended` instead of `none` / `no_membership` (§5.2: a never-confirmed first payment returns the account to `none`) | `billing.checkout-abandoned` (XFAIL) |
+| M2-F4 | billing | After an unconfirmed first payment expires, the membership is `none` but still carries `planId`, `provider` and `currentPeriodEnd` (`MembershipState`: null while `none`) | `billing.checkout-expired` (XFAIL) |
+| M2-F5 | identity | Unlinking Google from an account whose verified address is Google's verified address has no lasting effect: the identity's next sign-in is `signed-in` and relinks it (§4.1's automatic link), so a member cannot remove a Google account they lost control of without changing their address | `identity.oidc.unlink-sticks` (XFAIL) |
+
 ## Known limits
 
 - **The credit bound is checked at the counters too.** `pipeline.credit-bounded` (a burst of
@@ -295,6 +468,15 @@ production.
 - **Integrity is sampled**: four segments per rendition, not every object.
 - **L4-only balancing** with keep-alive can pin a client's requests to one instance; the
   consistency checks assume per-request (L7) balancing, as a Gateway API route or Workers give.
+- **Webhook recovery is mostly invisible from outside.** Every member-facing billing read that
+  waits on the provider (a checkout, a card change, the test clock) reads the provider itself, so
+  the projection is right without webhooks; what the outage check can prove is that journeys
+  complete without them and that nothing is applied twice after. The reconciliation job's own
+  repair of a projection nobody polls is covered by the billing area's tests.
+- **Not driven here**: the trial-ending email (sent by the scheduled reconciliation inside the
+  last 3 days of a trial), the Stripe lane (`tools/stripe`), real Google and Apple, Keycloak,
+  extend-trial and complimentary periods, dead-letter replay, experiment exposure events and
+  learned serving for a profile the model scored (the imported run must hold that profile).
 
 ## Adding a check
 
@@ -329,5 +511,13 @@ Checks live in `src/checks/<area>.ts` and are registered in `src/checks/index.ts
 - Anything eventual is polled with `ctx.eventually(what, probe, { timeoutMs })`, never a sleep.
 - Anything the target may legitimately lack is a `needs` requirement or a `ctx.skip(reason)`; a
   check that would pass vacuously skips instead.
+- A product defect the check found stays asserted: mark the check
+  `knownFinding: { id, owner, summary }` (reported `XFAIL` while it fails, `XPASS` once fixed)
+  and list it under Known findings.
+- Milestone 2 helpers: `src/oidc.ts` (federated sign-in through the development issuer, staff
+  tokens), `src/payments.ts` (the fake provider's form, checkout, test clock, delivery policy),
+  `src/mail.ts` (the mailbox, link tokens), `src/telemetry.ts` (client events as the SDK builds
+  them); `ctx.env.bareSignup`/`bareHolder` (an account without a membership) and
+  `ctx.env.issuerSlot()` before each federated sign-in.
 - Run `pnpm --filter @webflix/smoke test` (the runner, parsers and HTTP agent have unit tests),
   then the check against a real target.

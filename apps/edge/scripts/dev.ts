@@ -12,12 +12,17 @@
  * record existed, the wrangler process behind the port whose working directory is apps/edge.
  * Anything else listening on the port (8787 is Wrangler's default, so another project's dev
  * server may well be there) is left alone, with an explanation.
+ *
+ * While the server runs, this runner also fires the Worker's Cron Trigger on its schedule
+ * (lib/local-cron.ts): `wrangler dev` never does. `--no-cron` turns that off.
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { unstable_readConfig } from "wrangler";
+import { startLocalCron } from "./lib/local-cron.ts";
 import {
   type DevServerRecord,
   findRepoDevServer,
@@ -50,6 +55,8 @@ async function start(options: {
   state: string;
   assets: string;
   extra: string[];
+  cron: boolean;
+  cronEverySec: number | undefined;
 }): Promise<number> {
   mkdirSync(options.state, { recursive: true });
   // The record says "a dev.ts runner in apps/edge": make the working directory true to it.
@@ -88,8 +95,19 @@ async function start(options: {
   process.on("SIGINT", forward("SIGINT"));
   process.on("SIGTERM", forward("SIGTERM"));
   process.on("SIGHUP", forward("SIGHUP"));
+  const crons = options.cron
+    ? (unstable_readConfig({ config: join(EDGE_DIR, "wrangler.jsonc") }, { hideWarnings: true })
+        .triggers?.crons ?? [])
+    : [];
+  const stopCron = startLocalCron({
+    port: options.port,
+    crons,
+    log: say,
+    ...(options.cronEverySec ? { everySec: options.cronEverySec } : {}),
+  });
   return new Promise((resolveExit) => {
     child.once("exit", (code, signal) => {
+      stopCron();
       // Only remove the record if it is still ours (a second start may have replaced it).
       if (readRecord(options.state)?.pid === process.pid) rmSync(recordPath, { force: true });
       resolveExit(code ?? (signal ? 0 : 1));
@@ -158,6 +176,8 @@ async function main(argv: readonly string[]): Promise<number> {
       "inspector-port": { type: "string", default: "4609" },
       state: { type: "string", default: join(EDGE_DIR, ".wrangler", "state") },
       assets: { type: "string", default: join(EDGE_DIR, "dist", "public") },
+      "no-cron": { type: "boolean", default: false },
+      "cron-every": { type: "string" },
     },
   });
   const port = Number(values.port);
@@ -170,11 +190,15 @@ async function main(argv: readonly string[]): Promise<number> {
         state,
         assets: resolve(values.assets),
         extra,
+        cron: !values["no-cron"],
+        cronEverySec: values["cron-every"] ? Number(values["cron-every"]) : undefined,
       });
     case "stop":
       return stop({ port, state });
     default:
-      console.error("Usage: node scripts/dev.ts <start|stop> [--port] [--state] [--assets]");
+      console.error(
+        "Usage: node scripts/dev.ts <start|stop> [--port] [--state] [--assets] [--no-cron] [--cron-every <sec>]",
+      );
       return 2;
   }
 }

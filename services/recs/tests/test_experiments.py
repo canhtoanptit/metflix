@@ -322,3 +322,204 @@ def test_end_to_end_through_the_lake(tmp_path: Path) -> None:
     assert analysed["metrics"] == direct["metrics"]
     assert analysed["srm"] == direct["srm"]
     assert analysed["decision"] == direct["decision"]
+
+
+# --- The product's definitions, device units, results for the importer -----------------------
+
+
+def _product_definition(**overrides: Any) -> dict[str, Any]:
+    """An `ExperimentDefinition` as `GET /api/admin/v1/experiments` answers it."""
+    design = SyntheticDesign(key="recs-e2e", units=300, days=7, entry_days=3.0, effect=0.1)
+    definition: dict[str, Any] = {
+        "key": design.key,
+        "name": "Learned vs rules",
+        "description": None,
+        "unit": "profile",
+        "layer": "recs",
+        "allocation": {"start": 0, "end": 10_000},
+        "targeting": {"percentage": 100, "plans": [], "countries": [], "audience": "all"},
+        "variants": [{"name": "control", "weight": 1}, {"name": "treatment", "weight": 1}],
+        "control": "control",
+        "primaryMetric": "qualified_plays",
+        "secondaryMetrics": ["watch_hours"],
+        "alpha": 0.05,
+        "power": None,
+        "minimumDetectableEffect": 0.1,
+        # Staff set the start in the past, then pressed start: registered after `startsAt`.
+        "startsAt": "2026-08-25T00:00:00.000Z",
+        "endsAt": "2026-09-08T00:00:00.000Z",
+        "srmThreshold": None,
+        "status": "running",
+        "salt": "0123456789abcdef",
+        "registeredAt": design.start,
+        "createdAt": "2026-08-20T00:00:00.000Z",
+        "updatedAt": "2026-08-20T00:00:00.000Z",
+    }
+    definition.update(overrides)
+    return definition
+
+
+def _lake(tmp_path: Path) -> tuple[str, SyntheticDesign]:
+    design = SyntheticDesign(key="recs-e2e", units=300, days=7, entry_days=3.0, effect=0.1)
+    experiment = generate(design, 9)
+    store = tmp_path / "store"
+    write_lake(LocalStorage(store), to_events(experiment, 9))
+    return str(store), design
+
+
+def test_the_products_definitions_are_analysed_as_the_product_assigns(tmp_path: Path) -> None:
+    from webflix_recs.experiments.definitions import normalise_definitions
+
+    location, design = _lake(tmp_path)
+    answer = {
+        "items": [
+            _product_definition(),
+            _product_definition(key="draft-one", status="draft", registeredAt=None),
+            _product_definition(key="old-one", status="archived"),
+        ]
+    }
+    normalised, skipped = normalise_definitions(answer)
+    (mapped,) = normalised["experiments"]
+    # Nothing is assigned before registration: the window starts there.
+    assert mapped["startsAt"] == mapped["registeredAt"] == design.start
+    assert mapped["layer"] == "recs" and mapped["unit"] == "profile"
+    assert "power" not in mapped and "srmThreshold" not in mapped
+    assert {s["key"] for s in skipped} == {"draft-one", "old-one"}
+    report = run_analysis(location, answer, as_of_ms=design.end_ms, log=lambda _: None)
+    schemas.validate("experiment-report", report)
+    (analysed,) = report["experiments"]
+    assert analysed["unit"] == "profile" and analysed["layer"] == "recs"
+    assert sum(analysed["units"].values()) == 300
+    assert analysed["diagnostics"]["layerOverlapUnits"] == 0
+    assert analysed["diagnostics"]["exposureEvents"] > 300
+    assert [s["key"] for s in report["definitionsSkipped"]] == ["draft-one", "old-one"]
+
+
+def test_units_in_two_experiments_of_one_layer_are_reported(tmp_path: Path) -> None:
+    location, design = _lake(tmp_path)
+    storage = LocalStorage(location)
+    # A second experiment in the same layer, overlapping in time, sharing 25 units: an
+    # allocation the product refuses for running experiments, so it signals a bug.
+    events = [
+        e
+        for e in to_events(generate(replace(design, units=25), 9), 9)
+        if e["type"] == schemas.EXPOSURE
+    ]
+    for event in events:
+        event["payload"]["experimentKey"] = "recs-other"
+    write_lake(storage, events, seed=1)
+    answer = {"items": [_product_definition(), _product_definition(key="recs-other")]}
+    report = run_analysis(location, answer, as_of_ms=design.end_ms, log=lambda _: None)
+    overlap = {e["key"]: e["diagnostics"]["layerOverlapUnits"] for e in report["experiments"]}
+    assert overlap == {"recs-e2e": 25, "recs-other": 25}
+
+
+def test_results_are_written_where_the_importer_reads_them(tmp_path: Path) -> None:
+    from webflix_recs.experiments.results import (
+        RESULTS_POINTER,
+        read_results,
+        write_results,
+    )
+    from webflix_recs.storage import get_json
+
+    location, design = _lake(tmp_path)
+    storage = LocalStorage(location)
+    report = run_analysis(
+        location, {"items": [_product_definition()]}, as_of_ms=design.end_ms, log=lambda _: None
+    )
+    pointer = write_results(storage, report)
+    schemas.validate("experiment-results-pointer", pointer)
+    assert get_json(storage, RESULTS_POINTER) == pointer
+    (document,) = read_results(storage)
+    # What saveExperimentResults(key, report, Date.parse(computedAt)) stores, and
+    # GET /experiments/:key/results answers.
+    assert document["key"] == "recs-e2e"
+    assert document["computedAt"] == report["generatedAt"]
+    assert document["report"] == report["experiments"][0]
+    (entry,) = pointer["results"]
+    assert entry["path"] == f"experiments/results/r={pointer['run']}/recs-e2e.json"
+    assert entry["decision"] == report["experiments"][0]["decision"]["status"]
+    # A later run names its predecessor; a tampered file is refused by a reader.
+    later = dict(report, generatedAt="2099-01-01T00:00:00.000Z")
+    second = write_results(storage, later)
+    assert second["previous"] == pointer["run"]
+    storage.put(second["results"][0]["path"], b"{}")
+    with pytest.raises(ValueError, match=r"size|SHA-256"):
+        read_results(storage)
+
+
+def test_device_units_take_the_outcomes_of_the_profiles_signed_in_there(tmp_path: Path) -> None:
+    from helpers import make_event
+
+    start = SyntheticDesign().start_ms
+    events: list[dict[str, Any]] = []
+    for i in range(40):
+        variant = "control" if i % 2 == 0 else "treatment"
+        device, account, profile = f"dev-{i:03d}", f"a{i:021d}", f"p{i:021d}"
+        exposure = make_event(
+            schemas.EXPOSURE,
+            start + i * 60_000,
+            account="x" * 22,
+            profile=None,
+            experimentKey="landing",
+            variant=variant,
+            unitType="device",
+        )
+        exposure["deviceId"] = device
+        exposure["subject"]["account"] = None  # signed out: the device's own consent stamp
+        schemas.validate_event(exposure)
+        events.append(exposure)
+        # Later the member signs in on that device and browses: the link device -> profile.
+        events.append(
+            make_event(
+                "title.open", start + DAY_MS + i, account=account, profile=profile, device=device
+            )
+        )
+        plays = 1 if variant == "control" else 3
+        for n in range(plays):
+            events.append(
+                make_event(
+                    schemas.PLAYBACK_START,
+                    start + 2 * DAY_MS + i * 1000 + n,
+                    account=account,
+                    profile=profile,
+                    playback=f"pb-{i}-{n}",
+                    watched=0.0,
+                )
+            )
+            events.append(
+                make_event(
+                    schemas.PLAYBACK_PROGRESS,
+                    start + 2 * DAY_MS + i * 1000 + n + 600_000,
+                    account=account,
+                    profile=profile,
+                    playback=f"pb-{i}-{n}",
+                    watched=600.0,
+                )
+            )
+    store = tmp_path / "store"
+    write_lake(LocalStorage(store), events)
+    definitions = {
+        "format": "webflix.experiment-definitions",
+        "formatVersion": 1,
+        "experiments": [
+            {
+                "key": "landing",
+                "variants": [{"name": "control", "weight": 1}, {"name": "treatment", "weight": 1}],
+                "unit": "device",
+                "primaryMetric": "qualified_plays",
+                "alpha": 0.05,
+                "minimumDetectableEffect": 0.1,
+                "registeredAt": SyntheticDesign().start,
+                "startsAt": SyntheticDesign().start,
+                "endsAt": None,
+            }
+        ],
+    }
+    report = run_analysis(str(store), definitions, as_of_ms=start + 5 * DAY_MS, log=lambda _: None)
+    (analysed,) = report["experiments"]
+    assert analysed["unit"] == "device"
+    assert analysed["units"] == {"control": 20, "treatment": 20}
+    means = analysed["metrics"]["qualified_plays"]["variants"]
+    assert means["control"]["mean"] == 1.0 and means["treatment"]["mean"] == 3.0
+    assert analysed["diagnostics"]["deviceProfileLinks"] == 40

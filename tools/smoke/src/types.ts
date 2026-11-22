@@ -13,6 +13,10 @@ export const AREAS = [
   "consistency",
   "ratelimit",
   "pipeline",
+  "billing",
+  "privacy",
+  "experiments",
+  "staff",
 ] as const;
 export type Area = (typeof AREAS)[number];
 
@@ -57,6 +61,8 @@ export interface SmokeOptions {
   demo: { email: string; password: string };
   /** Pin the title used for packaged-media checks. */
   mediaTitleId: string | null;
+  /** A promo code the deployment's payment provider honours for the Standard plan. */
+  promoCode: string | null;
   only: string[];
   skip: string[];
   tags: string[];
@@ -97,6 +103,19 @@ export interface Requirement {
   evaluate(env: import("./env.ts").Environment): Promise<string | null>;
 }
 
+/**
+ * A product defect the suite found and reported to its owner. The check stays in place and
+ * keeps asserting what the design calls for: while it fails it is reported `XFAIL` with the
+ * finding, and the day the owner fixes it, it reports `XPASS` (remove the mark then).
+ */
+export interface KnownFinding {
+  /** Stable id used in reports (`M2-F3`). */
+  id: string;
+  /** The area that owns the fix (identity, billing, events, personalisation, admin, …). */
+  owner: string;
+  summary: string;
+}
+
 export interface CheckDefinition {
   id: string;
   area: Area;
@@ -104,6 +123,7 @@ export interface CheckDefinition {
   needs?: Requirement[];
   tags?: CheckTag[];
   timeoutMs?: number;
+  knownFinding?: KnownFinding;
   run(ctx: CheckContext): Promise<void>;
 }
 
@@ -142,6 +162,8 @@ export interface CheckResult {
   };
   notes: string[];
   requests: number;
+  /** The known finding this check is marked with (its failure is then `xfail`). */
+  finding?: KnownFinding;
 }
 
 export interface RunReport {

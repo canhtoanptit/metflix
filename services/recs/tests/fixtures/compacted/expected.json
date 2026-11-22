@@ -1,0 +1,166 @@
+{
+  "description": "What an export of each account must return from fixtures/compacted/store (services/recs/README.md, 'Compacted hours: the contract for readers').",
+  "accounts": {
+    "VPsPnSvHcldUMAbgrxuaX4": {
+      "eventIds": ["01a2021a-06bd-735b-918a-f80b6ed44332"],
+      "count": 1
+    },
+    "nWIk2ecp8LyH7_pfU_3IIs": {
+      "eventIds": [
+        "01a20219-f5e6-7195-b261-acefa89af168",
+        "01a20219-f7e1-7830-8bbe-c8dd7693a8a4",
+        "01a20219-f7e1-7b14-8d12-95ac4e002fd6"
+      ],
+      "count": 3
+    },
+    "vh0PRCi3upOcfyE-3ZWVJW": {
+      "eventIds": [
+        "01a20218-e376-7089-9015-0eaad3abf811",
+        "01a20218-e376-72ab-8c1c-2e8ff29162cb",
+        "01a20218-e398-7aed-ba7d-5f36e60204b4",
+        "01a20218-e399-7063-82be-56ac6d5033d8",
+        "01a20218-e399-707a-93e8-842de63d7577",
+        "01a20218-e399-7092-9cf2-1a575f6aa37f",
+        "01a20218-e399-7110-9d76-591338d9ca9a",
+        "01a20218-e399-711a-b7b8-183344abe086",
+        "01a20218-e399-717c-b6a9-5d0640403e68",
+        "01a20218-e399-7198-9ffd-dea8aea88d07",
+        "01a20218-e399-7219-86f1-9b2c33da1ba4",
+        "01a20218-e399-722d-ad04-3250c67b43d1",
+        "01a20218-e399-7254-99d5-543c38d06d36",
+        "01a20218-e399-7272-9890-797149ed7bfa",
+        "01a20218-e399-72f1-a6d7-2706f4e2c661",
+        "01a20218-e399-72f9-837f-aced2faaa7e7",
+        "01a20218-e399-72fe-bd1c-3996a7933d49",
+        "01a20218-e399-7302-b14e-b5f7cd47d488",
+        "01a20218-e399-734e-b95e-65ae0e6806f9",
+        "01a20218-e399-735b-b1fe-7887c2bcb928",
+        "01a20218-e399-73af-bbcd-4c8b1595e468",
+        "01a20218-e399-7430-8170-2f37b582ddf2",
+        "01a20218-e399-7591-bcc2-e2f97ca2401b",
+        "01a20218-e399-75d9-8466-6e0a82339ced",
+        "01a20218-e399-75de-bcfc-afb6913da663",
+        "01a20218-e399-765d-9c05-7ce4ebfa7312",
+        "01a20218-e399-76d8-b21a-59767ab99338",
+        "01a20218-e399-771b-9a3e-8e503bf09733",
+        "01a20218-e399-7735-a95d-152e48a3f6fd",
+        "01a20218-e399-7750-b024-6d882930805d",
+        "01a20218-e399-77a6-b508-c9b6e4709297",
+        "01a20218-e399-77ab-bbcf-9b8eb9348522",
+        "01a20218-e399-7818-a16a-027fed253b07",
+        "01a20218-e399-781a-913a-3aa9941381a7",
+        "01a20218-e399-78ad-8477-dfbbd7df5cb9",
+        "01a20218-e399-7927-8a56-1080682adf5a",
+        "01a20218-e399-7927-aa0f-2fe313d2143e",
+        "01a20218-e399-7984-b827-a61436a663ba",
+        "01a20218-e399-7a1d-b95d-31652903f467",
+        "01a20218-e399-7a2e-a907-901d83b5c17a",
+        "01a20218-e399-7a4b-bc6f-0b78cee99c86",
+        "01a20218-e399-7a93-8730-62ba7614d545",
+        "01a20218-e399-7aac-a631-09e286ef17a1",
+        "01a20218-e399-7ae1-8d5f-8e91ff787b85",
+        "01a20218-e399-7b0d-89d4-1d4f7bac5638",
+        "01a20218-e399-7bbb-9509-5e277fcfc3e6",
+        "01a20218-e399-7be8-a36c-fcfadf8b778b",
+        "01a20218-e399-7c57-be65-b56c2d243dc0",
+        "01a20218-e399-7cc1-bc5e-1122776c45d1",
+        "01a20218-e399-7cd5-ad55-e1ba93b2f8ab",
+        "01a20218-e399-7cf4-ac85-9cd407baf3fb",
+        "01a20218-e399-7d2b-bebe-df6c28c4dd30",
+        "01a20218-e399-7d47-ba4b-23f6e37a6bc3",
+        "01a20218-e399-7d92-a386-00db4f8679eb",
+        "01a20218-e399-7dbe-8fd6-b34fa20d9c38",
+        "01a20218-e399-7e5e-afeb-cbce4c3aef0e",
+        "01a20218-e399-7e7c-a8a2-8ca2e034cec8",
+        "01a20218-e399-7e86-94b0-38be33c93f0d",
+        "01a20218-e399-7ebb-8013-757a25f25974",
+        "01a20218-e399-7eca-b347-c9e451f68c43",
+        "01a20218-e399-7ed5-834d-c321938f703d",
+        "01a20218-e399-7f2a-9179-4e59b8fb39bd",
+        "01a20218-e399-7f58-9aac-4309937f2320",
+        "01a20218-e399-7f64-bcb9-e4879caf6c38",
+        "01a20218-e399-7fd8-bab1-469a537af33b",
+        "01a20218-e399-7fe3-95bf-14ba2b1600db",
+        "01a20218-e3a7-7c46-b2d6-a8c07576b807",
+        "01a20218-e3a7-7ea1-8170-085ba388c969",
+        "01a20218-e3b5-7500-88de-f3e299b255ee",
+        "01a20218-e3b5-76e5-a04b-dff27414005d"
+      ],
+      "count": 70
+    }
+  },
+  "hours": {
+    "events/dt=2026-11-22/hh=07/": {
+      "compacted": true,
+      "parquet": "events/dt=2026-11-22/hh=07/part-b16aebb776a257e7.parquet",
+      "rowGroups": [
+        {
+          "rows": 16,
+          "min": "VPsPnSvHcldUMAbgrxuaX4",
+          "max": "vh0PRCi3upOcfyE-3ZWVJW",
+          "nulls": 0
+        },
+        {
+          "rows": 16,
+          "min": "vh0PRCi3upOcfyE-3ZWVJW",
+          "max": "vh0PRCi3upOcfyE-3ZWVJW",
+          "nulls": 0
+        },
+        {
+          "rows": 16,
+          "min": "vh0PRCi3upOcfyE-3ZWVJW",
+          "max": "vh0PRCi3upOcfyE-3ZWVJW",
+          "nulls": 0
+        },
+        {
+          "rows": 16,
+          "min": "vh0PRCi3upOcfyE-3ZWVJW",
+          "max": "vh0PRCi3upOcfyE-3ZWVJW",
+          "nulls": 0
+        },
+        {
+          "rows": 16,
+          "min": "vh0PRCi3upOcfyE-3ZWVJW",
+          "max": "vh0PRCi3upOcfyE-3ZWVJW",
+          "nulls": 9
+        },
+        {
+          "rows": 5,
+          "min": null,
+          "max": null,
+          "nulls": 5
+        }
+      ],
+      "readRawObjects": [
+        "events/dt=2026-11-22/hh=07/01a2023f-0000-7000-8000-00000000a001.ndjson.gz"
+      ],
+      "skipRawObjects": [
+        "events/dt=2026-11-22/hh=07/01a20218-e4b5-77a0-879c-9088a86af09d.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20218-e4b9-77a3-b48c-20ea01a509f1.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20218-e4bc-71f9-98ac-f77fa770cf6d.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20218-e4bd-75a3-99ca-0fa8f3b60a1a.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20218-e4be-7361-8c5e-63c4758ee2fd.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20218-e4bf-76fb-b7ff-840254c1766e.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20218-e4c2-7410-aeea-738255626440.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20219-f742-74a1-8899-b603d3cbad7b.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20219-f74e-77cc-a7a3-57995d7ee78c.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a20219-f983-71fb-bf30-8868bcfe1430.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a2021a-0771-73aa-8072-db90eec8f93e.ndjson.gz",
+        "events/dt=2026-11-22/hh=07/01a2021a-e2a8-7399-9d55-98af1fedbe9a.ndjson.gz"
+      ],
+      "rowGroupsAReaderOfThisAccountReads": {
+        "VPsPnSvHcldUMAbgrxuaX4": [0],
+        "nWIk2ecp8LyH7_pfU_3IIs": [0],
+        "vh0PRCi3upOcfyE-3ZWVJW": [0, 1, 2, 3, 4]
+      },
+      "duplicates": "the straggler repeats one event already in the Parquet file (same eventId, a later receipt): return it once"
+    },
+    "events/dt=2026-11-22/hh=08/": {
+      "compacted": false,
+      "readRawObjects": [
+        "events/dt=2026-11-22/hh=08/01a20250-0000-7000-8000-000000000001.ndjson.gz"
+      ],
+      "skipRawObjects": []
+    }
+  }
+}

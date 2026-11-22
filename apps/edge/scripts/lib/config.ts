@@ -4,7 +4,8 @@ import { applyEdits, modify, parse } from "jsonc-parser";
 
 interface ProductionIds {
   databaseId: string;
-  kvId: string;
+  /** KV namespace ids by binding (`CACHE`, `RECS`). */
+  kv: Record<string, string>;
 }
 
 /**
@@ -24,14 +25,21 @@ export async function writeProductionIds(configPath: string, ids: ProductionIds)
   };
   const current = parse(text) as {
     env?: {
-      production?: { d1_databases?: { database_id?: string }[]; kv_namespaces?: { id?: string }[] };
+      production?: {
+        d1_databases?: { database_id?: string }[];
+        kv_namespaces?: { binding?: string; id?: string }[];
+      };
     };
   };
   const production = current.env?.production;
   if (production?.d1_databases?.[0]?.database_id !== ids.databaseId) {
     set(["d1_databases", 0, "database_id"], ids.databaseId);
   }
-  if (production?.kv_namespaces?.[0]?.id !== ids.kvId) set(["kv_namespaces", 0, "id"], ids.kvId);
+  for (const [binding, id] of Object.entries(ids.kv)) {
+    const index = production?.kv_namespaces?.findIndex((kv) => kv.binding === binding) ?? -1;
+    if (index === -1) throw new Error(`env.production declares no KV binding ${binding}`);
+    if (production?.kv_namespaces?.[index]?.id !== id) set(["kv_namespaces", index, "id"], id);
+  }
   if (text === original) return false;
   await writeFile(configPath, text);
   return true;

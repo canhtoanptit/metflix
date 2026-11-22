@@ -48,7 +48,9 @@
   // code: keep them warm across deploys.
   "cache": { "enabled": false, "cross_version_cache": true },
 
-  // The scheduler only publishes idempotent jobs (stats rollups, baseline, cleanup).
+  // The scheduler only publishes idempotent jobs: stats rollups, baseline, cleanups and every
+  // area's periodic jobs (playback expiry and outbox drain, the privacy sweep, billing
+  // reconciliation, identity and audit cleanups). The queue consumer runs them.
   "triggers": { "crons": ["*/5 * * * *"] },
 
   // Media tokens live in URL paths (/media/{token}/..., so HLS-relative URIs inherit them).
@@ -91,11 +93,37 @@
     "WEBFLIX_RATE_LIMIT_OIDC": "300/60",
     "WEBFLIX_RATE_LIMIT_EMAIL_SEND": "120/60",
     "WEBFLIX_RATE_LIMIT_EVENTS": "600/60",
+    // ---- Milestone 2 (docs/CLOUDFLARE.md §10): every state in a binding, none in an isolate.
+    // `app.version` of server events; production gets the deployed commit (scripts/deploy.ts).
+    "WEBFLIX_RELEASE": "local",
+    // Behaviour events: gzip NDJSON objects in R2 under events/ (written by the queue consumer).
+    "WEBFLIX_EVENT_SINK": "lake",
+    // Email: recorded in D1 (`email_outbox`), read back by /diagnostics/mailbox from any isolate.
+    "WEBFLIX_EMAIL_SENDER": "outbox",
+    "WEBFLIX_EMAIL_FROM": "",
+    // The fake provider: state in D1, its form at /_pay, webhooks processed by the queue consumer.
+    "WEBFLIX_PAYMENT_PROVIDER": "fake",
+    // Staff tokens from the development issuer this Worker serves at /dev-idp/staff.
+    "WEBFLIX_STAFF_VERIFIER": "oidc",
+    "WEBFLIX_STAFF_ISSUER": "",
     // Per-profile recommendation lists in KV (RECS), models and neighbours in D1.
     "WEBFLIX_RECOMMENDATION_STORE": "kv"
   },
-  // `make cf-dev` writes a random per-clone key to .dev.vars (git-ignored).
-  "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
+  // Locally these come from .dev.vars (git-ignored), which `make cf-dev` writes once per clone:
+  // random media-token and pseudonym keys, the provider credentials empty (= unset: the local
+  // Worker uses the D1 outbox and the fake provider). Wrangler loads only the names listed
+  // here from .dev.vars. Production requires each of them at deploy (docs/CLOUDFLARE.md §8).
+  "secrets": {
+    "required": [
+      "WEBFLIX_MEDIA_TOKEN_KEYS",
+      "WEBFLIX_PSEUDONYM_KEY",
+      "WEBFLIX_EMAIL_HTTP_API_KEY",
+      "WEBFLIX_EMAIL_WEBHOOK_SECRET",
+      "STRIPE_SECRET_KEY",
+      "STRIPE_PUBLISHABLE_KEY",
+      "STRIPE_WEBHOOK_SECRET"
+    ]
+  },
   "d1_databases": [
     {
       "binding": "DB",
@@ -184,10 +212,35 @@
         "WEBFLIX_RATE_LIMIT_OIDC": "",
         "WEBFLIX_RATE_LIMIT_EMAIL_SEND": "",
         "WEBFLIX_RATE_LIMIT_EVENTS": "",
+        // Empty here: `make cf-deploy` passes the deployed commit (--var WEBFLIX_RELEASE:…).
+        "WEBFLIX_RELEASE": "",
+        "WEBFLIX_EVENT_SINK": "lake",
+        // Resend's REST API with WEBFLIX_EMAIL_HTTP_API_KEY; bounces arrive on its webhook.
+        "WEBFLIX_EMAIL_SENDER": "http",
+        // Set to an address on a domain verified with the email provider (empty: the default
+        // `Webflix <no-reply@webflix.dev>`, which a provider will refuse to send from).
+        "WEBFLIX_EMAIL_FROM": "",
+        "WEBFLIX_PAYMENT_PROVIDER": "stripe",
+        // Empty = `memory`: the staff API admits nobody until a staff issuer is configured
+        // (set WEBFLIX_STAFF_VERIFIER to oidc and WEBFLIX_STAFF_ISSUER to its https issuer).
+        "WEBFLIX_STAFF_VERIFIER": "",
+        "WEBFLIX_STAFF_ISSUER": "",
         "WEBFLIX_RECOMMENDATION_STORE": "kv"
       },
-      // `wrangler deploy` refuses to deploy while one of these is unset (cf-provision sets them).
-      "secrets": { "required": ["WEBFLIX_MEDIA_TOKEN_KEYS"] },
+      // `wrangler deploy` refuses to deploy while one of these is unset. `make cf-deploy` sets
+      // the media-token and pseudonym keys on the first deploy (generated, or from your secret
+      // manager) and takes the provider credentials from the environment (docs/CLOUDFLARE.md §8).
+      "secrets": {
+        "required": [
+          "WEBFLIX_MEDIA_TOKEN_KEYS",
+          "WEBFLIX_PSEUDONYM_KEY",
+          "WEBFLIX_EMAIL_HTTP_API_KEY",
+          "WEBFLIX_EMAIL_WEBHOOK_SECRET",
+          "STRIPE_SECRET_KEY",
+          "STRIPE_PUBLISHABLE_KEY",
+          "STRIPE_WEBHOOK_SECRET"
+        ]
+      },
       "d1_databases": [
         {
           "binding": "DB",
@@ -196,9 +249,10 @@
           "migrations_dir": "../../packages/db/migrations/d1"
         }
       ],
+      // Placeholders until `make cf-provision` finds or creates `webflix-cache` and `webflix-recs`.
       "kv_namespaces": [
         { "binding": "CACHE", "id": "00000000000000000000000000000000" },
-        { "binding": "RECS", "id": "00000000000000000000000000000001" }
+        { "binding": "RECS", "id": "00000000000000000000000000000000" }
       ],
       "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "webflix-media" }],
       "durable_objects": {

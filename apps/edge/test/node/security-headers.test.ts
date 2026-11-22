@@ -6,8 +6,14 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { headersFile } from "../../scripts/lib/assets.ts";
-import { type HeaderList, renderChartHeaders } from "../../scripts/lib/security-headers.ts";
+import { configuredPaymentProvider, headersFile } from "../../scripts/lib/assets.ts";
+import {
+  addCspSources,
+  type HeaderList,
+  renderChartHeaders,
+  STRIPE_CSP_SOURCES,
+  withPaymentProvider,
+} from "../../scripts/lib/security-headers.ts";
 
 const CHART = join(import.meta.dirname, "..", "..", "..", "..", "deploy", "helm", "webflix");
 
@@ -60,7 +66,14 @@ describe("SPA security headers: Kubernetes (Helm) and Cloudflare (_headers) agre
   it.runIf(helmAvailable())("over https (production, TLS on the gateway)", async () => {
     const kubernetes = renderKubernetes(true);
     expect(kubernetes.map(([name]) => name)).toContain("Strict-Transport-Security");
-    expect(sorted(renderCloudflare(await headersFile("production")))).toEqual(sorted(kubernetes));
+    // Production runs Stripe: the chart's policy plus exactly Stripe.js's sources.
+    expect(configuredPaymentProvider("production")).toBe("stripe");
+    expect(sorted(renderCloudflare(await headersFile("production")))).toEqual(
+      sorted(withPaymentProvider(kubernetes, "stripe")),
+    );
+    expect(sorted(renderCloudflare(await headersFile("production", "fake")))).toEqual(
+      sorted(kubernetes),
+    );
   });
 
   it.runIf(helmAvailable())("over plain http (local)", async () => {
@@ -68,6 +81,36 @@ describe("SPA security headers: Kubernetes (Helm) and Cloudflare (_headers) agre
     expect(kubernetes.map(([name]) => name)).toContain("Content-Security-Policy");
     expect(kubernetes.map(([name]) => name)).not.toContain("Strict-Transport-Security");
     expect(sorted(renderCloudflare(await headersFile("local")))).toEqual(sorted(kubernetes));
+  });
+
+  it("allows Stripe's origins only when Stripe is the provider", async () => {
+    const csp = (file: string) =>
+      renderCloudflare(file).find(([name]) => name === "Content-Security-Policy")?.[1] ?? "";
+    expect(configuredPaymentProvider("local")).toBe("fake");
+    expect(csp(await headersFile("local"))).not.toMatch(/stripe/);
+    expect(csp(await headersFile("production", "memory"))).not.toMatch(/stripe/);
+    const stripe = csp(await headersFile("production"));
+    for (const [directive, sources] of Object.entries(STRIPE_CSP_SOURCES)) {
+      const values = new RegExp(`(?:^|; )${directive} ([^;]*)`).exec(stripe)?.[1]?.split(" ");
+      for (const source of sources) expect(values, `${directive} ${source}`).toContain(source);
+    }
+    // Only Stripe's sources were added: nothing else became framable or scriptable.
+    expect(stripe).toMatch(/(?:^|; )frame-src 'self' https:\/\/js\.stripe\.com/);
+    expect(stripe).toMatch(/(?:^|; )script-src 'self' https:\/\/js\.stripe\.com /);
+  });
+
+  it("starts a missing directive from default-src and never duplicates a source", () => {
+    expect(
+      addCspSources("default-src 'self'; img-src 'self' data:", {
+        "frame-src": ["https://a.example"],
+        "img-src": ["data:", "https://b.example"],
+      }),
+    ).toBe(
+      "default-src 'self'; img-src 'self' data: https://b.example; frame-src 'self' https://a.example",
+    );
+    expect(addCspSources("default-src 'none'", { "frame-src": ["https://a.example"] })).toBe(
+      "default-src 'none'; frame-src https://a.example",
+    );
   });
 
   it("refuses chart constructs it cannot evaluate instead of dropping a header", () => {

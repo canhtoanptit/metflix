@@ -12,55 +12,37 @@
  *   `promote` (new key first: it signs) → deploy → after the token lifetime, `retire`.
  */
 import { randomBytes } from "node:crypto";
+import { type CommandOutput, readSecretListing } from "./secret-listing.ts";
+
+export type { CommandOutput } from "./secret-listing.ts";
 
 export const MEDIA_KEYS_SECRET = "WEBFLIX_MEDIA_TOKEN_KEYS";
-
-export interface CommandOutput {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
 
 export type FirstKeyDecision =
   | { action: "keep" }
   | { action: "create"; why: string }
   | { action: "abort"; reason: string };
 
-/**
- * Wrangler 4.x (`secret list`, API codes 10007/10090): `Worker "<name>" (env: <env>) not
- * found.` followed by "If this is a new Worker, run `wrangler deploy` first". A test pins this
- * text against the installed Wrangler, so an upgrade that changes it fails there, not here.
- */
-const WORKER_NOT_FOUND = /Worker "([^"]+)"(?: \(env: [^)]+\))? not found\./;
-
-export function decideFirstKey(listing: CommandOutput, worker: string): FirstKeyDecision {
-  const output = `${listing.stdout}\n${listing.stderr}`;
-  if (listing.code === 0) {
-    const start = listing.stdout.search(/\[/);
-    let names: string[];
-    try {
-      if (start === -1) throw new Error("no JSON array");
-      const parsed = JSON.parse(listing.stdout.slice(start)) as unknown;
-      if (!Array.isArray(parsed)) throw new Error("not an array");
-      names = parsed.map((entry) => String((entry as { name?: unknown }).name));
-    } catch (error) {
+/** Whether the first deploy may create a generated key (`secret`), from `wrangler secret list`. */
+export function decideFirstKey(
+  listing: CommandOutput,
+  worker: string,
+  secret: string = MEDIA_KEYS_SECRET,
+): FirstKeyDecision {
+  const read = readSecretListing(listing, worker);
+  switch (read.kind) {
+    case "listed":
+      return read.names.includes(secret)
+        ? { action: "keep" }
+        : { action: "create", why: `the Worker has no ${secret} secret` };
+    case "new-worker":
+      return { action: "create", why: `Worker "${worker}" does not exist yet (first deploy)` };
+    case "unknown":
       return {
         action: "abort",
-        reason: `could not read \`wrangler secret list\` (${(error as Error).message}): ${listing.stdout.slice(0, 200)}`,
+        reason: `whether ${secret} is set is unknown; refusing to replace it: ${read.reason}`,
       };
-    }
-    return names.includes(MEDIA_KEYS_SECRET)
-      ? { action: "keep" }
-      : { action: "create", why: `the Worker has no ${MEDIA_KEYS_SECRET} secret` };
   }
-  const missing = WORKER_NOT_FOUND.exec(output);
-  if (missing && missing[1] === worker) {
-    return { action: "create", why: `Worker "${worker}" does not exist yet (first deploy)` };
-  }
-  return {
-    action: "abort",
-    reason: `\`wrangler secret list\` failed, so whether ${MEDIA_KEYS_SECRET} is set is unknown; refusing to replace it (exit ${listing.code}): ${output.trim().slice(0, 400)}`,
-  };
 }
 
 export interface SigningKey {

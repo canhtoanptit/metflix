@@ -442,13 +442,15 @@ class World:
             rng=rng,
         )
         for key, variant in experiments.items():
+            # As the product logs it (personalisation's serving plan): the unit's assignments and
+            # the page's policy in the context, no device, once per unit and variant per 30 days
+            # (the emitter drops the repeats after its random draws).
             self.emit.server(
                 ev.EXPOSURE,
                 t + 50,
                 subject,
-                context(surface="home", experiments=experiments),
+                context(experiments=experiments, policy=policy_ctx),
                 {"experimentKey": key, "variant": variant, "unitType": "profile"},
-                device_id=device.id,
             )
         u_dyn = self._dynamic_utility(profile, t)
         t += int(rng.integers(800, 3000))
@@ -759,7 +761,8 @@ class World:
             limited = watched < target - start
             playback_id = f"pb{rng.integers(0, 2**63):016x}"
             episode_id = self.episode_ids[title][item] if meta.is_series else None
-            ctx = context(surface="player", experiments=experiments)
+            # Playback's server events carry the player surface only (the product's envelope).
+            ctx = context(surface="player")
             self.emit.server(
                 ev.PLAYBACK_START,
                 t,
@@ -798,6 +801,11 @@ class World:
                     ),
                 )
             else:
+                # Stopped by choice (or a sample): the player is closed and the session released.
+                # Out of time mid-item: the member leaves without releasing it (a closed tab),
+                # and the product's expiry sweep ends it minutes after the last report, with
+                # `expired` (lease lifetime + carry + margin, then the next scheduler tick).
+                expired = limited and not accidental
                 self.emit.server(
                     ev.PLAYBACK_ABANDON,
                     t,
@@ -807,8 +815,11 @@ class World:
                         **self._item(
                             playback_id, title, episode_id, end_position, duration, watched
                         ),
-                        "reason": "closed",
+                        "reason": "expired" if expired else "closed",
                     },
+                    receipt_delay_ms=(140_000 + int(playback_id[-8:], 16) % 60_000)
+                    if expired
+                    else 0,
                 )
             self.stats.plays += 1
             profile.plays += 1

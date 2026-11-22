@@ -30,8 +30,23 @@ export interface Env {
   WEBFLIX_LOG_LEVEL?: string;
   WEBFLIX_PASSWORD_ITERATIONS?: string;
   WEBFLIX_EDGE_CACHE?: string;
-  // Secrets
+  // Milestone 2 vars wrangler.jsonc sets (portable, parsed by `loadCoreConfig`)
+  WEBFLIX_RELEASE?: string;
+  WEBFLIX_EVENT_SINK?: string;
+  WEBFLIX_EMAIL_SENDER?: string;
+  WEBFLIX_EMAIL_FROM?: string;
+  WEBFLIX_PAYMENT_PROVIDER?: string;
+  WEBFLIX_STAFF_VERIFIER?: string;
+  WEBFLIX_STAFF_ISSUER?: string;
+  WEBFLIX_RECOMMENDATION_STORE?: string;
+  // Secrets (`secrets.required`; empty locally = unset)
   WEBFLIX_MEDIA_TOKEN_KEYS?: string;
+  WEBFLIX_PSEUDONYM_KEY?: string;
+  WEBFLIX_EMAIL_HTTP_API_KEY?: string;
+  WEBFLIX_EMAIL_WEBHOOK_SECRET?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_PUBLISHABLE_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 }
 
 /**

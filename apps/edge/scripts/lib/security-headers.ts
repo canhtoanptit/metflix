@@ -77,3 +77,55 @@ export async function chartSpaHeaders(options: { https: boolean }): Promise<Head
   ]);
   return renderChartHeaders(valuesText, templateText, options);
 }
+
+/**
+ * What Stripe.js needs from the page's Content-Security-Policy (docs.stripe.com/security/guide,
+ * "Stripe.js", read 2026-11-22; docs/STRIPE.md §15): its script, its frames (3-D Secure
+ * challenges on hooks.stripe.com) and its API. Added only when Stripe is the configured
+ * provider (docs/BLUEPRINT-M2.md §5.5); with the fake provider card data goes to `/_pay`, which
+ * is same-origin. Link's hosts are not included: Link is not enabled.
+ */
+export const STRIPE_CSP_SOURCES: Readonly<Record<string, readonly string[]>> = {
+  "script-src": ["https://js.stripe.com", "https://*.js.stripe.com", "https://maps.googleapis.com"],
+  "frame-src": ["https://js.stripe.com", "https://*.js.stripe.com", "https://hooks.stripe.com"],
+  "connect-src": ["https://api.stripe.com", "https://maps.googleapis.com"],
+};
+
+/**
+ * `csp` with `sources` added per directive. A directive the policy lacks starts from
+ * `default-src` (its fallback), so adding Stripe's frames never widens what else may be framed.
+ */
+export function addCspSources(
+  csp: string,
+  sources: Readonly<Record<string, readonly string[]>>,
+): string {
+  const directives = csp
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const [name = "", ...values] = part.split(/\s+/);
+      return { name: name.toLowerCase(), values };
+    });
+  const fallback = directives.find((directive) => directive.name === "default-src")?.values ?? [];
+  for (const [name, added] of Object.entries(sources)) {
+    let directive = directives.find((candidate) => candidate.name === name);
+    if (!directive) {
+      directive = { name, values: fallback.filter((value) => value !== "'none'") };
+      directives.push(directive);
+    }
+    for (const source of added)
+      if (!directive.values.includes(source)) directive.values.push(source);
+  }
+  return directives.map((directive) => [directive.name, ...directive.values].join(" ")).join("; ");
+}
+
+/** The SPA headers with the configured payment provider's sources added to the CSP. */
+export function withPaymentProvider(headers: HeaderList, provider: string | undefined): HeaderList {
+  if (provider !== "stripe") return headers;
+  return headers.map(([name, value]): [string, string] =>
+    name.toLowerCase() === "content-security-policy"
+      ? [name, addCspSources(value, STRIPE_CSP_SOURCES)]
+      : [name, value],
+  );
+}

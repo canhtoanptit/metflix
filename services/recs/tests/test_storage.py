@@ -14,7 +14,7 @@ import pytest
 
 from webflix_recs.storage import InvalidKeyError, LocalStorage, S3Storage, Storage, key_problem
 
-MOTO_PORT = 5431
+MOTO_PORT = 5790  # this pipeline's port range (5790-5809)
 
 
 def test_local_layout_matches_the_node_filesystem_blob_store(tmp_path: Path) -> None:

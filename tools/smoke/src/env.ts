@@ -24,7 +24,9 @@ import {
   resolveUri,
 } from "./hls.ts";
 import { Agent, isApiError, runDetached } from "./http.ts";
-import type { SmokeOptions } from "./types.ts";
+import { DOCUMENTED_LIMITS, expectedSpec, measureProfilePinLimit } from "./limits.ts";
+import { discoverIssuer, type MemberIssuer, staffAccessToken } from "./oidc.ts";
+import type { RateLimitSpec, SmokeOptions } from "./types.ts";
 
 export interface TestAccount {
   tag: string;
@@ -81,6 +83,16 @@ export interface DemoFact {
   available: boolean;
   reason: string;
   viewer?: Viewer;
+}
+
+/** A capability of the target: available, or the exact reason it is not. */
+export interface Fact {
+  available: boolean;
+  reason: string;
+}
+
+export interface PaymentsFact extends Fact {
+  provider: "fake" | "stripe" | "unknown";
 }
 
 /** A card that is approved by the mock billing provider. */
@@ -558,6 +570,173 @@ export class Environment {
         () => undefined,
       );
     });
+  }
+
+  // --- Milestone 2 accounts --------------------------------------------------------------------
+
+  /** An account signed up without a card (milestone 2 §5.1): membership `none`. */
+  async bareSignup(tag: string, options: { label?: string } = {}): Promise<TestAccount> {
+    const agent = this.agent(options.label ?? tag);
+    const email = this.email(tag);
+    const session = await succeeds(
+      () => agent.api.signup({ body: { email, password: this.password } }),
+      `sign up without a card (${tag})`,
+    );
+    return { tag, email, password: this.password, agent, session };
+  }
+
+  /** `bareSignup`, then the account holder's profile selected on the sign-up device. */
+  async bareHolder(tag: string): Promise<TestAccount> {
+    const account = await this.bareSignup(tag);
+    await this.holder(account);
+    return account;
+  }
+
+  private flowLog: number[] = [];
+  private flowLock: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Wait for room in the `oidc` budget (per client address; the start and the callback each
+   * count) before a federated sign-in, so that a strict deployment never answers a callback
+   * with `?oidc=failed` because the suite outran its own limit.
+   */
+  issuerSlot(): Promise<void> {
+    const next = this.flowLock.then(async () => {
+      const spec = await this.oidcSpec();
+      if (!spec) return;
+      const perWindow = Math.max(1, Math.floor(spec.limit / 2) - 1);
+      const windowMs = spec.windowSec * 1000;
+      for (;;) {
+        const now = Date.now();
+        this.flowLog = this.flowLog.filter((at) => at > now - windowMs);
+        if (this.flowLog.length < perWindow) break;
+        const oldest = this.flowLog[0] ?? now;
+        await new Promise((resolve) => setTimeout(resolve, oldest + windowMs - now + 50));
+      }
+      this.flowLog.push(Date.now());
+    });
+    this.flowLock = next.catch(() => undefined);
+    return next;
+  }
+
+  private oidcSpec(): Promise<RateLimitSpec | null> {
+    return this.once("limits:oidc", async () => {
+      const mode = this.options.rateLimits.mode;
+      if (mode === "strict") return DOCUMENTED_LIMITS.strict.oidc;
+      if (mode === "relaxed") return DOCUMENTED_LIMITS.relaxed.oidc;
+      if (mode === "custom") return expectedSpec(this, "oidc", "other");
+      const measured = await measureProfilePinLimit(this);
+      // Unknown limits are paced as strict ones: slower, never wrong.
+      return measured.classification === "relaxed"
+        ? DOCUMENTED_LIMITS.relaxed.oidc
+        : DOCUMENTED_LIMITS.strict.oidc;
+    });
+  }
+
+  // --- Milestone 2 facts ---------------------------------------------------------------------
+
+  /** The development issuer stands in for `provider` at `/dev-idp/{provider}`. */
+  memberIssuer(provider: MemberIssuer): Promise<Fact> {
+    return this.once(`fact:issuer:${provider}`, async () => {
+      const agent = this.agent("probe-issuer");
+      const offered = await succeeds(() => agent.api.listSignInProviders(), "GET /auth/providers");
+      const ids = offered.items.map((item) => item.id);
+      if (!ids.includes(provider)) {
+        return {
+          available: false,
+          reason: `the deployment does not offer ${provider} sign-in (GET /auth/providers: ${ids.join(", ") || "none"})`,
+        };
+      }
+      const discovered = await discoverIssuer(agent, provider);
+      if ("absent" in discovered) {
+        return {
+          available: false,
+          reason: `the development issuer is not mounted (${discovered.absent}): a production configuration (WEBFLIX_ENV=production) or a real ${provider} client; federated journeys need WEBFLIX_ENV other than production and no WEBFLIX_OIDC_${provider.toUpperCase()}_* client`,
+        };
+      }
+      this.note("issuers", `${ids.join(", ")} through the development issuer (/dev-idp)`);
+      return { available: true, reason: "" };
+    });
+  }
+
+  /** The local mailbox the suites read emailed links from. */
+  mailbox(): Promise<Fact> {
+    return this.once("fact:mailbox", async () => {
+      const result = await this.agent("probe-mailbox").fetch(
+        `/api/v1/diagnostics/mailbox?to=${encodeURIComponent(this.email("mailbox-probe"))}`,
+      );
+      if (result.status === 200) {
+        this.note("mailbox", "GET /diagnostics/mailbox answers");
+        return { available: true, reason: "" };
+      }
+      this.note("mailbox", `not available (${result.status})`);
+      return {
+        available: false,
+        reason: `the local mailbox is not served (GET /diagnostics/mailbox → ${result.status}): it is a non-production diagnostics surface of the memory and outbox email senders (needs WEBFLIX_ENV other than production and WEBFLIX_EMAIL_SENDER=memory or outbox)`,
+      };
+    });
+  }
+
+  /** The fake payment provider: its form, test cards and per-customer clock. */
+  payments(): Promise<PaymentsFact> {
+    return this.once("fact:payments", async () => {
+      const agent = this.agent("probe-payments");
+      const config = await succeeds(() => agent.api.getBillingConfig(), "GET /billing/config");
+      if (config.provider === "stripe") {
+        this.note("payments", "Stripe");
+        return {
+          available: false,
+          provider: "stripe",
+          reason:
+            "the payment provider is Stripe (GET /billing/config): these journeys drive the fake provider's test cards, form and clock (WEBFLIX_PAYMENT_PROVIDER=fake); Stripe's lane is tools/stripe (docs/STRIPE.md)",
+        };
+      }
+      const cards = await agent.fetch("/_pay/api/cards");
+      const type = cards.headers.get("Content-Type") ?? "";
+      if (cards.status !== 200 || !type.includes("json")) {
+        this.note("payments", `fake, but /_pay is not served (${cards.status})`);
+        return {
+          available: false,
+          provider: "fake",
+          reason: `GET /billing/config names the fake provider but its form is not served (GET /_pay/api/cards → ${cards.status} ${type}): /_pay is mounted only outside production`,
+        };
+      }
+      this.note("payments", "fake provider (form at /_pay, test clock per customer)");
+      return { available: true, provider: "fake", reason: "" };
+    });
+  }
+
+  /** The staff issuer the suite can mint tokens from, accepted by the staff API. */
+  staffIssuer(): Promise<Fact> {
+    return this.once("fact:staff", async () => {
+      const agent = this.agent("probe-staff");
+      const discovered = await discoverIssuer(agent, "staff");
+      if ("absent" in discovered) {
+        return {
+          available: false,
+          reason: `the development staff issuer is not mounted (${discovered.absent}): the staff API trusts another issuer (Keycloak, WEBFLIX_STAFF_ISSUER) whose tokens the suite cannot mint`,
+        };
+      }
+      const token = await this.staffToken("staff-support");
+      const me = await agent.fetch("/api/admin/v1/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (me.status !== 200) {
+        return {
+          available: false,
+          reason: `the staff API refuses the development issuer's tokens (GET /api/admin/v1/me → ${me.status}): it trusts another issuer (WEBFLIX_STAFF_ISSUER)`,
+        };
+      }
+      this.note("staff", "tokens from the development staff issuer (/dev-idp/staff)");
+      return { available: true, reason: "" };
+    });
+  }
+
+  /** A staff access token for a development persona, minted once per run. */
+  staffToken(persona: string): Promise<string> {
+    return this.once(`staff:${persona}`, () =>
+      staffAccessToken(this.agent(`staff-${persona}`), persona),
+    );
   }
 
   // --- Facts -----------------------------------------------------------------------------------

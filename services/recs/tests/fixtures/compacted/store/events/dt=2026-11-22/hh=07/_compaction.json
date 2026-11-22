@@ -1,0 +1,101 @@
+{
+  "format": "webflix.events-compaction",
+  "formatVersion": 2,
+  "hour": "2026-11-22T07:00:00.000Z",
+  "parquet": "events/dt=2026-11-22/hh=07/part-b16aebb776a257e7.parquet",
+  "parquetBytes": 34874,
+  "parquetSha256": "b16aebb776a257e7943a12f8eb7ec0ca1214a257c242b8c8c4a6824684074058",
+  "rows": 85,
+  "rowGroups": 6,
+  "rowGroupRows": 16,
+  "sortedBy": ["account", "received_at", "event_id"],
+  "compression": "SNAPPY",
+  "columns": [
+    {
+      "name": "account",
+      "description": "pseudonymous account key (subject.account); null on signed-out events"
+    },
+    {
+      "name": "profile",
+      "description": "pseudonymous profile key (subject.profile); null without a profile"
+    },
+    { "name": "event_id", "description": "eventId" },
+    { "name": "type", "description": "event type" },
+    {
+      "name": "received_at",
+      "description": "receivedAt, exactly as stored (RFC 3339, milliseconds, Z)"
+    },
+    { "name": "occurred_at", "description": "occurredAt, exactly as stored" },
+    { "name": "title_id", "description": "payload.titleId when the type has one, else null" },
+    {
+      "name": "raw",
+      "description": "the event exactly as the lake writer stored it: one JSON line, UTF-8"
+    }
+  ],
+  "duplicatesDropped": 0,
+  "invalid": 0,
+  "erased": 0,
+  "sources": [
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4b5-77a0-879c-9088a86af09d.ndjson.gz",
+      "size": 364,
+      "etag": "00fa1db9290513a0e2ece2c3ac900e26"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4b9-77a3-b48c-20ea01a509f1.ndjson.gz",
+      "size": 2039,
+      "etag": "a016ee023ccc4926fad21e1130711570"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4bc-71f9-98ac-f77fa770cf6d.ndjson.gz",
+      "size": 925,
+      "etag": "0ba11fc5b1fd16b873a52ef55cdfd81c"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4bd-75a3-99ca-0fa8f3b60a1a.ndjson.gz",
+      "size": 438,
+      "etag": "6529c7f61ff873ffcaccdc7a88182991"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4be-7361-8c5e-63c4758ee2fd.ndjson.gz",
+      "size": 453,
+      "etag": "6a067a9d5450660758e8a360689238da"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4bf-76fb-b7ff-840254c1766e.ndjson.gz",
+      "size": 362,
+      "etag": "911ac4a1efccee20a37a087e1d9d6957"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20218-e4c2-7410-aeea-738255626440.ndjson.gz",
+      "size": 673,
+      "etag": "16a630ee4c6dc490f7e6e224c6f7f2f5"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20219-f742-74a1-8899-b603d3cbad7b.ndjson.gz",
+      "size": 362,
+      "etag": "9948c4bf1c7d86e0b8b9d17c839e9eb2"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20219-f74e-77cc-a7a3-57995d7ee78c.ndjson.gz",
+      "size": 335,
+      "etag": "a8410799e0a67695c90da8da9964bb07"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a20219-f983-71fb-bf30-8868bcfe1430.ndjson.gz",
+      "size": 334,
+      "etag": "65f85fb49b2437859b14758111805266"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a2021a-0771-73aa-8072-db90eec8f93e.ndjson.gz",
+      "size": 450,
+      "etag": "293273d0b932f65b0243de33d10f3032"
+    },
+    {
+      "key": "events/dt=2026-11-22/hh=07/01a2021a-e2a8-7399-9d55-98af1fedbe9a.ndjson.gz",
+      "size": 445,
+      "etag": "1d4bdf6d8ced727e0fb5f6d0e008de15"
+    }
+  ],
+  "compactedAt": "2026-11-22T08:20:00.000Z"
+}

@@ -3,6 +3,7 @@ real rule engine, the publish gate and atomic publishing."""
 
 from __future__ import annotations
 
+import gzip
 import io
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,8 @@ from conftest import EndToEnd
 from webflix_recs import artefacts
 from webflix_recs.evaluation.harness import EvaluationInputs, evaluate
 from webflix_recs.history import LeakError, targets
-from webflix_recs.ids import iso_ms
+from webflix_recs.ids import DAY_MS, iso_ms
+from webflix_recs.lake import compact
 from webflix_recs.storage import get_json, put_json
 
 pytestmark = [pytest.mark.slow, pytest.mark.node]
@@ -139,17 +141,20 @@ def test_restricted_profiles_never_reach_training_data_candidates_or_artefacts(
     excluded = _restricted_and_unconsented(e2e)
     truth = pl.read_parquet(e2e.truth / "profiles" / "*.parquet")
     restricted = set(truth.filter(pl.col("restricted"))["profile_key"].to_list())
-    # They are in the lake (flagged), so the exclusion is the pipeline's doing.
+    # The product stores nothing of a restricted profile (collector.ts) and the simulator now
+    # collects the same way: they are absent from the lake itself, compacted hours included.
+    # The pipeline's own exclusion rules stay as the second line (older lakes, test fixtures).
     lake_profiles: set[str] = set()
+    flagged = 0
     for info in e2e.storage.list("events/"):
         if info.key.endswith(".parquet"):
-            frame = pl.read_parquet(
-                io.BytesIO(e2e.storage.get(info.key) or b""), columns=["profile", "restricted"]
-            )
-            lake_profiles |= set(
-                frame.filter(pl.col("restricted"))["profile"].drop_nulls().to_list()
-            )
-    assert lake_profiles & restricted
+            frame = pl.read_parquet(io.BytesIO(e2e.storage.get(info.key) or b""))
+            lake_profiles |= set(frame["profile"].drop_nulls().to_list())
+            flagged += sum(1 for raw in frame["raw"] if '"restricted":true' in raw)
+    assert restricted and lake_profiles
+    assert not lake_profiles & restricted
+    assert flagged == 0
+    assert e2e.dataset.manifest["counts"]["profiles"]["excludedRestricted"] == 0
     for name, table in e2e.dataset.tables.items():
         if "profile" in table.columns:
             assert not set(table["profile"].to_list()) & excluded, f"dataset table {name}"
@@ -324,3 +329,111 @@ def test_published_artefacts_follow_the_documented_schema(
     assert {row["type"] for row in payload["rows"]} >= {"personal", "top-picks", "billboard"}
     # The importer's budget: a neighbours row is 5 bound parameters, so 20 rows per statement.
     assert len(artefacts.TABLES["neighbours"]["columns"]) * 20 <= 100
+
+
+def test_the_scheduled_jobs_on_simulated_data(
+    e2e: EndToEnd, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """train-and-score split around the Node step (as a Kubernetes job with init containers
+    runs it), publish of the scored run behind the gate, idempotent reruns, then the erasure of
+    a member who is in the dataset, the artefacts and the published version."""
+    import shutil
+    import subprocess
+
+    from webflix_recs import cli
+    from webflix_recs.erasure import erase
+    from webflix_recs.jobs import SCORED_MARKER, dataset_id_for
+    from webflix_recs.storage import LocalStorage
+
+    store = tmp_path / "store"
+    shutil.copytree(e2e.store, store)
+    storage = LocalStorage(store)
+    storage.delete([i.key for i in storage.list("recs")])  # only the lake and the catalogue
+    work = tmp_path / "work"
+    # Lighter training than the default recipe (the job, not the models, is under test here).
+    params = tmp_path / "params.json"
+    params.write_bytes(orjson.dumps({"em_rounds": 1, "iterations": 4}))
+    common = ["--store", str(store), "--workers", "2"]
+    job = [
+        *common, "train-and-score", "--as-of", iso_ms(e2e.end_ms), "--work", str(work),
+        "--truth", str(e2e.truth), "--bootstrap", "100", "--params", str(params),
+    ]  # fmt: skip
+
+    def run(args: list[str]) -> tuple[int, dict[str, Any]]:
+        try:
+            cli.main(args)
+        except SystemExit as stop:
+            capsys.readouterr()
+            return int(stop.code or 0), {}
+        return 0, orjson.loads(capsys.readouterr().out)
+
+    code, prepared = run([*job, "--phase", "prepare"])
+    assert code == 0 and Path(prepared["engineInput"]).exists()
+    node = subprocess.run(
+        [
+            "node",
+            str(Path(__file__).resolve().parents[1] / "scripts" / "rule-engine-rankings.ts"),
+            "--input", prepared["engineInput"], "--out-dir", str(work),
+        ],
+        capture_output=True, text=True, timeout=600, check=False,
+    )  # fmt: skip
+    assert node.returncode == 0, node.stderr
+    code, finished = run([*job, "--phase", "finish"])
+    assert code == 0 and finished["status"] == "done"
+    run_id = finished["run"]
+    assert finished["dataset"] == dataset_id_for(e2e.end_ms)
+    assert (get_json(storage, SCORED_MARKER) or {})["run"] == run_id
+    assert artefacts.validate_version(storage, run_id) == []
+    # Idempotent: the version is complete, so a rerun does nothing (and cannot rescore files a
+    # pointer may name).
+    code, again = run([*job, "--phase", "all"])
+    assert code == 0 and again["status"] == "already-scored"
+    # Publish takes the scored run; it is refused unless the gate passed (smoke-sized data
+    # rarely beats the engine), and nothing is published then.
+    gate_passed = finished["gate"]["passed"]
+    code, published = run([*common, "publish"])
+    if not gate_passed:
+        assert code == cli.EXIT_PUBLISH_REFUSED
+        assert get_json(storage, artefacts.POINTER_KEY) is None
+        recipe = finished["recipeHash"]
+        put_json(
+            storage,
+            f"{artefacts.EVALUATIONS_PREFIX}{recipe}/plant.json",
+            _passing_report(recipe, "plant", iso_ms(e2e.cutoff_ms)),
+        )
+        code, published = run([*common, "publish"])
+    assert code == 0 and published["status"] == "published" and published["run"] == run_id
+    code, unchanged = run([*common, "publish"])
+    assert code == 0 and unchanged["status"] == "unchanged"
+
+    # Erase a member who is everywhere: the lake, the job's dataset, the published lists.
+    profiles = e2e.dataset.tables["profiles"]
+    shard = next(f for f in artefacts.read_current(storage)[1]["files"] if f["table"] == "profiles")  # type: ignore[index]
+    listed = pl.read_parquet(io.BytesIO(storage.get(f"recs/v={run_id}/{shard['path']}") or b""))[
+        "profile_key"
+    ].to_list()
+    member = profiles.filter(pl.col("profile").is_in(listed))["account"][0]
+    member_profiles = set(profiles.filter(pl.col("account") == member)["profile"].to_list())
+    compact(str(store), now_ms=e2e.end_ms + DAY_MS)
+    outcome = erase(str(store), [member], workers=2, log=lambda _: None)
+    assert member in outcome.to_confirm and member_profiles <= set(outcome.to_confirm)
+    assert outcome.discovered_profiles >= len(member_profiles)
+    for info in storage.list():
+        if info.key.startswith("recs-work/erasure/"):
+            continue
+        body = storage.get(info.key) or b""
+        if info.key.endswith(".gz"):
+            body = gzip.decompress(body)
+        elif info.key.endswith(".parquet"):
+            frame = pl.read_parquet(io.BytesIO(body))
+            body = orjson.dumps(
+                [
+                    frame[c].cast(pl.String).to_list()
+                    for c in frame.columns
+                    if c in {"profile", "account", "profile_key", "raw"}
+                ]
+            )
+        for key in {member, *member_profiles}:
+            assert key.encode() not in body, info.key
+    assert artefacts.validate_version(storage, run_id) == []
+    assert artefacts.read_current(storage) is not None

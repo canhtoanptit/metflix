@@ -16,13 +16,36 @@ const read = (env?: string) =>
 const local = read();
 const production = read("production");
 
-/** The Worker's validated config for an environment's vars (secrets stubbed). */
-function composed(config: typeof local) {
+/** Valid-looking values for every secret either environment may require (never real ones). */
+const SECRET_STUBS: Record<string, string> = {
+  WEBFLIX_MEDIA_TOKEN_KEYS: `test:${"k".repeat(40)}`,
+  WEBFLIX_PSEUDONYM_KEY: "p".repeat(43),
+  WEBFLIX_EMAIL_HTTP_API_KEY: `re_${"e".repeat(30)}`,
+  WEBFLIX_EMAIL_WEBHOOK_SECRET: `whsec_${"w".repeat(32)}`,
+  STRIPE_SECRET_KEY: `sk_live_${"s".repeat(24)}`,
+  STRIPE_PUBLISHABLE_KEY: `pk_live_${"s".repeat(24)}`,
+  STRIPE_WEBHOOK_SECRET: `whsec_${"h".repeat(32)}`,
+};
+
+/**
+ * The Worker's validated config for an environment's vars plus exactly the secrets the
+ * environment declares as required (stubbed): production must compose with nothing else.
+ * Locally the provider credentials are empty, as `make cf-dev` writes them to .dev.vars.
+ */
+function composed(config: typeof local, overrides: Record<string, string> = {}) {
+  const secrets = Object.fromEntries(
+    (config.secrets?.required ?? []).map((name) => [
+      name,
+      config === local && !GENERATED.has(name) ? "" : (SECRET_STUBS[name] ?? "stub"),
+    ]),
+  );
   return loadEdgeConfig({
     ...(config.vars as Record<string, string>),
-    WEBFLIX_MEDIA_TOKEN_KEYS: `test:${"k".repeat(40)}`,
+    ...secrets,
+    ...overrides,
   } as unknown as Env);
 }
+const GENERATED = new Set(["WEBFLIX_MEDIA_TOKEN_KEYS", "WEBFLIX_PSEUDONYM_KEY"]);
 
 describe("wrangler.jsonc", () => {
   it("sends every server-owned path to the Worker before the asset layer", async () => {
@@ -116,6 +139,47 @@ describe("wrangler.jsonc", () => {
     expect(production.secrets?.required).toContain("WEBFLIX_MEDIA_TOKEN_KEYS");
     expect(production.compatibility_flags).not.toContain("nodejs_compat");
     expect(local.compatibility_flags).not.toContain("nodejs_compat");
+  });
+
+  it("declares the same secrets in both sections (secrets are not inherited)", async () => {
+    expect([...(production.secrets?.required ?? [])].sort()).toEqual(
+      [...(local.secrets?.required ?? [])].sort(),
+    );
+    // Every generated secret is one the tooling knows how to create, locally and on deploy.
+    const { GENERATED_SECRETS } = await import("../../scripts/lib/secrets.ts");
+    expect(Object.keys(GENERATED_SECRETS).sort()).toEqual([...GENERATED].sort());
+    for (const name of GENERATED) expect(local.secrets?.required).toContain(name);
+  });
+
+  it("composes production with exactly its required secrets, into the durable adapters", () => {
+    const config = composed(production).core;
+    expect(config.events.eventSink).toBe("lake");
+    expect(config.events.serverRelease).toBe("dev"); // replaced at deploy (--var)
+    expect(config.identity.emailSender).toBe("http");
+    expect(config.identity.emailHttp?.webhookSecret).toBeTruthy();
+    expect(config.billing.paymentProvider).toBe("stripe");
+    expect(config.billing.stripe?.publishableKey).toMatch(/^pk_live_/);
+    expect(config.personalisation.recommendationStore).toBe("kv");
+    // The staff API stays closed until an issuer is configured (intended).
+    expect(config.admin.staffVerifier).toBe("memory");
+    // A missing provider credential would answer 503 to everything: deploy must refuse first.
+    for (const name of ["STRIPE_SECRET_KEY", "WEBFLIX_EMAIL_HTTP_API_KEY"]) {
+      expect(() => composed(production, { [name]: "" }), name).toThrow();
+    }
+    // The development pseudonym key is refused once events are stored.
+    expect(() => composed(production, { WEBFLIX_PSEUDONYM_KEY: "" })).toThrow(/PSEUDONYM/);
+  });
+
+  it("composes the local Worker on bindings only: lake, D1 outbox, fake provider, dev issuer", () => {
+    const config = composed(local).core;
+    expect(config.events.eventSink).toBe("lake");
+    expect(config.events.serverRelease).toBe("local");
+    expect(config.identity.emailSender).toBe("outbox");
+    expect(config.billing.paymentProvider).toBe("fake");
+    expect(config.billing.stripe).toBeNull();
+    expect(config.admin.staffVerifier).toBe("oidc");
+    expect(config.admin.staffIssuer).toBeNull();
+    expect(config.personalisation.recommendationStore).toBe("kv");
   });
 
   it("uses a compatibility date the pinned runtime supports", async () => {

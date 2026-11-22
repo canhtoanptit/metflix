@@ -5,11 +5,13 @@
  *   node scripts/deploy.ts provision [--dry-run]   find or create D1, KV, R2, Queues; write ids
  *                                                   and the routing derived from the origin
  *   node scripts/deploy.ts deploy    [--dry-run] [--skip-media] [--skip-seed] [--with-demo]
+ *                                    [--release <name>]   (default: the commit)
  *   node scripts/deploy.ts media-key add|promote|retire [--dry-run] [--force]
  *   node scripts/deploy.ts bundle                   production bundle (no upload) + size report
  *
- * `deploy` = provision → stage assets → D1 migrations (remote) → media upload → seed →
- * `wrangler deploy` (+ the media-token secret on first deploy) → readiness check.
+ * `deploy` = check the production config → provision → plan the secrets → stage assets → D1
+ * migrations (remote) → media upload → seed → `wrangler deploy` (+ the secrets a first deploy
+ * sets, the release name as WEBFLIX_RELEASE) → readiness check.
  * Every step is idempotent, so a failed run is fixed by running it again.
  *
  * `--dry-run` needs no account: it validates the production config, stages the assets,
@@ -18,22 +20,30 @@
  *
  * Credentials: `wrangler login`, or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (CI).
  *
+ * Secrets (lib/secrets.ts): every name in `secrets.required`. The generated ones (media-token
+ * keys, pseudonym key) are set on the first deploy from the environment, else from the
+ * operator's key file, else generated; later deploys never touch them. Provider credentials
+ * (email, Stripe) come from the environment on the first deploy; a deploy that lacks one stops
+ * before it changes anything.
+ *
  * Media-token keys (lib/media-keys.ts): the first deploy sets WEBFLIX_MEDIA_TOKEN_KEYS from the
  * environment, else from the operator's key file, else a generated key; later deploys never
  * touch it. Rotation is `media-key add`, deploy, `promote`, deploy, `retire`. Secrets are
  * write-only on the platform, so the current set comes from WEBFLIX_MEDIA_TOKEN_KEYS (your
  * secret manager) or the key file the tooling keeps (apps/edge/.wrangler/secrets, mode 600).
  */
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
+import { ConfigError } from "@webflix/core";
 import { unstable_readConfig } from "wrangler";
+import { type Env, loadEdgeConfig } from "../src/env.ts";
 import { stageAssets } from "./lib/assets.ts";
 import { routingForOrigin, writeProductionIds, writeProductionRouting } from "./lib/config.ts";
 import {
-  decideFirstKey,
   formatKeys,
   MEDIA_KEYS_SECRET,
   newKey,
@@ -42,7 +52,15 @@ import {
   rotate,
   type SigningKey,
 } from "./lib/media-keys.ts";
-import { EDGE_DIR, WRANGLER_CONFIG } from "./lib/platform.ts";
+import { EDGE_DIR, REPO_ROOT, WRANGLER_CONFIG } from "./lib/platform.ts";
+import { readSecretListing } from "./lib/secret-listing.ts";
+import {
+  GENERATED_SECRETS,
+  PSEUDONYM_KEY_SECRET,
+  planSecrets,
+  type SecretPlan,
+  toolingSecrets,
+} from "./lib/secrets.ts";
 import { parseJsonOutput, wrangler } from "./lib/wrangler.ts";
 
 const ENV = "production";
@@ -50,7 +68,10 @@ const say = (message: string) => console.log(`[cf] ${message}`);
 const plan = (command: string) => console.log(`[cf]   (dry run) would run: ${command}`);
 
 /** KV namespaces are found by title; the binding only stores the id. */
-const KV_TITLE = "webflix-cache";
+const KV_TITLES: Readonly<Record<string, string>> = {
+  CACHE: "webflix-cache",
+  RECS: "webflix-recs",
+};
 /** Queues' maximum retention on Workers Paid (14 days). */
 const DEAD_LETTER_RETENTION_SEC = 14 * 24 * 60 * 60;
 /** Ids that mean "not provisioned yet" in wrangler.jsonc. */
@@ -59,7 +80,8 @@ const PLACEHOLDER = /^0+(-0+)*$/;
 interface ProductionResources {
   databaseName: string;
   databaseId: string | undefined;
-  kvId: string | undefined;
+  /** Every KV namespace binding, its title on the account and its id (undefined: placeholder). */
+  kv: { binding: string; title: string; id: string | undefined }[];
   bucket: string;
   queues: string[];
   deadLetterQueues: string[];
@@ -68,11 +90,20 @@ interface ProductionResources {
 function readProductionConfig(): ProductionResources {
   const config = unstable_readConfig({ config: WRANGLER_CONFIG, env: ENV }, { hideWarnings: true });
   const db = config.d1_databases[0];
-  const kv = config.kv_namespaces[0];
   const r2 = config.r2_buckets[0];
-  if (!db?.database_name || !kv || !r2?.bucket_name) {
-    throw new Error("wrangler.jsonc env.production must declare the DB, CACHE and MEDIA bindings");
+  if (!db?.database_name || config.kv_namespaces.length === 0 || !r2?.bucket_name) {
+    throw new Error("wrangler.jsonc env.production must declare the DB, KV and MEDIA bindings");
   }
+  const kv = config.kv_namespaces.map((namespace) => {
+    const title = KV_TITLES[namespace.binding];
+    if (!title)
+      throw new Error(`no KV namespace title for binding ${namespace.binding} (deploy.ts)`);
+    return {
+      binding: namespace.binding,
+      title,
+      id: namespace.id && !PLACEHOLDER.test(namespace.id) ? namespace.id : undefined,
+    };
+  });
   const queues = new Set<string>();
   const deadLetterQueues: string[] = [];
   for (const producer of config.queues.producers ?? []) {
@@ -88,7 +119,7 @@ function readProductionConfig(): ProductionResources {
   return {
     databaseName: db.database_name,
     databaseId: db.database_id && !PLACEHOLDER.test(db.database_id) ? db.database_id : undefined,
-    kvId: kv.id && !PLACEHOLDER.test(kv.id) ? kv.id : undefined,
+    kv,
     bucket: r2.bucket_name,
     queues: [...queues],
     deadLetterQueues,
@@ -113,12 +144,14 @@ async function provision(dryRun: boolean): Promise<void> {
     );
   }
   say(
-    `production resources: D1 "${wanted.databaseName}", KV "${KV_TITLE}", R2 "${wanted.bucket}", queues ${wanted.queues.map((q) => `"${q}"`).join(", ")}`,
+    `production resources: D1 "${wanted.databaseName}", KV ${wanted.kv.map((kv) => `"${kv.title}"`).join(", ")}, R2 "${wanted.bucket}", queues ${wanted.queues.map((q) => `"${q}"`).join(", ")}`,
   );
   if (dryRun) {
     plan("wrangler whoami --json");
     plan(`wrangler d1 list --json   → else: wrangler d1 create ${wanted.databaseName}`);
-    plan(`wrangler kv namespace list → else: wrangler kv namespace create ${KV_TITLE}`);
+    for (const kv of wanted.kv) {
+      plan(`wrangler kv namespace list → else: wrangler kv namespace create ${kv.title}`);
+    }
     plan(
       `wrangler r2 bucket info ${wanted.bucket} → else: wrangler r2 bucket create ${wanted.bucket}`,
     );
@@ -130,7 +163,7 @@ async function provision(dryRun: boolean): Promise<void> {
     }
     plan("write the D1 and KV ids, workers_dev and routes into wrangler.jsonc env.production");
     say(
-      `config today: D1 id ${wanted.databaseId ?? "not provisioned"}, KV id ${wanted.kvId ?? "not provisioned"}`,
+      `config today: D1 id ${wanted.databaseId ?? "not provisioned"}, ${wanted.kv.map((kv) => `KV ${kv.binding} ${kv.id ?? "not provisioned"}`).join(", ")}`,
     );
     return;
   }
@@ -156,18 +189,22 @@ async function provision(dryRun: boolean): Promise<void> {
   }
   if (!databaseId) throw new Error(`D1 database ${wanted.databaseName} not found after creation`);
 
-  // KV
+  // KV (the shared cache, and per-profile recommendation lists)
   const listNamespaces = async () =>
     parseJsonOutput<{ id: string; title: string }[]>(
       (await wrangler(["kv", "namespace", "list"])).stdout,
     );
-  let kvId = (await listNamespaces()).find((ns) => ns.title === KV_TITLE)?.id;
-  if (!kvId) {
-    say(`creating KV namespace ${KV_TITLE}…`);
-    await wrangler(["kv", "namespace", "create", KV_TITLE]);
-    kvId = (await listNamespaces()).find((ns) => ns.title === KV_TITLE)?.id;
+  const kvIds: Record<string, string> = {};
+  for (const { binding, title } of wanted.kv) {
+    let id = (await listNamespaces()).find((ns) => ns.title === title)?.id;
+    if (!id) {
+      say(`creating KV namespace ${title}…`);
+      await wrangler(["kv", "namespace", "create", title]);
+      id = (await listNamespaces()).find((ns) => ns.title === title)?.id;
+    }
+    if (!id) throw new Error(`KV namespace ${title} not found after creation`);
+    kvIds[binding] = id;
   }
-  if (!kvId) throw new Error(`KV namespace ${KV_TITLE} not found after creation`);
 
   // R2
   if (
@@ -189,11 +226,13 @@ async function provision(dryRun: boolean): Promise<void> {
     }
   }
 
-  const changed =
-    (await writeProductionIds(WRANGLER_CONFIG, { databaseId, kvId })) ||
-    (routing.ok && (await writeProductionRouting(WRANGLER_CONFIG, routing)));
+  const idsChanged = await writeProductionIds(WRANGLER_CONFIG, { databaseId, kv: kvIds });
+  const routingChanged = routing.ok && (await writeProductionRouting(WRANGLER_CONFIG, routing));
+  const changed = idsChanged || routingChanged;
   say(
-    `provisioned: D1 ${databaseId}, KV ${kvId}, R2 ${wanted.bucket}, ${wanted.queues.length} queues`,
+    `provisioned: D1 ${databaseId}, ${Object.entries(kvIds)
+      .map(([binding, id]) => `KV ${binding} ${id}`)
+      .join(", ")}, R2 ${wanted.bucket}, ${wanted.queues.length} queues`,
   );
   if (changed) say("wrote resource ids / routing into apps/edge/wrangler.jsonc: commit them");
 }
@@ -233,41 +272,153 @@ async function currentKeys(): Promise<SigningKey[]> {
   );
 }
 
-/** A secrets file for the first deploy, or null when the secret is already set. */
-async function firstDeploySecrets(dir: string): Promise<string | null> {
-  const listing = await wrangler(["secret", "list", "--env", ENV, "--format", "json"], {
-    allowFailure: true,
-  });
-  const decision = decideFirstKey(listing, readWorkerName());
-  if (decision.action === "abort") throw new Error(decision.reason);
-  if (decision.action === "keep") {
-    if (process.env[MEDIA_KEYS_SECRET]) {
+/** The operator's copy of the pseudonym key (it cannot be read back from the platform). */
+const PSEUDONYM_KEY_FILE = join(EDGE_DIR, ".wrangler", "secrets", "production-pseudonym-key.json");
+
+/**
+ * The value a first deploy sets for a generated secret: the environment (the operator's secret
+ * manager), else the operator's key file, else a new key written to that file. Never in CI
+ * without the environment: a key generated on a runner would be lost with it.
+ */
+async function generatedValue(name: string): Promise<string> {
+  const fromEnvironment = process.env[name];
+  if (name === MEDIA_KEYS_SECRET) {
+    if (fromEnvironment) return formatKeys(parseKeys(fromEnvironment));
+    const file = await readKeyFile();
+    if (file) return formatKeys(parseKeys(file.keys));
+  } else if (name === PSEUDONYM_KEY_SECRET) {
+    if (fromEnvironment) return fromEnvironment;
+    const stored = await readFile(PSEUDONYM_KEY_FILE, "utf8").catch(() => null);
+    if (stored) return (JSON.parse(stored) as { key: string }).key;
+  } else {
+    throw new Error(`${name} is not a generated secret`);
+  }
+  if (process.env.CI) {
+    throw new Error(
+      `First deploy from CI: provide ${name} from the CI secret store (a key generated here would be lost with the runner)`,
+    );
+  }
+  const generator = GENERATED_SECRETS[name];
+  if (!generator) throw new Error(`${name} is not a generated secret`);
+  const value = generator.production();
+  if (name === MEDIA_KEYS_SECRET) {
+    await writeKeyFile({ keys: value, updatedAt: new Date().toISOString() });
+  } else {
+    await mkdir(join(PSEUDONYM_KEY_FILE, ".."), { recursive: true });
+    await writeFile(
+      PSEUDONYM_KEY_FILE,
+      `${JSON.stringify({ key: value, createdAt: new Date().toISOString() }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    say(
+      `pseudonym key saved to ${PSEUDONYM_KEY_FILE} (mode 600): keep a copy in your secret manager`,
+    );
+  }
+  say(`generated ${name}`);
+  return value;
+}
+
+/**
+ * What this deploy does about each required secret, decided from `wrangler secret list` before
+ * anything is changed. A listing that cannot be read stops the deploy (guessing "absent" could
+ * replace a key), and so does a provider credential that is neither set nor in the environment.
+ */
+async function planDeploySecrets(): Promise<SecretPlan> {
+  const required = productionWranglerConfig().secrets?.required ?? [];
+  const listing = readSecretListing(
+    await wrangler(["secret", "list", "--env", ENV, "--format", "json"], { allowFailure: true }),
+    readWorkerName(),
+  );
+  if (listing.kind === "unknown") throw new Error(`refusing to deploy: ${listing.reason}`);
+  const plan = planSecrets(listing, required, process.env);
+  for (const name of plan.keep) {
+    if (process.env[name]) {
       say(
-        `${MEDIA_KEYS_SECRET} is already set: ignoring the environment value (use \`media-key\` to rotate)`,
+        `${name} is already set on the Worker: ignoring the environment value (change it with \`wrangler secret put ${name} --env ${ENV}\`${name === MEDIA_KEYS_SECRET ? " or rotate with `media-key`" : ""})`,
       );
     }
-    return null;
   }
-  say(`setting ${MEDIA_KEYS_SECRET}: ${decision.why}`);
-  let keys: SigningKey[];
-  const fromEnvironment = process.env[MEDIA_KEYS_SECRET];
-  const file = await readKeyFile();
-  if (fromEnvironment) keys = parseKeys(fromEnvironment);
-  else if (file) keys = parseKeys(file.keys);
-  else {
-    if (process.env.CI) {
-      throw new Error(
-        `First deploy from CI: provide ${MEDIA_KEYS_SECRET} from the CI secret store (a key generated here would be lost with the runner)`,
-      );
-    }
-    keys = [newKey()];
-    say("generated a 256-bit media-token key");
+  if (plan.missing.length > 0) {
+    throw new Error(
+      `refusing to deploy: ${plan.missing.join(", ")} ${plan.missing.length === 1 ? "is" : "are"} neither set on the Worker nor in the environment. Provider credentials are not generated: export them from your secret manager (docs/CLOUDFLARE.md §8) and run again.`,
+    );
   }
-  if (!fromEnvironment)
-    await writeKeyFile({ keys: formatKeys(keys), updatedAt: new Date().toISOString() });
+  say(
+    `secrets: ${plan.keep.length} already set${plan.generate.length ? `; generated on this first deploy: ${plan.generate.join(", ")}` : ""}${plan.fromEnvironment.length ? `; from the environment: ${plan.fromEnvironment.join(", ")}` : ""}`,
+  );
+  return plan;
+}
+
+/** A `--secrets-file` with what the plan sets, or null when everything is already set. */
+async function writeSecretsFile(plan: SecretPlan, dir: string): Promise<string | null> {
+  const values: Record<string, string> = {};
+  for (const name of plan.generate) values[name] = await generatedValue(name);
+  for (const name of plan.fromEnvironment) values[name] = process.env[name] ?? "";
+  if (Object.keys(values).length === 0) return null;
   const path = join(dir, "secrets.json");
-  await writeFile(path, JSON.stringify({ [MEDIA_KEYS_SECRET]: formatKeys(keys) }), { mode: 0o600 });
+  await writeFile(path, JSON.stringify(values), { mode: 0o600 });
   return path;
+}
+
+function productionWranglerConfig() {
+  return unstable_readConfig({ config: WRANGLER_CONFIG, env: ENV }, { hideWarnings: true });
+}
+
+/** `RELEASE` charset of the events area (`WEBFLIX_RELEASE`: 1-40 of [A-Za-z0-9._+-]). */
+const RELEASE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$/;
+
+/**
+ * The deployed release (`app.version` of server events): `--release` (`make cf-deploy
+ * CF_RELEASE=…`), else the commit (`-dirty` when the tree has changes), else the time of the
+ * deploy. Deliberately not read from the environment: the Kubernetes make fragment exports
+ * WEBFLIX_RELEASE as its Helm release name into every recipe.
+ */
+function releaseName(override: string | undefined): string {
+  if (override) {
+    if (!RELEASE.test(override)) throw new Error("--release: 1-40 characters of [A-Za-z0-9._+-]");
+    return override;
+  }
+  try {
+    const git = (args: string[]) =>
+      execFileSync("git", args, {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    const commit = git(["rev-parse", "--short=12", "HEAD"]);
+    return git(["status", "--porcelain"]) ? `${commit}-dirty` : commit;
+  } catch {
+    return `deploy-${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}`;
+  }
+}
+
+/**
+ * The Worker's own config validation on the production vars, the release and the required
+ * secrets (the environment's values where it has them, throwaway ones otherwise): a deploy
+ * whose Worker would answer every request with 503 `config.invalid` stops here instead.
+ */
+function checkProductionConfig(release: string, dryRun: boolean): void {
+  const config = productionWranglerConfig();
+  const stubs = toolingSecrets();
+  const secrets = Object.fromEntries(
+    (config.secrets?.required ?? []).map((name) => [
+      name,
+      process.env[name] || stubs[name] || "stub",
+    ]),
+  );
+  try {
+    loadEdgeConfig({
+      ...(config.vars as Record<string, string>),
+      WEBFLIX_RELEASE: release,
+      ...secrets,
+    } as unknown as Env);
+    say(`production config valid (release ${release})`);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    const detail = `the production Worker would not compose:\n  - ${error.issues.join("\n  - ")}`;
+    if (!dryRun) throw new Error(`refusing to deploy: ${detail}`);
+    say(`WARNING: a real deploy would stop here: ${detail}`);
+  }
 }
 
 function readWorkerName(): string {
@@ -406,9 +557,31 @@ async function verify(url: string): Promise<void> {
   say(`${url}/readyz → ${body}`);
 }
 
-async function deploy(options: { dryRun: boolean; media: boolean; seed: boolean; demo: boolean }) {
+async function deploy(options: {
+  dryRun: boolean;
+  media: boolean;
+  seed: boolean;
+  demo: boolean;
+  release: string | undefined;
+}) {
   const { dryRun } = options;
+  const release = releaseName(options.release);
+  checkProductionConfig(release, dryRun);
   await provision(dryRun);
+
+  // Before anything changes data: every required secret must be set or settable.
+  let secretPlan: SecretPlan | null = null;
+  if (dryRun) {
+    const required = productionWranglerConfig().secrets?.required ?? [];
+    plan(`wrangler secret list --env ${ENV}, then for each secret not yet set:`);
+    for (const name of required) {
+      plan(
+        `  ${name}: ${Object.hasOwn(GENERATED_SECRETS, name) ? "generated (or from the environment / the operator's key file)" : `from the environment (${process.env[name] ? "present here" : "absent here: a real first deploy would stop"})`}`,
+      );
+    }
+  } else {
+    secretPlan = await planDeploySecrets();
+  }
 
   const assets = await stageAssets("production");
   say(`static assets staged: ${assets.files} files, ${(assets.bytes / 1e6).toFixed(1)} MB`);
@@ -423,12 +596,10 @@ async function deploy(options: { dryRun: boolean; media: boolean; seed: boolean;
     await runOps(["seed", "--target", "production", options.demo ? "--demo" : "--no-demo"], dryRun);
   }
 
+  const deployArgs = ["deploy", "--env", ENV, "--var", `WEBFLIX_RELEASE:${release}`];
   if (dryRun) {
     printBundle(await bundle(join(EDGE_DIR, "dist", "worker")));
-    plan(
-      `wrangler secret list --env ${ENV} → first deploy only: --secrets-file with ${MEDIA_KEYS_SECRET}`,
-    );
-    plan(`wrangler deploy --env ${ENV}`);
+    plan(`wrangler ${deployArgs.join(" ")} [--secrets-file <the secrets a first deploy sets>]`);
     plan("GET <WEBFLIX_PUBLIC_ORIGIN>/readyz");
     say("dry run complete: nothing was sent to Cloudflare");
     return;
@@ -436,10 +607,12 @@ async function deploy(options: { dryRun: boolean; media: boolean; seed: boolean;
 
   const temp = await mkdtemp(join(tmpdir(), "webflix-deploy-"));
   try {
-    const secrets = await firstDeploySecrets(temp);
+    const secrets = secretPlan ? await writeSecretsFile(secretPlan, temp) : null;
     const result = await wrangler(
-      ["deploy", "--env", ENV, ...(secrets ? ["--secrets-file", secrets] : [])],
-      { inherit: true },
+      [...deployArgs, ...(secrets ? ["--secrets-file", secrets] : [])],
+      {
+        inherit: true,
+      },
     );
     if (result.code !== 0) throw new Error("wrangler deploy failed");
   } finally {
@@ -459,6 +632,7 @@ async function main(argv: readonly string[]): Promise<number> {
       "skip-seed": { type: "boolean", default: false },
       "with-demo": { type: "boolean", default: false },
       force: { type: "boolean", default: false },
+      release: { type: "string" },
     },
   });
   const dryRun = values["dry-run"];
@@ -472,6 +646,7 @@ async function main(argv: readonly string[]): Promise<number> {
         media: !values["skip-media"],
         seed: !values["skip-seed"],
         demo: values["with-demo"],
+        release: values.release,
       });
       return 0;
     case "media-key": {

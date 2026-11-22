@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webflix.dev/schemas/events-compaction/2",
+  "title": "Compaction manifest of one lake hour (_compaction.json)",
+  "description": "Written by `webflix-recs compact` (and rewritten by `erase`) after the Parquet file it names. Readers: services/recs/README.md, \"Compacted hours\". Version 1 manifests (zstd, unsorted, an `erase` list) may still exist until the next compaction of their hour rewrites them as version 2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "hour",
+    "parquet",
+    "parquetBytes",
+    "parquetSha256",
+    "rows",
+    "rowGroups",
+    "rowGroupRows",
+    "sortedBy",
+    "compression",
+    "columns",
+    "duplicatesDropped",
+    "invalid",
+    "erased",
+    "sources",
+    "compactedAt"
+  ],
+  "properties": {
+    "format": {
+      "const": "webflix.events-compaction"
+    },
+    "formatVersion": {
+      "const": 2
+    },
+    "hour": {
+      "description": "Start of the receipt hour (UTC).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "parquet": {
+      "description": "Key of the current Parquet file of this hour: events/dt=…/hh=…/part-{16 hex}.parquet.",
+      "type": "string",
+      "pattern": "^events/dt=[0-9]{4}-[0-9]{2}-[0-9]{2}/hh=[0-9]{2}/part-[0-9a-f]{16}\\.parquet$"
+    },
+    "parquetBytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "parquetSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rows": {
+      "description": "Events in the Parquet file (one per eventId).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "rowGroups": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rowGroupRows": {
+      "description": "At most this many rows per row group.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "sortedBy": {
+      "const": ["account", "received_at", "event_id"]
+    },
+    "compression": {
+      "const": "SNAPPY"
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "duplicatesDropped": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "invalid": {
+      "description": "Lines that failed validation (kept under events-quarantine/).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "erased": {
+      "description": "Rows removed by erasures since the hour was first compacted (a count only: erased keys are never written here).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "erasedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sources": {
+      "description": "Every raw object of the hour whose events the Parquet file holds. Readers use `key` only: size and etag are as compacted (an erasure rewrites a covered object in place, or deletes it when nothing is left).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "size", "etag"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^events/dt=[0-9]{4}-[0-9]{2}-[0-9]{2}/hh=[0-9]{2}/[^/]+\\.ndjson\\.gz$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "etag": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "compactedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

@@ -18,6 +18,15 @@ import orjson
 
 from webflix_recs.ids import iso_ms, parse_iso_ms
 
+#: Exit codes (README.md, "Jobs"). 1 is an unexpected failure, 2 a usage error (argparse).
+EXIT_PUBLISH_REFUSED = 3
+EXIT_INVALID_VERSION = 4
+EXIT_ERASURE_INCOMPLETE = 5
+EXIT_STAFF_API = 6
+EXIT_RULE_ENGINE_UNAVAILABLE = 7
+EXIT_EXPORT_FAILED = 8
+EXIT_LAKE_BUSY = 75
+
 DEFAULT_STORE = os.environ.get("WEBFLIX_RECS_STORE", ".cache/recs/store")
 
 
@@ -67,6 +76,7 @@ def cmd_simulate(args: argparse.Namespace) -> dict[str, Any]:
         days=args.days,
         start=iso_ms(parse_iso_ms(args.start)) if args.start else None,
         impression_sample_rate=args.impression_sample_rate,
+        object_layout=args.object_layout,
         experiments=tuple(ExperimentSpec.parse(text) for text in args.experiment)
         if args.experiment
         else None,
@@ -101,24 +111,144 @@ def cmd_simulate(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_compact(args: argparse.Namespace) -> dict[str, Any]:
     from webflix_recs.lake import compact  # noqa: PLC0415
+    from webflix_recs.lease import lake_lease  # noqa: PLC0415
+    from webflix_recs.storage import open_storage  # noqa: PLC0415
 
-    erase: list[str] = []
-    if args.erase:
-        erase = [line.strip() for line in Path(args.erase).read_text().splitlines() if line.strip()]
     started = time.perf_counter()
-    result = compact(
+    with lake_lease(open_storage(args.store), "compact"):
+        result = compact(
+            args.store,
+            now_ms=_instant(args.now, int(time.time() * 1000)),
+            grace_ms=args.grace_minutes * 60_000,
+            delete_sources=args.delete_sources,
+            workers=_workers(args.workers),
+            take_lease=False,
+        )
+        summary: dict[str, Any] = {"command": "compact", **result.to_dict()}
+        if args.erase:
+            # Kept for the operator routes' wording (`compact --erase FILE`): the same operation
+            # as `erase --keys FILE --confirm-out -`, under the same lease.
+            summary["erase"] = _run_erase(args, keys_source=args.erase, confirm="-", lease=False)
+    summary["seconds"] = round(time.perf_counter() - started, 2)
+    return summary
+
+
+def _run_erase(
+    args: argparse.Namespace, *, keys_source: str, confirm: str, lease: bool
+) -> dict[str, Any]:
+    from webflix_recs.admin_api import AdminApi  # noqa: PLC0415
+    from webflix_recs.erasure import erase, mark_confirmed, parse_keys  # noqa: PLC0415
+    from webflix_recs.storage import open_storage  # noqa: PLC0415
+
+    now = _instant(getattr(args, "now", None), int(time.time() * 1000))
+    api = AdminApi.from_environment() if "api" in {keys_source, confirm} else None
+    more_pending = False
+    if keys_source == "api":
+        assert api is not None
+        keys = api.pending_erasures()
+        more_pending = len(keys) >= 500
+    else:
+        keys = parse_keys(Path(keys_source).read_text() if keys_source != "-" else sys.stdin.read())
+    outcome = erase(
         args.store,
-        now_ms=_instant(args.now, int(time.time() * 1000)),
-        grace_ms=args.grace_minutes * 60_000,
-        delete_sources=args.delete_sources,
-        erase_accounts=erase,
+        keys,
+        now_ms=now,
+        watch_days=getattr(args, "watch_days", 30),
         workers=_workers(args.workers),
+        take_lease=lease,
+        log=_log,
     )
-    return {
-        "command": "compact",
-        **result.to_dict(),
-        "seconds": round(time.perf_counter() - started, 2),
+    summary: dict[str, Any] = {**outcome.to_dict(), "morePending": more_pending}
+    to_confirm = outcome.to_confirm
+    if not to_confirm:
+        return summary
+    reason = getattr(args, "reason", None) or (
+        f"webflix-recs erase {iso_ms(now)}: removed from the lake, compacted hours, datasets "
+        "and artefacts, and verified"
+    )
+    bodies = [
+        {"subjectKeys": to_confirm[start : start + 200], "reason": reason}
+        for start in range(0, len(to_confirm), 200)
+    ]
+    if confirm == "api":
+        assert api is not None
+        api.confirm_erasures(to_confirm, reason)
+        mark_confirmed(open_storage(args.store), to_confirm, now)
+        summary["confirmed"] = len(to_confirm)
+    elif confirm == "none":
+        summary["confirmBodies"] = bodies
+    else:
+        # The request bodies for POST /api/admin/v1/system/privacy/erasures/confirm, for an
+        # operator to send; the keys count as confirmed in the plan once they are written.
+        text = orjson.dumps(bodies if len(bodies) > 1 else bodies[0], option=orjson.OPT_INDENT_2)
+        if confirm == "-":
+            summary["confirmBodies"] = bodies
+        else:
+            Path(confirm).parent.mkdir(parents=True, exist_ok=True)
+            Path(confirm).write_bytes(text + b"\n")
+            summary["confirmFile"] = str(Path(confirm).resolve())
+        mark_confirmed(open_storage(args.store), to_confirm, now)
+    return summary
+
+
+def cmd_erase(args: argparse.Namespace) -> dict[str, Any]:
+    keys_source = args.keys or ("api" if os.environ.get("WEBFLIX_ADMIN_API_URL") else None)
+    if keys_source is None:
+        raise SystemExit("erase: give --keys FILE|api (or set WEBFLIX_ADMIN_API_URL)")
+    confirm = args.confirm or ("api" if keys_source == "api" else "-")
+    started = time.perf_counter()
+    summary = _run_erase(args, keys_source=keys_source, confirm=confirm, lease=True)
+    return {"command": "erase", **summary, "seconds": round(time.perf_counter() - started, 2)}
+
+
+def cmd_export_events(args: argparse.Namespace) -> dict[str, Any]:
+    from webflix_recs.erasure import parse_keys  # noqa: PLC0415
+    from webflix_recs.exports import export_events, parse_requests  # noqa: PLC0415
+
+    text = sys.stdin.read() if args.requests == "-" else Path(args.requests).read_text()
+    requests = parse_requests(orjson.loads(text))
+    erased: list[str] = []
+    if args.erasures == "api":
+        from webflix_recs.admin_api import AdminApi  # noqa: PLC0415
+
+        erased = AdminApi.from_environment().pending_erasures()
+    elif args.erasures:
+        erased = parse_keys(Path(args.erasures).read_text())
+    now = _instant(args.now, int(time.time() * 1000))
+    outcome = export_events(
+        args.store,
+        requests,
+        erased=erased,
+        now_ms=now,
+        grace_ms=args.grace_minutes * 60_000,
+        keep_days=args.keep_days,
+        force=args.force,
+        workers=_workers(args.workers),
+        log=_log,
+    )
+    document = outcome.document(now)
+    if args.results and args.results != "-":
+        Path(args.results).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.results).write_bytes(orjson.dumps(document, option=orjson.OPT_INDENT_2) + b"\n")
+    statuses: dict[str, int] = {}
+    for result in outcome.results:
+        statuses[result["status"]] = statuses.get(result["status"], 0) + 1
+    summary: dict[str, Any] = {
+        "command": "export-events",
+        "requests": len(requests),
+        "statuses": statuses,
+        "hoursRead": outcome.hours,
+        "objectsRead": outcome.objects_read,
+        "outputsPruned": outcome.pruned,
     }
+    if args.results == "-" or not args.results:
+        summary["results"] = document
+    else:
+        summary["resultsFile"] = str(Path(args.results).resolve())
+    if outcome.failed:
+        _emit(summary)
+        raise SystemExit(EXIT_EXPORT_FAILED)
+    return summary
 
 
 def cmd_build_dataset(args: argparse.Namespace) -> dict[str, Any]:
@@ -200,6 +330,24 @@ def cmd_evaluate(args: argparse.Namespace) -> dict[str, Any]:
         name, _, path = item.partition("=")
         externals[name] = Path(path)
     work = Path(args.work or Path(".cache/recs/work") / f"evaluate-{args.run}")
+    if args.engine_input_only:
+        from webflix_recs.evaluation.harness import write_rule_engine_input  # noqa: PLC0415
+
+        path = write_rule_engine_input(
+            EvaluationInputs(
+                catalog,
+                dataset,
+                models,
+                manifest,
+                horizon_days=args.horizon_days,
+                max_profiles=args.max_profiles,
+                seed=args.seed,
+                cutoff_ms=_instant(args.cutoff) if args.cutoff else None,
+            ),
+            Path(args.engine_input_only),
+            log=_log,
+        )
+        return {"command": "evaluate", "run": args.run, "engineInput": str(path.resolve())}
     report = evaluate(
         EvaluationInputs(
             catalog,
@@ -266,15 +414,24 @@ def cmd_score(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_publish(args: argparse.Namespace) -> dict[str, Any]:
     from webflix_recs.artefacts import PublishRefused, publish  # noqa: PLC0415
-    from webflix_recs.storage import open_storage  # noqa: PLC0415
+    from webflix_recs.jobs import latest_scored_run  # noqa: PLC0415
+    from webflix_recs.storage import get_json, open_storage  # noqa: PLC0415
 
     storage = open_storage(args.store)
+    run = args.run or latest_scored_run(storage)
+    if run is None:
+        raise SystemExit(
+            "publish: no --run given and nothing scored (recs-work/scored/latest.json)"
+        )
+    current = get_json(storage, "recs/current.json")
+    if isinstance(current, dict) and current.get("run") == run:
+        return {"command": "publish", "status": "unchanged", "run": run}
     try:
-        pointer = publish(storage, args.run, keep=args.keep, log=_log)
+        pointer = publish(storage, run, keep=args.keep, log=_log)
     except PublishRefused as refusal:
         _log(f"publish refused: {refusal}")
-        raise SystemExit(3) from refusal
-    return {"command": "publish", "pointer": "recs/current.json", **pointer}
+        raise SystemExit(EXIT_PUBLISH_REFUSED) from refusal
+    return {"command": "publish", "status": "published", "pointer": "recs/current.json", **pointer}
 
 
 def cmd_validate(args: argparse.Namespace) -> dict[str, Any]:
@@ -292,37 +449,81 @@ def cmd_validate(args: argparse.Namespace) -> dict[str, Any]:
     if problems:
         for problem in problems:
             _log(f"invalid: {problem}")
-        raise SystemExit(4)
+        raise SystemExit(EXIT_INVALID_VERSION)
     return {"command": "validate", "run": run, "valid": True}
 
 
 def cmd_analyse_experiments(args: argparse.Namespace) -> dict[str, Any]:
     from webflix_recs.experiments.analysis import run_analysis  # noqa: PLC0415
+    from webflix_recs.experiments.results import write_results  # noqa: PLC0415
+    from webflix_recs.jobs import closed_as_of  # noqa: PLC0415
+    from webflix_recs.storage import get_json, open_storage  # noqa: PLC0415
 
-    if args.definitions:
-        definitions = orjson.loads(Path(args.definitions).read_bytes())
+    storage = open_storage(args.store)
+    source = args.definitions
+    definitions: Any
+    if source == "api":
+        from webflix_recs.admin_api import AdminApi  # noqa: PLC0415
+
+        definitions = {"items": AdminApi.from_environment().list_experiments()}
+    elif source:
+        definitions = orjson.loads(Path(source).read_bytes())
     else:
         from webflix_recs.simulate.run import DEFINITIONS_KEY  # noqa: PLC0415
-        from webflix_recs.storage import get_json, open_storage  # noqa: PLC0415
 
-        definitions = get_json(open_storage(args.store), DEFINITIONS_KEY)
+        definitions = get_json(storage, DEFINITIONS_KEY)
         if definitions is None:
-            raise SystemExit(f"no --definitions given and no {DEFINITIONS_KEY} in the store")
+            raise SystemExit(
+                f"no --definitions given and no {DEFINITIONS_KEY} in the store "
+                "(use --definitions api to read them from the staff API)"
+            )
+    as_of = _instant(args.as_of) if args.as_of else closed_as_of(int(time.time() * 1000))
     report = run_analysis(
-        args.store,
-        definitions,
-        as_of_ms=_instant(args.as_of) if args.as_of else None,
-        workers=_workers(args.workers),
-        log=_log,
+        args.store, definitions, as_of_ms=as_of, workers=_workers(args.workers), log=_log
     )
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
-    return {
+    summary: dict[str, Any] = {
         "command": "analyse-experiments",
-        "report": str(out.resolve()),
+        "asOf": report["asOf"],
         "experiments": [e.get("key") for e in report.get("experiments", [])],
+        "skipped": report.get("definitionsSkipped", []),
     }
+    if not args.no_store:
+        pointer = write_results(storage, report)
+        summary["results"] = "experiments/results/current.json"
+        summary["run"] = pointer["run"]
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
+        summary["report"] = str(out.resolve())
+    return summary
+
+
+def cmd_train_and_score(args: argparse.Namespace) -> dict[str, Any]:
+    from webflix_recs.jobs import AlreadyScored, closed_as_of, train_and_score  # noqa: PLC0415
+
+    as_of = (
+        _instant(args.as_of)
+        if args.as_of
+        else closed_as_of(int(time.time() * 1000), args.grace_minutes * 60_000)
+    )
+    try:
+        summary = train_and_score(
+            args.store,
+            as_of_ms=as_of,
+            phase=args.phase,
+            work=Path(args.work),
+            truth_dir=Path(args.truth) if args.truth else None,
+            params_path=args.params,
+            keep_datasets=args.keep_datasets,
+            bootstrap=args.bootstrap,
+            workers=_workers(args.workers),
+            log=_log,
+        )
+    except AlreadyScored as done:
+        _log(str(done))
+        return {"command": "train-and-score", "status": "already-scored", "asOf": iso_ms(as_of)}
+    return {"command": "train-and-score", "status": "done", **summary}
 
 
 # --- parser -------------------------------------------------------------------------------------
@@ -362,6 +563,12 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--impression-sample-rate", type=float)
     p.add_argument(
+        "--object-layout",
+        choices=["hourly", "writer"],
+        help="hourly (default: one object per hour and shard) or writer (shaped like the "
+        "product's lake writer; many small objects)",
+    )
+    p.add_argument(
         "--experiment",
         action="append",
         help="key[:effect=0.1][:variants=control=50,treatment=50] (repeatable)",
@@ -377,9 +584,57 @@ def parser() -> argparse.ArgumentParser:
         "--delete-sources", action="store_true", help="delete the NDJSON objects once compacted"
     )
     p.add_argument(
-        "--erase", help="file of pseudonymous account keys whose events compaction drops"
+        "--erase",
+        help="then erase these keys (a file: the staff API's answer or one key per line), as "
+        "`erase --keys FILE --confirm-out -` does, under the same lease",
     )
     p.set_defaults(handler=cmd_compact)
+
+    p = sub.add_parser(
+        "erase",
+        help="remove erased members' subjects from the lake, compacted hours, datasets and "
+        "artefacts; verify; confirm",
+    )
+    p.add_argument(
+        "--keys",
+        help="`api` (GET /api/admin/v1/system/privacy/erasures; the default when "
+        "WEBFLIX_ADMIN_API_URL is set), a file (that answer, a JSON list, or one key per line), "
+        "or - for stdin",
+    )
+    p.add_argument(
+        "--confirm",
+        help="`api` (POST …/erasures/confirm; the default with --keys api), a file to write the "
+        "confirm request bodies to, - (in the summary; the default with a key file), or none",
+    )
+    p.add_argument("--reason", help="audit reason sent with the confirmation")
+    p.add_argument(
+        "--watch-days", type=int, default=30, help="keep erasing late arrivals this long"
+    )
+    p.add_argument("--now", help="the job's instant (default: now)")
+    p.set_defaults(handler=cmd_erase)
+
+    p = sub.add_parser(
+        "export-events",
+        help="the events part of members' data exports: each request's events, as stored, "
+        "under privacy/export-events/{requestId}/",
+    )
+    p.add_argument(
+        "--requests",
+        required=True,
+        help='a JSON file (or - for stdin): {"requests": [{"requestId", "accountKey", "from", '
+        '"to"}]}',
+    )
+    p.add_argument("--results", help="write the per-request results here (default: in the summary)")
+    p.add_argument(
+        "--erasures",
+        help="keys whose erasure is pending: `api` (GET /api/admin/v1/system/privacy/erasures) "
+        "or a file; the erasure plan's keys are always honoured",
+    )
+    p.add_argument("--grace-minutes", type=int, default=15)
+    p.add_argument("--keep-days", type=int, default=7, help="prune outputs older than this")
+    p.add_argument("--force", action="store_true", help="extract again even if complete")
+    p.add_argument("--now", help="the job's instant (default: now)")
+    p.set_defaults(handler=cmd_export_events)
 
     p = sub.add_parser("build-dataset", help="lake -> interaction tables (Parquet)")
     p.add_argument("--dataset", required=True, help="dataset id")
@@ -423,6 +678,13 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--work", help="scratch directory for the rule-engine exchange files")
     p.add_argument("--out", help="also write the report to this file")
+    p.add_argument(
+        "--engine-input-only",
+        metavar="DIR",
+        help="only write the rule engine's input (DIR/engine-input.ndjson) for a separate Node "
+        "step, then stop; evaluate afterwards with --external rule-engine=DIR/rule-engine.ndjson "
+        "--external rule-engine-home=DIR/rule-engine-home.ndjson",
+    )
     p.set_defaults(handler=cmd_evaluate)
 
     p = sub.add_parser("score", help="write a complete artefact version for a run (manifest last)")
@@ -433,7 +695,9 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "publish", help="validate a scored version, check the gate, flip recs/current.json"
     )
-    p.add_argument("--run", required=True)
+    p.add_argument(
+        "--run", help="default: the run train-and-score scored last (recs-work/scored/latest.json)"
+    )
     p.add_argument(
         "--keep",
         type=int,
@@ -452,13 +716,55 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--definitions",
-        help="pre-registered experiment definitions JSON (default: the store's "
-        "experiments/definitions.json, exported from the experiments table)",
+        help="`api` (GET /api/admin/v1/experiments), a JSON file (that answer, or the "
+        "pipeline's definitions document), or by default the store's experiments/definitions.json",
     )
-    p.add_argument("--as-of", help="analysis instant (default: now)")
-    p.add_argument("--out", required=True, help="report JSON path")
+    p.add_argument("--as-of", help="knowledge cutoff (default: the end of the last closed hour)")
+    p.add_argument("--out", help="also write the whole report to this file")
+    p.add_argument(
+        "--no-store",
+        action="store_true",
+        help="do not write experiments/results/ (the importer's input) to the store",
+    )
     p.set_defaults(handler=cmd_analyse_experiments)
+
+    p = sub.add_parser(
+        "train-and-score",
+        help="the daily model job: dataset, backtest and gate evaluation, production run, "
+        "scored version (never publishes)",
+    )
+    p.add_argument("--as-of", help="knowledge cutoff (default: the end of the last closed hour)")
+    p.add_argument("--grace-minutes", type=int, default=15)
+    p.add_argument(
+        "--phase",
+        default="all",
+        choices=["all", "prepare", "finish"],
+        help="all (Node on PATH runs the rule engine), or prepare / finish around a Node step",
+    )
+    p.add_argument("--work", default=".cache/recs/work/train-and-score", help="work directory")
+    p.add_argument("--truth", help="simulator ground truth (simulated lakes only)")
+    p.add_argument("--params", help="JSON file of parameter overrides")
+    p.add_argument("--keep-datasets", type=int, default=3)
+    p.add_argument("--bootstrap", type=int, default=1000)
+    p.set_defaults(handler=cmd_train_and_score)
     return root
+
+
+def _exit_code(error: Exception) -> int | None:
+    from webflix_recs.admin_api import AdminApiError  # noqa: PLC0415
+    from webflix_recs.erasure import ErasureIncomplete  # noqa: PLC0415
+    from webflix_recs.evaluation.rule_engine import RuleEngineUnavailable  # noqa: PLC0415
+    from webflix_recs.lease import LakeBusy  # noqa: PLC0415
+
+    if isinstance(error, LakeBusy):
+        return EXIT_LAKE_BUSY
+    if isinstance(error, ErasureIncomplete):
+        return EXIT_ERASURE_INCOMPLETE
+    if isinstance(error, AdminApiError):
+        return EXIT_STAFF_API
+    if isinstance(error, RuleEngineUnavailable):
+        return EXIT_RULE_ENGINE_UNAVAILABLE
+    return None
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -467,7 +773,14 @@ def main(argv: list[str] | None = None) -> None:
 
     limit_threads()
     started = time.perf_counter()
-    summary = args.handler(args)
+    try:
+        summary = args.handler(args)
+    except Exception as error:  # the documented failures map to exit codes; the rest is 1
+        code = _exit_code(error)
+        if code is None:
+            raise
+        _log(f"{args.command}: {error}")
+        raise SystemExit(code) from error
     summary["wallSeconds"] = round(time.perf_counter() - started, 2)
     summary["maxRssMb"] = _peak_rss_mb()
     _emit(summary)

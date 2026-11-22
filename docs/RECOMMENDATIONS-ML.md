@@ -17,13 +17,27 @@ validated, and the experiment analysis reported the A/A test flat and the plante
 detected (+8.7%). These are simulator results: they validate the pipeline and the relative
 ordering of systems under the simulator's assumptions, not real-world lift (§9).
 
+**Since the product was built around the pipeline (November 2026).** The lake is now written by
+the product's own writer, and the simulator stores only what that writer stores (restricted
+profiles produce nothing, accounts without any consented purpose only their consent changes,
+exposures once per unit and variant per 30 days), dropping events after every random draw so
+that every stored event is byte-identical to the earlier simulator's. At smoke size the
+evaluation is unchanged to the last digit (1,606 of 1,606 metric values, the gate interval, the
+propensity estimate) and so are the experiment results; only counts of excluded data moved
+(§6, §7). The full-run tables below were measured on the earlier lake; their accuracy numbers
+are expected to be identical, their data-rule counts are not (§6 says which and why), and
+refreshing them needs a full run on an idle machine (`make recs`, about 15 minutes and 10 GB).
+
 ## 1. Pipeline
 
 ```
- behaviour (simulator today, POST /events later)
+ behaviour: the product's lake writer (POST /events, server events, the playback outbox);
+            the simulator, collecting like the product, for tests and the documented runs
         │
         ▼
  events/dt=…/hh=…/*.ndjson.gz ──compact──► part-*.parquet (deduplicated, per closed hour)
+        │                         ▲
+        │                         └── erase (account deletions: lake, datasets, artefacts)
         │
         ▼ build-dataset (knowledge cutoff, validation, dedup, clock correction, eligibility)
  playback · actions · impressions(+labels) · profiles · accounts      (Parquet)
@@ -36,7 +50,9 @@ ordering of systems under the simulator's assumptions, not real-world lift (§9)
         ▼
  score → recs/v={run}/{neighbours,profiles}/*.parquet + manifest → publish → recs/current.json
         │
-        ▼ (TypeScript, not built here) importer → RecommendationStore → engine.ts
+        ▼ (TypeScript) importer → RecommendationStore → engine.ts
+
+ analyse-experiments → experiments/results/current.json → (TypeScript) saveExperimentResults
 ```
 
 Every stage records what it read and its knowledge cutoff; every run records the code digest,
@@ -78,24 +94,37 @@ hazard; 35% of accounts sign up during the window (cold profiles), with trials a
 transitions. 5% of sessions are *exploration* sessions: module order and item order within rows
 are randomised and flagged `context.policy.explore`.
 
-**Privacy-relevant behaviour.** Kids profiles emit only server playback events; teens emit
-everything; all their events are flagged `restricted`. 12% of accounts decline personalisation,
-6% analytics, 3% change their mind during the window (a `consent.change` event).
+**Privacy-relevant behaviour, collected like the product.** Kids profiles and teens with a
+lowered ceiling are simulated (they share their household's devices and evenings), but, as in
+the product (packages/core/src/areas/events/collector.ts), nothing of theirs is stored, client
+or server: `restricted: true` never reaches the lake. 12% of accounts decline personalisation,
+6% analytics, 3% change their mind during the window (a `consent.change` event); an account
+with neither purpose stores nothing but its consent changes. The rules are applied after every
+random draw for an event, so switching them off reproduces the earlier lake exactly plus the
+dropped events (a test checks both directions).
 
-**Delivery faults.** 1% of events delivered twice (a queue redelivery with the same receipt, or
-a client retry hours later), 2% of app sessions delivered late (offline for 1-72 h), 3% of devices
-with a clock off by minutes to hours.
+**Delivery faults.** 1% of events delivered twice: a client event either redelivered by the
+queue (same receipt) or retried by the client hours later (a later receipt), a server event
+always with its original receipt (a job retry or a second outbox drain); 2% of app sessions
+delivered late (offline for 1-72 h); 3% of devices with a clock off by minutes to hours. A title
+interrupted because the member ran out of time ends as the product ends a session nobody
+released: an `abandon` with reason `expired`, at the last report, received 140-200 s later.
 
 **Experiments.** Profiles are assigned by a hash of salt, key and profile key; exposure is logged
-when the home page is rendered; the planted effect multiplies the treatment profiles' session
-rate by 1 + effect (so qualified plays per member, the registered primary metric, move by about
-that much). The full run carries an A/A test and a +10% test.
+when the home page is rendered, once per profile and variant per 30 days, with the unit's
+assignments and the page's policy, as the product logs it; the planted effect multiplies the
+treatment profiles' session rate by 1 + effect (so qualified plays per member, the registered
+primary metric, move by about that much). The full run carries an A/A test and a +10% test.
 
 **Determinism and scale.** One generator per account (seed, account index): the lake is
 byte-identical whatever the number of worker processes (tested). Generation is separate from
-output: the same generator drives an in-memory sink (tests) or the lake writer, and a future
-replay sink for the real `POST /events` would batch client events (≤ 50 events, ≤ 64 KiB) and drive
-the playback routes for server events.
+output: the same generator drives an in-memory sink (tests) or the lake writer. Objects are one
+per hour and shard by default; `--object-layout writer` groups the same events the way the
+product's writer does (client batches of at most 50 events and 64 KiB per device, outbox drains
+of up to 100 playback events, one object per other server event), which multiplies the number
+of objects and is meant for exercising compaction and erasure, not for the documented runs. A
+replay sink for the real `POST /events` would batch client events the same way and drive the
+playback routes for server events.
 
 ## 3. The dataset
 
@@ -105,7 +134,9 @@ what production knew at T, late arrivals included. Then: schema validation, dedu
 and server clocks over a device's events; 12 h or more counts as offline delay, not clock
 error), and eligibility: every restricted event dropped, and every profile whose latest state is
 restricted or whose account's latest consent stamp lacks personalisation dropped with its whole
-history. Each rule is counted in the dataset manifest (the full run's counts are in §6).
+history. Each rule is counted in the dataset manifest (the full run's counts are in §6). On the
+product's lake the restricted rule finds nothing (the collector stored nothing of restricted
+profiles); it stays as the second line, and §11 notes what it no longer covers.
 
 Implicit feedback strength per profile and title (blueprint §7.1):
 
@@ -242,18 +273,30 @@ of 1.0; in a medium-scale probe during development the leaky run moved NDCG@10 f
 ## 6. Results (full local run)
 
 `make recs` from an empty `.cache/recs/full`: 60,000 households (135,679 profiles, of which
-89,004 eligible after excluding 27,973 restricted and 14,267 non-consenting), 56 days from
+89,004 eligible after excluding 27,973 restricted and 14,267 non-consenting; on the product-shaped
+lake the restricted ones are not in the lake at all, see below), 56 days from
 2026-09-01, 3.35 million sessions, 39.6 million lake events. Backtest cutoff 2026-10-20, test
 window to 2026-10-27; 46,458 profiles with at least one discovery (1.55 per profile; 10,078 with
 a search discovery); 113 titles available, 11 of them under 14 days old. Recipe `986d4ce2`
 (the code digest and parameters of the repository as delivered). Means with 95% bootstrap
 intervals (1000 resamples over profiles).
 
-Data rules at work: all 39.3 million events received before the cutoff validated (0 invalid);
-compaction dropped 211,676 duplicate deliveries; the dataset build removed 111,392 more that
-crossed hour boundaries (client retries), corrected the clocks of 4,132 devices, accepted
-272,842 client events delivered more than an hour late (by receipt, as production would have),
-and dropped 3.3 million events of profiles that were not eligible, on top of every event flagged restricted.
+Data rules at work (measured on the earlier lake, which still held restricted subjects' events):
+all 39.3 million events received before the cutoff validated (0 invalid); compaction dropped
+211,676 duplicate deliveries; the dataset build removed 111,392 more that crossed hour
+boundaries (client retries), corrected the clocks of 4,132 devices, accepted 272,842 client
+events delivered more than an hour late (by receipt, as production would have), and dropped 3.3
+million events of profiles that were not eligible, on top of every event flagged restricted.
+
+What collecting like the product changes in these counts, measured at smoke size (same seed,
+before → after) and expected in the same proportions at full size: lake events 134,335 →
+107,139 (−20%: restricted subjects and accounts without consent store nothing); profiles seen
+637 → 508 and excluded as restricted 128 → 0 (they are no longer in the lake at all); excluded
+for consent 72 → 71 (an account with neither purpose now has no profile events); duplicates the
+dataset removes in playback 131 → 0 (a server event's duplicate now keeps its receipt, so
+compaction drops it within the hour); devices whose clock was corrected 15 → 13 (two devices
+used only by restricted profiles). Every evaluated profile, every metric and the gate are
+identical, because every stored event of an eligible profile is.
 
 | System | Utility@10 ↑ | Regret@10 ↓ | NDCG@10 (replay) | Recall@20 | MAP@10 | Search NDCG@10 | Diversity@10 | Novelty@10 | Coverage@10 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -310,8 +353,9 @@ deeper modules are reached by members who found nothing above (§4).
 the gate passes with +0.046 [0.038, 0.054]; replay NDCG@10 cannot separate learned and engine
 (0.511 vs 0.516) and the engine's home order scores above the oracle there (0.541 vs 0.514). At
 smoke size (300 households, 21 days; 245 profiles) the learned models lose to the engine
-(−0.165 [−0.217, −0.116]) and **the gate refuses to publish**: with a few thousand ranker examples
-the content-and-popularity engine is the better bet, which is the point of having a gate.
+(−0.165 [−0.217, −0.116], unchanged by the product-shaped lake) and **the gate refuses to
+publish**: with a few thousand ranker examples the content-and-popularity engine is the better
+bet, which is the point of having a gate.
 
 ### Run time and memory
 
@@ -339,13 +383,23 @@ bound it, and is the next step before a catalogue or member base ten times large
 
 ## 7. Experiment analysis
 
-`analyse-experiments` reads exposures and outcomes from the lake, per pre-registered experiment:
+`analyse-experiments` reads exposures and outcomes from the lake, per pre-registered experiment
+(the product's definitions, read from the staff API, or the simulator's), and writes the
+results where the experiments area imports them (services/recs/README.md, "Experiment
+results"):
 
-* **Population**: profiles at their first exposure inside the window; excluded and counted:
-  restricted, no analytics consent (account's latest stamp), unknown variant, more than one
-  variant.
+* **Population**: units as the product assigns them, the profile (pseudonymous key) or, before
+  sign-in, the device; a unit enters at its first `experiment.exposure` inside the window. The
+  product logs an exposure for both arms, only when a treatment could apply (a fresh model, for
+  the recommendation experiment), once per unit and variant per 30 days. Excluded and counted:
+  restricted (0 on the product's lake), no analytics consent (the account's latest stamp; a
+  device's own), unknown variant, more than one variant. A device unit's outcomes are those of
+  the profiles signed in on that device (playback events carry no device).
+* **Layers**: units also exposed to another experiment of the same layer while both ran are
+  counted (`diagnostics.layerOverlapUnits`); the product's disjoint allocations make it 0.
 * **Pre-registration**: refused if registered after the start or exposed before registration;
-  the primary metric is fixed by the definition.
+  the primary metric is fixed by the definition. A product experiment's window starts at its
+  registration when staff set its start earlier, since the product assigns nobody before.
 * **Sample-ratio mismatch**: chi-square against the design weights; below p = 0.001 the decision
   is `invalid-sample-ratio-mismatch`.
 * **Metrics** per unit since first exposure: qualified plays, watch hours, any play, active
@@ -375,7 +429,11 @@ the start, profiles as units, qualified plays as the primary metric, MDE 5%, dai
 The planted effect multiplies visits by 1.10; qualified plays per member move by 8.7% because
 churn and viewing time do not scale exactly with visits. At medium scale the same pair reads
 A/A not significant (p 0.87) and +7.5% detected (p 1e-5); at smoke size (489 units) neither is
-significant, as the computed power predicts for that sample.
+significant, as the computed power predicts for that sample. Collecting like the product left
+the smoke results identical (units, metrics, sample-ratio checks); the count of units excluded
+for missing analytics consent went from 20 to 19 in each experiment, because an account with no
+consented purpose at all now stores no exposure (it is absent rather than excluded). The full
+run's unit counts are expected to move the same way: slightly fewer exclusions, the same units.
 
 ## 8. Serving hand-off
 
@@ -384,7 +442,10 @@ validation) and the importer recipe are specified in services/recs/README.md: ne
 (16 rows per `INSERT` at 6 bound parameters), per-profile lists as one JSON value per profile
 (one KV key or one row; bulk writes), every list excluding watched, finished and disliked
 titles, an `expiresAt` after which the engine falls back to the milestone 1 rules. Restricted
-profiles are never in the artefacts; the engine also falls back for them by rule.
+profiles are never in the artefacts; the engine also falls back for them by rule. An account
+deletion reaches the artefacts too: `erase` removes the member's profile rows from every
+retained version, recomputes the manifest and re-points `recs/current.json` (the version still
+validates and imports).
 
 ## 9. What the numbers do and do not show
 
@@ -416,12 +477,26 @@ profiles are never in the artefacts; the engine also falls back for them by rule
   estimand.
 * Pickled scikit-learn models are verified by SHA-256 before loading but tie a run to the
   library version that wrote it.
+* Erasure reads the whole lake three times (discover, rewrite, verify), reading only subject
+  columns except where a key matches; daily that is about the cost of a dataset build at full
+  size. Measured at smoke size only. Compacted hours are sorted by account with 1,000-row groups
+  so the data export reads one or two groups per hour; at a much larger member base a per-account
+  index would replace the scan.
 
 ## 11. From the simulator to real data
 
-1. `POST /events` and the lake writer (owner: events) produce the same lake; this pipeline needs
-   no change if the contracts adopt the schema decisions listed in services/recs/README.md (or a
-   one-module change in `schemas.py` otherwise).
+1. Done: the product's contracts adopted the event schema (`packages/contracts/src/events.ts`
+   generates `services/recs/schemas/event.schema.json`), the reader is proven on objects the real
+   writer produced (`tests/test_ingested_lake.py`, and the product's own test runs it on a lake
+   the HTTP app wrote), the simulator stores only what that writer stores, compaction writes a
+   format a small JavaScript reader decodes, erasure runs as an operation against the staff API,
+   the events of members' data exports are extracted by a batch job (`export-events`: thirteen
+   months of hourly partitions do not fit a Worker invocation), and experiment results land
+   where the product imports them. Two facts of the product's writer the jobs account for:
+   playback events and a few other kinds reach the lake from a database outbox on a scheduler
+   tick (5 minutes by default, configurable: keep the jobs' 15-minute grace above it), and on
+   Cloudflare every accepted client batch is its own object for now (many small objects per
+   hour, which compaction folds into one file).
 2. Start with replay metrics on search discoveries plus coverage and diversity guardrails as the
    offline gate (the evaluator does this when no truth is given), and keep an exploration slice
    (`context.policy.explore`) in production: without it position bias cannot be estimated.
@@ -429,14 +504,23 @@ profiles are never in the artefacts; the engine also falls back for them by rule
    running in the same layer to watch the assignment and logging.
 4. Recalibrate the simulator against real aggregates (session rates, play rates by position,
    completion distributions) so that it stays useful for testing changes before they ship.
+5. A gap the product's lake opens: restricted profiles emit nothing, so the pipeline cannot see
+   a profile *become* restricted (a kids flag set, a ceiling lowered). The earlier rule dropped
+   a profile whose latest state was restricted with its whole history; on the product's lake
+   such a profile keeps its earlier, unrestricted history in training data and can still be
+   scored (serving falls back to the rules for it, so nothing is shown). Closing it needs one
+   signal from the product: a server event when a profile's standing changes, or the profile
+   keys listed for exclusion the way erasure keys are.
 
 ## 12. Mode mapping
 
 | | dev | k8s | cloudflare |
 | --- | --- | --- | --- |
-| Jobs | `make recs` on the developer machine, store = the dev filesystem store | CronJobs running `webflix-recs` (image `webflix-recs`), store = Garage through `WEBFLIX_S3_*` | the same image run outside Workers (a container or any scheduler) against R2's S3 API |
-| Rule-engine baseline | Node script from the repository | the API image runs `scripts/rule-engine-rankings.ts`, output passed with `--external` | same |
+| Jobs | `make recs` on the developer machine, store = the dev filesystem store | CronJobs running the `webflix-recs` image: `compact` hourly, `erase`, `train-and-score`, `publish`, `analyse-experiments` daily (services/recs/README.md, "Jobs"), store = Garage through `WEBFLIX_S3_*` | the same image run outside Workers (a container or any scheduler) against R2's S3 API |
+| Rule-engine baseline | Node script from the repository, in-process | `train-and-score --phase prepare`, the Node script in an image with the repository's packages, `--phase finish`, sharing an `emptyDir` | same |
+| Erasure keys, experiment definitions | files, or the dev API with an access token | the staff API with a service account of the staff issuer (client credentials) | same |
 | Artefacts read by | importer via the filesystem store | importer via S3 | importer via R2 binding |
+| Members' exported events | the product's inline reader (raw and compacted hours) | `export-events`, the product folding its output into the export | same (`export-events` against R2) |
 
 ## 13. Public datasets
 

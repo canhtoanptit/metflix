@@ -26,6 +26,7 @@ import { createD1Database } from "@webflix/db/d1";
 import type { Env } from "../../src/env.ts";
 import { loadEdgeConfig } from "../../src/env.ts";
 import { type SyncResult, syncGeneration } from "./generation.ts";
+import { toolingSecrets } from "./secrets.ts";
 
 /** Key the media upload writes the current manifest to (tools/media `MANIFEST_KEYS.current`). */
 export const MANIFEST_KEY = "manifests/media.json";
@@ -87,10 +88,9 @@ export async function seed(
   env: Env,
   options: { force?: boolean; demo?: boolean; media?: boolean } = {},
 ): Promise<SeedOutcome> {
-  // Seeding signs nothing: a throwaway key keeps config validation happy where the real
-  // (production) secret is, rightly, not available to tooling.
-  const throwaway = `ops:${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
-  const config = loadEdgeConfig({ ...env, WEBFLIX_MEDIA_TOKEN_KEYS: throwaway });
+  // Seeding signs, derives and sends nothing: throwaway secrets keep config validation happy
+  // where the real (production) secrets are, rightly, not available to tooling.
+  const config = loadEdgeConfig({ ...env, ...toolingSecrets() });
   const clock = systemClock;
   const logger = createJsonLogger({ level: "warn", bindings: { service: "webflix-ops" } });
   const database = createD1Database(env.DB);

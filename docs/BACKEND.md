@@ -472,8 +472,20 @@ them).
 The Worker reads the portable variables above as vars and secrets, plus its own
 `WEBFLIX_PASSWORD_ITERATIONS` and `WEBFLIX_EDGE_CACHE` (docs/CLOUDFLARE.md §6 and §3).
 Milestone 2 binds a second KV namespace, `RECS`, for per-profile recommendation lists
-(`WEBFLIX_RECOMMENDATION_STORE=kv`, set in wrangler.jsonc); production needs its real id (the
-provisioning script does not create it yet).
+(`WEBFLIX_RECOMMENDATION_STORE=kv`); `make cf-provision` creates `webflix-recs` and writes its
+id. wrangler.jsonc sets, locally and in production: `WEBFLIX_EVENT_SINK=lake`, the email sender
+(`outbox` locally, `http` in production), the payment provider (`fake` locally, `stripe` in
+production), the staff verifier (the development issuer locally, closed in production until an
+issuer is configured) and `WEBFLIX_RELEASE` (`local`; the deployed commit in production).
+Secrets, the same names in both sections: `WEBFLIX_MEDIA_TOKEN_KEYS`, `WEBFLIX_PSEUDONYM_KEY`,
+`WEBFLIX_EMAIL_HTTP_API_KEY`, `WEBFLIX_EMAIL_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`,
+`STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (`.dev.vars` locally, written by
+`make cf-dev`; docs/CLOUDFLARE.md §8 and §10.2).
+
+Recommendation runs are imported from Node, not inside the Worker (a Worker invocation has
+1,000 KV operations): `make cf-recs-import` (`node apps/edge/scripts/ops.ts recs import [--run
+<run>] [--from <dir>] [--target production]`), with `cf-lake-pull` / `cf-recs-push` moving the
+lake out of R2 and a scored run back in (docs/CLOUDFLARE.md §10.4).
 
 ### Recommendation importer (Node)
 

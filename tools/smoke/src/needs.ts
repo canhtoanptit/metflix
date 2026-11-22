@@ -48,6 +48,41 @@ export const needs = {
         : "exhausting IP-keyed limits is disabled (--no-ip-exhaustion)";
     },
   },
+  googleIssuer: {
+    id: "dev-issuer-google",
+    async evaluate(env) {
+      const fact = await env.memberIssuer("google");
+      return fact.available ? null : fact.reason;
+    },
+  },
+  appleIssuer: {
+    id: "dev-issuer-apple",
+    async evaluate(env) {
+      const fact = await env.memberIssuer("apple");
+      return fact.available ? null : fact.reason;
+    },
+  },
+  mailbox: {
+    id: "mailbox",
+    async evaluate(env) {
+      const fact = await env.mailbox();
+      return fact.available ? null : fact.reason;
+    },
+  },
+  fakePayments: {
+    id: "fake-payments",
+    async evaluate(env) {
+      const fact = await env.payments();
+      return fact.available ? null : fact.reason;
+    },
+  },
+  staffIssuer: {
+    id: "staff-issuer",
+    async evaluate(env) {
+      const fact = await env.staffIssuer();
+      return fact.available ? null : fact.reason;
+    },
+  },
   strictLimits: {
     id: "strict-rate-limits",
     async evaluate(env) {

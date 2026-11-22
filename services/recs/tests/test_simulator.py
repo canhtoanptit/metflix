@@ -1,15 +1,18 @@
-"""The behaviour simulator: valid, deterministic, restricted profiles flagged, truth kept apart."""
+"""The behaviour simulator: valid, deterministic, collected like the product, truth kept apart."""
 
 from __future__ import annotations
 
 import collections
+import gzip
 import hashlib
 from dataclasses import replace
 from pathlib import Path
 
+import orjson
+
 from helpers import ANCHOR_MS, put_catalog, synthetic_catalog, synthetic_catalog_document
 from webflix_recs import schemas
-from webflix_recs.ids import DAY_MS, iso_ms
+from webflix_recs.ids import DAY_MS, iso_ms, parse_iso_ms
 from webflix_recs.simulate.config import ExperimentSpec, preset
 from webflix_recs.simulate.run import run_simulation, simulate_in_memory
 from webflix_recs.storage import LocalStorage
@@ -19,29 +22,121 @@ CONFIG = replace(
 )
 
 
-def test_every_event_is_valid_and_kids_emit_only_server_playback() -> None:
+def test_every_event_is_valid_and_the_lake_holds_only_what_the_product_stores() -> None:
     catalog = synthetic_catalog()
     events, truth = simulate_in_memory(CONFIG, catalog)
     assert len(events) > 1000
     for event in events:
         schemas.validate_event(event)
-    kinds = {row["profile_key"]: row for row in truth}
-    by_profile: dict[str, collections.Counter[str]] = collections.defaultdict(collections.Counter)
+    rows = {row["profile_key"]: row for row in truth}
+    accounts = {row["account_key"]: row for row in truth}
+    restricted = {key for key, row in rows.items() if row["restricted"]}
+    assert any(rows[key]["kids"] for key in restricted)
+    assert any(rows[key]["kind"] == "teen" for key in restricted)
     for event in events:
-        profile = event["subject"]["profile"]
-        if profile:
-            by_profile[profile][event["type"]] += 1
-            assert event["subject"]["restricted"] == kinds[profile]["restricted"]
-    kids = [key for key, row in kinds.items() if row["kids"] and by_profile.get(key)]
-    teens = [key for key, row in kinds.items() if row["kind"] == "teen" and by_profile.get(key)]
-    assert kids and teens
-    for key in kids:
-        assert set(by_profile[key]) <= schemas.PLAYBACK_TYPES
-    assert any(set(by_profile[key]) - schemas.PLAYBACK_TYPES for key in teens)
-    restricted = {key for key, row in kinds.items() if row["restricted"]}
+        subject = event["subject"]
+        # A restricted profile produces nothing at all, client or server (collector.ts).
+        assert not subject["restricted"]
+        assert subject["profile"] not in restricted
+        # Without any consented purpose, only the consent change itself is stored.
+        if not subject["consent"]["analytics"] and not subject["consent"]["personalisation"]:
+            assert event["type"] == schemas.CONSENT_CHANGE
+        # Server events carry no country (the product only knows a request's).
+        if event["source"] == "server":
+            assert subject["country"] is None
+        if event["type"].startswith("playback."):
+            assert event["context"]["experiments"] == {}
+            assert event["context"]["surface"] == "player"
+    reasons = {e["payload"]["reason"] for e in events if e["type"] == schemas.PLAYBACK_ABANDON}
+    assert {"closed", "expired"} <= reasons
     for event in events:
-        if event["type"] == schemas.EXPOSURE:
-            assert event["subject"]["profile"] not in restricted
+        if event["type"] == schemas.PLAYBACK_ABANDON and event["payload"]["reason"] == "expired":
+            # Ended by the expiry sweep minutes after the last report.
+            lag = parse_iso_ms(event["receivedAt"]) - parse_iso_ms(event["occurredAt"])
+            assert 140_000 <= lag < 200_500
+    assert accounts  # the truth still describes every simulated profile
+
+
+def test_collection_rules_remove_events_and_perturb_nothing_else() -> None:
+    catalog = synthetic_catalog()
+    config = replace(CONFIG, experiments=(ExperimentSpec.parse("recs-aa"),))
+    stored, truth = simulate_in_memory(config, catalog)
+    everything, _ = simulate_in_memory(replace(config, collect_like_the_product=False), catalog)
+    restricted = {row["profile_key"] for row in truth if row["restricted"]}
+
+    def key(event: dict[str, object]) -> bytes:
+        return orjson.dumps(event)
+
+    kept = collections.Counter(key(e) for e in stored)
+    all_ = collections.Counter(key(e) for e in everything)
+    # Every stored event is byte-identical to the one generated without the rules...
+    assert not kept - all_
+    removed = list((all_ - kept).elements())
+    assert removed
+    # ...and everything removed is something the product's collector would not store.
+    seen_exposures: set[tuple[str, str]] = set()
+    for line in removed:
+        event = orjson.loads(line)
+        subject = event["subject"]
+        consent = subject["consent"]
+        if subject["restricted"] or subject["profile"] in restricted:
+            continue
+        if not consent["analytics"] and not consent["personalisation"]:
+            assert event["type"] != schemas.CONSENT_CHANGE
+            continue
+        assert event["type"] == schemas.EXPOSURE, event["type"]
+        seen_exposures.add((subject["profile"], event["payload"]["variant"]))
+    # Exposures: once per profile and variant within 30 days (the window here is 10 days).
+    exposures = collections.Counter(
+        (e["subject"]["profile"], e["payload"]["experimentKey"], e["payload"]["variant"])
+        for e in stored
+        if e["type"] == schemas.EXPOSURE
+    )
+    duplicates = sum(1 for e in stored if e["type"] == schemas.EXPOSURE) - len(exposures)
+    assert duplicates == sum(  # only delivery duplicates (same eventId) remain
+        n - 1
+        for n in collections.Counter(
+            e["eventId"] for e in stored if e["type"] == schemas.EXPOSURE
+        ).values()
+    )
+    assert seen_exposures
+
+
+def test_writer_layout_groups_like_the_lake_writer_and_changes_no_event(tmp_path: Path) -> None:
+    catalog = synthetic_catalog()
+    lakes = {}
+    for layout in ("hourly", "writer"):
+        store = tmp_path / layout
+        storage = LocalStorage(store)
+        put_catalog(storage, synthetic_catalog_document())
+        run_simulation(
+            replace(CONFIG, accounts=20, days=4, shard_size=20, object_layout=layout),
+            catalog,
+            str(store),
+            tmp_path / f"truth-{layout}",
+            workers=1,
+            log=lambda *_: None,
+        )
+        objects = [
+            gzip.decompress(storage.get(info.key) or b"").splitlines()
+            for info in storage.list("events/")
+        ]
+        lakes[layout] = objects
+    assert len(lakes["writer"]) > 2 * len(lakes["hourly"])
+    hourly = collections.Counter(line for obj in lakes["hourly"] for line in obj)
+    writer = collections.Counter(line for obj in lakes["writer"] for line in obj)
+    assert hourly == writer
+    for obj in lakes["writer"]:
+        events = [orjson.loads(line) for line in obj]
+        sources = {e["source"] for e in events}
+        assert len(sources) == 1
+        if sources == {"client"}:
+            assert len(events) <= 50 and len({e["deviceId"] for e in events}) == 1
+            assert sum(len(line) + 1 for line in obj) <= 64 * 1024
+        elif events[0]["type"].startswith("playback."):
+            assert len(events) <= 100
+        else:
+            assert len(events) == 1
 
 
 def test_same_seed_same_lake_whatever_the_number_of_workers(tmp_path: Path) -> None:

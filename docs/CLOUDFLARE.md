@@ -13,7 +13,7 @@ make cf-deploy            # provision, migrate, upload media, seed, deploy, veri
 
 Numbers in this document were measured on 2026-11-21 (wrangler 4.166.0, workerd 1.20261119,
 compatibility date 2026-11-19); platform limits and prices are from the Cloudflare docs of
-that date.
+that date. Milestone 2 (§10) was wired and measured on 2026-11-22 with the same versions.
 
 ---
 
@@ -31,6 +31,11 @@ that date.
 | `PasswordHasher` | PBKDF2-SHA256 on WebCrypto, iterations from `WEBFLIX_PASSWORD_ITERATIONS` | The strongest KDF Workers provide natively; the CPU cost is made explicit (§6). |
 | `TokenSigner` | HMAC-SHA256, keys in the `WEBFLIX_MEDIA_TOKEN_KEYS` **secret** | Stateless media tokens verified on every segment without I/O. |
 | SPA | **Workers static assets**; the Worker answers misses (`src/spa.ts`) | Files are served by the asset layer before the Worker: free requests, cached, no Worker CPU. |
+| `EventSink` (milestone 2) | **R2**: the event lake, gzip NDJSON objects under `events/dt=…/hh=…/`, written by the queue consumer | The canonical store of behaviour in every mode (blueprint M2 §6.2); R2 directly, never through the media edge cache. §10. |
+| `EmailSender` | **D1 outbox** locally (`email_outbox`, read back by the mailbox API from any isolate); **Resend over HTTP** in production | No SMTP client on Workers; the outbox keeps local mail visible across isolates and restarts. |
+| `PaymentProvider` | the **fake provider** locally (state in D1, form at `/_pay/*`); **Stripe** in production (fetch + Web Crypto) | Provider events are verified, recorded in D1, then processed by the queue consumer; reconciliation runs on the Cron Trigger. |
+| `RecommendationStore` | **KV** `RECS` for per-profile lists, **D1** for models and neighbours | A page reads its lists in one KV read, no D1 round trip; runs are imported from outside the Worker (§10.3). |
+| `IdentityProvider`, `StaffVerifier` | the **development issuer** mounted at `/dev-idp/*` locally (single use kept in D1); Google, Apple and a configured staff issuer in production | §10.1. |
 
 ### Durable Object design
 
@@ -97,9 +102,14 @@ browser ── GET / , /assets/*.js, /favicon.svg (files that exist) ─► stat
    │                               └─ miss ─► MediaOrigin entrypoint ─► R2 (whole object)
    │
    ├─ /api/docs ─► Worker (HTML with per-response CSP nonce)
-   └─ /api/docs/scalar.js ─► static assets (excluded from run_worker_first)
+   ├─ /api/docs/scalar.js ─► static assets (excluded from run_worker_first)
+   ├─ /dev-idp/*  ─► Worker: the development OpenID issuer (never in production: 404)
+   └─ /_pay/*     ─► Worker: the fake provider's payment form (never in production: 404)
 
-Cron */5 ─► scheduled() ─► Queues ─► queue() ─► job handlers (D1, KV)
+POST /api/v1/webhooks/payments/{provider} ─► verify signature ─► D1 provider_events ─► Queues
+POST /api/v1/events ─► validate, enrich ─► Queues ─► queue() ─► R2 events/… (the lake)
+Cron */5 ─► scheduled() ─► Queues ─► queue() ─► job handlers (D1, KV, R2): rollups, cleanups,
+            playback expiry + outbox drain, privacy sweep, billing reconciliation, …
 ```
 
 `run_worker_first` lists the server-owned prefixes (the same prefixes the web dev server
@@ -226,14 +236,24 @@ every binding in a counter and asserts these):
 
 | Request | D1 queries | Durable Object | R2 | KV | Queues |
 | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/browse` (warm isolate) | 2 | 0 | 0 | 0 | 0 |
+| `GET /api/v1/browse` (warm isolate) | 2 | 0 | 0 | 0 (1 `RECS` read once a model serves the profile) | 0 |
 | `GET /api/v1/titles/:id` | 2 | 0 | 0 | 0 | 0 |
 | `GET /api/v1/search` | 4 | 0 | 0 | 0 | 0 |
-| `POST /api/v1/auth/login` | 4 | 1 (rate limit) | 0 | 0 | 0 |
-| `POST /api/v1/playback/sessions` | 5 | 2 (rate limit, acquire) | 0 | 0 | 0 |
+| `POST /api/v1/auth/login` | 4 | 1 (rate limit) | 0 | 0 | 1 (sign-in email / server event job) |
+| `POST /api/v1/playback/sessions` | 6 | 2 (rate limit, acquire) | 0 | 0 | 0 |
 | `POST …/heartbeat` (every 30 s) | 3 | 1 (renew) | 0 | 0 | 0 |
 | `GET …/master.m3u8` | 1 | 1 (slot check) | 1 | 0 | 0 |
 | `GET …/seg_N.m4s` | 0 | 0 | 1 (edge-cache miss only); 2 for the first segment of an asset in an isolate (the plan-cap rendition map reads the master playlist, memoised 10 min) | 0 | 0 |
+| `GET /api/v1/session` (milestone 2: experiment assignments) | 3 | 0 | 0 | 0 | 0 |
+| `POST /api/v1/events` (a batch, with consent) | 4 | 2 (device and account limits) | 0 | 0 | 1 |
+
+Milestone 2's wiring (§10) moved no row: the table was measured before and after it on the
+same commit. Two rows differ from the milestone 1 table because the areas changed them before
+the wiring (sign-in now publishes one job; starting playback reads one more D1 row); the
+budgets test counts the `RECS` namespace too, and the browse read with a served model is
+asserted by `test/personalisation.test.ts`. The lake is written by the consumer, never in the
+request: an event batch costs one queue message (3 Queues operations per 64 KB) and, in the
+consumer, one R2 write.
 
 A batch counts as one D1 query. Limits: 1,000 D1 queries and 10,000 subrequests per invocation
 on Paid (Free: 50 D1 queries, 1,000 subrequests to Cloudflare services), 6 simultaneous
@@ -328,10 +348,15 @@ make cf-media CF_MEDIA_PROFILE=full
 make cf-reset        # stop, then delete the instance's state (D1, KV, R2, Durable Objects, Queues)
 make cf-test         # adapter contract suites + Worker tests, in workerd
 make cf-bundle       # production bundle + size report;  make cf-startup: startup CPU profile
+make cf-lake-pull    # (dev server stopped) the event lake out of R2 into CF_RECS_STORE
+make cf-recs-push    # (dev server stopped) a scored run from CF_RECS_STORE into R2, pointer last
+make cf-recs-import  # (dev server stopped) import the published run into D1 and KV, from Node
+make cf-recs-status  # the model the Worker serves and the last import
 ```
 
-`make cf-dev` from a fresh clone: install (if needed) → `.dev.vars` with a random per-clone
-media-token key → web build (turbo-cached; if a work-in-progress edit breaks it, the last
+`make cf-dev` from a fresh clone: install (if needed) → `.dev.vars` with every secret
+wrangler.jsonc requires (random per-clone media-token and pseudonym keys, provider credentials
+empty; an existing file is only completed, never changed) → web build (turbo-cached; if a work-in-progress edit breaks it, the last
 successful build is served with a warning) → stage static assets → `wrangler d1 migrations
 apply --local` → media upload into local R2 (if `make content` has packaged media) → seed →
 `wrangler dev --test-scheduled`. Measured: **121 s** from nothing (most of it uploading the
@@ -346,8 +371,13 @@ make cf-stop CF_PORT=4620 CF_STATE=/tmp/cf-b/state
 ```
 
 `make cf-dev` runs the server through `scripts/dev.ts`, which records its PID, port and working
-directory in `<CF_STATE>/dev-server.json`. `make cf-stop` signals only that recorded runner while
-it is still alive, still `scripts/dev.ts` and still running in `apps/edge`; without a valid
+directory in `<CF_STATE>/dev-server.json`, and fires the Worker's Cron Trigger on the schedule
+wrangler.jsonc declares (`*/5`, at the same UTC minute boundaries as the platform):
+`wrangler dev` never fires Cron Triggers by itself (observed: no tick in 12 minutes across three
+boundaries), and without them the periodic jobs of milestone 2 (playback outbox drain, privacy
+sweep, billing reconciliation) would never run locally. `CF_CRON=off` leaves only `make cf-cron`.
+
+`make cf-stop` signals only that recorded runner while it is still alive, still `scripts/dev.ts` and still running in `apps/edge`; without a valid
 record (a server started some other way) only a wrangler process running in `apps/edge` behind
 the port. Anything else listening on the port (8787 is Wrangler's default, so another
 project's dev server may be there) is left alone, with an explanation, and the target fails.
@@ -401,16 +431,39 @@ browse D1, KV, R2 and Durable Objects and query captured logs; the inspector lis
 
 ### Conformance (`make smoke TARGET=cf`)
 
-Latest run recorded here (2026-11-21, round 2), against an isolated local instance (`make cf-dev
-CF_PORT=4620 …`, web build served, the fast media profile in its local R2, local rate-limit
-profile): **83 checks: 80 passed, 0 failed, 3 skipped**. The suite has since grown to 93 checks
-(`make smoke-list`); this document records no run of the current suite. Skips:
+Latest run recorded here (2026-11-22, milestone 2 wiring), with the suite as it stood that
+evening while its milestone 2 checks were still being written (130 checks; source fingerprint
+`16399cc6` of `tools/smoke/src`), against `make cf-dev` from a fresh state directory on :8787
+(web build served, the fast media profile in its local R2, local rate-limit profile), run the
+way the suite asks a conformance deployment to be run:
+
+```sh
+make cf-dev CF_CRON_EVERY=30 CF_DEV_FLAGS="--var WEBFLIX_DELETION_COOLING_OFF_SEC:30"
+make smoke TARGET=cf
+```
+
+**130 checks: 123 passed, 0 failed, 5 skipped, 2 expected failures**, in 180 s. Every
+milestone 2 area it covers passed on the Worker: sign-in and linking through the development
+issuer, the fake provider's member journey, trials, dunning, provider events delivered twice,
+out of order and after an outage, privacy (consent, export, deletion and erasure), the staff
+API's roles and audited support actions. Skips and expected failures:
 
 - `media.external-fallback`: every title is packaged; it passes on an external-HLS seed
   (`seed --no-media`).
 - `consistency.rate-limit-monotonic`, `ratelimit.strict-defaults`: they need the strict
   limits; both passed in round 1's strict run (`CF_DEV_FLAGS` with the `--var` overrides
   above, `SMOKE_ARGS=--timeout 300000`).
+- `billing.promo-code.applied`: no route, seed or setting creates a promo code for the fake
+  provider (the suite's finding M2-F1, billing).
+- `experiments.recommendation-status`: no run imported on a fresh state (`make cf-recs-import`
+  imports one). On an instance with an imported run it fails: a profile the run never saw is
+  served as `learned:<run>` (neighbours only), where the check and blueprint M2 §7.2 expect the
+  rule engine; that is serving's portable code, reported to its owner.
+- `billing.checkout-abandoned`, `billing.checkout-expired` (expected failures): the suite's
+  findings M2-F3 and M2-F4 (billing).
+
+An earlier run the same day (116 checks, fingerprint `1a39870d`, before the privacy, staff and
+experiments checks landed): 111 passed, 0 failed, 4 skipped, 1 expected failure.
 
 Under strict limits the suite needs `--timeout 300000`: its sign-ups share one client
 address's budget (5/min), checks queue on it while their default 120 s clock runs, and which
@@ -425,6 +478,27 @@ Prerequisites: Workers Paid; `pnpm --filter @webflix/edge exec wrangler login`, 
 `CLOUDFLARE_API_TOKEN` (Workers Scripts, D1, KV, R2, Queues edit) and `CLOUDFLARE_ACCOUNT_ID`.
 Set `env.production.vars.WEBFLIX_PUBLIC_ORIGIN` to the origin users will load (custom domain
 or `https://webflix.<subdomain>.workers.dev`); it drives `Secure`/`__Host-` cookies and HSTS.
+Set `WEBFLIX_EMAIL_FROM` to an address on a domain verified with the email provider.
+
+Milestone 2 makes production a subscription product, so a deploy needs the provider
+credentials. Export them from your secret manager before the first deploy (later deploys never
+touch a secret that is set; change one with `wrangler secret put <NAME> --env production`):
+
+| Secret | What | Where it comes from |
+| --- | --- | --- |
+| `WEBFLIX_MEDIA_TOKEN_KEYS` | media-token keys | generated on the first deploy (or the environment, or the key file); rotation below |
+| `WEBFLIX_PSEUDONYM_KEY` | key of the pseudonymous subject keys in the lake and the recommendation store | generated on the first deploy into `apps/edge/.wrangler/secrets/production-pseudonym-key.json` (mode 600; keep a copy); **never rotate**: a new key orphans every subject key already in the lake and the store |
+| `WEBFLIX_EMAIL_HTTP_API_KEY`, `WEBFLIX_EMAIL_WEBHOOK_SECRET` | Resend's API key; the signing secret of its webhook (`POST /api/v1/webhooks/email/resend`) | the environment |
+| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | live keys (a test key is refused in production); the signing secret of the endpoint you register in Stripe for `<origin>/api/v1/webhooks/payments/stripe` | the environment |
+
+The deploy reads `wrangler secret list` before it changes anything, and stops with the list of
+credentials that are neither set nor in the environment. It also runs the Worker's own config
+validation on the production vars first: a deploy whose Worker would answer every request with
+503 (`config.invalid`) stops there. The staff API stays closed until you set
+`WEBFLIX_STAFF_VERIFIER=oidc` and `WEBFLIX_STAFF_ISSUER` (your Keycloak realm, https). Google
+and Apple sign-in are offered once their clients are configured: the client ids as vars, the
+client secret / private key with `wrangler secret put` (they are not in `secrets.required`,
+which would make them mandatory; see §10.2).
 
 ```sh
 make cf-deploy-dry-run   # no account needed: config, assets, the exact bundle, the plan
@@ -433,9 +507,12 @@ make cf-deploy           # the real thing
 
 `make cf-deploy` (`scripts/deploy.ts deploy`), every step idempotent:
 
+0. **Check**: the release name (`--release`, `make cf-deploy CF_RELEASE=…`; default the commit,
+   `-dirty` for a changed tree) and the Worker's config validation on the production vars.
 1. **Provision**: check the public origin first (see Routing below; the placeholder stops the
-   deploy here), then find or create D1 `webflix`, KV `webflix-cache`, R2 `webflix-media`,
-   queues `webflix-jobs` and `webflix-jobs-dlq` (14-day retention); write the D1 and KV ids,
+   deploy here), then find or create D1 `webflix`, KV `webflix-cache` and `webflix-recs`, R2
+   `webflix-media`, queues `webflix-jobs` and `webflix-jobs-dlq` (14-day retention); write the
+   D1 and KV ids,
    `workers_dev` and `routes` into `env.production` of wrangler.jsonc (comment-preserving
    edit; commit them). Until then the ids are zero
    placeholders, and the top-level (local) ids are not ids at all, so an accidental
@@ -449,12 +526,14 @@ make cf-deploy           # the real thing
    `https://<account>.r2.cloudflarestorage.com` or `R2_S3_ENDPOINT`): the right transport for
    gigabytes. Without them it uses the R2 binding through Wrangler's remote bindings.
 5. Seed (`ops.ts seed --target production`), through remote bindings to D1/KV/R2.
-6. `wrangler deploy --env production`. The media-token key (`lib/media-keys.ts`): the deploy
-   runs `wrangler secret list` first and sets the key with `--secrets-file` only if the listing
-   succeeded and shows no key, or failed with Wrangler's specific "Worker not found" (a first
-   deploy). Any other failure aborts the deploy: a transient API error must never replace the
-   key (every outstanding token would die and the old key could not be recovered). The value
-   comes from `WEBFLIX_MEDIA_TOKEN_KEYS` in the environment (your secret manager; required in
+6. `wrangler deploy --env production --var WEBFLIX_RELEASE:<release>`, with `--secrets-file`
+   holding what the secrets plan (taken right after provisioning, before migrations) sets. A
+   secret is set only if `wrangler secret list` succeeded and does not show it, or failed with
+   Wrangler's specific "Worker not found" (a first deploy). Any other failure aborts the deploy:
+   a transient API error must never replace a key (every outstanding media token would die, or
+   every subject key would be orphaned, and the old key could not be recovered).
+   `--secrets-file` is additive: secrets it omits stay on the Worker. The media-token key
+   (`lib/media-keys.ts`) comes from `WEBFLIX_MEDIA_TOKEN_KEYS` in the environment (your secret manager; required in
    CI), else from the operator's key file `apps/edge/.wrangler/secrets/production-media-token-keys.json`
    (mode 600), else a generated 256-bit key that is written to that file: keep a copy in your
    secret manager, the platform cannot show it again. Later deploys never touch the key.
@@ -511,13 +590,15 @@ on the new schema). Dead letters: dashboard → Queues → `webflix-jobs-dlq`. M
 by tag `webflix-media`, or simply re-seed to roll the generation.
 
 **What was exercised and what was not.** Exercised: the dry run end to end (config
-validation, production asset staging, the exact minified bundle, the plan); the id and routing
+validation, production asset staging with Stripe's CSP sources, the exact minified bundle, the
+secrets plan and the release name, the plan); the id and routing
 write-back, the derived remote-binding configs, the key decision against Wrangler's recorded
 outputs and the rotation steps (unit tests); the S3 upload transport with
 the full fast profile (10,710 objects, 1.5 GB in 38 s, idempotent re-run) against miniflare's
 experimental local R2 S3 endpoint. Not exercised (no account): resource creation and the
-parsing of their live output, remote migrations, remote bindings for seed/upload, the first
-deploy with `--secrets-file`, `wrangler secret bulk` for rotations, custom-domain routes, the
+parsing of their live output (the second KV namespace included), remote migrations, remote
+bindings for seed/upload and for the recommendation importer, the KV REST bulk API with a real
+token, the first deploy with `--secrets-file` against `secrets.required`, `wrangler secret bulk` for rotations, custom-domain routes, the
 readiness check, and the Workers edge cache itself (Range
 slicing of loopback requests, `cross_version_cache`, billing of loopback requests). Confidence:
 high for the Worker, config and data path (all of it runs locally on the same runtime); medium
@@ -546,3 +627,186 @@ cache flag without code changes).
 | Compression | Node gzips `/api/*` | Cloudflare compresses at the edge |
 | Request timing in logs | real | `durationMs` reads 0: Workers time only advances across I/O |
 | Request bodies | unlimited by the platform | 100 MB (Free/Pro zone plan); API bodies are capped at 1 MiB anyway |
+| Email (milestone 2) | in-memory mailbox (dev), Mailpit over SMTP (kind) | D1 outbox locally; Resend over HTTP in production |
+| Payment webhooks | in-process queue / Valkey Streams worker | the Worker's webhook route → D1 → Queues → the same Worker's consumer |
+| Event lake | filesystem (dev), S3 (k8s) | R2, written by the queue consumer |
+| Recommendation store | SQLite / PostgreSQL | KV for per-profile lists, D1 for models and neighbours |
+| Recommendation import | `node apps/api/src/recs.ts import`, a CronJob | `make cf-recs-import` from Node (KV REST bulk API in production); not inside the Worker beyond a few hundred profiles |
+| Batch jobs (compaction, training, scoring) | `make recs`, CronJobs on the `webflix-recs` image | outside Workers against R2; locally `make cf-lake-pull` / `cf-recs-push` move objects in and out |
+
+---
+
+## 10. Milestone 2 on Cloudflare
+
+`make cf-dev` carries the whole of milestone 2 with every piece of state in a binding: a new
+member signs up through the development issuer, checks out with the fake provider, becomes
+entitled when the provider's event is processed by the queue consumer, plays, has their events
+land in R2 as lake objects, exports and deletes their data, and is served a recommendation run
+imported from outside the Worker; the Worker can be stopped and started in between (what that
+does and does not keep is in §10.5). Driven over HTTP on 2026-11-22 from a clean state
+directory, and by the conformance suite (§7).
+
+### 10.1 What runs where
+
+| Area | Local (`make cf-dev`) | Production (`env.production`) |
+| --- | --- | --- |
+| Consumer sign-in | the development issuer this Worker mounts at `/dev-idp/{google,apple}`, called in process by the relying party; codes are single use across isolates (D1 claims table), sealed with a secret derived from the media-token key every isolate has | Google and Apple once their clients are configured; `/dev-idp` answers 404 |
+| Email | D1 outbox (`WEBFLIX_EMAIL_SENDER=outbox`): `email_outbox`, read back by `GET /api/v1/diagnostics/mailbox` from any isolate | Resend's REST API (`http`), bounces on `POST /api/v1/webhooks/email/resend` |
+| Payments | the fake provider: state in D1, its form at `/_pay/*`; its webhooks are delivered in process to the receiver, which verifies them, records them in D1 (`provider_events`) and enqueues `billing.provider-event` | Stripe: the same receiver at `POST /api/v1/webhooks/payments/stripe` → D1 → Queues; the SPA's CSP gains Stripe.js's origins (and only then: `scripts/lib/security-headers.ts`) |
+| Event lake | R2 `events/dt=…/hh=…/{uuid}.ndjson.gz`, one object per accepted batch, written by the queue consumer; pseudonym key random per clone | the same; the pseudonym key is generated on the first deploy and never replaced |
+| Recommendations | KV `RECS` (per-profile lists) over D1 (models, neighbours); runs imported from Node (§10.4) | the same; `webflix-recs` is provisioned, lists are written with the KV REST bulk API |
+| Experiments | definitions in D1 through the isolate memo and KV `CACHE` | the same |
+| Staff API | tokens from the development issuer's staff realm (`/dev-idp/staff`) | closed (`memory`) until `WEBFLIX_STAFF_VERIFIER=oidc` and `WEBFLIX_STAFF_ISSUER` are set: intended |
+
+The Cron Trigger (`*/5`) publishes 11 idempotent jobs per tick (observed): the stats baseline,
+two rollups, playback and session cleanups, and the areas' own: playback expiry and the
+playback outbox drain (events), the privacy sweep (events: due erasures, expired exports),
+billing reconciliation, identity cleanup and the audit-log sweep (admin). The one queue
+consumer runs them and every area's jobs (event batches, provider events, emails, exports,
+erasures, recommendation imports).
+
+### 10.2 Configuration
+
+Vars (both sections; a test compares the names):
+
+| Var | Local | Production |
+| --- | --- | --- |
+| `WEBFLIX_RELEASE` | `local` | empty in the file; `make cf-deploy` passes the commit (`--var WEBFLIX_RELEASE:…`) |
+| `WEBFLIX_EVENT_SINK` | `lake` | `lake` |
+| `WEBFLIX_EMAIL_SENDER`, `WEBFLIX_EMAIL_FROM` | `outbox`, default | `http`, set it to an address on your verified domain |
+| `WEBFLIX_PAYMENT_PROVIDER` | `fake` | `stripe` |
+| `WEBFLIX_STAFF_VERIFIER`, `WEBFLIX_STAFF_ISSUER` | `oidc`, empty (the development issuer) | empty (= `memory`, closed), empty |
+| `WEBFLIX_RECOMMENDATION_STORE` | `kv` | `kv` |
+
+Secrets: the same seven names in `secrets.required` in both sections (§8 lists them). Wrangler
+loads **only** the names listed there from `.dev.vars` (an allowlist; missing ones produce a
+warning), so `make cf-dev` writes every one of them: random media-token and pseudonym keys, and
+the provider credentials empty, which the config loader reads as unset. To run the Stripe lane
+against the local Worker, fill the three `STRIPE_*` lines from `.cache/stripe/stripe.env`, start
+with `CF_DEV_FLAGS='--var WEBFLIX_PAYMENT_PROVIDER:stripe'` and stage the matching headers with
+`node apps/edge/scripts/ops.ts assets --payment-provider stripe` (not exercised here: no
+sandbox was created for this work). Optional secrets (the Google client secret, Apple's private
+key) are deliberately not in `secrets.required`, which would make every deploy require them;
+locally they cannot come from `.dev.vars` because of the allowlist (pass them with
+`CF_DEV_FLAGS='--var …'`), and in production they are set with `wrangler secret put`.
+
+The release name is not read from the environment: the Kubernetes make fragment exports
+`WEBFLIX_RELEASE` (its Helm release name, `webflix`) into every recipe of the Makefile.
+
+### 10.3 The queue carries billing and behaviour
+
+One queue serves every job. Measured locally: a member's membership turned `active` 2.2 s after
+the first invoice was paid on the fake provider's form, polling only `GET /session` (which never
+reads the provider; `GET /billing/checkout/:id` reconciles with it, by billing's design), with
+`invoice.paid` marked processed in `provider_events` by the consumer. The 2 s are the local
+`max_batch_timeout`; production waits up to 5 s for a batch to fill. Event batches share the
+queue with provider events and `max_concurrency: 2` (chosen to protect D1, which event batches
+barely touch: the consumer writes them to R2). If behaviour volume grows, a burst of event
+batches can delay entitlement; the remedy is a second queue for `events.*` jobs (a routing
+`JobQueue` in `adapters-cloudflare`, a second consumer with higher concurrency), not built yet.
+
+### 10.4 Batch jobs and the importer, outside Workers
+
+Compaction, training, scoring and analysis run outside Workers against R2 (blueprint M2 §9).
+Locally (the dev server stopped, like every ops command: one runtime per state directory):
+
+```sh
+make cf-stop
+make cf-lake-pull            # R2 events/ → CF_RECS_STORE (default .cache/recs/cf/store), incremental
+#   run the pipeline on that store: services/recs `webflix-recs --store .cache/recs/cf/store …`
+make cf-recs-push            # its published run → R2: recs/v={run}/… then recs/current.json last
+make cf-recs-import          # publish it into D1 (model, neighbours) and KV (lists), from Node
+make cf-dev
+```
+
+The store directory is the dev mode's filesystem `BlobStore` layout, which the pipeline reads
+and writes. In production the pipeline reads and writes R2 itself (its S3 store, R2's S3 API),
+and `make cf-recs-import ENV=production` (with `CLOUDFLARE_ACCOUNT_ID` and a
+`CLOUDFLARE_API_TOKEN` with Workers KV Storage: Write) imports through Wrangler's remote
+bindings for D1 and R2 and the KV REST bulk endpoint for the lists. The importer is the
+personalisation service's own (`importRecommendations`), composed in Node on the Worker's
+bindings, so it validates the artefacts exactly as the Worker's job would, and it invalidates
+the shared model cache in KV: a running Worker serves the new run within its isolate memo
+(30 s).
+
+Why outside: inside a Worker every KV `put` is one of the invocation's 1,000 operations to
+Cloudflare services (KV has no bulk write binding; the REST bulk write takes 10,000 pairs per
+request), a queue consumer has 128 MB of memory for the Parquet shards, and a run of the
+simulated pipeline has 89,000 profiles. The staff API's `POST /system/recommendations/import`
+still queues the in-Worker job: on Cloudflare it fits runs of at most a few hundred profiles,
+and a larger run fails as `failed` with the served run untouched (reported to the
+personalisation and admin owners).
+
+Measured: the lake of a journey (7 objects) pulled, a run for its two profiles written by a
+stand-in for the pipeline's `score`/`publish` (the pipeline itself was not run on this
+machine), pushed, and imported in 73 ms; browse then reported `policy: learned:<run>` with the
+imported top picks. `createKvRestBulkWriter` was run against miniflare's Local Explorer API,
+which implements the same `PUT …/storage/kv/namespaces/{id}/bulk` with a request schema
+generated from Cloudflare's OpenAPI document: 25,001 pairs went in three requests (10,000,
+10,000, 5,001), absolute expirations were stored, and a request the API refused made the
+writer throw with the API's message. (The emulator took 123 s for those writes: it measures the
+request shape, not the platform's speed.)
+
+### 10.5 Verified locally, not shown by local emulation, still to prove on a real account
+
+| Item | Seen locally | Local emulation cannot show | A real deployment must prove |
+| --- | --- | --- | --- |
+| Sign-up through the development issuer | yes: start → `/dev-idp` → callback → `signed-up`, membership `none` | Google's and Apple's real behaviour (cross-site form post, `SameSite=None`) | Google/Apple clients, their secrets bound at run time while not in `secrets.required` |
+| Checkout, provider event → queue → entitlement | yes (2.2 s, `invoice.paid` processed by the consumer) | Stripe webhooks over the internet; Queues' own batching delay (5 s in production) | Stripe live keys, the webhook endpoint and its secret, Stripe's retries against the Worker |
+| Periodic jobs on the Cron Trigger | yes: `make cf-dev` fires it every 5 min (a tick at 11:15:00.033 published 11 jobs, run by the consumer); `wrangler dev` alone never does | the platform's scheduler and its propagation (up to 15 min after a deploy) | that ticks arrive every 5 min |
+| Events → R2 lake objects | yes (client and server events, gzip NDJSON by receipt hour) | R2's latency and Class A cost | Workers Logs volume, R2 cost at real batch rates |
+| Export, deletion, erasure | yes (export document in R2 under `privacy/`, account erased, the profile's KV lists deleted) | | the export link and the email through Resend |
+| Email | yes (D1 outbox: welcome, receipt, reset-password) | Resend | Resend key, verified domain, bounce webhook |
+| Import from outside | yes (local bindings; REST writer against the emulated endpoint) | the real REST API's auth, rate limits and `unsuccessful_keys` | an import of a full-size run with a real token; KV propagation (up to 60 s) |
+| State across a restart | yes: session, membership, mailbox, lake, recommendations, stream slots (D1, KV, R2, Durable Objects) | **Queues durability.** miniflare keeps undelivered messages in memory: a batch acknowledged with 202 and followed by a stop 0.5 s later never reached the lake; one stopped after 4.3 s did. Retries waiting on their backoff are lost the same way | that Queues keeps messages across deploys (Cloudflare documents at-least-once delivery) |
+| Stripe CSP on the SPA | `_headers` staged with exactly Stripe.js's sources for production, none locally (tests) | the browser's enforcement, Stripe.js at run time, wallets (the chart's `Permissions-Policy: payment=()` may block the Payment Request API in Stripe's frame) | the browser suite with Stripe as provider |
+| Production composition | yes, in workerd: Stripe, HTTP email, the lake, staff API closed, `/dev-idp` and `/_pay` 404 (`test/production-config.test.ts`) | | the deploy itself (`secrets.required` with `--secrets-file`) |
+
+What survives a local restart without loss, because it is in D1 before any message is sent:
+provider events (and reconciliation repairs a membership whose job was lost), server playback
+events (the D1 outbox, drained on the Cron Trigger), due erasures (re-queued by every privacy
+sweep). What a local restart can lose: client event batches in their batch window, email jobs,
+export jobs (the request then stays pending, and blocks a new one, until staff replay it:
+reported to the events owner), recommendation import jobs. Restart the local Worker when it is
+quiet, or wait a few seconds after the last request.
+
+### 10.6 Cost drivers added by milestone 2
+
+An accepted event batch costs a gateway request, two Durable Object calls (rate limits), one
+queue message (3 Queues operations per 64 KB: $0.40/M beyond the included million) and one R2
+Class A write in the consumer ($4.50/M): about $6 per million batches. The web SDK flushes at
+most every 5 s, so continuous browsing can reach 720 batches an hour (about $0.0045 per
+browsing hour, more than a viewing hour's delivery, §5); playback itself adds little (server
+events go through the D1 outbox, one lake object per drain). The lever is writing one lake
+object per queue batch instead of per message (up to 10× fewer R2 writes), then a longer flush
+interval.
+
+### 10.7 Limits relied on (Cloudflare docs, read 2026-11-22)
+
+- Queues: 128 KB per message, 100 messages and 256 KB per `sendBatch`, consumer batches up to
+  100, `max_batch_timeout` 0–60 s, 15 min wall time per consumer invocation, retention up to 14
+  days (24 h on Free); messages exhausting `max_retries` go to the dead-letter queue, else are
+  deleted; per-message `retry({ delaySeconds })` overrides the batch; at-least-once delivery.
+  developers.cloudflare.com/queues/platform/limits/,
+  /queues/configuration/batching-retries/, /queues/reference/delivery-guarantees/,
+  /queues/platform/pricing/
+- Workers KV: 1,000 operations per invocation on Free and Paid (shared with other services,
+  e.g. 500 KV reads and 500 R2 reads; a bulk request counts once); 1 write per second per
+  key; 25 MiB values; expirations at least 60 s ahead; writes visible elsewhere within 60 s.
+  REST bulk write: 10,000 pairs and 100 MB per request, `unsuccessful_keys` to retry.
+  /kv/platform/limits/, /kv/api/write-key-value-pairs/,
+  /api/resources/kv/subresources/namespaces/methods/bulk_update/
+- D1: 1,000 queries per invocation on Paid (50 Free), a batch counts once; 100 bound
+  parameters; 100 KB per statement; 30 s per query; 6 simultaneous connections. /d1/platform/limits/
+- Workers: 10,000 subrequests (Paid), 128 MB per isolate, CPU 30 s default (5 min max) per
+  request and Cron Trigger, 15 min wall time for Cron Triggers and queue consumers, 128
+  vars + secrets per Worker (64 Free), 5 KB each. /workers/platform/limits/
+- Cron Triggers: UTC; changes take up to 15 minutes to propagate; locally triggered by request.
+  /workers/configuration/cron-triggers/
+- Durable Object alarms (the stream gate's and the rate limiter's, unchanged by milestone 2):
+  at-least-once, retried with exponential backoff from 2 s, up to six attempts.
+  /durable-objects/api/alarms/
+- Wrangler `secrets.required`: an allowlist for `.dev.vars` locally (missing names warn),
+  checked by `wrangler deploy`; `--secrets-file` adds to the existing secrets.
+  /workers/wrangler/configuration/, /workers/configuration/secrets/, `wrangler deploy --help`
+- Stripe.js CSP: docs.stripe.com/security/guide ("Stripe.js").

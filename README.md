@@ -130,12 +130,12 @@ summary. It exits non-zero if either suite has a failure or a flaky test. Report
 | Suite | What it checks | Details |
 | --- | --- | --- |
 | Browser suite | Playwright: every spec in Chromium; sign-in, browse and playback in Firefox and WebKit | [e2e/README.md](e2e/README.md) |
-| Conformance suite | 93 black-box HTTP checks of the contract and the documented behaviour (`make smoke-list` prints the current catalogue) | [tools/smoke/README.md](tools/smoke/README.md) |
+| Conformance suite | 131 black-box HTTP checks of the contract and the documented behaviour, milestone 2's journeys included (`make smoke-list` prints the current catalogue; what a deployment must provide for none to skip is in the suite's README) | [tools/smoke/README.md](tools/smoke/README.md) |
 
 The conformance suite ends by exhausting the sign-in budgets of the address it runs from, so
 it runs second, after a 65 s pause ([why the order matters](e2e/README.md#verify-the-browser-suite-then-the-conformance-suite)).
-The conformance suite takes about 100 s against the dev mode and about 5 minutes under strict
-rate limits; the browser suite's duration depends on the machine and is not recorded. Each suite
+The conformance suite takes about 3 minutes against the dev mode and longer under strict rate
+limits; the browser suite's duration depends on the machine and is not recorded. Each suite
 also runs alone: `make e2e TARGET=…` and `make smoke TARGET=…`. `make e2e-throttled TARGET=…`
 is the Chromium suite with the CPU slowed 4x. `make check` runs lint, typecheck and the unit,
 contract and integration tests (what CI runs); `make help` lists every target.

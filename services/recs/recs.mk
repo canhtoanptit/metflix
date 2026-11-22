@@ -6,6 +6,7 @@
 #   make recs-test                       ruff, mypy, pytest, TypeScript check of the Node scripts
 #   make recs-simulate PRESET=smoke      catalogue export + simulation only
 #   make recs [PRESET=full]              the full local run from an empty directory
+#   make recs-fixtures                   rewrite tests/fixtures/compacted (the export's fixtures)
 #   make recs-image                      the job image (webflix-recs:dev)
 
 RECS_DIR := services/recs
@@ -15,7 +16,7 @@ RECS_BIN := $(RECS_VENV)/bin
 PRESET ?= full
 RECS_ROOT := .cache/recs/$(PRESET)
 
-.PHONY: recs-setup recs-test recs-simulate recs recs-clean recs-image
+.PHONY: recs-setup recs-test recs-simulate recs recs-clean recs-image recs-fixtures
 
 recs-setup: ## Recommendation pipeline: create services/recs/.venv from uv.lock (Python 3.13, pinned)
 	@cd $(RECS_DIR) && $(RECS_UV) sync --frozen
@@ -42,6 +43,10 @@ recs-simulate: recs-setup ## Recommendation pipeline: export the catalogue and s
 
 recs: recs-setup ## Recommendation pipeline: full local run (simulate, compact, dataset, train, evaluate, score, publish, experiments), PRESET=full|medium|smoke
 	@bash $(RECS_DIR)/scripts/run-local.sh $(PRESET)
+
+recs-fixtures: recs-setup ## Recommendation pipeline: rewrite the compacted-hour fixtures the data export tests against
+	@$(RECS_BIN)/python $(RECS_DIR)/tests/compacted_fixture.py
+	@node $(RECS_DIR)/scripts/check-compacted-fixture.ts
 
 recs-clean: ## Recommendation pipeline: delete simulated data and runs under .cache/recs (keeps the uv cache)
 	@rm -rf .cache/recs/smoke .cache/recs/medium .cache/recs/full .cache/recs/work

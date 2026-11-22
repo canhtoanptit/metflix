@@ -17,6 +17,7 @@ Target
       --demo-email <email>    Seeded demo account (default ${DEMO_ACCOUNT_EMAIL})
       --demo-password <pw>    (default: the documented demo password)
       --media-title <id>      Title to use for packaged-media checks (default: discovered)
+      --promo-code <code>     A promo code the deployment honours for the Standard plan (billing.promo-code.applied)
 
 Selection
       --only <ids>            Comma-separated ids, prefixes or globs: "identity", "media.*,plans.stream-limit"
@@ -122,6 +123,7 @@ export function parseCli(
       "demo-email": { type: "string" },
       "demo-password": { type: "string" },
       "media-title": { type: "string" },
+      "promo-code": { type: "string" },
       verbose: { type: "boolean", default: false },
       "no-color": { type: "boolean", default: false },
       "run-id": { type: "string" },
@@ -164,6 +166,7 @@ export function parseCli(
         password: values["demo-password"] ?? DEMO_ACCOUNT_PASSWORD,
       },
       mediaTitleId: values["media-title"] ?? null,
+      promoCode: values["promo-code"] ?? null,
       only: list(values.only),
       skip: list(values.skip),
       tags: list(values.tag),

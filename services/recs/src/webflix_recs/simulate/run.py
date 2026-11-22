@@ -65,6 +65,7 @@ def _build_world(config: SimConfig, catalog: Catalog, sink: Sink, shard: int) ->
         rng=np.random.default_rng([config.seed, 4, shard]),
         app_version=config.app_version,
         duplicate_rate=config.duplicate_rate,
+        collect_like_the_product=config.collect_like_the_product,
     )
     return World(config, catalog, titles, policy, emitter, people_pool(catalog, titles))
 
@@ -124,7 +125,9 @@ def simulate_shard(
 def _shard_job(args: tuple[SimConfig, dict[str, Any], int, str, str]) -> dict[str, Any]:
     config, document, shard, store_location, truth_dir = args
     started = time.perf_counter()
-    sink = LakeSink(open_storage(store_location), shard=shard, seed=config.seed)
+    sink = LakeSink(
+        open_storage(store_location), shard=shard, seed=config.seed, layout=config.object_layout
+    )
     stats, truth = simulate_shard(config, document, shard, sink)
     frame = pl.DataFrame(truth, schema=TRUTH_PROFILE_SCHEMA)
     target = Path(truth_dir) / "profiles" / f"part-{shard:05d}.parquet"

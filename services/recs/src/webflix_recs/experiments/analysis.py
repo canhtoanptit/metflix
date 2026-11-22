@@ -2,12 +2,18 @@
 
 What a run does, per pre-registered experiment (schemas/experiment-definitions.schema.json):
 
-1. Population. Units are profiles. A unit enters at its first `experiment.exposure` (logged when
-   the treatment is experienced, blueprint §8.1) inside [startsAt, analysis end). Units are
-   excluded, and counted, when any of their events is flagged `restricted` (kids and capped
-   profiles are never in experiment populations), when their latest consent stamp lacks
-   `analytics`, when they were exposed to a variant the definition does not name, or when they
-   were exposed to more than one variant (an assignment bug must not be averaged away).
+1. Population. Units are what the product assigns: the profile (its pseudonymous key,
+   `subject.profile`) or, for experiments that run before sign-in, the device (`deviceId`),
+   per the definition's `unit` and the exposure's `payload.unitType`. A unit enters at its first
+   `experiment.exposure` inside [startsAt, analysis end). The product logs an exposure when the
+   treatment is experienced (blueprint §8.1), for both arms, only when a treatment could apply
+   (for the recommendation experiment: a fresh model exists), and once per unit and variant per
+   30 days, so the first one is the entry. Units are excluded, and counted, when any of their
+   events is flagged `restricted` (the product never assigns kids and capped profiles and never
+   stores their events, so this reads 0 on real data; it guards older lakes), when their
+   latest consent stamp lacks `analytics` (a device: its exposure's stamp), when they were
+   exposed to a variant the definition does not name, or when they were exposed to more than
+   one variant (an assignment bug must not be averaged away).
 2. Pre-registration. The definition fixes the primary metric, alpha, the minimum detectable
    effect (MDE) and the horizon before the start. The analysis refuses an experiment registered
    after it started or with exposures before its registration, and there is no parameter to
@@ -19,7 +25,9 @@ What a run does, per pre-registered experiment (schemas/experiment-definitions.s
    least 30 s credited), `watch_hours`, `any_play`, `active_days` (UTC days with a qualified
    play) and `retained` (no billing transition to `canceled`). Per-variant means with normal 95%
    intervals, the difference with a Welch interval and the relative lift with a delta-method
-   interval.
+   interval. Playback events carry no device, so a device unit's outcomes are those of the
+   profiles signed in on that device (client events carry both the device and the profile),
+   and its account is the one last seen there.
 5. Peeking protection: a mixture sequential probability ratio test (mSPRT; Johari, Koomen,
    Pekelis, Walsh, "Peeking at A/B tests", KDD 2017) with a normal mixing distribution, evaluated
    at every daily look from the start. It yields an always-valid p-value (the running minimum of
@@ -422,9 +430,11 @@ def analyse_frames(
     experiment: dict[str, Any],
     *,
     as_of_ms: int,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Analyse one experiment from exposure rows (EXPOSURE_SCHEMA; `restricted` and `analytics`
-    describe the unit, not just the row) and outcome rows (OUTCOME_SCHEMA)."""
+    """Analyse one experiment from exposure rows (EXPOSURE_SCHEMA; `profile` holds the unit's
+    key, `restricted` and `analytics` describe the unit, not just the row) and outcome rows
+    (OUTCOME_SCHEMA, `profile` again the unit's key)."""
     names = [variant["name"] for variant in experiment["variants"]]
     total_weight = sum(float(variant["weight"]) for variant in experiment["variants"])
     weights = {
@@ -627,9 +637,11 @@ def analyse_frames(
             "metric": primary,
             "basis": f"mSPRT always-valid p >= {comparison_alpha:g} at every look so far",
         }
+    unit = str(experiment.get("unit", "profile"))
     return {
         "key": experiment["key"],
-        "unit": "profile",
+        "unit": unit,
+        "layer": experiment.get("layer"),
         "control": control,
         "variants": [{"name": name, "weight": round(weights[name], 6)} for name in names],
         "registeredAt": experiment["registeredAt"],
@@ -645,8 +657,16 @@ def analyse_frames(
         "metrics": report_metrics,
         "looks": look_rows,
         "decision": decision,
+        "diagnostics": dict(diagnostics or {}),
         "methods": {
-            "unit": "profile; first experiment.exposure inside [startsAt, analysis end)",
+            "unit": (
+                "profile (pseudonymous key); first experiment.exposure inside [startsAt, "
+                "analysis end)"
+                if unit == "profile"
+                else "device (deviceId); first experiment.exposure inside [startsAt, analysis "
+                "end); outcomes of the profiles signed in on the device, retention of the "
+                "account last seen there"
+            ),
             "window": "per unit, events in [first exposure, look); a session counts at a look "
             "with the watching credited before it",
             "sequential": "mSPRT, normal mixture N(0, tau^2), tau = MDE x control mean at "
@@ -689,6 +709,9 @@ _SLIM_EXPOSURES: Final = {
     "experiment_key": pl.String,
     "variant": pl.String,
     "occurred_at": pl.Int64,
+    "unit_type": pl.String,
+    "device_id": pl.String,
+    "stamp_analytics": pl.Boolean,
 }
 _SLIM_PLAYBACK: Final = {
     **_ENVELOPE,
@@ -703,6 +726,15 @@ _SLIM_BILLING: Final = {
     "type": pl.String,
     "occurred_at": pl.Int64,
     "state_to": pl.String,
+}
+#: Which profiles (and account) were signed in on which device: from client events, which carry
+#: both. Device units take their outcomes through it.
+_LINKS: Final = {
+    "device_id": pl.String,
+    "profile": pl.String,
+    "account": pl.String,
+    "first_received": pl.Int64,
+    "last_received": pl.Int64,
 }
 
 
@@ -731,12 +763,29 @@ def _slim(frame: pl.DataFrame, as_of_ms: int | None) -> dict[str, pl.DataFrame]:
             pl.col("consent_analytics").last().alias("latest_analytics"),
         )
     )
+    links = (
+        frame.filter(
+            (pl.col("source") == "client")
+            & pl.col("device_id").is_not_null()
+            & pl.col("profile").is_not_null()
+        )
+        .sort("received_at")
+        .group_by(["device_id", "profile"])
+        .agg(
+            pl.col("account").last(),
+            pl.col("received_at").min().alias("first_received"),
+            pl.col("received_at").max().alias("last_received"),
+        )
+        .select(list(_LINKS))
+    )
     # Compact types where the events arrive (exact 64-bit event keys, hashed playback session
     # ids, no account on playback rows), so the full-size lake fits in memory comfortably.
     frame = frame.with_columns(*event_key_columns())
-    exposures = frame.filter(
-        (pl.col("type") == schemas.EXPOSURE) & (pl.col("unit_type") == "profile")
-    ).select(list(_SLIM_EXPOSURES))
+    exposures = (
+        frame.filter(pl.col("type") == schemas.EXPOSURE)
+        .with_columns(pl.col("consent_analytics").alias("stamp_analytics"))
+        .select(list(_SLIM_EXPOSURES))
+    )
     playback = (
         frame.filter(
             pl.col("type").is_in(list(schemas.PLAYBACK_TYPES)) & pl.col("profile").is_not_null()
@@ -748,6 +797,7 @@ def _slim(frame: pl.DataFrame, as_of_ms: int | None) -> dict[str, pl.DataFrame]:
     return {
         "state": state,
         "consent": consent,
+        "links": links,
         "exposures": exposures,
         "playback": playback,
         "billing": billing,
@@ -760,21 +810,71 @@ def _dedup(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def run_analysis(
-    location: str,
-    definitions: dict[str, Any],
-    *,
-    as_of_ms: int | None = None,
-    workers: int = 1,
-    log: Callable[[str], object] = print,
-) -> dict[str, Any]:
-    """Analyse every experiment in `definitions` from the lake at `location`.
+@dataclass
+class LakeFrames:
+    """Everything the analysis reads from the lake, deduplicated, for both unit types."""
 
-    `as_of_ms` is the knowledge cutoff (events received before it); by default, everything in
-    the lake. Raises `PreRegistrationError` for an experiment that cannot be analysed as
-    registered, and `schemas.SchemaError` for invalid definitions."""
-    schemas.validate("experiment-definitions", definitions)
-    started = time.perf_counter()
+    exposures: pl.DataFrame  # _SLIM_EXPOSURES deduplicated, with unit attributes
+    state: pl.DataFrame
+    links: pl.DataFrame
+    playback: pl.DataFrame
+    billing: pl.DataFrame
+    max_received_ms: int | None
+
+    def frames_for(self, unit: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """(exposures, outcomes) of one unit type, with `profile` holding the unit's key."""
+        playback = self.playback.with_columns(
+            pl.lit(None, dtype=pl.String).alias("account"),
+            pl.lit(None, dtype=pl.String).alias("state_to"),
+        )
+        billing = self.billing.with_columns(
+            pl.lit(None, dtype=pl.UInt64).alias("playback_id"),
+            pl.lit(None, dtype=pl.Float64).alias("watched_sec"),
+        )
+        rows = self.exposures.filter(pl.col("unit_type") == unit)
+        if unit == "profile":
+            exposures = rows.join(
+                self.state.select("profile", "restricted", "analytics"), on="profile", how="left"
+            ).select(list(EXPOSURE_SCHEMA))
+            outcomes = pl.concat([playback, billing], how="diagonal").select(list(OUTCOME_SCHEMA))
+            return exposures, outcomes
+        # Device units: the key is the device; its account is the exposure's (signed in) or the
+        # one last seen on the device; never restricted (the product assigns no restricted
+        # profile); consent is the exposure's own stamp (a signed-out device's own answer).
+        last_account = (
+            self.links.sort("last_received")
+            .group_by("device_id")
+            .agg(pl.col("account").drop_nulls().last().alias("linked_account"))
+        )
+        exposures = (
+            rows.filter(pl.col("device_id").is_not_null())
+            .join(last_account, on="device_id", how="left")
+            .select(
+                pl.col("device_id").alias("profile"),
+                pl.coalesce("account", "linked_account").alias("account"),
+                "experiment_key",
+                "variant",
+                "occurred_at",
+                pl.lit(False).alias("restricted"),
+                pl.col("stamp_analytics").fill_null(False).alias("analytics"),
+            )
+        )
+        linked = self.links.select("device_id", "profile")
+        device_playback = (
+            playback.join(linked, on="profile", how="inner")
+            .with_columns(pl.col("device_id").alias("profile"))
+            .drop("device_id")
+        )
+        outcomes = pl.concat([device_playback, billing], how="diagonal").select(
+            list(OUTCOME_SCHEMA)
+        )
+        return exposures, outcomes
+
+
+def read_lake(
+    location: str, *, as_of_ms: int | None = None, workers: int = 1
+) -> tuple[LakeFrames, dict[str, Any], int]:
+    """Read the lake once for every experiment: (frames, read statistics, hours read)."""
     until = None if as_of_ms is None else as_of_ms + HOUR_MS
     results, read_stats, hours = read_events(
         location,
@@ -782,19 +882,15 @@ def run_analysis(
         workers=workers,
         transform=functools.partial(_slim, as_of_ms=as_of_ms),
     )
-    parts: dict[str, list[pl.DataFrame]] = {
-        "state": [],
-        "consent": [],
-        "exposures": [],
-        "playback": [],
-        "billing": [],
-    }
+    names = ("state", "consent", "links", "exposures", "playback", "billing")
+    parts: dict[str, list[pl.DataFrame]] = {name: [] for name in names}
     for result in results:
         for name, frame in result.items():
             parts[name].append(frame)
     empty = {
         "state": pl.DataFrame(schema=_STATE_SCHEMA),
         "consent": pl.DataFrame(schema=_CONSENT_SCHEMA),
+        "links": pl.DataFrame(schema=_LINKS),
         "exposures": pl.DataFrame(schema=_SLIM_EXPOSURES),
         "playback": pl.DataFrame(schema=_SLIM_PLAYBACK),
         "billing": pl.DataFrame(schema=_SLIM_BILLING),
@@ -821,39 +917,121 @@ def run_analysis(
         .join(consent, on="account", how="left")
         .with_columns(pl.col("analytics").fill_null(False))
     )
-    exposures = (
-        _dedup(frames["exposures"])
-        .join(state.select("profile", "restricted", "analytics"), on="profile", how="left")
-        .select(list(EXPOSURE_SCHEMA))
+    links = (
+        frames["links"]
+        .group_by(["device_id", "profile"])
+        .agg(
+            pl.col("account").drop_nulls().last(),
+            pl.col("first_received").min(),
+            pl.col("last_received").max(),
+        )
+        .select(list(_LINKS))
     )
-    outcomes = pl.concat(
-        [
-            _dedup(frames["playback"]).with_columns(
-                pl.lit(None, dtype=pl.String).alias("account"),
-                pl.lit(None, dtype=pl.String).alias("state_to"),
-            ),
-            _dedup(frames["billing"]).with_columns(
-                pl.lit(None, dtype=pl.UInt64).alias("playback_id"),
-                pl.lit(None, dtype=pl.Float64).alias("watched_sec"),
-            ),
-        ],
-        how="diagonal",
-    ).select(list(OUTCOME_SCHEMA))
-    if as_of_ms is None:
-        candidates = [
-            int(
-                frame["received_at" if "received_at" in frame.columns else "latest_received"]
-                .to_numpy()
-                .max()
-            )
-            for frame in (state, frames["billing"], frames["exposures"])
-            if frame.height
-        ]
-        as_of_ms = (max(candidates) + 1) if candidates else int(time.time() * 1000)
-    experiments = [
-        analyse_frames(exposures, outcomes, experiment, as_of_ms=as_of_ms)
-        for experiment in definitions["experiments"]
+    exposures = _dedup(frames["exposures"])
+    playback = _dedup(frames["playback"])
+    billing = _dedup(frames["billing"])
+    candidates = [
+        int(frame[column].to_numpy().max())
+        for frame, column in (
+            (state, "latest_received"),
+            (billing, "received_at"),
+            (exposures, "received_at"),
+        )
+        if frame.height
     ]
+    lake = LakeFrames(
+        exposures, state, links, playback, billing, max(candidates) if candidates else None
+    )
+    return lake, read_stats.to_dict(), hours
+
+
+def _windows_overlap(a: dict[str, Any], b: dict[str, Any], end_ms: int) -> bool:
+    a_start, b_start = parse_iso_ms(a["startsAt"]), parse_iso_ms(b["startsAt"])
+    a_end = parse_iso_ms(a["endsAt"]) if a.get("endsAt") else end_ms
+    b_end = parse_iso_ms(b["endsAt"]) if b.get("endsAt") else end_ms
+    return a_start < b_end and b_start < a_end
+
+
+def layer_overlap_units(
+    lake: LakeFrames, experiment: dict[str, Any], others: Sequence[dict[str, Any]], end_ms: int
+) -> int | None:
+    """Units exposed to this experiment and to another of its layer while both ran: the
+    product's allocations make that impossible, so anything above 0 is an assignment bug."""
+    layer = experiment.get("layer")
+    if not layer:
+        return None
+    unit = str(experiment.get("unit", "profile"))
+    rivals = [
+        other["key"]
+        for other in others
+        if other["key"] != experiment["key"]
+        and other.get("layer") == layer
+        and str(other.get("unit", "profile")) == unit
+        and _windows_overlap(experiment, other, end_ms)
+    ]
+    if not rivals:
+        return 0
+    column = "profile" if unit == "profile" else "device_id"
+    rows = lake.exposures.filter(pl.col("unit_type") == unit)
+    mine = set(rows.filter(pl.col("experiment_key") == experiment["key"])[column].drop_nulls())
+    theirs = set(rows.filter(pl.col("experiment_key").is_in(rivals))[column].drop_nulls())
+    return len(mine & theirs)
+
+
+def run_analysis(
+    location: str,
+    definitions: Any,
+    *,
+    as_of_ms: int | None = None,
+    workers: int = 1,
+    log: Callable[[str], object] = print,
+) -> dict[str, Any]:
+    """Analyse every experiment in `definitions` from the lake at `location`.
+
+    `definitions`: the pipeline's document or the product's (experiments/definitions.py).
+    `as_of_ms` is the knowledge cutoff (events received before it); by default, everything in
+    the lake. Raises `PreRegistrationError` for an experiment that cannot be analysed as
+    registered, and `schemas.SchemaError` for invalid definitions."""
+    from webflix_recs.experiments.definitions import normalise_definitions  # noqa: PLC0415
+
+    normalised, skipped = normalise_definitions(definitions)
+    started = time.perf_counter()
+    lake, read_stats, hours = read_lake(location, as_of_ms=as_of_ms, workers=workers)
+    if as_of_ms is None:
+        as_of_ms = (
+            lake.max_received_ms + 1
+            if lake.max_received_ms is not None
+            else int(time.time() * 1000)
+        )
+    by_unit: dict[str, tuple[pl.DataFrame, pl.DataFrame]] = {}
+    experiments = []
+    for experiment in normalised["experiments"]:
+        unit = str(experiment.get("unit", "profile"))
+        if unit not in by_unit:
+            by_unit[unit] = lake.frames_for(unit)
+        exposures, outcomes = by_unit[unit]
+        diagnostics: dict[str, Any] = {
+            "exposureEvents": int(
+                lake.exposures.filter(
+                    (pl.col("experiment_key") == experiment["key"]) & (pl.col("unit_type") == unit)
+                ).height
+            ),
+            "exposureEventsOfOtherUnitType": int(
+                lake.exposures.filter(
+                    (pl.col("experiment_key") == experiment["key"]) & (pl.col("unit_type") != unit)
+                ).height
+            ),
+            "layerOverlapUnits": layer_overlap_units(
+                lake, experiment, normalised["experiments"], as_of_ms
+            ),
+        }
+        if unit == "device":
+            diagnostics["deviceProfileLinks"] = int(lake.links.height)
+        experiments.append(
+            analyse_frames(
+                exposures, outcomes, experiment, as_of_ms=as_of_ms, diagnostics=diagnostics
+            )
+        )
     for experiment in experiments:
         log(
             f"experiment {experiment['key']}: {experiment['units']} units, "
@@ -866,11 +1044,12 @@ def run_analysis(
         "asOf": iso_ms(as_of_ms),
         "code": code_version(),
         "read": {
-            **read_stats.to_dict(),
+            **read_stats,
             "hours": hours,
             "seconds": round(time.perf_counter() - started, 2),
         },
         "experiments": experiments,
+        "definitionsSkipped": skipped,
     }
     schemas.validate("experiment-report", report)
     return report

@@ -20,7 +20,10 @@ describe("provisioning write-back", () => {
     const copy = join(temp, "wrangler.jsonc");
     await copyFile(WRANGLER_CONFIG, copy);
     const before = await readFile(copy, "utf8");
-    const ids = { databaseId: "6f1c5a9e-0000-4000-8000-1234567890ab", kvId: "a".repeat(32) };
+    const ids = {
+      databaseId: "6f1c5a9e-0000-4000-8000-1234567890ab",
+      kv: { CACHE: "a".repeat(32), RECS: "b".repeat(32) },
+    };
     expect(await writeProductionIds(copy, ids)).toBe(true);
     const after = await readFile(copy, "utf8");
     const comments = (text: string) =>
@@ -33,7 +36,10 @@ describe("provisioning write-back", () => {
       { hideWarnings: true },
     );
     expect(production.d1_databases[0]?.database_id).toBe(ids.databaseId);
-    expect(production.kv_namespaces[0]?.id).toBe(ids.kvId);
+    const kv = (binding: string) =>
+      production.kv_namespaces.find((namespace) => namespace.binding === binding)?.id;
+    expect(kv("CACHE")).toBe(ids.kv.CACHE);
+    expect(kv("RECS")).toBe(ids.kv.RECS);
     const local = unstable_readConfig({ config: copy }, { hideWarnings: true });
     expect(local.d1_databases[0]?.database_id).toBe("webflix-local");
     // Idempotent: a second run with the same ids changes nothing.

@@ -89,6 +89,11 @@ class Storage(Protocol):
 
     def put(self, key: str, data: bytes, *, content_type: str | None = None) -> ObjectInfo: ...
 
+    def put_if_absent(self, key: str, data: bytes, *, content_type: str | None = None) -> bool:
+        """Create the object only if no object has the key; False when one exists. Atomic on
+        the filesystem layout and on stores that honour `If-None-Match: *` (AWS S3)."""
+        ...
+
     def delete(self, keys: Iterable[str]) -> None: ...
 
     def list(self, prefix: str = "") -> Iterator[ObjectInfo]:
@@ -215,6 +220,37 @@ class LocalStorage:
         }
         self._write_atomically(meta, orjson.dumps(sidecar))
         return ObjectInfo(key, len(data), etag, uploaded)
+
+    def put_if_absent(self, key: str, data: bytes, *, content_type: str | None = None) -> bool:
+        target, meta = self._paths(key)
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        temp = self._tmp / str(uuid.uuid4())
+        try:
+            with temp.open("wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                # A hard link fails if the target exists: the atomic "create if absent".
+                os.link(temp, target)
+            except FileExistsError:
+                return False
+        finally:
+            temp.unlink(missing_ok=True)
+        stat = target.stat()
+        sidecar = {
+            "key": key,
+            "size": len(data),
+            "etag": hashlib.sha256(data).hexdigest()[:32],
+            "contentType": content_type or content_type_for(key),
+            "cacheControl": None,
+            "uploadedAt": int(time.time() * 1000),
+            "customMetadata": {},
+            "file": {"ino": stat.st_ino, "size": stat.st_size, "mtimeMs": stat.st_mtime_ns / 1e6},
+        }
+        self._write_atomically(meta, orjson.dumps(sidecar))
+        return True
 
     def delete(self, keys: Iterable[str]) -> None:
         for key in keys:
@@ -352,6 +388,29 @@ class S3Storage:
         return ObjectInfo(
             key, len(data), str(response.get("ETag", "")).strip('"'), int(time.time() * 1000)
         )
+
+    def put_if_absent(self, key: str, data: bytes, *, content_type: str | None = None) -> bool:
+        try:
+            self._client.put_object(
+                Bucket=self.bucket,
+                Key=self._key(key),
+                Body=data,
+                ContentType=content_type or content_type_for(key),
+                IfNoneMatch="*",
+            )
+        except Exception as error:
+            response = getattr(error, "response", None) or {}
+            code = str(response.get("Error", {}).get("Code", ""))
+            if code in {"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}:
+                return False
+            if code not in {"NotImplemented", "501"}:
+                raise
+            # A store without conditional writes: check, then write (not atomic; the lease that
+            # uses this documents the gap).
+            if self.head(key) is not None:
+                return False
+            self.put(key, data, content_type=content_type)
+        return True
 
     def delete(self, keys: Iterable[str]) -> None:
         batch: list[dict[str, str]] = []

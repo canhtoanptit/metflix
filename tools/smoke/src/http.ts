@@ -6,8 +6,11 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+  ADMIN_API_BASE_PATH,
+  type AdminApiClient,
   type ApiClient,
   ApiError,
+  adminRoutes,
   createRouteClient,
   PROBLEM_CONTENT_TYPE,
   REQUEST_ID_HEADER,
@@ -56,6 +59,11 @@ export interface RequestOptions {
   maxBytes?: number;
   /** Do not send the jar's cookies. */
   omitCookies?: boolean;
+  /**
+   * Follow same-origin redirects of GET and HEAD like a browser (default). Off: the redirect
+   * itself is the result (federated sign-in reads each `Location` on the way).
+   */
+  followRedirects?: boolean;
 }
 
 /** What a running check provides to the requests made inside it (see `runInCheckScope`). */
@@ -179,6 +187,7 @@ export class Agent {
   readonly origin: string;
   readonly api: ApiClient;
   private readonly options: AgentOptions;
+  private readonly aliases = new Set<string>();
 
   constructor(options: AgentOptions) {
     this.options = options;
@@ -189,24 +198,23 @@ export class Agent {
       validateResponses: true,
       fetch: (input, init) => this.transport(input, init),
     });
-    // Each typed call runs in its own collector so a rejection can carry its exchange.
-    this.api = new Proxy(client, {
-      get: (target, property, receiver) => {
-        const method = Reflect.get(target, property, receiver) as unknown;
-        if (typeof method !== "function") return method;
-        return async (...args: unknown[]) => {
-          const result = await capture(() =>
-            (method as (...a: unknown[]) => Promise<unknown>)(...args),
-          );
-          if (result.ok) return result.value;
-          const last = result.exchanges[result.exchanges.length - 1];
-          if (last && typeof result.error === "object" && result.error !== null) {
-            exchangeByError.set(result.error, last);
-          }
-          throw result.error;
-        };
-      },
-    }) as ApiClient;
+    this.api = withExchanges(client);
+  }
+
+  /**
+   * The staff API (`/api/admin/v1`) with a bearer token, through this agent (its cookies are
+   * sent too, as a browser would: the staff API must ignore them). Responses are validated.
+   */
+  staffApi(accessToken: string): AdminApiClient {
+    return withExchanges(
+      createRouteClient(adminRoutes, {
+        baseUrl: this.origin,
+        basePath: ADMIN_API_BASE_PATH,
+        validateResponses: true,
+        headers: { Authorization: `Bearer ${accessToken}` },
+        fetch: (input, init) => this.transport(input, init),
+      }),
+    );
   }
 
   /** Raw request against the target (path or same-origin absolute URL). */
@@ -225,7 +233,30 @@ export class Agent {
       retryOn429: options.retryOn429 ?? this.options.retryOn429 ?? true,
       maxBytes: options.maxBytes ?? 64 * 1024 * 1024,
       omitCookies: options.omitCookies ?? false,
+      followRedirects: options.followRedirects ?? true,
     });
+  }
+
+  /**
+   * Treat `origin` as this target's own (the deployment's public origin when the suite reaches
+   * it through another one, e.g. the API port behind the SPA's dev server): URLs the deployment
+   * builds from its public origin, such as the development issuer's endpoints and the callbacks
+   * it redirects to, are then requested from the base URL instead. Same host only: a browser
+   * shares cookies across ports, so nothing a browser would not do is assumed.
+   */
+  alias(origin: string): void {
+    const target = new URL(origin);
+    if (target.hostname !== new URL(this.origin).hostname) {
+      throw new Error(`Refusing to alias another host: ${target.origin}`);
+    }
+    if (target.origin !== this.origin) this.aliases.add(target.origin);
+  }
+
+  /** `pathOrUrl` as a path on this target when it is this target's (or an alias's), else null. */
+  ownPath(pathOrUrl: string): string | null {
+    const url = new URL(pathOrUrl, this.origin);
+    if (url.origin !== this.origin && !this.aliases.has(url.origin)) return null;
+    return `${url.pathname}${url.search}`;
   }
 
   /** The `fetch` the typed client uses. */
@@ -241,6 +272,7 @@ export class Agent {
       retryOn429: this.options.retryOn429 ?? true,
       maxBytes: 64 * 1024 * 1024,
       omitCookies: false,
+      followRedirects: true,
     });
     const nullBody = [101, 204, 205, 304].includes(result.status) || init.method === "HEAD";
     return new Response(nullBody ? null : (result.bytes as Uint8Array<ArrayBuffer>), {
@@ -250,7 +282,8 @@ export class Agent {
   }
 
   private resolve(pathOrUrl: string): URL {
-    const url = new URL(pathOrUrl, this.origin);
+    const own = this.ownPath(pathOrUrl);
+    const url = new URL(own ?? pathOrUrl, this.origin);
     if (url.origin !== this.origin) {
       // External HLS fallbacks and anything else off-origin: the suite never calls them.
       throw new Error(`Refusing to fetch a third-party origin: ${url.origin}`);
@@ -267,6 +300,7 @@ export class Agent {
       retryOn429: boolean;
       maxBytes: number;
       omitCookies: boolean;
+      followRedirects: boolean;
     },
   ): Promise<HttpResult> {
     let url = this.resolve(pathOrUrl);
@@ -278,6 +312,7 @@ export class Agent {
       const location = result.headers.get("Location");
       // Follow same-origin redirects like a browser; never follow one off-origin.
       if (
+        request.followRedirects &&
         result.status >= 300 &&
         result.status < 400 &&
         result.status !== 304 &&
@@ -285,9 +320,9 @@ export class Agent {
         (request.method === "GET" || request.method === "HEAD") &&
         redirects < 5
       ) {
-        const next = new URL(location, url);
-        if (next.origin !== this.origin) return result;
-        url = next;
+        const own = this.ownPath(new URL(location, url).href);
+        if (own === null) return result;
+        url = new URL(own, this.origin);
         redirects += 1;
         continue;
       }
@@ -335,7 +370,7 @@ export class Agent {
       requestId: headers.get(REQUEST_ID_HEADER) ?? requestId,
       method: request.method,
       url: displayPath(url.pathname) + url.search,
-      requestHeaders: headerRecord(headers, ["cookie"]),
+      requestHeaders: headerRecord(headers, ["cookie", "authorization"]),
       ...(request.body === undefined ? {} : { requestBody: request.body.slice(0, 1500) }),
       status: 0,
       responseHeaders: {},
@@ -400,6 +435,27 @@ export class Agent {
       exchange,
     };
   }
+}
+
+/** Each typed call runs in its own collector so a rejection can carry its exchange. */
+function withExchanges<T extends object>(client: T): T {
+  return new Proxy(client, {
+    get: (target, property, receiver) => {
+      const method = Reflect.get(target, property, receiver) as unknown;
+      if (typeof method !== "function") return method;
+      return async (...args: unknown[]) => {
+        const result = await capture(() =>
+          (method as (...a: unknown[]) => Promise<unknown>)(...args),
+        );
+        if (result.ok) return result.value;
+        const last = result.exchanges[result.exchanges.length - 1];
+        if (last && typeof result.error === "object" && result.error !== null) {
+          exchangeByError.set(result.error, last);
+        }
+        throw result.error;
+      };
+    },
+  });
 }
 
 export class NetworkError extends Error {

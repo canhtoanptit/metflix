@@ -96,10 +96,14 @@ function countedNamespace<T extends DurableObjectNamespace<undefined>>(namespace
   });
 }
 
+const KV_METHODS = ["get", "put", "delete", "list", "getWithMetadata"];
+if (!env.RECS) throw new Error("wrangler.jsonc must bind RECS");
 const measured: Env = {
   ...env,
   DB: countedD1(env.DB),
-  CACHE: counted(env.CACHE, "kv", ["get", "put", "delete", "list", "getWithMetadata"]),
+  CACHE: counted(env.CACHE, "kv", KV_METHODS),
+  // Per-profile recommendation lists: a KV read on browse once a model is served.
+  RECS: counted(env.RECS, "kv", KV_METHODS),
   MEDIA: counted(env.MEDIA, "r2", ["get", "head", "put", "delete", "list"]),
   JOBS: counted(env.JOBS, "queue", ["send", "sendBatch"]),
   LIMITS: countedNamespace(env.LIMITS as never),
@@ -146,6 +150,28 @@ async function measure(path: string, init: Parameters<typeof call>[1] = {}) {
 }
 
 const table: Record<string, Counts & { status: number }> = {};
+
+/** A client event as the web SDK sends it (contracts' event schema). */
+function clientEvent(sequence: number) {
+  return {
+    eventId: `0193a1d2-7c4e-7a10-8f00-${sequence.toString(16).padStart(12, "0")}`,
+    type: "title.open",
+    version: 1,
+    occurredAt: new Date().toISOString(),
+    deviceId: "budget-device",
+    sessionSeq: sequence,
+    app: { platform: "web", version: "budget" },
+    context: {
+      surface: "home",
+      rowId: null,
+      rowRank: 1,
+      rank: sequence,
+      experiments: {},
+      policy: null,
+    },
+    payload: { titleId: "t-kestrel" },
+  };
+}
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -197,6 +223,21 @@ beforeAll(async () => {
   table["POST /api/v1/auth/login"] = await measure(
     "/api/v1/auth/login",
     body({ email: FIXTURE_DEMO_ACCOUNT.email, password: "webflix-demo" }),
+  );
+  // Milestone 2's hot requests: the session (experiment assignments ride on it) and a batch of
+  // behaviour events (every few seconds from an active client; collected only with consent).
+  await call("/api/v1/session/profile", {
+    method: "PUT",
+    body: JSON.stringify({ profileId: "pr-demo" }),
+  });
+  table["GET /api/v1/session"] = await measure("/api/v1/session?deviceId=budget-device");
+  await call("/api/v1/privacy/consent", {
+    method: "PUT",
+    body: JSON.stringify({ purpose: "analytics", granted: true, source: "banner" }),
+  });
+  table["POST /api/v1/events"] = await measure(
+    "/api/v1/events",
+    body({ events: [clientEvent(1), clientEvent(2)] }),
   );
   for (const [path, row] of Object.entries(table)) {
     console.log(
@@ -256,6 +297,22 @@ describe("hot-path binding budgets (per request)", () => {
     const heartbeat = table["POST heartbeat"];
     expect(heartbeat).toMatchObject({ status: 200, durableObject: 1 });
     expect(heartbeat?.d1).toBeLessThanOrEqual(3);
+  });
+
+  it("the session stays a few D1 reads (experiment assignments are memoised)", () => {
+    expect(table["GET /api/v1/session"]).toMatchObject({
+      status: 200,
+      durableObject: 0,
+      r2: 0,
+      queue: 0,
+    });
+    expect(table["GET /api/v1/session"]?.d1).toBeLessThanOrEqual(3);
+  });
+
+  it("an event batch is two rate limits and one queue message; the lake is the consumer's", () => {
+    const events = table["POST /api/v1/events"];
+    expect(events).toMatchObject({ status: 202, durableObject: 2, queue: 1, r2: 0 });
+    expect(events?.d1).toBeLessThanOrEqual(4);
   });
 
   it("sign-in is one rate-limit call plus a few D1 queries", () => {

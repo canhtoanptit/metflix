@@ -179,7 +179,10 @@ async function runOne(definition: CheckDefinition, env: Environment): Promise<Ch
     clearTimeout(timer);
   }
 
-  if (options.expectFail.some((pattern) => matchesPattern(definition.id, pattern))) {
+  if (
+    definition.knownFinding !== undefined ||
+    options.expectFail.some((pattern) => matchesPattern(definition.id, pattern))
+  ) {
     if (outcome === "fail") outcome = "xfail";
     else if (outcome === "pass") outcome = "xpass";
   }
@@ -194,6 +197,7 @@ async function runOne(definition: CheckDefinition, env: Environment): Promise<Ch
     ...(failure === undefined ? {} : { failure }),
     notes,
     requests: exchanges.length,
+    ...(definition.knownFinding === undefined ? {} : { finding: definition.knownFinding }),
   };
 }
 

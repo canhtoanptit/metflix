@@ -33,6 +33,12 @@ _DOCUMENT_SCHEMAS: Final = {
     "rankings-line": "rankings-line.schema.json",
     "experiment-definitions": "experiment-definitions.schema.json",
     "experiment-report": "experiment-report.schema.json",
+    "experiment-result": "experiment-result.schema.json",
+    "experiment-results-pointer": "experiment-results-pointer.schema.json",
+    "events-compaction": "events-compaction.schema.json",
+    "export-events-requests": "export-events-requests.schema.json",
+    "export-events-manifest": "export-events-manifest.schema.json",
+    "export-events-results": "export-events-results.schema.json",
 }
 
 

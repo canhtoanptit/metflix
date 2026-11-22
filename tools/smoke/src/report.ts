@@ -51,6 +51,11 @@ export function formatResult(result: CheckResult, style: Style, verbose = false)
   const label = paint(style, COLORS[result.outcome], LABELS[result.outcome]);
   const head = `${label} ${result.id.padEnd(46)} ${seconds(result.durationMs).padStart(7)}  ${result.title}`;
   const lines = [head];
+  if (result.finding && (result.outcome === "xfail" || result.outcome === "xpass")) {
+    lines.push(
+      `        finding:  ${result.finding.id} (${result.finding.owner}) ${result.finding.summary}${result.outcome === "xpass" ? " (fixed? remove the knownFinding mark)" : ""}`,
+    );
+  }
   if (result.reason) lines.push(`        reason:   ${result.reason}`);
   if (result.failure) {
     const failure = result.failure;
@@ -122,10 +127,24 @@ export function formatSummary(report: RunReport, style: Style): string {
     lines.push("", paint(style, COLORS.skip, "Skipped (not passed)"));
     for (const result of skipped) lines.push(`  ${result.id}: ${result.reason ?? ""}`);
   }
+  const xfailed = report.results.filter((result) => result.outcome === "xfail");
+  if (xfailed.length > 0) {
+    lines.push("", paint(style, COLORS.xfail, "Known findings (failing as expected, not passed)"));
+    for (const result of xfailed) {
+      lines.push(
+        `  ${result.id}: ${result.finding ? `${result.finding.id} (${result.finding.owner}): ` : ""}${result.failure?.message ?? ""}`,
+      );
+    }
+  }
   const xpassed = report.results.filter((result) => result.outcome === "xpass");
   if (xpassed.length > 0) {
-    lines.push("", "Expected to fail but passed (remove from --expect-fail):");
-    for (const result of xpassed) lines.push(`  ${result.id}`);
+    lines.push(
+      "",
+      "Expected to fail but passed (remove from --expect-fail, or the check's knownFinding mark):",
+    );
+    for (const result of xpassed) {
+      lines.push(`  ${result.id}${result.finding ? ` (${result.finding.id})` : ""}`);
+    }
   }
   const { counts } = report;
   lines.push(
@@ -151,7 +170,8 @@ export function formatCatalogue(checks: readonly CheckDefinition[]): string {
         definition.needs && definition.needs.length > 0
           ? `  needs: ${definition.needs.map((requirement) => requirement.id).join(", ")}`
           : "";
-      lines.push(`  ${definition.id.padEnd(46)} ${definition.title}${tags}${needs}`);
+      const finding = definition.knownFinding ? `  finding: ${definition.knownFinding.id}` : "";
+      lines.push(`  ${definition.id.padEnd(46)} ${definition.title}${tags}${needs}${finding}`);
     }
   }
   lines.push("", `${checks.length} checks`);
