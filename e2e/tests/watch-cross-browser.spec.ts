@@ -1,7 +1,13 @@
 import type { Page } from "@playwright/test";
 import { findPlayableTitle } from "./api.ts";
 import { expect, test } from "./fixtures.ts";
-import { CLIENT_HEADERS, createAccount, secondDevice, videoState } from "./member-support.ts";
+import {
+  CLIENT_HEADERS,
+  createAccount,
+  recordErrorScreens,
+  secondDevice,
+  videoState,
+} from "./member-support.ts";
 
 /**
  * Watch-page screens every engine must lay out and drive correctly: the blocking overlay over
@@ -34,7 +40,7 @@ async function playing(page: Page): Promise<void> {
   }
 }
 
-test("signed out everywhere: the whole screen says so, nothing clipped, within one heartbeat", async ({
+test("signed out everywhere: the whole screen says so, nothing clipped, within one heartbeat; signing in again goes straight there", async ({
   page,
   newDevice,
 }) => {
@@ -43,6 +49,7 @@ test("signed out everywhere: the whole screen says so, nothing clipped, within o
   const account = await createAccount(owner.request, { tag: "xb-signout" });
   const movie = await findPlayableTitle(owner.request, "movie");
   await secondDevice(page.context(), account);
+  const errorScreens = await recordErrorScreens(page);
   await page.goto(`/watch/${movie.id}?t=0`);
   await playing(page);
 
@@ -68,6 +75,13 @@ test("signed out everywhere: the whole screen says so, nothing clipped, within o
     return false;
   });
   expect(clipped).toBe(false);
+
+  // Its action leads straight to sign-in, back to this title afterwards; the watch screen never
+  // renders without the session it was opened with.
+  await action.click();
+  await expect(page).toHaveURL(/\/login\?redirect=%2Fwatch%2F/);
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  expect(await errorScreens(), "an error screen on the way to sign-in").toEqual([]);
 });
 
 test("post-play: one recommendation leads, with full-size ratings below", async ({ page }) => {

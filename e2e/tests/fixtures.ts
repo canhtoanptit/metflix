@@ -12,7 +12,8 @@
  * - `E2E_CPU_THROTTLE=4`: Chromium pages run with the CPU slowed that many times (CDP
  *   `Emulation.setCPUThrottlingRate`), the gate's proof that timing-sensitive specs hold.
  * - Every context (the page's and `newDevice()`s) fails its spec on a Content-Security-Policy
- *   violation in the console, naming the blocked URL and directive.
+ *   violation in the console, naming the blocked URL and directive, and on React reporting a state
+ *   update during another component's render (development builds report it, so the dev mode).
  */
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -87,6 +88,25 @@ function expectNoCspViolations(reports: string[]): void {
   expect(reports, "Content-Security-Policy violations (blocked URL and directive)").toEqual([]);
 }
 
+/**
+ * React's "Cannot update a component (`A`) while rendering a different component (`B`)": B's
+ * render changed A's state, a bug in B whatever A shows. Seen once (WatchPage from PlayerFrame) in
+ * a run and never reproduced; watched for, so a recurrence names its spec.
+ */
+function watchRenderPhaseUpdates(context: BrowserContext): string[] {
+  const reports: string[] = [];
+  context.on("console", (message) => {
+    const text = message.text();
+    if (/Cannot update a component .* while rendering a different component/.test(text))
+      reports.push(`${message.page()?.url()}: ${text.split("\n")[0]}`);
+  });
+  return reports;
+}
+
+function expectNoRenderPhaseUpdates(reports: string[]): void {
+  expect(reports, "React state updates during another component's render").toEqual([]);
+}
+
 function expectNoViolations(violations: string[]): void {
   expect(
     violations,
@@ -118,9 +138,11 @@ export const test = base.extend<Options & Fixtures>({
     throttleContext(context);
     const violations = demo ? guardReadOnly(context) : null;
     const csp = watchCsp(context);
+    const renderUpdates = watchRenderPhaseUpdates(context);
     await use(context);
     if (violations) expectNoViolations(violations);
     expectNoCspViolations(csp);
+    expectNoRenderPhaseUpdates(renderUpdates);
   },
 
   page: async ({ page }, use) => {
@@ -133,6 +155,7 @@ export const test = base.extend<Options & Fixtures>({
       context: BrowserContext;
       violations: string[] | null;
       csp: string[];
+      renderUpdates: string[];
     }> = [];
     await use(async (options = {}) => {
       const { demo, ...contextOptions } = options;
@@ -145,13 +168,15 @@ export const test = base.extend<Options & Fixtures>({
         context,
         violations: demo ? guardReadOnly(context) : null,
         csp: watchCsp(context),
+        renderUpdates: watchRenderPhaseUpdates(context),
       });
       return context;
     });
-    for (const { context, violations, csp } of opened) {
+    for (const { context, violations, csp, renderUpdates } of opened) {
       await context.close();
       if (violations) expectNoViolations(violations);
       expectNoCspViolations(csp);
+      expectNoRenderPhaseUpdates(renderUpdates);
     }
   },
 });

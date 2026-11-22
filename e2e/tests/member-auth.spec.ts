@@ -1,5 +1,11 @@
 import { expect, test } from "./fixtures.ts";
-import { CLIENT_HEADERS, createAccount, expectAccessible, PASSWORD } from "./member-support.ts";
+import {
+  CLIENT_HEADERS,
+  createAccount,
+  expectAccessible,
+  PASSWORD,
+  recordErrorScreens,
+} from "./member-support.ts";
 
 /** Sign in and sign out against the real API. */
 
@@ -75,7 +81,9 @@ test("sign out: a calm confirmation, and the app is closed behind it", async ({ 
   await expect(page).toHaveURL(/\/login\?redirect=%2Fbrowse/);
 });
 
-test("sign out of all devices from Account signs this browser out too", async ({ newDevice }) => {
+test("sign out of all devices from Account signs this browser out too, straight to sign-in", async ({
+  newDevice,
+}) => {
   const first = await newDevice();
   const account = await createAccount(first.request, { tag: "everywhere" });
   const second = await newDevice();
@@ -86,6 +94,7 @@ test("sign out of all devices from Account signs this browser out too", async ({
   expect(login.ok()).toBe(true);
 
   const page = await first.newPage();
+  const errorScreens = await recordErrorScreens(page);
   await page.goto("/account/devices");
   await expect(
     page.getByRole("region", { name: "Signed-in devices" }).getByRole("listitem"),
@@ -95,6 +104,8 @@ test("sign out of all devices from Account signs this browser out too", async ({
   await expectAccessible(page);
   await confirm.getByRole("button", { name: "Sign out everywhere" }).click();
   await expect(page).toHaveURL(/\/login/);
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  expect(await errorScreens(), "an error screen on the way to sign-in").toEqual([]);
   const other = await (await second.request.get("/api/v1/session")).json();
   expect(other.authenticated).toBe(false);
 });

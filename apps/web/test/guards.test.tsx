@@ -1,5 +1,6 @@
 import { screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { sessionCache } from "../src/app/session/session.ts";
 import { locationOf, renderApp } from "./harness.tsx";
 
 async function landAt(path: string, scenario: Parameters<typeof renderApp>[1]) {
@@ -82,6 +83,64 @@ describe("route guards", () => {
     expect(locationOf(router)).toBe("/profiles?redirect=%2Fbrowse");
     (await screen.findByRole("button", { name: /^Mara/ })).click();
     await waitFor(() => expect(locationOf(router)).toBe("/browse"), { timeout: 5000 });
+  });
+
+  // The session cache changes first and the router re-runs the guards straight after, exactly as
+  // sign-out everywhere, a 401 and "Sign in again" do. The open screen must not render in between
+  // without its session (it threw, and the error page flashed on the way to sign-in).
+  describe("a session that ends while a screen is open", () => {
+    it.each([
+      {
+        what: "signed out",
+        path: "/account",
+        title: "Account",
+        end: "signOut",
+        expected: "/login?redirect=%2Faccount",
+      },
+      {
+        what: "signed out",
+        path: "/browse",
+        title: "Home",
+        end: "signOut",
+        expected: "/login?redirect=%2Fbrowse",
+      },
+      {
+        what: "profile cleared",
+        path: "/browse",
+        title: "Home",
+        end: "clearProfile",
+        expected: "/profiles?redirect=%2Fbrowse",
+      },
+    ] as const)(
+      "$what on $path goes straight to $expected, with no error page",
+      async ({ path, title, end, expected }) => {
+        const app = await landAt(path, "profile");
+        await waitFor(() => expect(document.title).toBe(`${title} · Webflix`));
+        const errorScreens: string[] = [];
+        const observer = new MutationObserver(() => {
+          if (document.body.textContent?.includes("Something went wrong")) {
+            errorScreens.push(locationOf(app.router));
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        const consoleError = vi.spyOn(console, "error");
+        try {
+          sessionCache[end](app.queryClient);
+          await app.router.invalidate();
+          await waitFor(() => expect(locationOf(app.router)).toBe(expected), { timeout: 5000 });
+          await waitFor(() => expect(app.router.state.status).toBe("idle"));
+          const sessionErrors = consoleError.mock.calls
+            .flat()
+            .map(String)
+            .filter((text) => /used while signed out|used without an active profile/.test(text));
+          expect(errorScreens).toEqual([]);
+          expect(sessionErrors).toEqual([]);
+        } finally {
+          observer.disconnect();
+          consoleError.mockRestore();
+        }
+      },
+    );
   });
 
   it("renders a not-found page for unknown URLs", async () => {

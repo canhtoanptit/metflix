@@ -1,6 +1,7 @@
 import { createAccount, createProfile } from "./api.ts";
 import { firstCard, row } from "./browse-support.ts";
 import { expect, test } from "./fixtures.ts";
+import { recordErrorScreens } from "./member-support.ts";
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -51,6 +52,7 @@ test("the session ending mid-browse leads to sign in, says why, and comes back t
     tag: "ended",
     profile: { settings: { autoplayPreviews: false } },
   });
+  const errorScreens = await recordErrorScreens(page);
   await page.goto("/browse");
   await expect(row(page, "Trending Now")).toBeVisible();
   // Let the page finish loading (later batches of rows, images). Otherwise a request still in
@@ -67,6 +69,7 @@ test("the session ending mid-browse leads to sign in, says why, and comes back t
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/login\?redirect=%2Fbrowse%3Ftitle%3D/);
   await expect(page.getByText("You've been signed out", { exact: true })).toBeVisible();
+  expect(await errorScreens(), "an error screen on the way to sign-in").toEqual([]);
 });
 
 test.describe("the demo account", () => {

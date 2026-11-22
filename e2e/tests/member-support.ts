@@ -19,6 +19,44 @@ export {
   uniqueEmail,
 } from "./api.ts";
 
+/**
+ * Records every time the page showed the app's error screen ("Something went wrong", on screen or
+ * in the document title) or logged a session hook used without its session. A session that ends
+ * while a screen is open (signed out everywhere, revoked, "Sign in again") must lead straight to
+ * sign-in: the screens behind a guard never render without the session the guard promised them.
+ * Call before the page loads; the returned function reads what was recorded in this document.
+ */
+export async function recordErrorScreens(page: Page): Promise<() => Promise<string[]>> {
+  const logged: string[] = [];
+  page.on("console", (message) => {
+    const text = message.text();
+    if (/used while signed out|used without an active profile/.test(text)) {
+      logged.push(`console: ${text.split("\n")[0]}`);
+    }
+  });
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    Object.assign(window, { __webflixErrorScreens: seen });
+    const note = (what: string) => {
+      if (seen.length < 20) seen.push(`${what} on ${location.pathname}`);
+    };
+    new MutationObserver((records) => {
+      if (document.title.includes("Something went wrong")) note("error title");
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.textContent?.includes("Something went wrong")) note("error screen");
+        }
+      }
+    }).observe(document, { childList: true, subtree: true, characterData: true });
+  });
+  return async () => [
+    ...logged,
+    ...(await page.evaluate(
+      () => (window as { __webflixErrorScreens?: string[] }).__webflixErrorScreens ?? [],
+    )),
+  ];
+}
+
 /** A second "device": a fresh browser context signed in to the same account. */
 export async function secondDevice(context: BrowserContext, account: TestAccount): Promise<void> {
   await signIn(context.request, account, account.profileId);

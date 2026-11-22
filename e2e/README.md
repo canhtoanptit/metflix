@@ -135,7 +135,9 @@ putting back and nothing needs to run serially. Second devices are `newDevice()`
 **Content-Security-Policy violations fail the spec.** Every browser context watches the
 console, and a CSP violation (a blocked script, style, image, media or connection) fails the
 spec that caused it, with the blocked URL and the directive. A blocked resource is a broken page
-wherever the deployment serves a CSP.
+wherever the deployment serves a CSP. The same watch fails a spec when React reports a state update
+during another component's render ("Cannot update a component ... while rendering a different
+component"), which only development builds report (the dev mode).
 
 **Rate limits are waited out, never failed on.** `sendPatiently` (used by sign-up, sign-in and
 profile selection) waits for `Retry-After` on a `429` and extends the test's timeout by that wait.
