@@ -1,13 +1,15 @@
-import type { OidcProvider } from "@webflix/contracts";
+import { API_BASE_PATH, type OidcProvider } from "@webflix/contracts";
 import {
+  AppError,
   type ClientInfo,
   type IssuedSession,
   type OidcCompletion,
   sha256Hex,
   utf8Encode,
 } from "@webflix/core";
+import type { MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { AppContainer } from "../container.ts";
+import type { AppContainer, AppEnv } from "../container.ts";
 import {
   clearSessionCookie,
   credentialCharge,
@@ -191,6 +193,12 @@ export function createIdentityHandlers(container: AppContainer): AreaHandlers<"i
     listAvatars: () => services.profiles.listAvatars(),
 
     // --- Milestone 2 (§4, §8.2) ----------------------------------------------------------------
+    listSignInProviders: (_request, c) => {
+      // The same for every visitor and read from configuration: a shared cache may keep it.
+      c.header("Cache-Control", "public, max-age=300");
+      return services.identity.signInProviders();
+    },
+
     startOidc: async ({ params, query }, c) => {
       const start = await services.identity.startOidc({
         provider: params.provider,
@@ -236,5 +244,39 @@ export function createIdentityHandlers(container: AppContainer): AreaHandlers<"i
       services.identity.receiveEmailWebhook(params.provider, c.req.raw.headers, body),
 
     getMailbox: ({ query }) => services.identity.mailbox(query),
+  };
+}
+
+const CALLBACK_PATH = new RegExp(`^${API_BASE_PATH}/auth/oidc/([^/]+)/callback$`);
+
+/**
+ * The OpenID callbacks are browser navigations (an issuer's redirect, Apple's cross-site form
+ * post): a person must never land on a problem document there. Whatever refused the request
+ * before its handler ran (validation, an oversized or mistyped form body, the `oidc` rate limit,
+ * an unavailable dependency) becomes the same redirect as every other failure: back to the
+ * transaction's `returnTo` with `?oidc=failed`, the transaction cookie dropped. The refusal itself
+ * still happens (the rate limit is charged and enforced); only its rendering changes.
+ */
+export function oidcCallbackNavigation(container: AppContainer): MiddlewareHandler<AppEnv> {
+  const { services, config, logger } = container;
+  return async (c, next) => {
+    await next();
+    const match = CALLBACK_PATH.exec(c.req.path);
+    if (!match || c.res.status < 400) return;
+    const provider = match[1] ?? "";
+    const name = services.identity.transactionCookieName(provider, config.cookies.secure);
+    const location = await services.identity.abandonedCallbackLocation(
+      provider,
+      getCookie(c, name),
+    );
+    logger.warn("identity.oidc_refused", {
+      provider,
+      status: c.res.status,
+      code: c.error instanceof AppError ? c.error.code : null,
+    });
+    // Replace, not merge: nothing of the problem response (its type, length) may carry over.
+    c.res = undefined;
+    c.res = new Response(null, { status: 303, headers: { Location: location } });
+    deleteCookie(c, name, { path: "/", secure: config.cookies.secure, httpOnly: true });
   };
 }

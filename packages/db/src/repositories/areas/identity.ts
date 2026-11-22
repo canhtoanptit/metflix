@@ -109,6 +109,54 @@ export function createIdentityRepository(database: Database): IdentityRepository
       ? sql<string>`${sql.ref(column)} collate "C"`
       : sql<string>`${sql.ref(column)}`;
 
+  /** The account and its milestone 1 subscription row, if any (a left join: one statement). */
+  const accountWithSubscription = (accountId: string) =>
+    db
+      .selectFrom("accounts as a")
+      .leftJoin("subscriptions as s", "s.account_id", "a.id")
+      .select([
+        "a.id",
+        "a.email",
+        "a.password_hash",
+        "a.email_verified_at",
+        "a.created_at",
+        "a.updated_at",
+        "s.account_id as s_account_id",
+        "s.plan_id as s_plan_id",
+        "s.started_at as s_started_at",
+        "s.current_period_end as s_current_period_end",
+        "s.canceled_at as s_canceled_at",
+        "s.card_brand as s_card_brand",
+        "s.card_last4 as s_card_last4",
+        "s.card_exp_month as s_card_exp_month",
+        "s.card_exp_year as s_card_exp_year",
+        "s.updated_at as s_updated_at",
+      ])
+      .where("a.id", "=", accountId);
+
+  type AccountWithSubscriptionRow = Awaited<
+    ReturnType<ReturnType<typeof accountWithSubscription>["executeTakeFirstOrThrow"]>
+  >;
+
+  const toAccountWithSubscription = (row: AccountWithSubscriptionRow) => ({
+    account: toAccount(row),
+    subscription:
+      row.s_account_id === null || row.s_plan_id === null
+        ? null
+        : toSubscription({
+            account_id: row.s_account_id,
+            plan_id: row.s_plan_id,
+            started_at: Number(row.s_started_at),
+            current_period_end: Number(row.s_current_period_end),
+            canceled_at: row.s_canceled_at === null ? null : Number(row.s_canceled_at),
+            card_brand: row.s_card_brand,
+            card_last4: row.s_card_last4,
+            card_exp_month: row.s_card_exp_month === null ? null : Number(row.s_card_exp_month),
+            card_exp_year: row.s_card_exp_year === null ? null : Number(row.s_card_exp_year),
+            updated_at: Number(row.s_updated_at),
+          }),
+  });
+
   /** Account ids holding a live token of `purpose` for their current address (a subquery). */
   const liveTokenAccount = (tokenHash: string, purpose: string, now: number) =>
     db
@@ -151,31 +199,15 @@ export function createIdentityRepository(database: Database): IdentityRepository
       return row ? toAccount(row) : null;
     },
 
+    async getAccountWithSubscription(accountId) {
+      const row = await accountWithSubscription(accountId).executeTakeFirst();
+      return row ? toAccountWithSubscription(row) : null;
+    },
+
     async loadBootstrap(accountId) {
       // One round trip (a D1 batch): the account with its subscription row, and its profiles.
       const [accountRows, profileRows] = await database.batch([
-        db
-          .selectFrom("accounts as a")
-          .leftJoin("subscriptions as s", "s.account_id", "a.id")
-          .select([
-            "a.id",
-            "a.email",
-            "a.password_hash",
-            "a.email_verified_at",
-            "a.created_at",
-            "a.updated_at",
-            "s.account_id as s_account_id",
-            "s.plan_id as s_plan_id",
-            "s.started_at as s_started_at",
-            "s.current_period_end as s_current_period_end",
-            "s.canceled_at as s_canceled_at",
-            "s.card_brand as s_card_brand",
-            "s.card_last4 as s_card_last4",
-            "s.card_exp_month as s_card_exp_month",
-            "s.card_exp_year as s_card_exp_year",
-            "s.updated_at as s_updated_at",
-          ])
-          .where("a.id", "=", accountId),
+        accountWithSubscription(accountId),
         db
           .selectFrom("profiles as p")
           .leftJoin("avatars as av", "av.id", "p.avatar_id")
@@ -186,24 +218,8 @@ export function createIdentityRepository(database: Database): IdentityRepository
       ]);
       const row = accountRows.rows[0];
       if (!row) return null;
-      const subscription =
-        row.s_account_id === null || row.s_plan_id === null
-          ? null
-          : toSubscription({
-              account_id: row.s_account_id,
-              plan_id: row.s_plan_id,
-              started_at: Number(row.s_started_at),
-              current_period_end: Number(row.s_current_period_end),
-              canceled_at: row.s_canceled_at === null ? null : Number(row.s_canceled_at),
-              card_brand: row.s_card_brand,
-              card_last4: row.s_card_last4,
-              card_exp_month: row.s_card_exp_month === null ? null : Number(row.s_card_exp_month),
-              card_exp_year: row.s_card_exp_year === null ? null : Number(row.s_card_exp_year),
-              updated_at: Number(row.s_updated_at),
-            });
       return {
-        account: toAccount(row),
-        subscription,
+        ...toAccountWithSubscription(row),
         profiles: profileRows.rows.map((profile) => toProfile(profile as ProfileJoinRow)),
       };
     },

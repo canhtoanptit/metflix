@@ -339,7 +339,18 @@ export const EVENT_SURFACES = [
 export const EVENT_ROW_KINDS = ["billboard", ...ROW_KINDS] as const;
 export const SIGNUP_STEPS = ["email", "plan", "payment", "profiles", "complete"] as const;
 export const SIGNUP_STEP_OUTCOMES = ["viewed", "completed", "failed"] as const;
-export const PLAYBACK_ABANDON_REASONS = ["closed", "error", "stalled", "replaced"] as const;
+/**
+ * `playback.abandon.reason`: `closed` (released before the end), `replaced` (another start on
+ * the device), `stalled` (a report found its stream slot gone: revoked or lapsed), `expired`
+ * (never released: the slot lapsed and no report came back, e.g. a killed tab), `error`.
+ */
+export const PLAYBACK_ABANDON_REASONS = [
+  "closed",
+  "error",
+  "stalled",
+  "replaced",
+  "expired",
+] as const;
 export const AUTH_EVENT_METHODS = ["password", "oidc"] as const;
 export const AUTH_EVENT_OUTCOMES = ["success", "failure"] as const;
 export const EXPERIMENT_UNIT_TYPES = ["profile", "device"] as const;
@@ -385,6 +396,20 @@ export type StaffRole = (typeof STAFF_ROLES)[number];
 export const STAFF_CLIENT_ID = "webflix-admin";
 export const STAFF_API_AUDIENCE = "webflix-admin-api";
 export const AUDIT_ACTOR_TYPES = ["staff", "member", "system"] as const;
+/**
+ * What an audited staff action came to. `pending`: written before the call, not settled yet;
+ * `succeeded`; `failed`: the call ended with an error (its code is in `after.error`); a refusal
+ * of a single-step action changed nothing; `unknown`: the call ended in a way that does not say
+ * whether the change happened (a timeout, the provider unreachable), or never reported back.
+ * Check the target before trying an `unknown` one again.
+ */
+export const AUDIT_OUTCOMES = ["pending", "succeeded", "failed", "unknown"] as const;
+export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
+/**
+ * The console's idempotency key on billing actions: generated once per submitted form and sent
+ * again on every retry of it, so a retried request never acts twice (a UUID fits).
+ */
+export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
 // --- Email (§8.2) -----------------------------------------------------------------------------
 export const EMAIL_TEMPLATES = [

@@ -12,6 +12,7 @@ import type {
   PrivacyErasuresTable,
   PrivacyRequestsTable,
 } from "../../tables/events.ts";
+import { toPlaybackSession } from "../activity.ts";
 import { fromBool, toBool, typed } from "../mapping.ts";
 
 /** Erasure keys per statement: 4 bound parameters each, well within D1's 100. */
@@ -268,6 +269,19 @@ export function createEventsRepository(database: Database): EventsRepository {
           .where("compacted_at", "is", null)
           .execute();
       }
+    },
+
+    async openPlaybackBefore(cutoff, limit) {
+      const rows = await db
+        .selectFrom("playback_sessions")
+        .selectAll()
+        .where("ended_at", "is", null)
+        .where("last_heartbeat_at", "<", cutoff)
+        .orderBy("last_heartbeat_at", "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPlaybackSession);
     },
 
     async takeOutbox(limit) {

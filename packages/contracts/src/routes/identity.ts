@@ -27,6 +27,7 @@ import {
   OidcProviderParams,
   OidcStartQuery,
   RequestPasswordResetBody,
+  SignInProviders,
 } from "../identity.ts";
 import {
   AvatarCatalog,
@@ -277,6 +278,25 @@ export const identityRoutes = {
     auth: "account",
     summary: "Avatars for the profile picker, grouped",
     response: AvatarCatalog,
+  }),
+  listSignInProviders: defineRoute({
+    method: "GET",
+    path: "/auth/providers",
+    tag: "auth",
+    area: "identity",
+    auth: "public",
+    summary: "Sign-in issuers this deployment offers (the sign-in buttons)",
+    description:
+      "Public and cacheable (`Cache-Control: public`): the same for every visitor, read from configuration (no database). Each item's `id` is the `{provider}` of `GET /auth/oidc/{provider}/start`; `displayName` is what to show. Empty when only password sign-in is offered.",
+    response: SignInProviders,
+    examples: {
+      response: {
+        items: [
+          { id: "google", displayName: "Google" },
+          { id: "apple", displayName: "Apple" },
+        ],
+      },
+    },
   }),
   startOidc: defineRoute({
     method: "GET",

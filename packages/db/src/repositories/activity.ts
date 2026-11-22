@@ -148,7 +148,7 @@ export function createLibraryRepository(database: Database): LibraryRepository {
   };
 }
 
-function toPlaybackSession(row: PlaybackSessionsTable): PlaybackSessionRecord {
+export function toPlaybackSession(row: PlaybackSessionsTable): PlaybackSessionRecord {
   return {
     id: row.id,
     accountId: row.account_id,

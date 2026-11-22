@@ -58,9 +58,39 @@ describe("routes registered but not implemented", () => {
           [name, adminRoutes[name as keyof typeof adminRoutes], ADMIN_API_BASE_PATH] as const,
       ),
     ];
-    // Shrinks as the areas implement their routes (the staff API's stay pending until the admin
-    // area's wave); the uniform answer is what is checked for whichever remain.
-    expect(pending.length).toBeGreaterThan(0);
+    // Every area has implemented its routes now (the admin area's wave closed the last ones), so
+    // the mechanism is also checked on a route bound with `notImplemented()` behind the real
+    // guard; the uniform answer is checked for any real route still pending too.
+    const { createGuard } = await import("../src/session.ts");
+    const { notImplemented } = await import("../src/index.ts");
+    const probe = new Hono();
+    probe.onError(problemErrorHandler());
+    bindRoutes(
+      probe as never,
+      {
+        probeRoute: defineRoute({
+          method: "POST",
+          path: "/probe/:id",
+          tag: "admin",
+          area: "admin",
+          auth: "staff",
+          staffRole: "admin",
+          summary: "probe",
+          params: z.object({ id: z.string() }),
+          body: z.object({ reason: z.string() }),
+          response: null,
+        }),
+      },
+      { probeRoute: notImplemented() },
+      { guard: createGuard(t.container) as never, basePath: ADMIN_API_BASE_PATH },
+    );
+    const synthetic = await probe.request(`${ADMIN_API_BASE_PATH}/probe/x1`, { method: "POST" });
+    expect(synthetic.status).toBe(501);
+    expect(await synthetic.json()).toMatchObject({
+      code: "not_implemented",
+      operationId: "probeRoute",
+      area: "admin",
+    });
     for (const [name, route, base] of pending) {
       // Anonymous, no CSRF header, no body: still the uniform answer.
       const response = await t.request(pathOf(base, route), { method: route.method });

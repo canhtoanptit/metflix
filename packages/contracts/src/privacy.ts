@@ -88,7 +88,8 @@ const ExportTime = IsoDateTime.nullable();
 /**
  * "Download your data" (§6.3): everything Webflix holds about the account, as one document.
  * `events` are the account's behaviour events in the lake (pseudonymous, as stored); `areas`
- * holds each milestone 2 area's own part (identities, invoices...) under the area's name;
+ * holds each area's own part under the area's name (`identity`: sign-in methods and email
+ * verification; `billing`: membership and invoices; ...);
  * `notes` says what is held elsewhere (the payment provider) and why something is not included.
  */
 export const DataExport = z
@@ -98,22 +99,6 @@ export const DataExport = z
     requestId: Id,
     generatedAt: IsoDateTime,
     account: z.object({ id: Id, email: z.string(), createdAt: IsoDateTime }),
-    membership: z
-      .object({
-        planId: z.string(),
-        startedAt: IsoDateTime,
-        currentPeriodEnd: IsoDateTime,
-        canceledAt: ExportTime,
-        card: z
-          .object({
-            brand: z.string(),
-            last4: z.string(),
-            expMonth: z.number().int(),
-            expYear: z.number().int(),
-          })
-          .nullable(),
-      })
-      .nullable(),
     profiles: z.array(
       z.object({
         id: Id,

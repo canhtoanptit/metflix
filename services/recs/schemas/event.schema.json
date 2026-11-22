@@ -761,7 +761,7 @@
           },
           "reason": {
             "type": "string",
-            "enum": ["closed", "error", "stalled", "replaced"]
+            "enum": ["closed", "error", "stalled", "replaced", "expired"]
           }
         },
         "required": [

@@ -414,3 +414,77 @@ foundation's contract keeps working. Milestone 1's card fields (`SignupBody.paym
   per client address by default), as docs/BACKEND.md §3 documents.
 - **Not changed**: `PAYMENT_DECLINE_REASONS` (a provider's other decline codes map to
   `card_declined`, `insufficient_funds` or `expired_card`), `CHECKOUT_STATUSES`, every error code.
+
+## 2026-11-22 — identity fix round: offered issuers, callbacks that always redirect (additive)
+
+- **New route `GET /auth/providers`** (`listSignInProviders`, public, a client method):
+  `SignInProviders { items: SignInProvider[] }`, each `{ id: OidcProviderId, displayName }`, in
+  button order; empty when only password sign-in is offered. Read from configuration (no
+  database round trip), the same for every visitor, `Cache-Control: public, max-age=300`. Show a
+  button per item and send it to `GET /auth/oidc/{id}/start`. A small route of its own rather
+  than a field of `GET /session`: that response is per-browser and never cached, while this one
+  is public and changes only with configuration. New schemas: `SignInProvider`,
+  `SignInProviders`.
+- **The OpenID callbacks never answer a problem document** (`GET` and Apple's form `POST
+  /auth/oidc/:provider/callback`): a request refused before the handler (an invalid query or
+  form, a repeated, oversized or mistyped form body, an unknown issuer, the `oidc` rate limit) is
+  answered like every other failure, `303` to the transaction's `returnTo` (or `/`) with
+  `?oidc=failed`, and the transaction cookie is dropped. The rate limit is still charged and
+  enforced; only its rendering on these two navigations changed (`GET /auth/oidc/:provider/start`
+  still answers `rate_limited`). The server logs `identity.oidc_refused` with the refusal's code.
+
+## 2026-11-22 — events fix round: abandonment of unreleased sessions, export layout
+
+- **`PLAYBACK_ABANDON_REASONS` gains `expired`** (appended): a playback session nobody released
+  (its stream slot lapsed and no report came back, e.g. a killed tab) is ended by the events
+  area's sweep with `playback.abandon { reason: "expired" }`. `stalled` keeps its meaning (a
+  report found its slot gone). The event version stays 1; `services/recs/schemas/event.schema.json`
+  is regenerated (the reason's enum). Readers that switch on the reason: add the value.
+- **`DataExport.membership` removed** (breaking for a reader of the export document; no client
+  reads it yet): the membership and invoices are billing's part of the export,
+  `DataExport.areas.billing`, beside identity's (`areas.identity`: sign-in methods, email
+  verification). A member without a membership now gets an export too.
+
+
+## 2026-11-22 — admin area: the staff API is implemented (staff routes changed)
+
+All 32 staff routes are implemented, and six are added (38). The staff routes had answered `501`
+until now and no client calls them yet, so the changes below break nobody; the member API is
+unchanged. Behaviour for the console and operators: docs/BACKEND.md §3, "The staff API".
+
+- **`idempotencyKey` is required** (breaking for the staff routes' old shape) on `RefundBody`,
+  `CancelMemberSubscriptionBody`, `ExtendTrialBody` and `ComplimentaryPeriodBody`:
+  `IDEMPOTENCY_KEY_PATTERN` (16-64 of `[A-Za-z0-9_-]`, a UUID fits). Generate it once per
+  submitted form and resend it on every retry: a retried refund never refunds twice. A retry of a
+  succeeded request answers the original response; while the first runs, after it failed or ended
+  unknown, with other parameters or by another staff member: **`staff_action_conflict`** (409,
+  new code; also a dead letter replayed twice).
+- **The audit log lists `AuditLogEntry`** (new schema): `AuditEntry` (unchanged: what the
+  experiments and personalisation areas write with their changes) plus `outcome`
+  (`AUDIT_OUTCOMES`: `pending`, `succeeded`, `failed`, `unknown`; schema `AuditOutcome`) and
+  `completedAt`. `AuditPage` items are `AuditLogEntry`; `AuditQuery` gains an `outcome` filter.
+  Reads of member data are entries too (`member.viewed`, `member.searched`,
+  `member.privacy_viewed`).
+- **New staff routes**, closing the two gaps the contract had (support's privacy actions, the
+  operator's erasure and rollback):
+  - `GET /members/:accountId/privacy` (`getMemberPrivacy`, `support`): `MemberPrivacy { consent:
+    ConsentState, requests: PrivacyRequest[] }`, `downloadUrl` always null.
+  - `PUT /members/:accountId/privacy/consent` (`setMemberConsent`, `support`):
+    `SetMemberConsentBody { purpose, granted, reason }` → `ConsentState` (recorded with source
+    `support`).
+  - `DELETE /members/:accountId/deletion` (`cancelMemberDeletion`, `support`): `ReasonBody`, 204;
+    `not_found` when no deletion is scheduled.
+  - `GET /system/privacy/erasures?limit=` (`listPendingErasures`, `admin`): `PendingErasures {
+    subjectKeys }` for the lake's compaction (`compact --erase`).
+  - `POST /system/privacy/erasures/confirm` (`confirmErasures`, `admin`): `ConfirmErasuresBody {
+    subjectKeys (1-200), reason }`, 204.
+  - `POST /system/recommendations/rollback` (`rollbackRecommendations`, `admin`): `ReasonBody` →
+    `RecommendationStatus`; `not_found` without a previous run.
+  Deliberately not exposed: the events area's read-back of a member's behaviour events (no
+  support task needs it) and the export document or its link.
+- **Error lists** (documentation): the billing actions list `checkout_state_conflict`,
+  `subscription_required` and `staff_action_conflict` where the service can answer them;
+  `replayDeadLetter` lists `staff_action_conflict`.
+- **Constants**: `AUDIT_OUTCOMES`, `AuditOutcome`, `IDEMPOTENCY_KEY_PATTERN`.
+- **Schemas**: `IdempotencyKey`, `AuditOutcome`, `AuditLogEntry`, `MemberPrivacy`,
+  `SetMemberConsentBody`, `PendingErasuresQuery`, `PendingErasures`, `ConfirmErasuresBody`.

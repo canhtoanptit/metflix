@@ -13,6 +13,7 @@
  */
 
 export * from "./areas/admin/config.ts";
+export * from "./areas/admin/public.ts";
 export type { AdminRepository } from "./areas/admin/repository.ts";
 export type { AdminService } from "./areas/admin/service.ts";
 export * from "./areas/billing/config.ts";

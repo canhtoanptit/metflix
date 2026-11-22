@@ -4,30 +4,27 @@ import { effectiveMembership, legacySubscriptionView } from "./projection.ts";
 import type { MembershipRecord } from "./repository.ts";
 
 /**
- * The account and milestone 1's mock membership row, if any.
- *
- * STAND-IN (needs from identity): milestone 1's `repos.accounts.get` joins `subscriptions` and
- * answers null for an account created without payment (milestone 2 sign-up), so billing falls
- * back to the identity area's account read for such accounts. Replace both with one identity
- * read that returns the account with a nullable subscription when identity offers it.
+ * The account and milestone 1's mock membership row, if any: one read of the identity area
+ * (`repos.identity.getAccountWithSubscription`), which, unlike milestone 1's
+ * `repos.accounts.get`, also answers for an account created without payment (§5.1).
  */
 export async function readAccount(
   deps: Pick<ServiceDependencies, "repos">,
   accountId: string,
 ): Promise<{ account: AccountRecord; subscription: SubscriptionRecord | null } | null> {
-  const loaded = await deps.repos.accounts.get(accountId);
-  if (loaded) return loaded;
-  const identity = await deps.repos.identity.getAccount(accountId);
-  if (!identity) return null;
+  const loaded = await deps.repos.identity.getAccountWithSubscription(accountId);
+  if (!loaded) return null;
+  const { account, subscription } = loaded;
   return {
     account: {
-      id: identity.id,
-      email: identity.email,
-      passwordHash: identity.passwordHash ?? "",
-      createdAt: identity.createdAt,
-      updatedAt: identity.updatedAt,
+      id: account.id,
+      email: account.email,
+      // Milestone 1's record spells "no password" as the empty string; billing never reads it.
+      passwordHash: account.passwordHash ?? "",
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
     },
-    subscription: null,
+    subscription,
   };
 }
 

@@ -50,7 +50,8 @@ export function createAreaServices(deps: ServiceDependencies): {
     events,
     personalisation: createPersonalisationService(deps, seams),
     experiments,
-    admin: createAdminService(deps, seams),
+    // The staff operations call the other areas' services, resolved when a request runs.
+    admin: createAdminService(deps, seams, { areas: () => areas }),
   };
   return { areas, seams };
 }

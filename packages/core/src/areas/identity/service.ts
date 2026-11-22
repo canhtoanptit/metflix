@@ -7,12 +7,14 @@ import {
   type LinkedIdentity,
   type Mailbox,
   type MaturityLevel,
+  OIDC_PROVIDERS,
   OIDC_RESULT_PARAM,
   type OidcIntent,
   type OidcOutcome,
   type OidcProvider,
   PASSWORD_RESET_TTL_SEC,
   type REAUTH_METHODS,
+  type SignInProviders,
   type WebhookAck,
 } from "@webflix/contracts";
 import { type EmailTemplateData, EmailWebhookError, parseResendWebhook } from "@webflix/email";
@@ -137,8 +139,16 @@ export interface IdentityService extends AreaModule {
     transaction: string | undefined;
     client: ClientInfo;
   }): Promise<OidcCompletion>;
+  /** The issuers offered, in button order: key and display name only (configuration, no I/O). */
+  signInProviders(): SignInProviders;
+  /**
+   * Where a callback the handler never ran for (refused by validation or the rate limit) sends
+   * the browser: its transaction's `returnTo`, if the cookie opens, with `?oidc=failed`. Opens
+   * the cookie only (nothing is claimed or stored); the transaction is abandoned either way.
+   */
+  abandonedCallbackLocation(provider: string, transaction: string | undefined): Promise<string>;
   /** The cookie name of a provider's transaction (one per provider, so two tabs do not collide). */
-  transactionCookieName(provider: OidcProvider, secure: boolean): string;
+  transactionCookieName(provider: string, secure: boolean): string;
   listIdentities(auth: AuthContext): Promise<IdentityList>;
   unlinkIdentity(auth: AuthContext, provider: OidcProvider): Promise<void>;
   getElevation(auth: AuthContext): Promise<Elevation>;
@@ -611,6 +621,27 @@ export function createIdentityService(
       // keyed by the address instead (the outbox, a suppression) goes here.
       const account = await repos.identity.getAccount(accountId);
       if (account) await repos.identity.forgetAddress(account.email);
+    },
+
+    signInProviders() {
+      return {
+        items: Object.values(providers()).flatMap((provider) =>
+          provider ? [{ id: provider.id, displayName: provider.displayName }] : [],
+        ),
+      };
+    },
+
+    async abandonedCallbackLocation(provider, transaction) {
+      if (!(OIDC_PROVIDERS as readonly string[]).includes(provider) || !transaction) {
+        return withOutcome("/", "failed");
+      }
+      const parsed = Transaction.safeParse(
+        await transactions.open(transaction, `oidc:${provider}`),
+      );
+      return withOutcome(
+        parsed.success && parsed.data.p === provider ? parsed.data.r : "/",
+        "failed",
+      );
     },
 
     transactionCookieName(provider, secure) {

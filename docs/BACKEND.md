@@ -11,7 +11,7 @@ web app can rely on. Companion documents: `docs/DECISIONS.md` (why things are th
 | --- | --- | --- |
 | `packages/core` | Application services (`createServices`), repository ports, recommendation engine, catalog/popularity caches, mock billing, seeder, jobs and scheduler, in-memory repositories (`@webflix/core/memory`), contract suites and test harness (`@webflix/core/testing`) | portable (Web APIs only) |
 | `packages/db` | Kysely schema, migrations (authored once), repositories, SQL search index. Entry points: `@webflix/db` (portable), `@webflix/db/sqlite` (node:sqlite), `@webflix/db/postgres` (pg), `@webflix/db/d1` (D1 binding, portable). Generated D1 SQL in `packages/db/migrations/d1/` | portable + Node-only subpaths |
-| `packages/http` | `createApp(container)`: the 79 member routes and the 32-route staff API (milestone 2's not yet built answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
+| `packages/http` | `createApp(container)`: the 79 member routes and the 38-route staff API (every route is implemented; a route registered without a handler would answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
 | `apps/api` | Node entrypoint: `serve`, `worker`, `migrate`, `seed`; composition of adapters from env | Node |
 
 ## 2. Running the API
@@ -173,6 +173,8 @@ ratings so the home page is full on first load.
   the `webflix_device` cookie (`__Host-` on https; HttpOnly, a year, stateless): it only exempts
   that browser from the per-email limit.
 - **Sign-in, milestone 2 (identity area; docs/BLUEPRINT-M2.md §4).**
+  - *Which buttons*: `GET /api/v1/auth/providers` lists the offered issuers (`id`,
+    `displayName`, button order; public, cacheable, no database read).
   - *Federated sign-in* is a browser navigation: `GET /api/v1/auth/oidc/{google|apple}/start?intent=signin|link|reauth&returnTo=/path`
     (302 to the issuer; an issuer that cannot be reached sends the browser straight back with
     `?oidc=failed`). The callback redirects to `returnTo` with `?oidc=<outcome>`
@@ -180,7 +182,9 @@ ratings so the home page is full on first load.
     `linked`, `reauthenticated`, `link-required` (an account has this address but may not be
     linked automatically: sign in to it, then link from Account), `identity-in-use`,
     `cancelled`, `failed` (never more detail; the server logs `identity.oidc_failed` with the
-    reason). The transaction is a sealed cookie (`webflix_oidc_<provider>`, `__Host-` on https,
+    reason). The callbacks never answer JSON: a request refused before the handler (invalid
+    query or form, the `oidc` rate limit) is the same `?oidc=failed` redirect
+    (`identity.oidc_refused` in the logs). The transaction is a sealed cookie (`webflix_oidc_<provider>`, `__Host-` on https,
     ten minutes, `SameSite=None` for Apple's cross-site form post).
   - *Linking rule*: an issuer identity is keyed by (issuer, subject). It signs in to an existing
     account by address only when the issuer verified the address **and** the account verified
@@ -264,9 +268,11 @@ ratings so the home page is full on first load.
 - **Download your data.** `POST /privacy/export` needs a fresh account-holder proof
   (`reauthentication_required`: send the member through `POST /session/elevation`), one export
   at a time (`privacy_request_pending`), not on the demo account. The job builds one JSON
-  document (account, membership, profiles, devices, each profile's list, ratings, progress and
-  history, consents, privacy requests, every lake event of the account, the other areas' parts)
-  and emails the link; `GET /privacy/requests` lists it with `downloadUrl` until `expiresAt`.
+  document (account, profiles, devices, each profile's list, ratings, progress and history,
+  consents, privacy requests, every lake event of the account, and each area's own part under
+  `areas`: billing's membership and invoices, identity's sign-in methods) and emails the link
+  through identity's `data-export-ready` template (the suppression list applies; the link stays
+  listed either way); `GET /privacy/requests` lists it with `downloadUrl` until `expiresAt`.
   The link (`GET /privacy/exports/:id?token=`) works only for its account, signed in as the
   account holder; it answers the document as an attachment.
 - **Delete account.** `POST /account/deletion` (fresh proof, not the demo account) schedules
@@ -279,13 +285,21 @@ ratings so the home page is full on first load.
 - **Server events.** Other areas call `emitServerEvent` (never throws; one queue message per
   event, stamped by the consumer with the consent in force at receipt). Playback produces
   `playback.start`, `progress` at each quarter of credited watching, `complete` at 95% or the
-  end, and `abandon` (`closed`, `replaced`, `stalled`), with ids derived from the session and
+  end, and `abandon` (`closed`, `replaced`, `stalled`, `expired`), with ids derived from the session and
   milestone so a repeat is the same event. They are written to the event outbox
   (`event_outbox`) in the same batch as the playback write that produced them, so the playback
   routes answer and cost exactly what they did (no extra round trip, no queue message: apps/edge
   `test/budgets.test.ts`). The `events.outbox` job, published on every scheduler tick, drains
-  the outbox to the lake; the read-back and the export drain it first. A session closed without
-  a release (a killed tab) gets no `abandon` today.
+  the outbox to the lake; the read-back and the export drain it first. A session nobody
+  released (a killed tab) is ended by the `events.playback-expiry` job (every tick) once its slot
+  has lapsed (no report for the lease's lifetime plus a minute, and the gate no longer holds it),
+  with one `abandon` (`expired`) in the same batch. Playback start also refuses a title staff
+  made unavailable (`not_found`, as its detail page answers), and answers `subscription_required`
+  to an account without a membership.
+- **The subject's plan** is billing's `currentPlan` (null without an entitled membership: never
+  invented). The account behind an export or an erasure is read through identity's
+  `getMemberIdentity`, so a member without a membership (sign-up without a card) can export,
+  delete, and has its events stamped.
 - **The privacy rules and the tests that guard them** (each was checked by breaking the code and
   watching its test fail):
 
@@ -299,6 +313,54 @@ ratings so the home page is full on first load.
   | Export needs a fresh proof, completes, is complete, is served only to its account | `core test/events/member-rights.test.ts`, `http test/events.test.ts` |
   | Deletion waits out its cooling-off period, removes what must go, keeps billing records, lists the subject for compaction | `member-rights.test.ts`, `db test/events-erasure.test.ts` |
   | Lake keys are the pipeline's pseudonyms | `core test/events/lake.test.ts`, `services/recs/tests/test_ingested_lake.py` |
+
+### The staff API (milestone 2 §8.3, `/api/admin/v1`)
+
+For the admin console (`createAdminApiClient({ accessToken })`) and for operators.
+
+- **Authentication.** `Authorization: Bearer <access token>` from the staff issuer (the console
+  signs staff in with the authorisation code flow and PKCE as client `webflix-admin`; the API
+  never sees a staff password). The token must be signed by a key the issuer publishes, with an
+  algorithm `WEBFLIX_STAFF_ALGORITHMS` allows, `iss` exactly the configured issuer, `aud`
+  containing `webflix-admin-api`, an access token (Keycloak's claim `typ: Bearer`, or header
+  `typ: at+jwt`; an ID token is refused), unexpired and not issued in the future (60 s skew).
+  Anything else is `401 unauthenticated` with no reason (the reason is logged:
+  `admin.staff_token_refused`); an issuer whose keys cannot be fetched while none are cached is
+  `503`. Cookies are ignored: a member session never opens a staff route, and a staff token never
+  opens a member route. Mutations need `X-Webflix-Client: web`, like the member API.
+- **Roles** come from `resource_access["webflix-admin"].roles`: `support`, `billing`, `content`,
+  `experiments`, `admin` (passes every check). Each route names one role
+  (`x-webflix-staff-role` in OpenAPI); without it, `403 staff_role_required` with `requiredRole`.
+  Reading a member's record is `support`'s, so billing agents hold both roles.
+- **Audit.** Every mutating route takes a `reason`; `GET /audit` lists who, what, on whom
+  (`target`), why, the request id, and the `outcome`: `pending` (written before the action ran,
+  not settled yet), `succeeded`, `failed` (ended with an error; `after.error` names it; a refusal
+  of a single-step action changed nothing), `unknown` (a timeout, an unreachable provider, a
+  multi-step action refused half-way, or no answer within 15 minutes: check the member before
+  trying again). Experiments and editorial changes are written by their areas in the same batch
+  as the change; member, billing, privacy and system actions are written before they run and
+  settled after, so no such action exists without its entry. Reading a member's record, their
+  privacy view or a member search is audited too (`member.viewed`, `member.privacy_viewed`,
+  `member.searched` with the query), before the data is returned.
+- **Idempotency.** The billing actions (refund, cancel, extend a trial, complimentary period)
+  require `idempotencyKey` (16-64 of `[A-Za-z0-9_-]`, a UUID fits): generate one per submitted
+  form and send it again on every retry of that form. A retry of a request that succeeded answers
+  the first response again; while the first is running, after it failed or ended `unknown`, or
+  with other parameters or another staff member, it answers `409 staff_action_conflict` and acts
+  on nothing.
+- **What staff see.** A member's record has no password hash (only `hasPassword`), no token, no
+  issuer subject and no card details, and its invoices have no hosted-invoice or PDF link (bearer
+  links to the member's invoice). The privacy view has the consent and the requests, never an
+  export's download link (`downloadUrl` is always null) and never the member's behaviour events.
+  Dead letters are listed without their payloads.
+- **Operators.** `GET /system/privacy/erasures` lists the pseudonymous account keys the lake's
+  compaction must drop (`compact --erase FILE`); `POST /system/privacy/erasures/confirm` records
+  that it did. `POST /system/recommendations/rollback` serves the previous model run again.
+  Dead letters: the job processor records a job that fails its last attempt (the fifth, every
+  queue's setting) in `job_dead_letters` in every mode; `POST /system/dead-letters/:id/replay`
+  publishes it again, once. `GET /system/health` probes the database, the cache and the
+  recommendation store (2 s each) and counts dead letters; queue depth is null (no queue port
+  reports it; Valkey's is on `/metrics`).
 
 ## 4. Configuration reference
 
@@ -366,9 +428,10 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_RECS_READ_TIMEOUT_MS` | `250` | personalisation | A recommendation-store read slower than this counts as unavailable: the page is the rule engine's, and the store is skipped for 30 s |
 | `WEBFLIX_EXPERIMENTS` | `database` | experiments | `database` (definitions in the experiments table, read through process memory 30 s and the shared cache 60 s) or `memory` (tests) |
 | `WEBFLIX_EXPERIMENTS_NEW_MEMBER_DAYS` | `30` | experiments | A member counts as "new" for experiment targeting this many days after joining |
-| `WEBFLIX_STAFF_VERIFIER` | `memory` | admin | `memory` (tokens mintable only in process) or `oidc` (the staff issuer's JWKS) |
-| `WEBFLIX_STAFF_ISSUER` | unset | admin | The staff issuer (required for `oidc`) |
-| `WEBFLIX_STAFF_AUDIENCE` / `WEBFLIX_STAFF_CLIENT_ID` | `webflix-admin-api` / `webflix-admin` | admin | The admin API's audience; the client whose roles count |
+| `WEBFLIX_STAFF_VERIFIER` | `oidc` outside production; `memory` in production | admin | `oidc`: staff access tokens validated offline against the staff issuer's published keys (discovery, then its JWKS; Web Crypto, every runtime). `memory`: tokens can only be minted in process, so the staff API admits nobody (production logs `admin.staff_api_closed` until an issuer is configured) |
+| `WEBFLIX_STAFF_ISSUER` | unset: outside production `{WEBFLIX_PUBLIC_ORIGIN}/dev-idp/staff`, the development issuer's staff realm, read in process | admin | The exact staff issuer, e.g. a Keycloak realm `https://sso.example/realms/webflix` (https in production, no trailing slash). Required for `oidc` in production. Pointing the API at Keycloak is this variable only |
+| `WEBFLIX_STAFF_AUDIENCE` / `WEBFLIX_STAFF_CLIENT_ID` | `webflix-admin-api` / `webflix-admin` | admin | The admin API's audience (`aud` must contain it); the client whose roles count (`resource_access.<client>.roles`) |
+| `WEBFLIX_STAFF_ALGORITHMS` | `RS256` | admin | Signature algorithms accepted on staff tokens (`RS256`, `ES256`, comma-separated), fixed here and never read from a token. Keycloak signs with RS256 by default |
 
 ### Node (`apps/api`)
 
@@ -696,4 +759,9 @@ Milestone 2: the seven port suites (`describeIdentityProviderContract`,
 The area repository suites (`describe<Area>RepositoryContract`) run on memory, SQLite,
 PostgreSQL and D1. `packages/http/test/milestone2.test.ts` covers the uniform 501, the staff
 guard and the new route kinds; `packages/contracts/test/no-card-data.test.ts` refuses card
-fields outside `LEGACY_CARD_FIELDS`.
+fields outside `LEGACY_CARD_FIELDS`. The staff API: `packages/http/test/admin-guard.test.ts`
+(every staff route against every role, no token, a member session; a staff token on every
+member route), `admin-api.test.ts` (each action, its audit entry, the write-ahead entry under
+failure, refund idempotency, least data), `staff-verifier.test.ts` (the OpenID verifier against
+the contract and the development issuer's token faults), and `staff-api.test.ts` in apps/api
+(SQLite, real issuer tokens) and apps/edge (workerd, D1).

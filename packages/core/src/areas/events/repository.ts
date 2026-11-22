@@ -5,6 +5,7 @@ import type {
   PRIVACY_REQUEST_STATUSES,
 } from "@webflix/contracts";
 import type { OutboxEvent } from "../../repositories/ports.ts";
+import type { PlaybackSessionRecord } from "../../repositories/records.ts";
 
 /**
  * Repository port of the events area: `consents`, `privacy_requests`, `privacy_erasures`
@@ -57,6 +58,12 @@ export interface EventsRepository {
   pendingErasures(limit: number): Promise<PrivacyErasureRecord[]>;
   /** Compaction dropped these subjects' events (idempotent). */
   markErasuresCompacted(subjectKeys: readonly string[], at: number): Promise<void>;
+
+  /**
+   * Playback sessions still open whose credit clock (`lastHeartbeatAt`, within a few seconds of
+   * the last report) is before `cutoff`: candidates for the expiry sweep, oldest first.
+   */
+  openPlaybackBefore(cutoff: number, limit: number): Promise<PlaybackSessionRecord[]>;
 
   /** Outbox rows (written by the playback repository), oldest first, at most `limit`. */
   takeOutbox(limit: number): Promise<OutboxEvent[]>;

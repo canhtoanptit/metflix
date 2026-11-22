@@ -91,6 +91,12 @@ export const ERROR_CATALOG = {
   experiment_conflict: { status: 409, title: "That change conflicts with the experiment" },
   /** A valid staff token without the role the route needs (§8.3). */
   staff_role_required: { status: 403, title: "Your staff role does not allow this" },
+  /**
+   * A staff action that collides with an earlier one: its idempotency key was used for another
+   * request, or the earlier attempt with it is still running, failed, or ended with an unknown
+   * outcome (the audit entry named in `detail` says which); or a dead letter already replayed.
+   */
+  staff_action_conflict: { status: 409, title: "This conflicts with an earlier staff action" },
 } as const satisfies Record<string, ErrorSpec>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

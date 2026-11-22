@@ -30,6 +30,7 @@ export const ROUTE_INDEX = {
   updateProfile: { method: "PATCH", path: "/profiles/:id" },
   deleteProfile: { method: "DELETE", path: "/profiles/:id" },
   listAvatars: { method: "GET", path: "/avatars" },
+  listSignInProviders: { method: "GET", path: "/auth/providers" },
   listIdentities: { method: "GET", path: "/account/identities" },
   unlinkIdentity: { method: "DELETE", path: "/account/identities/:provider" },
   getElevation: { method: "GET", path: "/session/elevation" },
@@ -120,6 +121,9 @@ export const ADMIN_ROUTE_INDEX = {
   signOutMemberEverywhere: { method: "POST", path: "/members/:accountId/sign-out" },
   sendMemberPasswordReset: { method: "POST", path: "/members/:accountId/password-reset" },
   removeProfilePin: { method: "DELETE", path: "/members/:accountId/profiles/:profileId/pin" },
+  getMemberPrivacy: { method: "GET", path: "/members/:accountId/privacy" },
+  setMemberConsent: { method: "PUT", path: "/members/:accountId/privacy/consent" },
+  cancelMemberDeletion: { method: "DELETE", path: "/members/:accountId/deletion" },
   refundInvoice: { method: "POST", path: "/members/:accountId/refunds" },
   cancelMemberSubscription: { method: "POST", path: "/members/:accountId/subscription/cancel" },
   extendMemberTrial: { method: "POST", path: "/members/:accountId/subscription/extend-trial" },
@@ -148,6 +152,9 @@ export const ADMIN_ROUTE_INDEX = {
   replayDeadLetter: { method: "POST", path: "/system/dead-letters/:id/replay" },
   getRecommendationStatus: { method: "GET", path: "/system/recommendations" },
   importRecommendations: { method: "POST", path: "/system/recommendations/import" },
+  rollbackRecommendations: { method: "POST", path: "/system/recommendations/rollback" },
+  listPendingErasures: { method: "GET", path: "/system/privacy/erasures" },
+  confirmErasures: { method: "POST", path: "/system/privacy/erasures/confirm" },
   listAuditLog: { method: "GET", path: "/audit" },
 } as const satisfies {
   readonly [K in keyof AdminClientRoutes]: {

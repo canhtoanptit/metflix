@@ -21,6 +21,14 @@ export interface IdentityRepository {
 
   getAccount(accountId: string): Promise<IdentityAccount | null>;
   /**
+   * The account and its milestone 1 subscription row, null when it has none (an account created
+   * before payment, §5.1), in one statement. Milestone 1's `repos.accounts.get` answers null for
+   * such an account; this read does not. Null when the account does not exist.
+   */
+  getAccountWithSubscription(
+    accountId: string,
+  ): Promise<{ account: IdentityAccount; subscription: SubscriptionRecord | null } | null>;
+  /**
    * The session bootstrap's reads in one round trip: the account (with the identity columns),
    * its milestone 1 subscription row (null without one) and its profiles, oldest first. Null
    * when the account does not exist.

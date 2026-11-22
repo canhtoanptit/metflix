@@ -13,20 +13,29 @@ import { AppError } from "../../errors.ts";
 import { createSubjectKeys, type SubjectKind } from "../../ports/event-sink.ts";
 import { handleJob } from "../../ports/job-queue.ts";
 import type { Logger } from "../../ports/logger.ts";
+import { HEARTBEAT_CARRY_SEC, type OutboxEvent } from "../../repositories/ports.ts";
 import type { AuthContext, ServiceDependencies } from "../../services/context.ts";
 import type { AreaModule, ServerEventInput } from "../module.ts";
-import { createCollector, type IngestRequest, isRestrictedProfile } from "./collector.ts";
+import {
+  createCollector,
+  type IngestRequest,
+  isRestrictedProfile,
+  toOutboxEvent,
+} from "./collector.ts";
 import { type ConsentFlags, presentConsentState } from "./consent.ts";
 import {
   appendEventsJob,
   drainOutboxJob,
+  playbackExpiryJob,
   privacyEraseJob,
   privacyExportJob,
   privacySweepJob,
   serverEventJob,
 } from "./jobs.ts";
 import { createConsentLedger } from "./ledger.ts";
-import { createPrivacy, type OtherAreas } from "./privacy.ts";
+import type { OtherAreas } from "./neighbours.ts";
+import { isCompleted, playbackEvent } from "./playback-events.ts";
+import { createPrivacy } from "./privacy.ts";
 import type { ConsentPurposeName } from "./repository.ts";
 
 const HOUR_MS = 3600 * 1000;
@@ -34,6 +43,9 @@ const HOUR_MS = 3600 * 1000;
 const OUTBOX_BATCH = 100;
 const OUTBOX_ROUNDS = 10;
 const READ_BACK_MAX_WINDOW_MS = 7 * 24 * HOUR_MS;
+/** Open sessions examined per expiry run, and the slack past the slot's lapse before one is. */
+const EXPIRY_BATCH = 100;
+const EXPIRY_MARGIN_SEC = 60;
 
 export type { IngestRequest } from "./collector.ts";
 
@@ -109,22 +121,73 @@ export interface EventsService extends AreaModule {
 }
 
 export interface EventsServiceOptions {
-  /** The other areas' modules (their export and erasure hooks), resolved when a job runs. */
-  otherAreas?: OtherAreas;
+  /**
+   * The other areas' services (the member's plan, the account behind an export, every area's
+   * export and erasure hooks), resolved when used: they are built after this one.
+   */
+  otherAreas: OtherAreas;
 }
 
 export function createEventsService(
   deps: ServiceDependencies,
-  options: EventsServiceOptions = {},
+  options: EventsServiceOptions,
 ): EventsService {
   const { clock, config, eventSink } = deps;
   const keys = createSubjectKeys(config.events.pseudonymKey);
   // The ledger emits `consent.change` through the collector's seam implementation.
   const ledger = createConsentLedger(deps, (event) => collector.emitServerEvent(event));
-  const collector = createCollector(deps, keys, ledger);
-  const privacy = createPrivacy(deps, keys, options.otherAreas ?? (() => ({})), () =>
-    drainOutbox(deps.logger),
-  );
+  const collector = createCollector(deps, keys, ledger, options.otherAreas);
+  const privacy = createPrivacy(deps, keys, options.otherAreas, () => drainOutbox(deps.logger));
+
+  /**
+   * End the playback sessions nobody released (a killed tab, a lost network): their stream slot
+   * lapsed and no report came back. Each is ended once (the write ends only an open session)
+   * with its `playback.abandon` (`expired`) in the same batch, unless it had completed or its
+   * profile is restricted. A session whose slot is still held is left alone. Bounded per run.
+   */
+  async function expireAbandonedPlayback(logger: Logger): Promise<number> {
+    const now = clock.now();
+    const cutoff =
+      now - (config.playback.leaseTtlSec + HEARTBEAT_CARRY_SEC + EXPIRY_MARGIN_SEC) * 1000;
+    const sessions = await deps.repos.events.openPlaybackBefore(cutoff, EXPIRY_BATCH);
+    const held = new Map<string, Set<string>>();
+    let ended = 0;
+    for (const session of sessions) {
+      let slots = held.get(session.accountId);
+      if (!slots) {
+        const leases = await deps.streamGate.list(session.accountId);
+        slots = new Set(leases.map((lease) => lease.playbackSessionId));
+        held.set(session.accountId, slots);
+      }
+      if (slots.has(session.id)) continue;
+      const profile = await deps.repos.profiles.get(session.accountId, session.profileId);
+      const outbox: OutboxEvent[] = [];
+      if (
+        profile &&
+        !isRestrictedProfile(profile) &&
+        !isCompleted(session.state, session.positionSec, session.durationSec)
+      ) {
+        const event = await playbackEvent(
+          "playback.abandon",
+          "abandon",
+          {
+            record: session,
+            positionSec: session.positionSec,
+            durationSec: session.durationSec,
+            watchedSec: session.watchedSec,
+          },
+          { reason: "expired" },
+          // Playback stopped at the last report (the credit clock stays within seconds of it).
+          session.lastHeartbeatAt,
+        );
+        if (event) outbox.push(toOutboxEvent(event, now));
+      }
+      await deps.repos.playback.end(session.id, now, { outbox });
+      ended += 1;
+    }
+    if (ended > 0) logger.info("playback.expired_sessions_ended", { sessions: ended });
+    return ended;
+  }
 
   /**
    * Move the event outbox to the lake: stamp each row's server event (privacy rules applied),
@@ -248,6 +311,9 @@ export function createEventsService(
         }
         await collector.writeLake([outcome.event]);
       }),
+      handleJob(playbackExpiryJob, async (_payload, context) => {
+        await expireAbandonedPlayback(context.logger);
+      }),
       handleJob(drainOutboxJob, async (_payload, context) => {
         const stored = await drainOutbox(context.logger);
         if (stored > 0) context.logger.debug("events.outbox_drained", { events: stored });
@@ -256,7 +322,12 @@ export function createEventsService(
       handleJob(privacyEraseJob, ({ requestId }) => privacy.runErasure(requestId)),
       handleJob(privacySweepJob, () => privacy.sweep()),
     ],
-    scheduled: () => [drainOutboxJob.create({}), privacySweepJob.create({})],
+    // The expiry sweep first: its abandonments are in the outbox before the drain runs.
+    scheduled: () => [
+      playbackExpiryJob.create({}),
+      drainOutboxJob.create({}),
+      privacySweepJob.create({}),
+    ],
 
     emitServerEvent: (event) => collector.emitServerEvent(event),
     ingest: (request) => collector.ingest(request),

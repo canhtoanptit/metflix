@@ -178,13 +178,23 @@ describe("ingestion of client batches", () => {
     expect(lakeEvents(t.sink)).toHaveLength(EVENT_BATCH_MAX_EVENTS);
   });
 
-  it("does one consent read and one account read per batch, never per event", async () => {
+  it("reads consent and the plan once per batch, never per event", async () => {
     const t = await eventServices();
     const member = await createMember(t);
     const store = (t.deps.repos as unknown as { store: { queries: number } }).store;
-    const events = Array.from({ length: 50 }, () => clientEvent("impression"));
-    const before = store.queries;
-    await t.services.events.ingest({ auth: member.as("adult"), events, gpc: false, country: null });
-    expect(store.queries - before).toBe(2);
+    const cost = async (size: number) => {
+      const events = Array.from({ length: size }, () => clientEvent("impression"));
+      const before = store.queries;
+      await t.services.events.ingest({
+        auth: member.as("adult"),
+        events,
+        gpc: false,
+        country: null,
+      });
+      return store.queries - before;
+    };
+    const one = await cost(1);
+    expect(await cost(50)).toBe(one);
+    expect(one).toBeLessThanOrEqual(3);
   });
 });

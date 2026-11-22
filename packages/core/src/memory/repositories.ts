@@ -125,6 +125,8 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
   const tick = () => {
     s.queries += 1;
   };
+  const personalisation = createMemoryPersonalisationRepository();
+  const experiments = createMemoryExperimentsRepository();
   const emailTaken = (email: string, exceptId?: string) =>
     [...s.accounts.values()].some((account) => account.email === email && account.id !== exceptId);
 
@@ -139,9 +141,12 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
     identity: createMemoryIdentityRepository(store),
     billing: createMemoryBillingRepository(),
     events: createMemoryEventsRepository(s),
-    personalisation: createMemoryPersonalisationRepository(),
-    experiments: createMemoryExperimentsRepository(),
-    admin: createMemoryAdminRepository(),
+    personalisation,
+    experiments,
+    admin: createMemoryAdminRepository({
+      // One audit log, as on SQL: the rows those two write with their changes are listed too.
+      alsoWrittenBy: () => [experiments.audit, personalisation.audit],
+    }),
 
     accounts: {
       async emailExists(email) {

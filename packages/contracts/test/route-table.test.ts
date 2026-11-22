@@ -147,6 +147,7 @@ describe("route table", () => {
     ];
     // Milestone 2 (docs/BLUEPRINT-M2.md §4-§6, §8; docs/CONTRACT_CHANGES.md).
     const milestone2 = [
+      "GET /auth/providers",
       "GET /auth/oidc/:provider/start",
       "GET /auth/oidc/:provider/callback",
       "POST /auth/oidc/:provider/callback",
@@ -219,9 +220,26 @@ describe("route table", () => {
       "GET /system/recommendations",
       "POST /system/recommendations/import",
       "GET /audit",
+      // Added by the admin area (docs/CONTRACT_CHANGES.md): support's privacy actions, the
+      // operator's erasure confirmations and the recommendation rollback.
+      "GET /members/:accountId/privacy",
+      "PUT /members/:accountId/privacy/consent",
+      "DELETE /members/:accountId/deletion",
+      "POST /system/recommendations/rollback",
+      "GET /system/privacy/erasures",
+      "POST /system/privacy/erasures/confirm",
     ];
     const actual = adminEntries.map(([, route]) => `${route.method} ${route.path}`);
     expect(actual.sort()).toEqual(staff.sort());
+  });
+
+  it("takes an idempotency key on every staff billing action (a retry must not act twice)", () => {
+    for (const [name, route] of adminEntries) {
+      if (route.method === "GET" || !route.path.startsWith("/members/:accountId/")) continue;
+      const shape = (route.body as { shape?: Record<string, unknown> } | undefined)?.shape;
+      const billing = route.path.endsWith("/refunds") || route.path.includes("/subscription/");
+      expect(shape?.idempotencyKey !== undefined, name).toBe(billing);
+    }
   });
 
   it("takes a reason on every mutating staff route (the audit log needs one)", () => {

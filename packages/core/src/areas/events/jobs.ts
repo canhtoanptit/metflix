@@ -60,3 +60,9 @@ export const privacySweepJob = defineJob("privacy.sweep", z.object({}));
  * lake. Published on every scheduler tick; idempotent (rows are deleted once stored).
  */
 export const drainOutboxJob = defineJob("events.outbox", z.object({}));
+
+/**
+ * End the playback sessions nobody released (their stream slot lapsed and no report came back)
+ * and record their abandonment. Published on every scheduler tick; idempotent.
+ */
+export const playbackExpiryJob = defineJob("events.playback-expiry", z.object({}));

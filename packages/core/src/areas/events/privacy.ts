@@ -14,8 +14,10 @@ import { createHmacTokenSigner } from "../../ports/token-signer.ts";
 import type { AuthContext, ServiceDependencies } from "../../services/context.ts";
 import { createCredentialChecks } from "../../services/credentials.ts";
 import { isDemoAccount } from "../../services/privileges.ts";
+import { sendTemplatedEmail } from "../identity/email.ts";
 import type { AreaModule } from "../module.ts";
 import { privacyEraseJob, privacyExportJob } from "./jobs.ts";
+import type { OtherAreas } from "./neighbours.ts";
 import type { PrivacyRequestRecord } from "./repository.ts";
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -45,9 +47,6 @@ export async function gunzipJson(bytes: Uint8Array): Promise<unknown> {
   return JSON.parse(text) as unknown;
 }
 
-/** Areas other than events that may hold a part of an account's data. */
-export type OtherAreas = () => Readonly<Record<string, AreaModule>>;
-
 /**
  * Member rights (§6.3): "Download your data" (an asynchronous export to a signed link, sent by
  * email) and "Delete account" (a fresh account-holder proof, a cooling-off period, then
@@ -61,7 +60,7 @@ export function createPrivacy(
   /** Moves the event outbox to the lake, so an export also holds the newest server events. */
   drainOutbox: () => Promise<unknown> = async () => undefined,
 ) {
-  const { repos, clock, ids, jobs, logger, config, eventSink, email } = deps;
+  const { repos, clock, ids, jobs, logger, config, eventSink } = deps;
   const credentials = createCredentialChecks(deps);
   const signer = createHmacTokenSigner({ keys: config.media.tokenKeys, clock });
 
@@ -169,8 +168,10 @@ export function createPrivacy(
   async function collectExport(record: PrivacyRequestRecord): Promise<DataExport> {
     const now = clock.now();
     const accountId = record.accountId;
-    const loaded = await repos.accounts.get(accountId);
-    if (!loaded) throw new Error(`Account ${accountId} no longer exists`);
+    // The account through identity's service: it exists with or without a membership.
+    const member = await otherAreas().identity.getMemberIdentity(accountId);
+    // Profiles and devices in full (settings, avatars, each device): identity's milestone 1
+    // tables, keyed by the account, which `getMemberIdentity` summarises without them.
     const [profiles, devices, consents, requests] = await Promise.all([
       repos.profiles.list(accountId),
       repos.sessions.listForAccount(accountId, now),
@@ -210,30 +211,19 @@ export function createPrivacy(
       });
     }
     const areas: Record<string, JsonValue> = {};
-    for (const [name, module] of Object.entries(otherAreas())) {
+    for (const [name, module] of Object.entries(otherAreas()) as [string, AreaModule][]) {
       if (module.exportAccountData) areas[name] = await module.exportAccountData(accountId);
     }
-    const subscription = loaded.subscription ?? null;
     return {
       format: "webflix.data-export",
       formatVersion: 1,
       requestId: record.id,
       generatedAt: toIsoString(now),
       account: {
-        id: loaded.account.id,
-        email: loaded.account.email,
-        createdAt: toIsoString(loaded.account.createdAt),
+        id: member.account.id,
+        email: member.account.email,
+        createdAt: member.account.createdAt,
       },
-      membership: subscription
-        ? {
-            planId: subscription.planId,
-            startedAt: toIsoString(subscription.startedAt),
-            currentPeriodEnd: toIsoString(subscription.currentPeriodEnd),
-            canceledAt:
-              subscription.canceledAt === null ? null : toIsoString(subscription.canceledAt),
-            card: subscription.card ? { ...subscription.card } : null,
-          }
-        : null,
       profiles: profiles.map((profile) => ({
         id: profile.id,
         name: profile.name,
@@ -270,6 +260,7 @@ export function createPrivacy(
       areas,
       notes: [
         "Behaviour events are stored under pseudonymous keys derived from your account and profile ids; the ones listed are every event the event lake holds for your account within its retention period.",
+        "Your membership and invoices are under areas.billing, your sign-in methods and email verification under areas.identity.",
         "Payment card details are held by the payment provider, never by Webflix; invoices and payment records are kept by Webflix and the provider for as long as the law requires.",
         "Recommendations are computed from the data above and are not stored as separate personal data.",
       ],
@@ -277,19 +268,18 @@ export function createPrivacy(
   }
 
   async function sendExportEmail(record: PrivacyRequestRecord, to: string): Promise<void> {
-    const url = `${config.publicOrigin}${downloadPath(record.id, await exportToken(record))}`;
-    const until = toIsoString(record.expiresAt ?? clock.now());
-    // Rendered here until identity's templates (packages/email, `data-export-ready`) take over.
-    await email.send(
-      {
-        to,
-        subject: "Your Webflix data is ready to download",
-        text: `The copy of your Webflix data you asked for is ready.\n\nDownload it (sign in first if asked): ${url}\n\nThe link works until ${until}. If you did not ask for this, change your password.`,
-        html: `<p>The copy of your Webflix data you asked for is ready.</p><p><a href="${url}">Download your data</a> (sign in first if asked).</p><p>The link works until ${until}. If you did not ask for this, change your password.</p>`,
-        template: "data-export-ready",
-      },
-      { idempotencyKey: `privacy-export:${record.id}` },
-    );
+    const link = `${config.publicOrigin}${downloadPath(record.id, await exportToken(record))}`;
+    // Identity's templates and suppression list; at most one message per export.
+    const outcome = await sendTemplatedEmail(deps, {
+      to,
+      template: "data-export-ready",
+      data: { link, expiresAt: toIsoString(record.expiresAt ?? clock.now()) },
+      idempotencyKey: `privacy-export:${record.id}`,
+    });
+    if (!outcome.sent) {
+      // The address bounced or complained before: the export is still listed with its link.
+      logger.info("privacy.export_email_suppressed", { requestId: record.id });
+    }
   }
 
   /** The `privacy.export` job. */
@@ -357,7 +347,15 @@ export function createPrivacy(
     const accountId = record.accountId;
     try {
       // Erasure keys first: a retry after the account row is gone still has them.
-      const profiles = await repos.profiles.list(accountId);
+      // The profiles through identity's service; on a retry after the account row went, none
+      // are left and their keys were recorded by the earlier attempt.
+      const profiles = await otherAreas()
+        .identity.getMemberIdentity(accountId)
+        .then((member) => member.profiles)
+        .catch((error: unknown) => {
+          if (error instanceof AppError && error.code === "not_found") return [];
+          throw error;
+        });
       await repos.events.addErasures([
         {
           subjectKey: await keys.account(accountId),
@@ -374,7 +372,9 @@ export function createPrivacy(
           })),
         )),
       ]);
-      for (const module of Object.values(otherAreas())) await module.eraseAccountData?.(accountId);
+      for (const module of Object.values(otherAreas()) as AreaModule[]) {
+        await module.eraseAccountData?.(accountId);
+      }
       await deps.streamGate.releaseAll(accountId);
       for (const request of await repos.events.listPrivacyRequests(accountId)) {
         if (request.exportBlobKey === null) continue;

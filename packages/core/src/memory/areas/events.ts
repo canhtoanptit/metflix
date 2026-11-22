@@ -147,6 +147,15 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
       }
     },
 
+    async openPlaybackBefore(cutoff, limit) {
+      tick();
+      return [...(store?.playback.values() ?? [])]
+        .filter((session) => session.endedAt === null && session.lastHeartbeatAt < cutoff)
+        .sort((a, b) => a.lastHeartbeatAt - b.lastHeartbeatAt || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
     async takeOutbox(limit) {
       tick();
       return [...(store?.eventOutbox ?? [])]

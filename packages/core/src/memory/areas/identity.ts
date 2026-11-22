@@ -94,6 +94,14 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       return account ? present(account) : null;
     },
 
+    async getAccountWithSubscription(accountId) {
+      tick();
+      const account = accounts.get(accountId);
+      if (!account) return null;
+      const subscription = store?.subscriptions.get(accountId);
+      return { account: present(account), subscription: subscription ? copy(subscription) : null };
+    },
+
     async loadBootstrap(accountId) {
       tick();
       const account = accounts.get(accountId);

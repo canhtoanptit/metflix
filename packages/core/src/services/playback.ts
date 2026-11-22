@@ -27,7 +27,11 @@ import {
 } from "../recommendations/engine.ts";
 import { utcDay } from "../recommendations/hash.ts";
 import type { OutboxEvent } from "../repositories/ports.ts";
-import type { EpisodeSummary, PlaybackSessionRecord } from "../repositories/records.ts";
+import type {
+  AccountRecord,
+  EpisodeSummary,
+  PlaybackSessionRecord,
+} from "../repositories/records.ts";
 import type { ServiceDependencies, Viewer } from "./context.ts";
 import { statsRollupJob } from "./jobs.ts";
 import { presentEpisodeRef } from "./presenters.ts";
@@ -232,10 +236,13 @@ export function createPlaybackService(
         personalize(viewer),
         repos.accounts.get(accountId),
       ]);
-      if (!account) throw new AppError("unauthenticated");
       const { snapshot } = personalization;
       const title = snapshot.title(input.titleId);
-      if (!title) throw new AppError("not_found", { detail: "No such title" });
+      // Unknown, or made unavailable by staff (switched off, outside its window): the same
+      // answer as the title's detail page, as if the catalogue did not have it.
+      if (!title || personalization.isUnavailable(title.id)) {
+        throw new AppError("not_found", { detail: "No such title" });
+      }
       if (!personalization.isVisible(title.id)) {
         throw new AppError("maturity_restricted", {
           maturity: title.maturity,
@@ -243,8 +250,14 @@ export function createPlaybackService(
         });
       }
       const now = clock.now();
-      // Billing decides (milestone 2: the membership projection's entitlement, §5.2).
-      const plan = await playbackEntitlement(deps, account, now);
+      // Billing decides (milestone 2: the membership projection's entitlement, §5.2). An account
+      // created without payment has no milestone 1 membership row, which `accounts.get` joins:
+      // the session proves the account exists, and billing answers `subscription_required`.
+      const plan = await playbackEntitlement(
+        deps,
+        account ?? { account: { id: accountId } as AccountRecord, subscription: null },
+        now,
+      );
 
       let episode: EpisodeSummary | undefined;
       if (title.type === "series") {

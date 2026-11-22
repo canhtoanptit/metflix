@@ -89,7 +89,9 @@ describe("data export", () => {
       id: member.accountId,
       email: `${member.accountId}@example.com`,
     });
-    expect(document.membership?.planId).toBe("premium");
+    // The membership and invoices are billing's part, the sign-in methods identity's.
+    expect(document.areas.billing).toMatchObject({ invoices: [] });
+    expect(document.areas.identity).toMatchObject({ linkedIdentities: [] });
     expect(document.profiles.map((profile) => profile.id).sort()).toEqual(
       Object.values(member.profiles)
         .map((profile) => profile.id)

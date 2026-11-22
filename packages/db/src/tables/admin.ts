@@ -1,5 +1,10 @@
-/** Tables of the admin area (migration 0007_admin). Representations: see schema.ts. */
+/** Tables of the admin area (migrations 0007_admin, 0014_admin_audit_outcome). Representations: see schema.ts. */
+import type { Generated } from "kysely";
 
+/**
+ * The `audit_log` columns every area's repository writes (experiments and personalisation write
+ * their row in the same batch as their change; see `auditLogRow`).
+ */
 export interface AuditLogTable {
   id: string;
   /** `staff` | `member` | `system`. */
@@ -16,6 +21,22 @@ export interface AuditLogTable {
   created_at: number;
 }
 
+/**
+ * The columns only the admin area writes (0014): the outcome of an action the staff API audits
+ * ahead of the call (`pending` until settled), and the console's idempotency key. A row written
+ * in the same batch as its change takes the defaults (`succeeded`, nulls).
+ */
+export interface AuditOutcomeColumns {
+  /**
+   * `pending` | `succeeded` | `failed` | `unknown` (AUDIT_OUTCOMES). Default `succeeded`; nullable
+   * only because an added column must be (read as `succeeded`).
+   */
+  outcome: Generated<string | null>;
+  completed_at: number | null;
+  /** Unique when set. */
+  idempotency_key: string | null;
+}
+
 export interface JobDeadLettersTable {
   id: string;
   job_type: string;
@@ -27,7 +48,7 @@ export interface JobDeadLettersTable {
 }
 
 export interface AdminTables {
-  audit_log: AuditLogTable;
+  audit_log: AuditLogTable & AuditOutcomeColumns;
   job_dead_letters: JobDeadLettersTable;
 }
 

@@ -399,6 +399,43 @@ export function describeEventsRepositoryContract(
       expect(await repo().takeOutbox(10)).toEqual([]);
     });
 
+    it("finds open playback sessions by their credit clock, for the expiry sweep", async () => {
+      await account();
+      await h().repos.profiles.createWithinLimit(
+        makeProfileRow({ id: "p-1", accountId: "acc-1" }),
+        5,
+      );
+      const base = T0 + DAY_MS;
+      const session = (id: string, lastHeartbeatAt: number) => ({
+        id,
+        accountId: "acc-1",
+        profileId: "p-1",
+        sessionId: "ses-acc-1",
+        titleId: "t-1",
+        episodeId: null,
+        assetId: null,
+        maxVideoHeight: 1080,
+        startedAt: base,
+        lastHeartbeatAt,
+        endedAt: null,
+        positionSec: 0,
+        durationSec: 600,
+        watchedSec: 0,
+        state: "playing" as const,
+      });
+      await h().repos.playback.create(session("ps-old", base + 1_000));
+      await h().repos.playback.create(session("ps-older", base));
+      await h().repos.playback.create(session("ps-fresh", base + 500_000));
+      await h().repos.playback.create(session("ps-ended", base));
+      await h().repos.playback.end("ps-ended", base + 2_000);
+      const open = await repo().openPlaybackBefore(base + 100_000, 10);
+      expect(open.map((record) => record.id)).toEqual(["ps-older", "ps-old"]);
+      expect(open[0]).toEqual(session("ps-older", base));
+      expect(
+        (await repo().openPlaybackBefore(base + 100_000, 1)).map((record) => record.id),
+      ).toEqual(["ps-older"]);
+    });
+
     it("deletes an account with what cascades from it, keeping privacy requests", async () => {
       await account("acc-1");
       await account("acc-2");

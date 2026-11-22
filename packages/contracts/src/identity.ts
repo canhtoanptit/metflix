@@ -63,6 +63,24 @@ export const OidcCallbackForm = OidcCallbackQuery.extend({
 });
 export type OidcCallbackForm = z.input<typeof OidcCallbackForm>;
 
+/**
+ * A sign-in issuer this deployment offers (a button on the sign-in screens): its key and the
+ * name to show. Nothing about its endpoints or client registration.
+ */
+export const SignInProvider = z
+  .object({
+    id: OidcProviderId,
+    displayName: z.string().min(1).max(64),
+  })
+  .meta({ id: "SignInProvider" });
+export type SignInProvider = z.output<typeof SignInProvider>;
+
+/** The issuers offered, in button order (empty: password sign-in only). */
+export const SignInProviders = z
+  .object({ items: z.array(SignInProvider) })
+  .meta({ id: "SignInProviders" });
+export type SignInProviders = z.output<typeof SignInProviders>;
+
 // --- Linked identities (§4.1) -----------------------------------------------------------------
 
 export const LinkedIdentity = z

@@ -347,6 +347,42 @@ export function describeFederatedSignIn(
         expect(url.searchParams.get("x")).toBe("1");
       });
 
+      it("lists the offered issuers for the sign-in buttons", async () => {
+        const response = await browser().send(new Request(`${h().origin}${API}/auth/providers`));
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Cache-Control")).toBe("public, max-age=300");
+        expect(await response.json()).toEqual({
+          items: [
+            { id: "google", displayName: "Google" },
+            { id: "apple", displayName: "Apple" },
+          ],
+        });
+      });
+
+      it("answers a callback refused before its handler with a redirect, never JSON", async () => {
+        const b = browser();
+        await start(b, "google", { returnTo: "/after" });
+        const oversized = await b.send(
+          new Request(
+            `${h().origin}${API}/auth/oidc/google/callback?code=${"x".repeat(5000)}&state=s`,
+          ),
+        );
+        expect(oversized.status).toBe(303);
+        expect(oversized.headers.get("Location")).toBe(`${h().origin}/after?oidc=failed`);
+        await start(b, "apple", { returnTo: "/apple" });
+        const repeated = await b.send(
+          new Request(`${h().origin}${API}/auth/oidc/apple/callback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: "code=a&code=b&state=s",
+          }),
+        );
+        expect(repeated.status).toBe(303);
+        expect(repeated.headers.get("Location")).toBe(`${h().origin}/apple?oidc=failed`);
+        expect(repeated.headers.get("Content-Type") ?? "").not.toMatch(/json/);
+        expect((await session(b)).authenticated).toBe(false);
+      });
+
       it("does not offer an issuer the deployment does not configure", async () => {
         expect((await start(browser(), "keycloak")).status).toBe(404);
       });

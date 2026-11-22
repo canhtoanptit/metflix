@@ -3,6 +3,7 @@
  * and tests, and the reference behaviour each contract suite was written against.
  */
 export { createMemoryAreaPorts, type MemoryAreaPorts } from "./area-ports.ts";
+export { createMemoryAdminRepository, type MemoryAdminRepository } from "./areas/admin.ts";
 export { MemoryBlobStore } from "./blob-store.ts";
 export { MemoryKeyValueCache } from "./cache.ts";
 export { MemoryEmailSender } from "./email-sender.ts";

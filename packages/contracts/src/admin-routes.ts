@@ -9,6 +9,7 @@ import {
   CancelMemberSubscriptionBody,
   CollectionBody,
   ComplimentaryPeriodBody,
+  ConfirmErasuresBody,
   CreateExperimentBody,
   DeadLetter,
   DeadLetterPage,
@@ -18,9 +19,12 @@ import {
   EditorialCollectionList,
   ExtendTrialBody,
   MemberDetail,
+  MemberPrivacy,
   MemberProfileParams,
   MemberSearchPage,
   MemberSearchQuery,
+  PendingErasures,
+  PendingErasuresQuery,
   PlanPriceParams,
   PlanSyncResult,
   ReasonBody,
@@ -29,6 +33,7 @@ import {
   RefundBody,
   SetBillboardBody,
   SetExperimentStatusBody,
+  SetMemberConsentBody,
   SetPlanPriceBody,
   SetTitleAvailabilityBody,
   StaffIdentity,
@@ -45,20 +50,23 @@ import {
   ExperimentList,
   ExperimentResults,
 } from "./experiments.ts";
+import { ConsentState } from "./privacy.ts";
 import { defineRoute } from "./route.ts";
 
 const IdParams = z.object({ id: Id });
 const reason = { reason: "Member asked on the support line (ticket 4821)" };
+const idempotencyKey = "6b1f4a9e-2c3d-4e5f-8a7b-9c0d1e2f3a4b";
 
 /**
  * The staff API (milestone 2 §8.3), served under `ADMIN_API_BASE_PATH` (`/api/admin/v1`) and
  * called by the staff console with a bearer token from the staff issuer. Every route needs a
- * role (`staffRole`; `admin` passes every check); every mutating route takes a `reason` and
- * writes the audit log in the same batch as its change. Typed client: `createAdminApiClient`.
+ * role (`staffRole`; `admin` passes every check); every mutating route takes a `reason` and is
+ * audited with its outcome (`GET /audit`); the billing actions also take an `idempotencyKey`.
+ * Reading a member's record is audited as well. Typed client: `createAdminApiClient`.
  *
  * All of these are implemented by the admin area's handlers, as thin calls into the services of
  * the area that owns the data (billing refunds, identity support actions, personalisation's
- * editorial data, experiments).
+ * editorial data, experiments, the events area's privacy records).
  */
 export const adminRoutes = {
   getStaffSelf: defineRoute({
@@ -140,6 +148,48 @@ export const adminRoutes = {
     examples: { request: reason },
   }),
 
+  // --- Member privacy (§6.3) ------------------------------------------------------------------
+  getMemberPrivacy: defineRoute({
+    method: "GET",
+    path: "/members/:accountId/privacy",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "support",
+    summary: "The member's consent and their export and deletion requests (no download links)",
+    params: AccountIdParams,
+    response: MemberPrivacy,
+    errors: ["not_found"],
+  }),
+  setMemberConsent: defineRoute({
+    method: "PUT",
+    path: "/members/:accountId/privacy/consent",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "support",
+    summary: "Record the member's consent answer, given to support",
+    params: AccountIdParams,
+    body: SetMemberConsentBody,
+    response: ConsentState,
+    errors: ["not_found"],
+    examples: { request: { purpose: "personalisation", granted: false, ...reason } },
+  }),
+  cancelMemberDeletion: defineRoute({
+    method: "DELETE",
+    path: "/members/:accountId/deletion",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "support",
+    summary: "Cancel the member's scheduled account deletion during its cooling-off period",
+    params: AccountIdParams,
+    body: ReasonBody,
+    response: null,
+    errors: ["not_found"],
+    examples: { request: reason },
+  }),
+
   // --- Billing actions ------------------------------------------------------------------------
   refundInvoice: defineRoute({
     method: "POST",
@@ -153,8 +203,8 @@ export const adminRoutes = {
     body: RefundBody,
     response: Refund,
     successStatus: 201,
-    errors: ["not_found", "checkout_state_conflict"],
-    examples: { request: { invoiceId: "inv-1", ...reason } },
+    errors: ["not_found", "checkout_state_conflict", "staff_action_conflict"],
+    examples: { request: { invoiceId: "inv-1", ...reason, idempotencyKey } },
   }),
   cancelMemberSubscription: defineRoute({
     method: "POST",
@@ -167,8 +217,14 @@ export const adminRoutes = {
     params: AccountIdParams,
     body: CancelMemberSubscriptionBody,
     response: MembershipState,
-    errors: ["not_found", "subscription_required", "demo_account_protected"],
-    examples: { request: { when: "period_end", ...reason } },
+    errors: [
+      "not_found",
+      "subscription_required",
+      "demo_account_protected",
+      "checkout_state_conflict",
+      "staff_action_conflict",
+    ],
+    examples: { request: { when: "period_end", ...reason, idempotencyKey } },
   }),
   extendMemberTrial: defineRoute({
     method: "POST",
@@ -181,8 +237,13 @@ export const adminRoutes = {
     params: AccountIdParams,
     body: ExtendTrialBody,
     response: MembershipState,
-    errors: ["not_found", "checkout_state_conflict"],
-    examples: { request: { days: 7, ...reason } },
+    errors: [
+      "not_found",
+      "subscription_required",
+      "checkout_state_conflict",
+      "staff_action_conflict",
+    ],
+    examples: { request: { days: 7, ...reason, idempotencyKey } },
   }),
   grantComplimentaryPeriod: defineRoute({
     method: "POST",
@@ -195,8 +256,13 @@ export const adminRoutes = {
     params: AccountIdParams,
     body: ComplimentaryPeriodBody,
     response: MembershipState,
-    errors: ["not_found", "subscription_required"],
-    examples: { request: { days: 30, ...reason } },
+    errors: [
+      "not_found",
+      "subscription_required",
+      "checkout_state_conflict",
+      "staff_action_conflict",
+    ],
+    examples: { request: { days: 30, ...reason, idempotencyKey } },
   }),
 
   // --- Plans and prices -----------------------------------------------------------------------
@@ -437,10 +503,12 @@ export const adminRoutes = {
     auth: "staff",
     staffRole: "admin",
     summary: "Publish a dead-lettered job again",
+    description:
+      "Once per dead letter (`staff_action_conflict` after that); a job that fails again is a new dead letter.",
     params: IdParams,
     body: ReasonBody,
     response: DeadLetter,
-    errors: ["not_found"],
+    errors: ["not_found", "staff_action_conflict"],
     examples: { request: { reason: "Provider outage is over" } },
   }),
   getRecommendationStatus: defineRoute({
@@ -465,6 +533,51 @@ export const adminRoutes = {
     response: RecommendationStatus,
     successStatus: 202,
     examples: { request: { reason: "New run published" } },
+  }),
+  rollbackRecommendations: defineRoute({
+    method: "POST",
+    path: "/system/recommendations/rollback",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "admin",
+    summary: "Serve the previous recommendation run again",
+    description:
+      "One write: the run before the active one becomes active again for every process within the model cache's lifetime. `not_found` when there is no previous run.",
+    body: ReasonBody,
+    response: RecommendationStatus,
+    errors: ["not_found"],
+    examples: { request: { reason: "Run 20261122-0300 lowered engagement" } },
+  }),
+  listPendingErasures: defineRoute({
+    method: "GET",
+    path: "/system/privacy/erasures",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "admin",
+    summary: "Pseudonymous account keys the event lake's next compaction must erase",
+    description:
+      "For the operator who runs the pipeline's compaction (`compact --erase FILE`); confirm with `POST /system/privacy/erasures/confirm` once it has run.",
+    query: PendingErasuresQuery,
+    response: PendingErasures,
+  }),
+  confirmErasures: defineRoute({
+    method: "POST",
+    path: "/system/privacy/erasures/confirm",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "admin",
+    summary: "Record that a compaction dropped these keys' events",
+    body: ConfirmErasuresBody,
+    response: null,
+    examples: {
+      request: {
+        subjectKeys: ["k3Jx9QvT0bYzA1c2D3e4F5"],
+        reason: "Compaction run 2026-11-22T03:00Z with --erase",
+      },
+    },
   }),
   listAuditLog: defineRoute({
     method: "GET",

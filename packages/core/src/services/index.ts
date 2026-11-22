@@ -79,13 +79,17 @@ export function createServices(deps: ServiceDependencies): Services {
     browse,
     search: createSearchService(deps, browse.personalizeAvailable),
     library: createLibraryService(deps, state, browse.personalize),
-    playback: createPlaybackService(deps, browse.personalize),
+    // Playback refuses what staff made unavailable, like the detail page (editorial is cached).
+    playback: createPlaybackService(deps, browse.personalizeAvailable),
     seeder: createSeeder(deps, state),
     scheduler: createScheduler(deps, modules),
-    processor: createProcessor(
-      deps,
-      state,
-      modules.flatMap((module) => module.jobs),
+    // Jobs that exhaust their attempts are also recorded for staff (admin area, dead letters).
+    processor: areas.admin.captureDeadLetters(
+      createProcessor(
+        deps,
+        state,
+        modules.flatMap((module) => module.jobs),
+      ),
     ),
     state,
   };

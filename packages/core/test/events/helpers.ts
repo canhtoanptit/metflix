@@ -41,7 +41,11 @@ export interface Member {
  * sign-up evolves): a premium membership, one live session and three profiles: an adult, a
  * kids profile and a teen profile with a lowered ceiling (both restricted).
  */
-export async function createMember(t: TestServices, id = "acc-ev"): Promise<Member> {
+export async function createMember(
+  t: TestServices,
+  id = "acc-ev",
+  options: { membership?: boolean } = {},
+): Promise<Member> {
   const session = makeSessionRecord({
     id: `ses-${id}`,
     tokenHash: `hash-${id}`,
@@ -50,11 +54,31 @@ export async function createMember(t: TestServices, id = "acc-ev"): Promise<Memb
     lastSeenAt: TEST_NOW,
     expiresAt: TEST_NOW + 30 * DAY_MS,
   });
-  await t.deps.repos.accounts.createWithSession({
-    account: makeAccountRecord({ id, email: `${id}@example.com`, createdAt: TEST_NOW }),
-    subscription: makeSubscriptionRecord({ accountId: id, planId: "premium", startedAt: TEST_NOW }),
-    session,
-  });
+  if (options.membership === false) {
+    // Milestone 2's sign-up without a card: an account and a session, no membership at all.
+    await t.deps.repos.identity.createAccount({
+      account: {
+        id,
+        email: `${id}@example.com`,
+        passwordHash: null,
+        emailVerifiedAt: null,
+        createdAt: TEST_NOW,
+        updatedAt: TEST_NOW,
+      },
+      session,
+      identity: null,
+    });
+  } else {
+    await t.deps.repos.accounts.createWithSession({
+      account: makeAccountRecord({ id, email: `${id}@example.com`, createdAt: TEST_NOW }),
+      subscription: makeSubscriptionRecord({
+        accountId: id,
+        planId: "premium",
+        startedAt: TEST_NOW,
+      }),
+      session,
+    });
+  }
   const rows: Record<"adult" | "kids" | "teen", ProfileRow> = {
     adult: makeProfileRow({ id: `${id}-adult`, accountId: id, name: "Sam" }),
     kids: makeProfileRow({

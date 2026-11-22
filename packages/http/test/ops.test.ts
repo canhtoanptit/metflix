@@ -130,8 +130,11 @@ describe("API description", () => {
     // The member API and the staff API.
     expect(operations).toHaveLength(Object.keys(routes).length + Object.keys(adminRoutes).length);
     expect(document.components.securitySchemes.sessionCookie.name).toBe("webflix_session");
-    // Registered but not implemented yet: marked pending; implemented routes are not.
-    expect(document.paths["/api/admin/v1/plans"].get["x-webflix-implementation"]).toBe("pending");
+    // Only a route registered but not implemented yet is marked pending (none is left since the
+    // admin area's wave: milestone2.test.ts checks the mark on a probe route).
+    expect(document.paths["/api/admin/v1/plans"].get).not.toHaveProperty(
+      "x-webflix-implementation",
+    );
     expect(document.paths["/api/v1/billing/config"].get).not.toHaveProperty(
       "x-webflix-implementation",
     );

@@ -155,7 +155,7 @@ export function describeIdentityRepositoryContract(
         expect(await repo().getAccount("acc-missing")).toBeNull();
       });
 
-      it("loads the session bootstrap in one call: account, subscription row (or none), profiles", async () => {
+      it("reads an account with its subscription row or none, and the session bootstrap in one call", async () => {
         await create("acc-1", { passwordHash: null, emailVerifiedAt: T0 });
         expect(await repo().loadBootstrap("acc-1")).toEqual({
           account: account("acc-1", { passwordHash: null, emailVerifiedAt: T0 }),
@@ -206,6 +206,22 @@ export function describeIdentityRepositoryContract(
             5,
           );
         }
+        expect(await repo().getAccountWithSubscription("acc-1")).toEqual({
+          account: account("acc-1", { passwordHash: null, emailVerifiedAt: T0 }),
+          subscription: null,
+        });
+        expect(await repo().getAccountWithSubscription("acc-m1")).toEqual({
+          account: {
+            id: "acc-m1",
+            email: "m1@example.test",
+            passwordHash: "$h$1",
+            emailVerifiedAt: null,
+            createdAt: T0,
+            updatedAt: T0,
+          },
+          subscription,
+        });
+        expect(await repo().getAccountWithSubscription("acc-missing")).toBeNull();
         const loaded = await repo().loadBootstrap("acc-m1");
         expect(loaded?.account).toMatchObject({
           id: "acc-m1",

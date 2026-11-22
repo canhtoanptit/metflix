@@ -1,7 +1,9 @@
 /**
  * The staff (admin) API (docs/BLUEPRINT-M2.md §8.3): request and response schemas of
- * `adminRoutes`. Every mutating action carries a `reason`, written to the audit log in the same
- * batch as the change.
+ * `adminRoutes`. Every mutating action carries a `reason`, kept in the audit log with who acted,
+ * on what and with what outcome: in the same batch as the change where the owning area writes it
+ * (experiments, editorial data), else written before the action runs and settled after it
+ * (members, billing, privacy, system).
  */
 import * as z from "zod";
 import { Entitlement, Invoice, MembershipState, MembershipStatus } from "./billing.ts";
@@ -9,15 +11,19 @@ import { BrowseView } from "./browse.ts";
 import { Cursor, Id, IsoDateTime, JsonValue, page } from "./common.ts";
 import {
   AUDIT_ACTOR_TYPES,
+  AUDIT_OUTCOMES,
   EXPERIMENT_STATUSES,
+  IDEMPOTENCY_KEY_PATTERN,
   MAX_PAGE_SIZE,
   STAFF_ROLES,
   VIDEO_QUALITIES,
 } from "./constants.ts";
+import { SubjectKey } from "./events.ts";
 import { experimentDefinitionFields } from "./experiments.ts";
 import { LinkedIdentity } from "./identity.ts";
 import { MaturityLevel } from "./maturity.ts";
 import { Money, PlanId } from "./plans.ts";
+import { ConsentPurpose, ConsentState, PrivacyRequest } from "./privacy.ts";
 
 export const StaffRoleSchema = z.enum(STAFF_ROLES).meta({ id: "StaffRole" });
 
@@ -37,6 +43,15 @@ export const AuditReason = z.string().trim().min(3).max(500);
 
 export const ReasonBody = z.object({ reason: AuditReason }).meta({ id: "ReasonBody" });
 export type ReasonBody = z.input<typeof ReasonBody>;
+
+/**
+ * Required on the billing actions (they move money or free time, so a retry must not apply
+ * twice): generate it once per submitted form and send it again on every retry of that form. A
+ * retry of a request that succeeded answers its original response; one whose first attempt is
+ * still running, failed or ended unknown answers `staff_action_conflict`; the same key with
+ * other parameters too.
+ */
+export const IdempotencyKey = z.string().regex(IDEMPOTENCY_KEY_PATTERN);
 
 const AdminPageQuery = {
   cursor: Cursor.optional(),
@@ -100,6 +115,47 @@ export type MemberDetail = z.output<typeof MemberDetail>;
 
 export const MemberProfileParams = z.object({ accountId: Id, profileId: Id });
 
+// --- Member privacy (§6.3) --------------------------------------------------------------------
+
+/**
+ * What support sees of a member's privacy: the consent in force and the member's export and
+ * deletion requests. Never an export's download link (`downloadUrl` is always null here) and
+ * never the member's behaviour events.
+ */
+export const MemberPrivacy = z
+  .object({
+    consent: ConsentState,
+    requests: z.array(PrivacyRequest),
+  })
+  .meta({ id: "MemberPrivacy" });
+export type MemberPrivacy = z.output<typeof MemberPrivacy>;
+
+/** Support records the member's own answer, given on the support line (`source: support`). */
+export const SetMemberConsentBody = z
+  .object({ purpose: ConsentPurpose, granted: z.boolean(), reason: AuditReason })
+  .meta({ id: "SetMemberConsentBody" });
+export type SetMemberConsentBody = z.input<typeof SetMemberConsentBody>;
+
+/** The operator's side of erasure: what the lake's next compaction must drop (`compact --erase`). */
+export const PendingErasuresQuery = z.object({
+  limit: z.coerce.number<number>().int().min(1).max(500).optional(),
+});
+export type PendingErasuresQuery = z.input<typeof PendingErasuresQuery>;
+
+export const PendingErasures = z
+  .object({
+    /** Pseudonymous account keys, as the lake stores them. */
+    subjectKeys: z.array(SubjectKey),
+  })
+  .meta({ id: "PendingErasures" });
+export type PendingErasures = z.output<typeof PendingErasures>;
+
+/** A compaction ran with `--erase` and dropped these keys' events. */
+export const ConfirmErasuresBody = z
+  .object({ subjectKeys: z.array(SubjectKey).min(1).max(200), reason: AuditReason })
+  .meta({ id: "ConfirmErasuresBody" });
+export type ConfirmErasuresBody = z.input<typeof ConfirmErasuresBody>;
+
 // --- Billing actions --------------------------------------------------------------------------
 
 export const RefundBody = z
@@ -108,6 +164,7 @@ export const RefundBody = z
     /** Omitted: refund what remains of the invoice. */
     amount: Money.optional(),
     reason: AuditReason,
+    idempotencyKey: IdempotencyKey,
   })
   .meta({ id: "RefundBody" });
 export type RefundBody = z.input<typeof RefundBody>;
@@ -130,17 +187,26 @@ export const CancelMemberSubscriptionBody = z
     /** With `now`: refund the unused time of the current period. */
     refundUnused: z.boolean().optional(),
     reason: AuditReason,
+    idempotencyKey: IdempotencyKey,
   })
   .meta({ id: "CancelMemberSubscriptionBody" });
 export type CancelMemberSubscriptionBody = z.input<typeof CancelMemberSubscriptionBody>;
 
 export const ExtendTrialBody = z
-  .object({ days: z.number().int().min(1).max(30), reason: AuditReason })
+  .object({
+    days: z.number().int().min(1).max(30),
+    reason: AuditReason,
+    idempotencyKey: IdempotencyKey,
+  })
   .meta({ id: "ExtendTrialBody" });
 export type ExtendTrialBody = z.input<typeof ExtendTrialBody>;
 
 export const ComplimentaryPeriodBody = z
-  .object({ days: z.number().int().min(1).max(366), reason: AuditReason })
+  .object({
+    days: z.number().int().min(1).max(366),
+    reason: AuditReason,
+    idempotencyKey: IdempotencyKey,
+  })
   .meta({ id: "ComplimentaryPeriodBody" });
 export type ComplimentaryPeriodBody = z.input<typeof ComplimentaryPeriodBody>;
 
@@ -349,6 +415,8 @@ export type RecommendationStatus = z.output<typeof RecommendationStatus>;
 
 // --- Audit log --------------------------------------------------------------------------------
 
+export const AuditOutcomeSchema = z.enum(AUDIT_OUTCOMES).meta({ id: "AuditOutcome" });
+
 export const AuditQuery = z.object({
   actorId: z.string().min(1).max(255).optional(),
   targetType: z
@@ -356,10 +424,16 @@ export const AuditQuery = z.object({
     .regex(/^[a-z][a-z_-]{0,31}$/)
     .optional(),
   targetId: z.string().min(1).max(255).optional(),
+  /** E.g. `unknown` or `pending`: the actions someone must follow up. */
+  outcome: AuditOutcomeSchema.optional(),
   ...AdminPageQuery,
 });
 export type AuditQuery = z.input<typeof AuditQuery>;
 
+/**
+ * One audit row as an area writes it in the same batch as its change (experiments,
+ * personalisation). The log lists `AuditLogEntry`, which adds the outcome.
+ */
 export const AuditEntry = z
   .object({
     id: Id,
@@ -380,5 +454,18 @@ export const AuditEntry = z
   .meta({ id: "AuditEntry" });
 export type AuditEntry = z.output<typeof AuditEntry>;
 
-export const AuditPage = page(AuditEntry).meta({ id: "AuditPage" });
+/**
+ * An entry of the audit log. Actions of the identity, billing and events areas and the system
+ * actions are written before they run (`pending`) and settled after (`completedAt`); a row an
+ * area wrote in the same batch as its change is `succeeded` from the start (`completedAt` null).
+ * Reading a member's record is audited too (`member.viewed`, `member.searched`,
+ * `member.privacy_viewed`: no reason, `succeeded`).
+ */
+export const AuditLogEntry = AuditEntry.extend({
+  outcome: AuditOutcomeSchema,
+  completedAt: IsoDateTime.nullable(),
+}).meta({ id: "AuditLogEntry" });
+export type AuditLogEntry = z.output<typeof AuditLogEntry>;
+
+export const AuditPage = page(AuditLogEntry).meta({ id: "AuditPage" });
 export type AuditPage = z.output<typeof AuditPage>;

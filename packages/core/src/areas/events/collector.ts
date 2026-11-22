@@ -21,6 +21,7 @@ import type { ServerEventInput } from "../module.ts";
 import { anyConsent, type ConsentFlags, deviceConsent, effectiveConsent } from "./consent.ts";
 import { appendEventsJob, serverEventJob } from "./jobs.ts";
 import type { ConsentLedger } from "./ledger.ts";
+import type { OtherAreas } from "./neighbours.ts";
 
 /** What the HTTP layer knows about an ingestion request beyond the session. */
 export interface IngestRequest {
@@ -101,9 +102,23 @@ export function createCollector(
   deps: ServiceDependencies,
   keys: SubjectKeys,
   ledger: ConsentLedger,
+  otherAreas: OtherAreas,
 ) {
   const { clock, ids, jobs, logger, config, repos, eventSink } = deps;
   const mode = () => config.events.consentMode;
+
+  /** The plan the member may play on now (billing decides); null without an entitled membership. */
+  const planOf = (accountId: string) => otherAreas().billing.currentPlan(accountId);
+
+  /** The plan, or `gone` when billing no longer knows the account (erased since). */
+  async function planOrGone(accountId: string): Promise<{ plan: PlanId | null } | "gone"> {
+    try {
+      return { plan: await planOf(accountId) };
+    } catch (error) {
+      if (error instanceof AppError && error.code === "unauthenticated") return "gone";
+      throw error;
+    }
+  }
 
   async function subjectOf(input: {
     accountId: string | null;
@@ -166,13 +181,13 @@ export function createCollector(
     let consent: ConsentFlags;
     let plan: PlanId | null = null;
     if (auth) {
-      // Two reads in parallel, once per batch (never per event): consent and the plan.
-      const [inForce, account] = await Promise.all([
+      // Once per batch (never per event), in parallel: consent and the plan.
+      const [inForce, current] = await Promise.all([
         ledger.inForce(auth.session.accountId, now, { gpc: request.gpc }),
-        repos.accounts.get(auth.session.accountId),
+        planOf(auth.session.accountId),
       ]);
       consent = inForce;
-      plan = account?.subscription?.planId ?? null;
+      plan = current;
     } else {
       consent = deviceConsent(mode(), request.consent, request.gpc);
     }
@@ -243,13 +258,15 @@ export function createCollector(
     const profileless = (PROFILELESS_EVENT_TYPES as readonly string[]).includes(event.type);
     const profileId = profileless ? null : payload.profileId;
     const receivedAt = Date.parse(event.receivedAt);
-    const [account, profile, latest] = await Promise.all([
-      accountId ? repos.accounts.get(accountId) : Promise.resolve(null),
+    const [membership, profile, latest] = await Promise.all([
+      accountId ? planOrGone(accountId) : Promise.resolve(null),
       accountId && profileId ? repos.profiles.get(accountId, profileId) : Promise.resolve(null),
       accountId ? repos.events.consentsAt(accountId, receivedAt) : Promise.resolve([]),
     ]);
     // An account erased (or a profile deleted) since: nothing to attribute the event to.
-    if (accountId && !account) return { skipped: "account_gone" };
+    if (accountId && (membership === null || membership === "gone")) {
+      return { skipped: "account_gone" };
+    }
     if (profileId && !profile) return { skipped: "profile_gone" };
     if (profile && isRestrictedProfile(profile)) return { skipped: "restricted" };
     const consent = accountId
@@ -270,7 +287,7 @@ export function createCollector(
       subject: await subjectOf({
         accountId,
         profileId,
-        plan: account?.subscription?.planId ?? null,
+        plan: membership && membership !== "gone" ? membership.plan : null,
         country: null,
         consent,
       }),
