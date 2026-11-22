@@ -21,7 +21,7 @@ make k8s-down
  browser ──► localhost:8080 ──► kind node :30080 ──► Envoy (Gateway API, 2 replicas)
                                                          │  HTTPRoute
               /api/*  /media/*  /cdn/*  ─────────────────┼──────────────► webflix-api   (Deployment, HPA 2–5 on kind / 3–12 default)
-              /dev-idp/*  /_pay/*  (outside production) ─┤
+              /dev-idp/*  /_pay/*  (404 in production) ───┤
               everything else  ──────────────────────────┘──────────────► webflix-web   (nginx, static SPA, HPA 2–3)
                                                                                │
    webflix-worker (job consumer + scheduler) ◄── Valkey Streams ──┐            │
@@ -212,8 +212,8 @@ projects, so it is never pruned automatically), and pulled base images (`kindest
 
 ### Routing
 
-One `HTTPRoute` (Gateway API v1): `/api`, `/media`, `/cdn` → `webflix-api:80`, everything else →
-`webflix-web:80`. Request timeouts: API 60 s, media 300 s, web 30 s.
+One `HTTPRoute` (Gateway API v1): `/api`, `/media`, `/cdn`, `/dev-idp`, `/_pay` →
+`webflix-api:80`, everything else → `webflix-web:80`. Request timeouts: API 60 s, media 300 s, web 30 s.
 
 **The web app** serves hashed `/assets/*` as `immutable`, the shell (`/`, `/index.html` and
 every client-side route requested as a page load) as `no-cache`, and other files for an hour. A
@@ -222,6 +222,13 @@ anything under `/assets/`, and any path whose last segment has an extension unle
 load (`Sec-Fetch-Mode: navigate`, or `Accept: text/html` from older clients); the Cloudflare
 Worker applies the same rule. `deploy/docker/web/test.sh` (`make k8s-test-web`) checks all of
 this against the image in a container.
+
+**The development stand-ins' prefixes.** `/dev-idp` and `/_pay` also go to the API, in every
+environment: outside production it serves the development OpenID issuer there and, with the
+fake provider, its payment form; in production it answers a 404 problem for both, as the
+Worker does. Until 2026-11-23 the chart routed them only outside production, so in production
+they fell to the web app, whose SPA fallback answered a 200 HTML page for `/_pay/api/cards`
+(the conformance check `billing.provider-config` caught it).
 
 **Ops endpoints are on their own listener.** `/healthz`, `/readyz`, `/dependencies` and
 `/metrics` are served on port 4001 (`ops`), never on the public port 4000: the HTTPRoute only
@@ -447,7 +454,7 @@ pipeline; `deploy/kind/values-conformance.yaml` is the conformance variant (§9.
 | `image.registry`, `api.image.digest`, `web.image.digest` | | pin by digest in production |
 | `config.identity.{oidcProviders,google,apple,keycloak}` | unset: the application's defaults | consumer issuers (`WEBFLIX_OIDC_*`); client secrets and Apple's key through `secrets.envFrom` |
 | `config.email.{sender,from,smtp,http}` | `smtp` to the catcher with `mailcatcher.enabled`, else the application's (`memory`) | `WEBFLIX_EMAIL_*`, `WEBFLIX_SMTP_*` (host, port and `tls: none` derived for the catcher); the SMTP password and HTTP key through `secrets.envFrom` |
-| `config.billing.{paymentProvider,graceSec,fake.*}` | unset: `memory` in production, `fake` elsewhere | `stripe` also adds Stripe.js's origins to the web app's CSP (§9.10); Stripe's keys through `secrets.envFrom` |
+| `config.billing.{paymentProvider,graceSec,fake.*}` | unset: `none` in production (checkout answers `503 payments_not_configured`), `fake` elsewhere | `stripe` also adds Stripe.js's origins to the web app's CSP (§9.10); Stripe's keys through `secrets.envFrom` |
 | `config.events.{sink,consentMode,exportEvents,deletionCoolingOffSec,retentionDays,aggregatesRetentionDays,exportLinkTtlSec,release}` | `lake`, the app's, `batch`, …, `release` = the API image's tag | `WEBFLIX_EVENT_SINK`, `WEBFLIX_CONSENT_MODE`, `WEBFLIX_EXPORT_EVENTS`, …, `WEBFLIX_RELEASE` (server events' `app.version`) |
 | `config.recommendations.{store,defaultPolicy,exploreShare}` | `database`, the app's | `WEBFLIX_RECOMMENDATION_STORE`, `WEBFLIX_RECS_*` |
 | `config.staff.{verifier,issuer,algorithms}` | `oidc` + the in-chart realm with `keycloak.enabled`, else the app's (`memory` in production: closed) | `WEBFLIX_STAFF_*`; the issuer must be https in production |
@@ -649,7 +656,8 @@ kind cluster with two API replicas behind Envoy, PostgreSQL 19, Valkey streams a
 - **production** (`make k8s-up`): `config.environment: production`, the in-chart Keycloak as
   the staff issuer, email through SMTP to the mail catcher, the lake in the bucket, the
   pipeline's CronJobs with Keycloak's service account. No payment provider: production refuses
-  the fake one and Stripe's test keys, so checkout stays closed.
+  the fake one, the in-process one and Stripe's test keys, so it runs `none` (checkout answers
+  `503 payments_not_configured`, every replica alike).
 - **conformance** (`make k8s-up VARIANT=conformance`): the development stand-ins the
   conformance suite drives, short timers and the privacy jobs every minute (§9.2).
 
@@ -660,7 +668,7 @@ kind cluster with two API replicas behind Envoy, PostgreSQL 19, Valkey streams a
 | Consumer sign-in | Google and Apple once their clients are configured (`config.identity`); none offered meanwhile (`identity.providers_not_offered`) | the development issuer at `/dev-idp/{google,apple}` (routed by the gateway), sealed with the app Secret's `WEBFLIX_DEV_IDP_SECRET`, single use through the claims table |
 | Staff issuer | Keycloak 26.8.2, realm `webflix` (§9.4) | the development issuer's staff realm (`/dev-idp/staff`) |
 | Email | SMTP to Mailpit (§9.5) | the database outbox, read back by `GET /diagnostics/mailbox` from any replica |
-| Payments | none (`memory`: closed) | the fake provider, state in PostgreSQL, its form at `/_pay` (routed) |
+| Payments | none (`none`: `GET /billing/config` answers `{"provider":"none"}`, checkouts `503 payments_not_configured`) | the fake provider, state in PostgreSQL (compare-and-set per customer), its form at `/_pay` (routed) |
 | Webhooks, emails, event batches, exports, erasures, imports | jobs on the Valkey stream, consumed by the worker (1 replica; 2 in the variant) | the same |
 | Scheduler | the worker, every 60 s on kind (`config.schedulerIntervalSec`) | every 10 s |
 | Event lake | gzip NDJSON under `events/` in the bucket | the same |
@@ -671,8 +679,9 @@ kind cluster with two API replicas behind Envoy, PostgreSQL 19, Valkey streams a
 ### 9.2 The conformance variant
 
 `deploy/kind/values-conformance.yaml` over `deploy/kind/values.yaml`: `environment:
-development` (mounts `/dev-idp`, `/_pay`, the diagnostics routes; the HTTPRoute adds rules for
-`/dev-idp` and, with the fake provider, `/_pay`), the fake payment provider, the outbox email
+development` (mounts `/dev-idp`, `/_pay` and the diagnostics routes in the API, to which the
+HTTPRoute sends `/dev-idp` and `/_pay` in every configuration: production answers 404 there),
+the fake payment provider, the outbox email
 sender, the deletion cooling-off at 10 s and the scheduler at 10 s, two workers, the relaxed
 rate-limit profile (as on the local Worker), Keycloak and the mail catcher off, and the lake
 round every minute with a 1 minute export grace and the
@@ -682,6 +691,40 @@ through the Service verifies). What the conformance README requires to be shared
 replicas holds here with two API replicas and two workers: the issuer's secret comes from one
 Secret and its single-use codes from PostgreSQL, the fake provider's state is in PostgreSQL, the
 mailbox is the database outbox, rate limits and stream slots are in Valkey.
+
+**After the fixes** (2026-11-23, the same one-node cluster and database, new images with the
+owners' fixes of K1 to K9, migration 0017 applied on PostgreSQL; the suite is now 134 checks; the
+HPA ran the API at 5 replicas through every run):
+
+| Run | Configuration | Checks | Passed | Failed | Skipped | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | conformance (relaxed) | 134 | 130 | 0 | 4 | 317 s |
+| B | conformance, again, same database | 134 | 129 | 1 | 4 | 286 s |
+| C | conformance with the strict limits (`make k8s-redeploy RATE_LIMITS=strict`) | 134 | 131 | 1 | 2 | 1 066 s |
+| D | production | 134 | 93 | 1 | 40 | 649 s |
+| D′ | production, after routing `/_pay` and `/dev-idp` to the API in every environment | 134 | 94 | 0 | 40 | 652 s |
+| E | conformance, again (the cluster left running) | 134 | 129 | 1 | 4 | 305 s |
+
+Run D's failure was the chart's: `billing.provider-config` (new) asserts that without a
+provider `/_pay` is not served, and production routed `/_pay` to the web app, whose SPA
+fallback answered a 200 page; the HTTPRoute now sends `/dev-idp` and `/_pay` to the API in every
+environment (§3, Routing), which answers 404 there in production, and run D′ passes with every
+skip reason true (billing: "the deployment has no payment provider (GET /billing/config
+answers provider none …)"; the staff checks: the development issuer "answered 404
+application/problem+json", Keycloak being the issuer).
+
+On the conformance variant every check passes except one, in three of four runs:
+`billing.dunning` got a `500
+internal_error` from `GET /billing/payment-method/setup/:id` (finding K12, §9.11): the poll's
+completion of the card change ran into the same completion running elsewhere (the worker
+processing the setup's event, or another replica's poll), the fake provider answered "a request
+with this key is in flight", and nothing turned that into "still processing". All 776 provider
+events of these runs were processed (at most two attempts each), none dead-lettered. The skips
+are the right ones: probes not routed, every title packaged, and under relaxed limits the two
+checks that need the strict profile, which pass in run C. A strict run is practical now: the
+suite renews its tokens and no longer counts rate-limit waits against a check's timeout.
+
+The earlier results, before the fixes:
 
 **Results** (2026-11-22, the one-node cluster, `make smoke TARGET=k8s SMOKE_ARGS="--timeout
 300000"`; runs 1 to 5 on one database, 6 and 7 on a new cluster's; the HPA took the API from 2
@@ -842,34 +885,42 @@ development issuer, Keycloak; PostgreSQL and Valkey only for the importer). The 
 | --- | --- | --- |
 | `webflix-recs-lake-round` | `*/5 * * * *` (every minute in the variant) | `lake_round.py`: `erase --keys api --confirm api` when keys are pending or daily, the export round, `compact` hourly (§9.7 for why one CronJob) |
 | `webflix-recs-analyse` | daily 04:30 | `analyse-experiments --definitions api`; the worker imports the results on its next tick (`experiments.import-results`) |
-| `webflix-recs-train-and-score` | daily 04:00 | init containers in order on one `/work`: the catalogue snapshot (tools image, `export-catalog.ts`) copied into the bucket, `train-and-score --phase prepare`, the rule engine (tools image, `rule-engine-rankings.ts`), `--phase finish`, `publish` (exit 3, the gate refusing, is not a failure: the served run stays); then the importer (`node apps/api/src/recs.ts import`, a no-op when that run is served) |
+| `webflix-recs-train-and-score` | daily 04:00 | init containers in order on one `/work`: the catalogue snapshot (tools image, `export-catalog.ts`) copied into the bucket, `train-and-score --phase prepare`, the rule engine (tools image, `rule-engine-rankings.ts`), `--phase finish`, `publish` (exit 3, the gate refusing, is not a failure: the served run stays; a young lake is exit 0, `nothing-to-train` then `nothing-to-publish`); then the importer (`node apps/api/src/recs.ts import`, a no-op when that run is served; "No recs/current.json", nothing ever published, is treated as success: below) |
 
-Every job runs with `--workers 1` (`pipeline.workers`). On the first conformance run an erase
-in the lake round hung for seven minutes with every process asleep on a futex: the pipeline's
-process pools (`parallel.py`, `ProcessPoolExecutor`) use Python 3.13's default start method,
-`fork` on Linux (macOS, where the pipeline was developed, uses `spawn`), after polars' and
-boto3's threads have started, so a forked worker can inherit a lock held by a thread that does
-not exist in it. Its default worker count is also the node's CPU count (11 here: 9 workers),
-not the container's limit (1 CPU). With one worker the pools are never used; the hung round
-also held the CronJob (`Forbid`) for its hour, which is why that run's export never finished.
-Reported to the pipeline's owner (§9.11).
+**Worker processes.** On the first conformance run an erase in the lake round hung for seven
+minutes with every process asleep on a futex: the pipeline's process pools forked (Python 3.13's
+default on Linux) after polars' and boto3's threads had started, and sized themselves from the
+node's 11 CPUs, not the container's limit (finding K5); the chart then ran every job with
+`--workers 1`. Fixed in the pipeline: pools are spawned, sized from the CPUs the container may
+use (its cgroup quota) minus one, and a stalled pool exits 9 instead of hanging. The chart no
+longer passes `--workers` unless `pipeline.workers` is set; with the kind values' 1 CPU limit
+that is one worker, and the smoke Job below ran with `WORKERS=4` to put spawned pools through
+compaction, erasure and the dataset build on Linux.
 
-The export round (`files/pipeline/export_round.py`, the Kubernetes counterpart of the Worker's
-`apps/edge/scripts/lib/pipeline-jobs.ts`): `GET /system/privacy/exports` with the service
-account's token, `GET /system/privacy/erasures`, `webflix-recs export-events --requests …
---results … --erasures …`, `POST /system/privacy/exports/results`. With nothing pending it is
-one token and one list call (0.3 s). Every job is safe to rerun; `concurrencyPolicy: Forbid`,
-one retry (`backoffLimit: 1`), stopped after an hour. On a fresh install the first round can
-run before any API pod is ready and fail (`Connection refused` on the token endpoint, exit 6);
-the next minute's round succeeds, and the failed Job stays in the history
-(`failedJobsHistoryLimit: 2`) until two newer ones fail.
+**The export round** is now the pipeline's own call: `webflix-recs export-events --grace-minutes
+N` reads the pending requests from the staff API (`GET /system/privacy/exports`), the pending
+erasures, and posts its results (`POST /system/privacy/exports/results`), the default when
+`WEBFLIX_ADMIN_API_URL` is set (finding K8; the chart's own wrapper script is gone). With
+nothing pending it is one token and one list call. Every job is safe to rerun;
+`concurrencyPolicy: Forbid`, one retry (`backoffLimit: 1`), stopped after an hour. On a fresh
+install the first round can run before any API pod is ready and fail (`Connection refused` on
+the token endpoint, exit 6); the next minute's round succeeds, and the failed Job stays in the
+history (`failedJobsHistoryLimit: 2`) until two newer ones fail.
+
+**The importer on a fresh install.** `node apps/api/src/recs.ts import` exits 1 with "No
+recs/current.json: nothing published" until a first run is published, which on a new
+deployment takes days (a young lake: `nothing-to-train`) and at smoke size never happens (the
+gate refuses). The chart treats exactly that answer as success (the step logs "nothing published
+yet: nothing to import" and exits 0), so the daily Job does not fail for an ordinary state;
+every other failure of the importer still fails the Job.
 
 **At smoke size, every step as a Kubernetes workload** (`make k8s-pipeline-smoke`): a Job with
 the CronJobs' images runs the whole pipeline on a simulated lake (300 accounts, 21 days ending
 at the last full hour) under the bucket's `sim/` prefix, so the product's own lake is never
 touched, then the product's importers. Measured on the one-node cluster (61 s end to end with
-the pipeline's default 9 worker processes, the first time; 123 s with `--workers 1`, as it runs
-now):
+the pipeline's default 9 forked worker processes, the first time; 123 s with `--workers 1`;
+117 s with `WORKERS=4` after the fix of K5, the pools spawned, plus an erasure of one simulated
+account: 48 raw objects and 49 Parquet files rewritten and verified in 42 s):
 
 | Step | Image | Result |
 | --- | --- | --- |
@@ -924,18 +975,23 @@ rewrites it. The pipeline's own design names exactly these races as why the leas
 fails loudly: the second job simply runs.
 
 **What the chart does.** With the in-chart Garage (`pipeline.lake.serialize: auto`) the three
-jobs never run as separate CronJobs: one CronJob, the lake round, runs erase, the export round
-and compact one after another in one pod (`files/pipeline/lake_round.py`), and its
-`concurrencyPolicy: Forbid` is the mutual exclusion the lease cannot give (the lease is still
-taken, harmlessly). Each step runs only when it has work (pending erasure keys or the daily
-watch-period pass; pending exports; an hourly compaction), so a round with nothing to do costs
-two staff API calls and a state read. Readers (train-and-score, analyse, the product's export
-reader) never take the lease, by the pipeline's design. With a store that honours conditional
-writes (AWS S3, R2) `pipeline.lake.serialize: false` gives back the separate CronJobs and their
-own schedules. Reported to the pipeline's owner: `put_if_absent` cannot tell a store that
-ignores the condition from one that honours it, so the lease silently degrades; a probe at
-startup (create-only write twice on a scratch key) would let the job refuse, or require an
-explicit "serialised by the scheduler" flag, on such a store.
+jobs never run as separate CronJobs: one CronJob, the lake round, runs erase, export-events and
+compact one after another in one pod (`files/pipeline/lake_round.py`), and its
+`concurrencyPolicy: Forbid` is the mutual exclusion the lease cannot give. Each step runs only
+when it has work (pending erasure keys or the daily watch-period pass; pending exports; an
+hourly compaction), so a round with nothing to do costs two staff API calls and a state read.
+Readers (train-and-score, analyse, the product's export reader) never take the lease, by the
+pipeline's design. With a store that honours conditional writes (AWS S3, R2)
+`pipeline.lake.serialize: false` gives back the separate CronJobs, each taking the lease.
+
+**What the pipeline does now** (finding K6, fixed): before its first acquisition a job probes the
+store with two create-only writes on a scratch key; on Garage the second is not refused, so
+`compact`, `erase` and `export-events` exit 10 ("…accepted a create-only write onto an existing
+key and overwrote it…") unless the pod declares the scheduler the lock,
+`WEBFLIX_RECS_LAKE_SERIALIZED=true`, which the lake round sets (and the smoke Job, the only
+writer of `sim/`). Their summaries then say `"lakeLease": "scheduler"` instead of `"held"`.
+A separate CronJob on Garage, or anything started by hand without the variable, now fails loudly
+instead of running unprotected.
 
 ### 9.8 Milestone 2 on PostgreSQL
 
@@ -976,8 +1032,9 @@ What dev's in-process stand-ins did within one process, and what holds across po
 | The mailbox | holds | the outbox sender writes to PostgreSQL; `GET /diagnostics/mailbox` reads it from any replica |
 | Rate limits, stream slots, the job queue | holds | Valkey (Lua scripts, consumer group), as in milestone 1 |
 | The fake provider's state | holds | PostgreSQL (`payments_fake_*`) |
-| **The fake provider's per-customer lock** | **does not hold** | an in-process `Map` of promises (`packages/payments-fake/src/provider.ts`, `withLock`); the SQL store's writes are unconditional upserts (`version` is stored, never compared). Two pods mutating one customer at once (a checkout poll on one API replica, the confirmation on the other, a webhook or the test clock in a worker) can interleave and the later write wins. Not observed failing in the runs; reported to billing (§9.11) |
-| **The production default payment provider (`memory`)** | **does not hold** | in process: a checkout started on one replica showed `clientSecret` `seti_mem…` there and `null` when the other replica answered; reported to billing with the misleading `GET /billing/config` (§9.11) |
+| The fake provider's per-customer exclusion | holds, since the fix of K2 | was an in-process `Map` of promises with unconditional upserts; now a compare-and-set per customer in PostgreSQL (the operation retries on a conflict): every provider event of the runs after the fix processed, at most twice |
+| The production default payment provider | holds, since the fix of K3 | was `memory`, in process (one replica returned a checkout's client secret, the other `null`); production now has `none`, which every replica answers the same way (`{"provider":"none"}`, `503 payments_not_configured`) |
+| Experiment definitions | holds, since the fix of K4 | each process kept them 30 s, so replicas disagreed for up to 30 s after a start; a status change now takes effect at an instant 60 s ahead, the same on every replica |
 
 ### 9.10 Security headers with Stripe
 
@@ -1000,6 +1057,23 @@ entry). Not verified in a browser with real wallets (no device; the blueprint sa
 
 ### 9.11 Findings in other areas (reported, not patched here)
 
+**Status after the owners' fixes** (2026-11-23, deployed to this cluster and checked from
+outside; the table below it is the finding as first reported):
+
+| # | Fixed | What Kubernetes showed afterwards |
+| --- | --- | --- |
+| K1 | yes: every sync updates its subscription's checkouts; the confirmation looks again after its save | no checkout left `processing`; the 13 billing checks and `staff.refund` pass, behind five API replicas and two workers, except K12 below |
+| K2 | yes: compare-and-set per customer in the fake's SQL store | first run on PostgreSQL: the fake's contract, the two-instance interleavings and the shared-store tests, 33 of 33, on PostgreSQL 19 (temporary copies of the SQLite tests, not kept); in the cluster all 776 provider events processed, at most two attempts each, none dead-lettered |
+| K3 | yes: production defaults to `none` | `GET /billing/config` answers `{"provider":"none"}`; the production run's billing skips name the real reason and `billing.provider-config` passes (run D, §9.2); the chart's default and schema follow (`none`) |
+| K4 | yes: status changes take effect at `statusChangeAt` (60 s ahead on Kubernetes; migration 0017 applied on PostgreSQL with data) | `experiments.assignment` passes in every run: "the start took effect at statusChangeAt (30 probe rounds before it: none assigned)" with five replicas |
+| K5 | yes: spawned pools sized from the cgroup quota; a stalled pool exits 9 | the chart stopped forcing `--workers 1` (`pipeline.workers` unset); `make k8s-pipeline-smoke WORKERS=4`: compaction of 497 hours and an erasure (48 raw objects and 49 Parquet files rewritten, verified) on four spawned workers, no stall |
+| K6 | yes: the lease probes the store and refuses on Garage (exit 10) unless the scheduler is declared the lock | `compact` started by hand on the bucket exits 10 ("…accepted a create-only write (If-None-Match: \*) onto an existing key and overwrote it…"); the lake round sets `WEBFLIX_RECS_LAKE_SERIALIZED=true` and its summaries say `"lakeLease": "scheduler"` |
+| K7 | yes: a young lake is `nothing-to-train`, then `nothing-to-publish`, exit 0 | train-and-score on the product's lake completes in 12 s with the reason ("no play before … the ranker's 7-day window"); the importer's "No recs/current.json" is treated as success by the chart (§9.6) |
+| K8 | yes: `export-events` reads and posts through the staff API | the chart's wrapper is gone; a member's export deferred under the grace, then completed and recorded by the next round; an erasure confirmed by the round after the cooling-off |
+| K9 | yes: tokens renewed, rate-limit waits not counted | the strict run (C, 1 066 s) passed its staff and experiment checks |
+| K10, K11 | corrected here (docs and the comment) | — |
+| **K12** (new) | — | see the table below |
+
 | # | Owner | Where | Seen | The design calls for |
 | --- | --- | --- | --- | --- |
 | K1 | billing | `POST /billing/checkout/:id/confirm`, `GET /billing/checkout/:id`; `syncSubscription`/`afterWrite` (`packages/core/src/areas/billing/sync.ts`) | a trial checkout stays `processing` for ever beside a `trialing` membership whenever the worker processes the provider's events before the confirmation request saved the subscription's id on the checkout (10 billing checks and `staff.refund` fail on every conformance run; all pass with webhook delivery off) | "Polling a checkout that waits on the provider reads the provider: the membership activates when the provider says so, with or without a webhook"; "a checkout is complete once the membership it started is entitled". Evaluate `checkoutStatusFor` for the checkout being polled (and at the end of the confirmation) whether or not the projection changed |
@@ -1013,6 +1087,7 @@ entry). Not verified in a browser with real wallets (no device; the blueprint sa
 | K9 | conformance suite | `tools/smoke/src/env.ts` `staffToken` (memoised per run) | the development issuer's access tokens live 300 s; a run longer than that (strict limits on Kubernetes: 16 min) is refused `expired` on its last staff calls | fetch a new token when the old one is near its `exp` |
 | K10 | Cloudflare | `apps/edge/scripts/deploy.ts` (comment), docs/CLOUDFLARE.md §10.2 and §10.5 | they describe the make fragment exporting `WEBFLIX_RELEASE` and the chart's `payment=()`; both changed here (§9.3, §9.10) | update the text; the Worker's `_headers` follow the chart's literal header by themselves |
 | K11 | events (docs) | docs/BACKEND.md §3, "Download your data" | "until something runs the job (no deployment schedules it yet), a batch export stays processing" | Kubernetes schedules it now (the lake round) |
+| K12 | billing | `GET /billing/payment-method/setup/:id` → `getPaymentMethodSetup` → `completeSetup` → `providerCall` (`packages/core/src/areas/billing/service.ts`) | `500 internal_error` in `billing.dunning` in two of three runs after the fixes: the poll completes the card change while the same completion runs elsewhere (the worker on the setup's event, or another replica's poll); the fake answers `PaymentProviderError` `unavailable` "a request with this key is in flight" (`default-card-<setup>`), and it reaches the HTTP layer unhandled (log `http.unhandled_error`, request `smk-a64ed4-1550`) | "card changes record success last and polls retry": a poll that meets the completion in flight elsewhere answers the setup's current state (still processing), and the next poll sees it finished; a provider's `unavailable` should never be a 500 |
 
 ### 9.12 Verified by running, and only reasoned about
 
@@ -1036,6 +1111,8 @@ Reasoned, not run:
   design; not exercised).
 - **What the lake round prevents.** The race it closes (two jobs rewriting one hour) was not
   provoked; the lease probe shows the lock is absent, the pipeline's own design names the races.
-- **The fake provider's lost update across pods (K2).** Read in the code; no run hit it.
+- **The fake provider's lost update across pods (K2).** Read in the code, never hit in a run;
+  its fix was run on PostgreSQL through the fake's own two-instance tests, not provoked in the
+  cluster.
 - **The pipeline at the full preset** (forbidden on this machine) and a train-and-score that
   publishes (the gate refuses at smoke size, as documented).

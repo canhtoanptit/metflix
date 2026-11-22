@@ -24,6 +24,15 @@ tests:
       - notExists:
           path: data.WEBFLIX_EMAIL_SENDER
 
+  - it: passes the experiments' propagation delay through when set
+    template: configmap.yaml
+    set:
+      config.experiments.propagationSec: 90
+    asserts:
+      - equal:
+          path: data.WEBFLIX_EXPERIMENTS_PROPAGATION_SEC
+          value: "90"
+
   - it: stamps server events with the API image's tag
     template: configmap.yaml
     set:
@@ -114,35 +123,21 @@ tests:
           path: data["security-headers.conf"]
           pattern: 'payment=\(self \\"https://js.stripe.com\\" \\"https://\*.js.stripe.com\\"\)'
 
-  - it: routes the development stand-ins only outside production
+  - it: sends the development stand-ins' prefixes to the API in every environment (404 in production)
     template: gateway/httproute.yaml
     asserts:
       - lengthEqual:
           path: spec.rules
-          count: 4
-      - equal:
-          path: spec.rules[3].matches[0].path.value
-          value: /
-  - it: routes /dev-idp and the fake provider's /_pay in development
-    template: gateway/httproute.yaml
-    set:
-      config.environment: development
-    asserts:
+          count: 5
       - equal:
           path: spec.rules[3].matches[0].path.value
           value: /dev-idp
       - equal:
-          path: spec.rules[4].matches[0].path.value
+          path: spec.rules[3].matches[1].path.value
           value: /_pay
       - equal:
-          path: spec.rules[4].backendRefs[0].name
+          path: spec.rules[3].backendRefs[0].name
           value: webflix-api
-  - it: does not route /_pay when the provider is not the fake
-    template: gateway/httproute.yaml
-    set:
-      config.environment: development
-      config.billing.paymentProvider: stripe
-    asserts:
       - equal:
           path: spec.rules[4].matches[0].path.value
           value: /

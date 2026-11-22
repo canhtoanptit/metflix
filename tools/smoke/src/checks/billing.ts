@@ -29,6 +29,7 @@ import {
   startPlayback,
   subscribe,
 } from "../payments.ts";
+import { uuidv7 } from "../telemetry.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
 import { API, CSRF } from "./util.ts";
 
@@ -172,6 +173,96 @@ async function settled(ctx: CheckContext, agent: Agent, what: string) {
 }
 
 export const billingChecks: CheckDefinition[] = [
+  {
+    id: "billing.provider-config",
+    area: "billing",
+    title:
+      "GET /billing/config tells the truth: with no provider it says none, and every payment action answers payments_not_configured (no fake form or webhook served, memberships none); the fake is advertised only where its form is served",
+    async run(ctx: CheckContext) {
+      const visitor = ctx.agent("no-provider");
+      const config = await succeeds(() => visitor.api.getBillingConfig(), "GET /billing/config");
+      if (config.provider === "fake") {
+        // Advertising the fake is a promise that its form serves the browser.
+        const cards = await visitor.fetch("/_pay/api/cards");
+        check(
+          cards.status === 200 && (cards.headers.get("Content-Type") ?? "").includes("json"),
+          "GET /billing/config advertises the fake provider, but its form is not served",
+          {
+            expected: `/_pay/api/cards answering 200 (the form at ${config.formUrl}), or provider none`,
+            observed: `${cards.status} ${cards.headers.get("Content-Type") ?? ""}`,
+            exchange: cards.exchange,
+          },
+        );
+        ctx.note("provider fake: its form is served (the billing journeys drive it)");
+        return;
+      }
+      if (config.provider === "stripe") {
+        ctx.note("provider stripe: a publishable key (the Stripe lane is tools/stripe)");
+        return;
+      }
+      equal(JSON.stringify(config), JSON.stringify({ provider: "none" }), "GET /billing/config");
+      const account = await ctx.env.bareHolder("no-provider");
+      const agent = account.agent;
+      const before = await succeeds(() => agent.api.getAccount(), "GET /account");
+      equal(before.membership?.status, "none", "membership without a provider");
+      equal(before.entitlement?.reason, "no_membership", "entitlement.reason");
+      const post = (path: string, body?: object) =>
+        agent.fetch(`${API}${path}`, {
+          method: "POST",
+          headers: CSRF,
+          ...(body === undefined ? {} : { body }),
+        });
+      problem(
+        await post("/billing/checkout", { planId: "standard" }),
+        "payments_not_configured",
+        "POST /billing/checkout",
+      );
+      problem(
+        await post(`/billing/checkout/${uuidv7()}/confirm`),
+        "payments_not_configured",
+        "POST /billing/checkout/:id/confirm",
+      );
+      problem(
+        await post("/billing/promotions/validate", {
+          code: FAKE_STANDING_PROMOTION,
+          planId: "standard",
+        }),
+        "payments_not_configured",
+        "POST /billing/promotions/validate",
+      );
+      problem(
+        await post("/billing/payment-method/setup"),
+        "payments_not_configured",
+        "POST /billing/payment-method/setup",
+      );
+      for (const provider of ["fake", "stripe"]) {
+        problem(
+          await visitor.fetch(`${API}/webhooks/payments/${provider}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Stripe-Signature": "t=1,v1=00" },
+            body: JSON.stringify({ id: "evt_smoke", type: "invoice.paid" }),
+          }),
+          "not_found",
+          `POST /webhooks/payments/${provider} without a provider`,
+        );
+      }
+      for (const path of ["/_pay/api/cards", "/_pay/form"]) {
+        const served = await visitor.fetch(path);
+        equal(served.status, 404, `GET ${path} without a provider`, served.exchange);
+      }
+      await refusedPlayback(
+        agent,
+        (await movie(ctx.env)).id,
+        "none",
+        "playback without a provider",
+      );
+      equal(
+        (await membership(agent, "after the refusals")).status,
+        "none",
+        "membership after the refusals",
+      );
+    },
+  },
   {
     id: "billing.checkout",
     area: "billing",

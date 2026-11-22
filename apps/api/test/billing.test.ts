@@ -52,12 +52,12 @@ async function drain() {
   for (let i = 0; i < 20 && queue.size > 0; i += 1) await queue.drain();
 }
 
-function client() {
+function client(target: Hono = app) {
   const jar = createCookieJar();
   const send = async (url: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
     if (jar.header()) headers.set("Cookie", jar.header());
-    const response = await app.request(url, { ...init, headers });
+    const response = await target.request(url, { ...init, headers });
     jar.store(response);
     return response;
   };
@@ -259,5 +259,64 @@ describe("billing over HTTP on the Node runtime (dev: fake provider on SQLite)",
     // Milestone 1's plan change on a mock membership is unchanged.
     const changed = await legacy.api.changePlan({ body: { planId: "standard" } });
     expect(changed.plan.id).toBe("standard");
+  });
+});
+
+describe("billing over HTTP with no payment provider (production's default, finding K3)", () => {
+  let bare: Runtime;
+  let bareApp: Hono;
+  beforeAll(async () => {
+    bare = createRuntime(
+      loadApiConfig({
+        WEBFLIX_DATABASE_URL: "sqlite::memory:",
+        WEBFLIX_BLOB_STORE: "memory",
+        WEBFLIX_MEDIA_DIR: "none",
+        WEBFLIX_LOG_LEVEL: "error",
+        WEBFLIX_PAYMENT_PROVIDER: "none",
+      }),
+      "api",
+    );
+    await migrateToLatest(bare.infra.database);
+    await bare.services.seeder.seed({
+      catalog: FIXTURE_CATALOG,
+      demoAccount: FIXTURE_DEMO_ACCOUNT,
+      manifest: FIXTURE_MANIFEST,
+    });
+    bareApp = createHttpApp(bare);
+  });
+  afterAll(async () => {
+    await bare.close();
+  });
+
+  it("says there is none, refuses checkouts and promo codes, serves no form and takes no webhook", async () => {
+    const c = client(bareApp);
+    expect(await c.api.getBillingConfig()).toEqual({ provider: "none" });
+    await c.api.signup({
+      body: { email: "nobody-pays@example.test", password: "correct horse battery" },
+    });
+    for (const attempt of [
+      () => c.api.startCheckout({ body: { planId: "standard" } }),
+      () => c.api.confirmCheckout({ params: { id: "anything" } }),
+      () => c.api.validatePromotion({ body: { code: "WEBFLIX50", planId: "basic" } }),
+    ]) {
+      const error = await attempt().then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(503);
+      expect((error as ApiError).code).toBe("payments_not_configured");
+    }
+    expect((await c.send("/_pay/form")).status).toBe(404);
+    for (const provider of ["fake", "stripe"]) {
+      const webhook = await c.send(`/api/v1/webhooks/payments/${provider}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Stripe-Signature": "t=1,v1=x" },
+        body: "{}",
+      });
+      expect(webhook.status, provider).toBe(404);
+    }
+    await withProfile(c);
+    expect((await c.api.getAccount()).membership?.status).toBe("none");
   });
 });

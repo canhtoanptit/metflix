@@ -44,6 +44,10 @@ class InvalidKeyError(ValueError):
     pass
 
 
+class ConditionalWriteUnsupported(RuntimeError):
+    """The store refuses conditional writes outright (`NotImplemented`)."""
+
+
 def key_problem(key: str) -> str | None:
     """Why `key` is not a valid blob key (same rules as packages/contracts), or None."""
     if not key:
@@ -91,7 +95,9 @@ class Storage(Protocol):
 
     def put_if_absent(self, key: str, data: bytes, *, content_type: str | None = None) -> bool:
         """Create the object only if no object has the key; False when one exists. Atomic on
-        the filesystem layout and on stores that honour `If-None-Match: *` (AWS S3)."""
+        the filesystem layout and on stores that honour `If-None-Match: *` (AWS S3, R2 by its
+        documentation); a store that ignores the header overwrites and answers True (lease.py
+        probes for that); one that refuses it raises `ConditionalWriteUnsupported`."""
         ...
 
     def delete(self, keys: Iterable[str]) -> None: ...
@@ -403,13 +409,13 @@ class S3Storage:
             code = str(response.get("Error", {}).get("Code", ""))
             if code in {"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}:
                 return False
-            if code not in {"NotImplemented", "501"}:
-                raise
-            # A store without conditional writes: check, then write (not atomic; the lease that
-            # uses this documents the gap).
-            if self.head(key) is not None:
-                return False
-            self.put(key, data, content_type=content_type)
+            if code in {"NotImplemented", "501"}:
+                raise ConditionalWriteUnsupported(
+                    f"{self.describe()} does not implement conditional writes (If-None-Match)"
+                ) from error
+            raise
+        # A 200 means created only on a store that honours the header; Garage, for one, accepts
+        # it and overwrites (lease.py probes for that before relying on this).
         return True
 
     def delete(self, keys: Iterable[str]) -> None:

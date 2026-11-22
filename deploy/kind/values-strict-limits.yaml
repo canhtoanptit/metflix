@@ -1,0 +1,14 @@
+# The production (strict) rate limits on a configuration that sets others: make k8s-up
+# RATE_LIMITS=strict (e.g. with VARIANT=conformance, whose values pick the relaxed profile). An
+# empty limit is left out of the ConfigMap, so the application's strict defaults apply
+# (docs/BACKEND.md §3). The conformance suite waits out every limit like a well-behaved client
+# (a run takes about 17 minutes from one address this way, against about 5 relaxed).
+config:
+  rateLimits:
+    auth: ""
+    signup: ""
+    emailLookup: ""
+    profilePin: ""
+    oidc: ""
+    emailSend: ""
+    events: ""

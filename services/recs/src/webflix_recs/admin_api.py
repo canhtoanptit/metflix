@@ -6,6 +6,9 @@ Two jobs talk to the product (docs/BACKEND.md §3, "The staff API"):
   `admin`) and, once it has verified that nothing of them is left, records it with
   `POST /system/privacy/erasures/confirm` (at most 200 keys per call, with a reason: the
   product's audit log keeps it);
+* `export-events` reads `GET /system/privacy/exports` (the data exports whose events are not
+  extracted yet; role `admin`) and records what it did with
+  `POST /system/privacy/exports/results` (at most 500 results per call, with a reason);
 * `analyse-experiments` can read the experiment definitions with `GET /experiments` (role
   `experiments`).
 
@@ -14,16 +17,19 @@ Configuration (environment):
 * `WEBFLIX_ADMIN_API_URL`: the staff API's base, e.g. `https://webflix.example/api/admin/v1`;
 * a bearer token, one of: `WEBFLIX_STAFF_TOKEN` (an access token obtained elsewhere), or
   `WEBFLIX_STAFF_TOKEN_URL` with `WEBFLIX_STAFF_CLIENT_ID` and either
-  `WEBFLIX_STAFF_CLIENT_SECRET` (OAuth 2.0 client credentials: a service account of the staff
-  issuer, e.g. a Keycloak client whose service account holds the `admin` role of
-  `webflix-admin`) or `WEBFLIX_STAFF_REFRESH_TOKEN` (the refresh-token grant), optionally
-  `WEBFLIX_STAFF_SCOPE`.
+  `WEBFLIX_STAFF_CLIENT_SECRET` (OAuth 2.0 client credentials, the client authenticated with
+  HTTP Basic: a service account of the staff issuer, e.g. a Keycloak client whose service
+  account holds the `admin` role of `webflix-admin`; in dev, the development issuer's
+  `webflix-jobs` client at `{origin}/dev-idp/staff/token`) or `WEBFLIX_STAFF_REFRESH_TOKEN` (the
+  refresh-token grant), optionally `WEBFLIX_STAFF_SCOPE`. Tokens are fetched again shortly
+  before they expire (the product's last five minutes).
 
 Standard library only (urllib): the job image needs no HTTP client dependency.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import time
 import urllib.error
@@ -37,6 +43,7 @@ import orjson
 
 CONFIRM_BATCH = 200
 LIST_LIMIT = 500
+RESULTS_BATCH = 500
 
 
 class AdminApiError(RuntimeError):
@@ -76,6 +83,8 @@ class TokenSource:
     static: str | None = None
     token_url: str | None = None
     form: dict[str, str] = field(default_factory=dict)
+    #: HTTP Basic client authentication (`client_secret_basic`, RFC 6749 §2.3.1).
+    basic: tuple[str, str] | None = None
     _cached: tuple[str, float] | None = None
 
     def __call__(self) -> str:
@@ -85,11 +94,16 @@ class TokenSource:
             return self._cached[0]
         if not self.token_url:
             raise AdminApiError("no staff token configured (see webflix_recs.admin_api)")
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if self.basic is not None:
+            client, secret = (urllib.parse.quote(part, safe="") for part in self.basic)
+            encoded = base64.b64encode(f"{client}:{secret}".encode()).decode()
+            headers["Authorization"] = f"Basic {encoded}"
         answer = _request(
             self.token_url,
             method="POST",
             body=urllib.parse.urlencode(self.form).encode(),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers=headers,
         )
         token = (answer or {}).get("access_token")
         if not isinstance(token, str):
@@ -110,17 +124,19 @@ class TokenSource:
                 "set WEBFLIX_STAFF_TOKEN, or WEBFLIX_STAFF_TOKEN_URL and WEBFLIX_STAFF_CLIENT_ID "
                 "with WEBFLIX_STAFF_CLIENT_SECRET or WEBFLIX_STAFF_REFRESH_TOKEN"
             )
-        form = {"client_id": client}
+        form: dict[str, str] = {}
         if env.get("WEBFLIX_STAFF_REFRESH_TOKEN"):
             form.update(
                 grant_type="refresh_token", refresh_token=env["WEBFLIX_STAFF_REFRESH_TOKEN"]
             )
         else:
             form.update(grant_type="client_credentials")
-        if env.get("WEBFLIX_STAFF_CLIENT_SECRET"):
-            form["client_secret"] = env["WEBFLIX_STAFF_CLIENT_SECRET"]
         if env.get("WEBFLIX_STAFF_SCOPE"):
             form["scope"] = env["WEBFLIX_STAFF_SCOPE"]
+        secret = env.get("WEBFLIX_STAFF_CLIENT_SECRET")
+        if secret:
+            return cls(token_url=url, form=form, basic=(client, secret))
+        form["client_id"] = client  # a public client (the refresh-token grant)
         return cls(token_url=url, form=form)
 
 
@@ -168,6 +184,23 @@ class AdminApi:
                 "POST", "/system/privacy/erasures/confirm", {"subjectKeys": chunk, "reason": reason}
             )
         return len(keys)
+
+    def pending_exports(self, limit: int = LIST_LIMIT) -> list[dict[str, Any]]:
+        """`GET /system/privacy/exports`: `{requests: [{requestId, accountKey, from, to}]}`."""
+        answer = self._call("GET", f"/system/privacy/exports?limit={int(limit)}")
+        requests = (answer or {}).get("requests")
+        if not isinstance(requests, list):
+            raise AdminApiError("GET /system/privacy/exports: no requests list in the answer")
+        return [item for item in requests if isinstance(item, dict)]
+
+    def record_export_results(self, document: dict[str, Any], reason: str) -> int:
+        """`POST /system/privacy/exports/results`: export-events' results document and a
+        reason, at most 500 results per call."""
+        results = list(document.get("results", []))
+        for start in range(0, len(results), RESULTS_BATCH):
+            body = {**document, "results": results[start : start + RESULTS_BATCH], "reason": reason}
+            self._call("POST", "/system/privacy/exports/results", body)
+        return len(results)
 
     def list_experiments(self) -> list[dict[str, Any]]:
         answer = self._call("GET", "/experiments")

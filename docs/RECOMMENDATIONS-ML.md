@@ -477,6 +477,9 @@ validates and imports).
   estimand.
 * Pickled scikit-learn models are verified by SHA-256 before loading but tie a run to the
   library version that wrote it.
+* A fresh lake has nothing to train for its first two weeks (the backtest at T − 7 days needs
+  plays before T − 14 days): `train-and-score` and `publish` report that and exit cleanly, and
+  the engine serves the milestone 1 rules meanwhile.
 * Erasure reads the whole lake three times (discover, rewrite, verify), reading only subject
   columns except where a key matches; daily that is about the cost of a dataset build at full
   size. Measured at smoke size only. Compacted hours are sorted by account with 1,000-row groups
@@ -516,7 +519,7 @@ validates and imports).
 
 | | dev | k8s | cloudflare |
 | --- | --- | --- | --- |
-| Jobs | `make recs` on the developer machine, store = the dev filesystem store | CronJobs running the `webflix-recs` image: `compact` hourly, `erase`, `train-and-score`, `publish`, `analyse-experiments` daily (services/recs/README.md, "Jobs"), store = Garage through `WEBFLIX_S3_*` | the same image run outside Workers (a container or any scheduler) against R2's S3 API |
+| Jobs | `make recs` on the developer machine, store = the dev filesystem store | CronJobs running the `webflix-recs` image (docs/KUBERNETES.md §9.6): a lake round running `erase`, `export-events` and `compact` one after another (Garage ignores conditional writes, so the scheduler is the lake's lock and says so with `WEBFLIX_RECS_LAKE_SERIALIZED=true`; without it the jobs refuse, exit 10), `train-and-score` and `publish`, `analyse-experiments` daily, store = Garage through `WEBFLIX_S3_*` | the same image run outside Workers (a container or any scheduler) against R2's S3 API, where the lake lease itself excludes overlapping jobs |
 | Rule-engine baseline | Node script from the repository, in-process | `train-and-score --phase prepare`, the Node script in an image with the repository's packages, `--phase finish`, sharing an `emptyDir` | same |
 | Erasure keys, experiment definitions | files, or the dev API with an access token | the staff API with a service account of the staff issuer (client credentials) | same |
 | Artefacts read by | importer via the filesystem store | importer via S3 | importer via R2 binding |

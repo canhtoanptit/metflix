@@ -41,6 +41,12 @@ from webflix_recs.storage import Storage, get_json, put_json
 RUNS_PREFIX = "recs-work/runs/"
 
 
+class NotEnoughData(ValueError):
+    """The dataset cannot train a run at this cutoff (an ordinary outcome on a young lake):
+    no eligible profile, no play before the ranker's window, or no labelled impressions of both
+    kinds in it."""
+
+
 @dataclass(frozen=True)
 class TrainParams:
     seed: int = 7
@@ -175,6 +181,17 @@ def train(
     started = time.perf_counter()
     profiles = dataset.tables["profiles"]["profile"].sort().to_list()
     window_start = as_of_ms - params.ranker_window_days * DAY_MS
+    if not profiles:
+        raise NotEnoughData(
+            f"dataset {dataset.dataset_id} has no eligible profile (unrestricted, consenting to "
+            "personalisation) before its cutoff"
+        )
+    plays = dataset.tables["playback"].filter(pl.col("event_time") < window_start).height
+    if plays == 0:
+        raise NotEnoughData(
+            f"no play before {iso_ms(window_start)}: the candidate models need history from "
+            f"before the ranker's {params.ranker_window_days}-day window"
+        )
     content = ContentModel.fit(catalog, dimensions=params.content_dimensions, seed=params.seed)
 
     stage = time.perf_counter()
@@ -195,6 +212,12 @@ def train(
         max_rows=params.max_training_impressions,
         seed=params.seed,
     )
+    positives = int(examples["played"].sum()) if examples.height else 0
+    if examples.height == 0 or positives in (0, examples.height):
+        raise NotEnoughData(
+            f"{examples.height} labelled impressions in [{iso_ms(window_start)}, "
+            f"{iso_ms(as_of_ms)}), {positives} played: the ranker needs both outcomes"
+        )
     context_a = FeatureContext(history_a, cowatch_a, als_a, content, blend_a)
     features = gather_features(context_a, examples)
     played = examples["played"].to_numpy()

@@ -85,6 +85,15 @@ export const ExperimentDefinition = z
   .object({
     ...definitionFields,
     status: z.enum(EXPERIMENT_STATUSES),
+    /**
+     * When `status` takes effect for assignment, at the same instant on every replica and
+     * isolate (null: in effect). Definitions are cached per instance, so a start, pause or stop
+     * is scheduled a short while ahead (`WEBFLIX_EXPERIMENTS_PROPAGATION_SEC`) instead of
+     * reaching instances one by one; until then units are assigned as under `previousStatus`.
+     */
+    statusChangeAt: IsoDateTime.nullable(),
+    /** The status assignment follows until `statusChangeAt` (null: none pending). */
+    previousStatus: z.enum(EXPERIMENT_STATUSES).nullable(),
     /** Changing the salt reshuffles every unit: only before an experiment starts. */
     salt: z.string().min(1).max(64),
     /** When it was pre-registered (became `running` the first time). */

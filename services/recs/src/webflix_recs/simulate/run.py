@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import resource
 import time
 from dataclasses import asdict
@@ -15,7 +14,7 @@ import polars as pl
 
 from webflix_recs.catalog import Catalog
 from webflix_recs.ids import DAY_MS, iso_ms
-from webflix_recs.parallel import process_pool
+from webflix_recs.parallel import default_workers, parallel_map
 from webflix_recs.simulate.behaviour import World
 from webflix_recs.simulate.config import SimConfig
 from webflix_recs.simulate.emit import Emitter, LakeSink, MemorySink, Sink
@@ -156,22 +155,21 @@ def run_simulation(
     """Simulate every shard; write the lake through the store and the truth to `truth_dir`."""
     truth = Path(truth_dir)
     truth.mkdir(parents=True, exist_ok=True)
-    workers = max(1, min(workers or (os.cpu_count() or 2) - 2, config.shards))
+    workers = max(1, min(workers or default_workers(), config.shards))
     jobs = [
         (config, catalog.raw, shard, store_location, str(truth)) for shard in range(config.shards)
     ]
     started = time.perf_counter()
     results: list[dict[str, Any]] = []
-    if workers == 1:
-        results = [_shard_job(job) for job in jobs]
-    else:
-        with process_pool(workers) as pool:
-            for stats in pool.map(_shard_job, jobs):
-                results.append(stats)
-                log(
-                    f"  shard {stats['shard'] + 1}/{config.shards}: "
-                    f"{stats['lines']} events in {stats['seconds']}s"
-                )
+    results = parallel_map(
+        _shard_job,
+        jobs,
+        workers=workers,
+        on_result=lambda stats: log(
+            f"  shard {stats['shard'] + 1}/{config.shards}: "
+            f"{stats['lines']} events in {stats['seconds']}s"
+        ),
+    )
     elapsed = time.perf_counter() - started
     totals: dict[str, Any] = {"events": {}}
     for stats in results:

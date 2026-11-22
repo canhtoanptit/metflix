@@ -76,9 +76,12 @@ export function describeExperimentsRepositoryContract(
       const repo = h().repos.experiments;
       const definition = experimentDefinition({ status: "draft" });
       await repo.createExperiment(definition, audit("a-1", "experiment.create", definition.key));
+      // A scheduled change round-trips: when it takes effect and what holds until then.
       const running = {
         ...definition,
         status: "running" as const,
+        statusChangeAt: "2026-11-22T13:01:00.000Z",
+        previousStatus: "draft" as const,
         updatedAt: "2026-11-22T13:00:00.000Z",
       };
       expect(

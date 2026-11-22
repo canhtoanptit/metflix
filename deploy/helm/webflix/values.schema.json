@@ -255,7 +255,7 @@
           "properties": {
             "paymentProvider": {
               "type": "string",
-              "enum": ["", "fake", "stripe", "memory"]
+              "enum": ["", "none", "fake", "stripe", "memory"]
             },
             "graceSec": {
               "type": ["integer", "null"],
@@ -358,6 +358,18 @@
             }
           },
           "description": "The staff API's token verifier (admin)"
+        },
+        "experiments": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Experiments (experiments area)",
+          "properties": {
+            "propagationSec": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "maximum": 3600
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -1873,7 +1885,7 @@
           }
         },
         "workers": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 1,
           "maximum": 32
         }

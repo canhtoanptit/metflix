@@ -23,9 +23,16 @@ import {
   parseMediaPlaylist,
   resolveUri,
 } from "./hls.ts";
-import { Agent, isApiError, runDetached } from "./http.ts";
+import { Agent, currentScope, isApiError, runDetached } from "./http.ts";
 import { DOCUMENTED_LIMITS, expectedSpec, measureProfilePinLimit } from "./limits.ts";
-import { discoverIssuer, type MemberIssuer, staffAccessToken } from "./oidc.ts";
+import {
+  clientCredentialsToken,
+  DEV_JOBS_CLIENT,
+  discoverIssuer,
+  type MemberIssuer,
+  staffTokens,
+  tokenExpiry,
+} from "./oidc.ts";
 import type { RateLimitSpec, SmokeOptions } from "./types.ts";
 
 export interface TestAccount {
@@ -92,7 +99,7 @@ export interface Fact {
 }
 
 export interface PaymentsFact extends Fact {
-  provider: "fake" | "stripe" | "unknown";
+  provider: "fake" | "stripe" | "none" | "unknown";
 }
 
 /** A card that is approved by the mock billing provider. */
@@ -611,7 +618,10 @@ export class Environment {
         this.flowLog = this.flowLog.filter((at) => at > now - windowMs);
         if (this.flowLog.length < perWindow) break;
         const oldest = this.flowLog[0] ?? now;
-        await new Promise((resolve) => setTimeout(resolve, oldest + windowMs - now + 50));
+        const waitMs = oldest + windowMs - now + 50;
+        // Pacing within the deployment's limit is rate-limit time, not the check's.
+        currentScope()?.onThrottle?.(waitMs);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
       }
       this.flowLog.push(Date.now());
     });
@@ -682,6 +692,15 @@ export class Environment {
     return this.once("fact:payments", async () => {
       const agent = this.agent("probe-payments");
       const config = await succeeds(() => agent.api.getBillingConfig(), "GET /billing/config");
+      if (config.provider === "none") {
+        this.note("payments", "none (GET /billing/config: no payment provider)");
+        return {
+          available: false,
+          provider: "none",
+          reason:
+            "the deployment has no payment provider (GET /billing/config answers provider none: production's default until one is configured): these journeys drive the fake provider (WEBFLIX_PAYMENT_PROVIDER=fake, outside production); Stripe's lane is tools/stripe",
+        };
+      }
       if (config.provider === "stripe") {
         this.note("payments", "Stripe");
         return {
@@ -732,11 +751,85 @@ export class Environment {
     });
   }
 
-  /** A staff access token for a development persona, minted once per run. */
+  /**
+   * A staff access token for a development persona, valid for a while yet: minted on first use
+   * and again whenever the one held nears its expiry (a strict-limits run outlives the issuer's
+   * five-minute tokens). Ask for it at each use; never keep one across a wait.
+   */
   staffToken(persona: string): Promise<string> {
-    return this.once(`staff:${persona}`, () =>
-      staffAccessToken(this.agent(`staff-${persona}`), persona),
-    );
+    return this.renewing(`staff:${persona}`, async () => {
+      const issuedAt = Date.now();
+      const minted = await staffTokens(this.agent(`staff-${persona}`), persona);
+      return {
+        token: minted.accessToken,
+        issuedAt,
+        expiresAt: tokenExpiry(minted.accessToken, minted.expiresInSec, issuedAt),
+      };
+    });
+  }
+
+  /** The jobs' service-account token (client credentials), renewed the same way. */
+  jobToken(): Promise<string> {
+    return this.renewing("job", async () => {
+      const issuedAt = Date.now();
+      const granted = await clientCredentialsToken(this.agent("staff-job"), DEV_JOBS_CLIENT);
+      const token = granted.json.access_token;
+      if (granted.result.status !== 200 || typeof token !== "string") {
+        fail(`the ${DEV_JOBS_CLIENT.id} client-credentials grant failed`, {
+          observed: `${granted.result.status} ${granted.result.exchange.responseBody ?? ""}`,
+          exchange: granted.result.exchange,
+        });
+      }
+      const expiresIn = granted.json.expires_in;
+      return {
+        token,
+        issuedAt,
+        expiresAt: tokenExpiry(token, typeof expiresIn === "number" ? expiresIn : null, issuedAt),
+      };
+    });
+  }
+
+  private tokenMints = 0;
+  private tokenRenewals = 0;
+  private readonly tokens = new Map<
+    string,
+    Promise<{ token: string; issuedAt: number; expiresAt: number }>
+  >();
+
+  /**
+   * The token held under `key` while more than a margin of its life remains (a minute, or a
+   * quarter of a short lifetime), else a new one; concurrent callers share one minting.
+   */
+  private async renewing(
+    key: string,
+    mint: () => Promise<{ token: string; issuedAt: number; expiresAt: number }>,
+  ): Promise<string> {
+    for (;;) {
+      const held = this.tokens.get(key);
+      if (held !== undefined) {
+        const current = await held.catch(() => null);
+        if (current) {
+          const margin = Math.min(60_000, (current.expiresAt - current.issuedAt) / 4);
+          if (current.expiresAt - Date.now() > margin) return current.token;
+        }
+        // Expired, nearly so, or failed: replace it unless another caller already did.
+        if (this.tokens.get(key) !== held) continue;
+        if (current) this.tokenRenewals += 1;
+      }
+      this.tokenMints += 1;
+      this.note(
+        "staff tokens",
+        `${this.tokenMints} minted, ${this.tokenRenewals} renewed near expiry`,
+      );
+      const next = mint();
+      this.tokens.set(key, next);
+      try {
+        return (await next).token;
+      } catch (error) {
+        if (this.tokens.get(key) === next) this.tokens.delete(key);
+        throw error;
+      }
+    }
   }
 
   // --- Facts -----------------------------------------------------------------------------------

@@ -71,6 +71,8 @@ export interface RequestScope {
   collectors: Exchange[][];
   signal?: AbortSignal;
   note?: (message: string) => void;
+  /** Time spent waiting out `rate_limited` answers (the check's deadline is extended by it). */
+  onThrottle?: (ms: number) => void;
 }
 
 const scopes = new AsyncLocalStorage<RequestScope>();
@@ -204,14 +206,18 @@ export class Agent {
   /**
    * The staff API (`/api/admin/v1`) with a bearer token, through this agent (its cookies are
    * sent too, as a browser would: the staff API must ignore them). Responses are validated.
+   * Pass a token provider (`() => env.staffToken(persona)`) for a client used over time.
    */
-  staffApi(accessToken: string): AdminApiClient {
+  staffApi(accessToken: string | (() => Promise<string>)): AdminApiClient {
     return withExchanges(
       createRouteClient(adminRoutes, {
         baseUrl: this.origin,
         basePath: ADMIN_API_BASE_PATH,
         validateResponses: true,
-        headers: { Authorization: `Bearer ${accessToken}` },
+        // A provider is asked before every request, so a renewed token is picked up.
+        headers: async () => ({
+          Authorization: `Bearer ${typeof accessToken === "string" ? accessToken : await accessToken()}`,
+        }),
         fetch: (input, init) => this.transport(input, init),
       }),
     );
@@ -335,7 +341,9 @@ export class Agent {
       );
       if (throttledSec > 600) return result;
       // A little jitter so parallel checks waiting on one bucket do not stampede it.
-      await sleep(retryAfter * 1000 + Math.floor(Math.random() * 300), scope?.signal);
+      const waitMs = retryAfter * 1000 + Math.floor(Math.random() * 300);
+      scope?.onThrottle?.(waitMs);
+      await sleep(waitMs, scope?.signal);
     }
   }
 

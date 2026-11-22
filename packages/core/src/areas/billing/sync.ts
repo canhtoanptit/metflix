@@ -188,6 +188,12 @@ export async function syncSubscription(
     if (!(await repos.billing.saveMembership(next, previous?.version ?? null))) continue;
     const changed = !sameProjection(previous, next);
     if (changed) await afterWrite(context, previous, next, subscription);
+    // Checkouts follow the projection on every sync, changed or not (finding K1). The
+    // confirmation saves the subscription's id on its checkout only after the provider created
+    // the subscription, so the worker may write the projection before that checkout can be
+    // found; every sync that starts after the save (the confirmation's own, a poll, any later
+    // event or reconciliation) looks it up after its own write and completes it.
+    await settleCheckouts(context, subscription.id, next);
     return { accountId, membership: next, changed };
   }
   logger.warn("billing.sync_contended", { subscriptionId });
@@ -219,7 +225,10 @@ async function afterWrite(
     ? effectiveMembership(previous, context.graceSec, previous.providerSyncedAt).status
     : "none";
   const after = effectiveMembership(next, context.graceSec, context.now()).status;
-  await mirrorLegacySubscription(context.deps, next, context.graceSec, context.now());
+  // Mirrored from the latest projection, not this writer's: a slower sync finishing after a
+  // newer one must not leave the mirror at its older state.
+  const latest = (await repos.billing.getMembership(next.accountId)) ?? next;
+  await mirrorLegacySubscription(context.deps, latest, context.graceSec, context.now());
   if (before !== after) {
     logger.info("billing.transition", { accountId: next.accountId, from: before, to: after });
     await context.seams.emitServerEvent({
@@ -229,22 +238,34 @@ async function afterWrite(
       profileId: null,
     });
   }
-  // Checkouts of this subscription follow the projection.
-  const checkouts = await repos.billing.listCheckoutsForSubscription(
-    context.provider,
-    subscription.id,
-  );
-  for (const checkout of checkouts) {
-    const status = checkoutStatusFor(checkout, next);
-    if (status !== checkout.status) {
-      await repos.billing.saveCheckout({ ...checkout, status, updatedAt: context.now() });
-    }
-  }
   const invoice = subscription.latestInvoiceId
     ? await context.payments.retrieveInvoice(subscription.latestInvoiceId)
     : null;
   if (invoice) await storeInvoice(context, invoice);
   await emailsForChange(context, previous, next, before, after, invoice);
+}
+
+/**
+ * Brings the checkouts of one subscription in line with its just-written projection. Only the
+ * status moves, from a fresh read of each checkout, so a concurrent writer of other fields is
+ * not undone; every writer computes the same status from the same provider state.
+ */
+async function settleCheckouts(
+  context: BillingContext,
+  subscriptionId: string,
+  membership: MembershipRecord,
+): Promise<void> {
+  const { repos } = context.deps;
+  const checkouts = await repos.billing.listCheckoutsForSubscription(
+    context.provider,
+    subscriptionId,
+  );
+  for (const checkout of checkouts) {
+    const status = checkoutStatusFor(checkout, membership);
+    if (status !== checkout.status) {
+      await repos.billing.saveCheckout({ ...checkout, status, updatedAt: context.now() });
+    }
+  }
 }
 
 /** A checkout is complete once the membership it started is entitled (§5.1 step 4). */

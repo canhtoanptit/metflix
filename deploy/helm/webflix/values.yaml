@@ -97,8 +97,9 @@ config:
   billing:
     # WEBFLIX_PAYMENT_PROVIDER: stripe (keys STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY,
     # STRIPE_WEBHOOK_SECRET in secrets.envFrom; the web app's CSP then admits Stripe.js), fake
-    # (refused in production; its form is routed at /_pay) or memory. Empty: fake outside
-    # production, memory in production (no checkout can complete).
+    # (refused in production; its form is routed at /_pay) or none. Empty: fake outside
+    # production, none in production (GET /billing/config says so, checkouts answer 503
+    # payments_not_configured). `memory` (in process, tests) is refused in production.
     paymentProvider: ""
     # WEBFLIX_BILLING_GRACE_SEC: past_due stays entitled this long after a failed renewal.
     graceSec: null
@@ -125,6 +126,10 @@ config:
     exportLinkTtlSec: null
     # WEBFLIX_RELEASE, the app.version of server events. Empty: the API image's tag.
     release: ""
+  experiments:
+    # WEBFLIX_EXPERIMENTS_PROPAGATION_SEC: how far ahead a staff status change takes effect, so
+    # every replica's cached definitions agree from that instant. null: 60 s on Kubernetes.
+    propagationSec: null
   recommendations:
     # WEBFLIX_RECOMMENDATION_STORE: database (PostgreSQL) or memory.
     store: database
@@ -344,12 +349,10 @@ pipeline:
   store: ""
   # Native thread budget of each job (WEBFLIX_RECS_THREADS).
   threads: 2
-  # Worker processes of each job (webflix-recs --workers). 1 by default: the pipeline's process
-  # pools use Python's default start method, fork on Linux, after its native thread pools have
-  # started, and a forked worker can inherit a held lock (an erase on kind hung that way with 9
-  # workers, every process asleep on a futex); its default count is also the node's CPUs, not
-  # the container's limit. Raise it with a large lake once the pipeline starts its pools safely.
-  workers: 1
+  # Worker processes of each job (webflix-recs --workers). null: the pipeline's default, the CPUs
+  # the container may use (its cgroup quota, i.e. resources.limits.cpu) minus one, 1 to 12; its
+  # pools are spawned, never forked (finding K5).
+  workers: null
   # How the jobs reach the staff API (erasures, exports, experiment definitions): a service
   # account of the staff issuer with the `admin` and `experiments` roles of webflix-admin.
   staffApi:
@@ -363,11 +366,13 @@ pipeline:
     # (keycloak.enabled), or outside production the development issuer's published secret.
     existingSecret: ""
   # The lake lease is a create-only write (PutObject with If-None-Match: *). Garage accepts the
-  # header and ignores it (measured on v2.5.0: every concurrent writer "wins"), so with the
-  # in-chart store the three jobs that rewrite the lake (erase, export-events, compact) run one
-  # after another in one CronJob, the lake round, whose concurrencyPolicy Forbid is the lock.
-  # auto: serialized with objectStore.enabled; separate CronJobs with an external store that
-  # honours the header (AWS S3, R2). jobs.*.enabled and graceMinutes still apply to each step.
+  # header and ignores it (measured on v2.5.0: every concurrent writer "wins"), and the pipeline
+  # then refuses to run compact, erase or export-events (exit 10) unless told that the scheduler
+  # is the lock. So with the in-chart store the three run one after another in one CronJob, the
+  # lake round, whose concurrencyPolicy Forbid is the lock, with WEBFLIX_RECS_LAKE_SERIALIZED=true.
+  # auto: serialized with objectStore.enabled; separate CronJobs (each taking the lease) with an
+  # external store that honours the header (AWS S3, R2). jobs.*.enabled and graceMinutes still
+  # apply to each step.
   lake:
     serialize: auto
     schedule: "*/5 * * * *"

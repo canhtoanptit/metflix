@@ -54,7 +54,7 @@ import polars as pl
 from webflix_recs import schemas
 from webflix_recs.ids import DAY_MS, HOUR_MS, iso_ms, parse_iso_ms
 from webflix_recs.lake import list_hours, relist_hour, snapshot_hour
-from webflix_recs.parallel import process_pool
+from webflix_recs.parallel import parallel_map
 from webflix_recs.storage import Storage, get_json, open_storage, put_json
 
 EXPORT_PREFIX = "privacy/export-events/"
@@ -180,15 +180,8 @@ def _read(
         if keys:
             jobs.append((location, hour.hour_ms, keys))
     total = HourMatches()
-    outcomes: Iterable[HourMatches]
-    if workers <= 1 or len(jobs) <= 1:
-        outcomes = (_hour_job(job) for job in jobs)
-        for outcome in outcomes:
-            _merge(total, outcome)
-    else:
-        with process_pool(workers) as pool:
-            for outcome in pool.map(_hour_job, jobs, chunksize=8):
-                _merge(total, outcome)
+    for outcome in parallel_map(_hour_job, jobs, workers=workers):
+        _merge(total, outcome)
     return total, len(jobs)
 
 

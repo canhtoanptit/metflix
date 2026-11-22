@@ -177,7 +177,21 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
   const context = createBillingContext(deps, seams);
   const { repos, payments, ids, logger } = deps;
   const provider = context.provider;
+  /**
+   * False when the deployment has no payment provider (`WEBFLIX_PAYMENT_PROVIDER=none`,
+   * production's default; finding K3). Decided by configuration alone, so every replica answers
+   * the same: the config says `none`, nothing that needs a provider starts, no webhook is taken.
+   */
+  const configured = deps.config.billing.paymentProvider !== "none";
   let catalogue: Promise<void> | undefined;
+
+  function requireProvider(): void {
+    if (!configured) {
+      throw new AppError("payments_not_configured", {
+        detail: "No payment provider is configured: memberships cannot be started here yet.",
+      });
+    }
+  }
 
   // The fake delivers its webhooks in process; they are verified like any other delivery.
   payments.attachWebhookReceiver?.(async ({ body, signature }) => {
@@ -371,14 +385,21 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
 
   // --- Card replacement completion (from the provider's event, §5.4) ----------------------------
 
+  /**
+   * Finishes a card change from the provider's own state; run by the worker (the setup's
+   * event) and by the member's poll, in any order, as often as needed (finding K1). Every step
+   * is idempotent (fixed operation keys) and success is recorded last, so a run cut short
+   * anywhere (a replica gone mid-way) is finished by the next one rather than marked done.
+   */
   async function completeSetup(providerSetupId: string): Promise<void> {
     const setup = await repos.billing.findSetupByProviderId(provider, providerSetupId);
     if (!setup || setup.status === "succeeded") return;
     const confirmed = await payments.retrieveSetup(providerSetupId);
     if (!confirmed) return;
-    const now = context.now();
     if (confirmed.status === "failed") {
-      await repos.billing.saveSetup({ ...setup, status: "failed", updatedAt: now });
+      if (setup.status !== "failed") {
+        await repos.billing.saveSetup({ ...setup, status: "failed", updatedAt: context.now() });
+      }
       return;
     }
     if (confirmed.status !== "succeeded" || !confirmed.paymentMethod) return;
@@ -402,12 +423,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           call,
         ),
     );
-    await repos.billing.saveSetup({
-      ...setup,
-      status: "succeeded",
-      providerPaymentMethodId: confirmed.paymentMethod.id,
-      updatedAt: now,
-    });
+    const paymentMethodId = confirmed.paymentMethod.id;
     // A card change does not make the provider attempt an open invoice (§5.4): ask it to.
     if (membership?.providerSubscriptionId) {
       const subscription = await payments.retrieveSubscription(membership.providerSubscriptionId);
@@ -441,6 +457,12 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       }
       await syncSubscription(context, membership.providerSubscriptionId, setup.accountId);
     }
+    await repos.billing.saveSetup({
+      ...setup,
+      status: "succeeded",
+      providerPaymentMethodId: paymentMethodId,
+      updatedAt: context.now(),
+    });
   }
 
   // --- Plan changes ---------------------------------------------------------------------------
@@ -472,10 +494,10 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         await processProviderEvent(context, eventId, { completeSetup });
       }),
       handleJob(reconcileJob, async () => {
-        await reconcile(context);
+        if (configured) await reconcile(context);
       }),
     ],
-    scheduled: () => [{ type: RECONCILE_JOB, payload: {} }],
+    scheduled: () => (configured ? [{ type: RECONCILE_JOB, payload: {} }] : []),
 
     async exportAccountData(accountId): Promise<JsonValue> {
       // What the member sees on their account page (§6.3 "Download your data"): the membership
@@ -566,6 +588,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
 
     config() {
+      if (!configured) return { provider: "none" };
       if (provider === "stripe") {
         const key = deps.config.billing.stripe?.publishableKey ?? "";
         return { provider: "stripe", publishableKey: key };
@@ -602,6 +625,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         throw new AppError("unrestricted_profile_required");
       }
       if (isDemoAccount(accountId)) throw new AppError("demo_account_protected");
+      requireProvider();
       const current = await snapshot(accountId);
       if (current.entitlement.entitled) {
         throw new AppError("checkout_state_conflict", {
@@ -713,6 +737,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
 
     async confirmCheckout(accountId, checkoutId) {
+      requireProvider();
       const found = await repos.billing.getCheckout(accountId, checkoutId);
       if (!found) throw new AppError("not_found", { detail: "No such checkout" });
       let checkout: CheckoutRecord = found;
@@ -1024,6 +1049,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     // --- Card replacement (§5.4) ----------------------------------------------------------------
     async setupPaymentMethod(accountId) {
       if (isDemoAccount(accountId)) throw new AppError("demo_account_protected");
+      requireProvider();
       await requireProviderMembership(accountId);
       const customerId = await customerFor(accountId);
       const id = ids.next();
@@ -1048,10 +1074,9 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     async getPaymentMethodSetup(accountId, setupId) {
       const record = await repos.billing.getSetup(accountId, setupId);
       if (!record) throw new AppError("not_found", { detail: "No such card change" });
-      // Polling reads the provider (the event may not have arrived yet).
-      if (record.status === "requires_confirmation" || record.status === "processing") {
-        await completeSetup(record.providerSetupId);
-      }
+      // Polling reads the provider (the event may not have arrived yet, or its processing
+      // stopped half-way): anything not recorded as succeeded is looked at again.
+      if (record.status !== "succeeded") await completeSetup(record.providerSetupId);
       const current = (await repos.billing.getSetup(accountId, setupId)) ?? record;
       const setup =
         current.status === "requires_confirmation"
@@ -1081,6 +1106,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
 
     async validatePromotion(input) {
+      requireProvider();
       const found = await promotionFor(input.code, input.planId);
       const promotion = found?.promotion;
       if (!promotion) throw new AppError("promotion_code_invalid", { promotionReason: "unknown" });
@@ -1100,7 +1126,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
 
     // --- Provider events (§5.3) -----------------------------------------------------------------
     async receiveWebhook(webhookProvider, body, signature) {
-      if (webhookProvider !== provider) {
+      if (!configured || webhookProvider !== provider) {
         throw new AppError("not_found", { detail: "No such payment provider" });
       }
       let event: Awaited<ReturnType<typeof payments.parseWebhook>>;
@@ -1128,10 +1154,11 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       return snapshot(accountId);
     },
 
-    reconcile: () => reconcile(context),
+    reconcile: async () =>
+      configured ? reconcile(context) : { listed: 0, recorded: 0, requeued: 0, resynced: 0 },
 
     async advanceClock(accountId, seconds) {
-      if (deps.config.environment === "production" || !payments.advanceTestClock) {
+      if (deps.config.environment === "production" || !configured || !payments.advanceTestClock) {
         throw new AppError("not_found", { detail: "No test clock here" });
       }
       const customer = await repos.billing.getCustomer(accountId, provider);
@@ -1395,6 +1422,11 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
 
     async syncPlans() {
+      if (!configured) {
+        throw new AppError("service_unavailable", {
+          detail: "No payment provider is configured: there is no catalogue to sync.",
+        });
+      }
       try {
         const result = await syncCatalogue();
         catalogue = Promise.resolve();

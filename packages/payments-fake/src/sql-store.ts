@@ -1,17 +1,31 @@
 import type { Database } from "@webflix/db";
+import { type SqlBool, sql } from "kysely";
 import type {
   FakeClockRecord,
+  FakeCommit,
   FakeDocument,
   FakeDocumentKind,
   FakeStore,
   KeyReservation,
 } from "./store.ts";
 
+/** Guard rows live beside the documents, under a kind no document has. */
+const GUARD_KIND = "guard";
+
 /**
  * `FakeStore` over the billing area's `payments_fake_objects`, `payments_fake_idempotency` and
  * `payments_fake_clocks` tables, on any `@webflix/db` dialect: SQLite in dev, PostgreSQL on
  * Kubernetes, D1 in the Worker. Writes of one operation go in one batch (D1 has no interactive
  * transactions); every statement stays far below the 100-parameter limit.
+ *
+ * `commit` is a compare-and-set over guard rows, portable to all three (finding K2). Its batch
+ * first moves each guard from the version the operation read to the next, writing a token
+ * unique to this commit: `UPDATE … WHERE version = <read>` (or an insert that does nothing when
+ * the row exists, for a guard never committed). Every later statement of the batch writes only
+ * if all guards carry that token, so a lost race writes nothing. On PostgreSQL (read committed)
+ * a concurrent update of the same guard waits for the first to commit, then sees the new
+ * version and matches no row; SQLite and D1 run batches one at a time. Guards are taken in key
+ * order, so two commits never wait on each other in a cycle.
  */
 export function createSqlFakeStore(database: Database): FakeStore {
   const { db } = database;
@@ -95,6 +109,112 @@ export function createSqlFakeStore(database: Database): FakeStore {
             ),
         ),
       );
+    },
+
+    async guardVersions(keys) {
+      const versions = new Map<string, number>(keys.map((key) => [key, 0]));
+      if (keys.length === 0) return versions;
+      const rows = await db
+        .selectFrom("payments_fake_objects")
+        .select(["id", "version"])
+        .where("kind", "=", GUARD_KIND)
+        .where("id", "in", [...keys])
+        .execute();
+      for (const row of rows) versions.set(row.id, Number(row.version));
+      return versions;
+    },
+
+    async commit({ guards, documents, clocks = [] }: FakeCommit): Promise<boolean> {
+      const keys = [...guards.keys()].sort();
+      if (keys.length === 0) throw new Error("payments-fake: a commit needs a guard");
+      const token = `commit:${crypto.randomUUID()}`;
+      const wall = Date.now();
+      const claims = keys.map((key) => {
+        const version = guards.get(key) ?? 0;
+        return version === 0
+          ? db
+              .insertInto("payments_fake_objects")
+              .values({
+                kind: GUARD_KIND,
+                id: key,
+                customer_id: null,
+                data_json: token,
+                version: 1,
+                created_at: wall,
+                updated_at: wall,
+              })
+              .onConflict((oc) => oc.columns(["kind", "id"]).doNothing())
+          : db
+              .updateTable("payments_fake_objects")
+              .set({ data_json: token, version: version + 1, updated_at: wall })
+              .where("kind", "=", GUARD_KIND)
+              .where("id", "=", key)
+              .where("version", "=", version);
+      });
+      // True only inside the batch that moved every guard.
+      const held = sql<SqlBool>`(${db
+        .selectFrom("payments_fake_objects")
+        .select((eb) => eb.fn.countAll().as("held"))
+        .where("kind", "=", GUARD_KIND)
+        .where("id", "in", keys)
+        .where("data_json", "=", token)}) = ${keys.length}`;
+      // Typed casts: PostgreSQL cannot infer a parameter's type from a bare select list.
+      const writes = documents.map((document) =>
+        db
+          .insertInto("payments_fake_objects")
+          .columns([
+            "kind",
+            "id",
+            "customer_id",
+            "data_json",
+            "version",
+            "created_at",
+            "updated_at",
+          ])
+          .expression(
+            db
+              .selectNoFrom([
+                sql<string>`cast(${document.kind} as text)`.as("kind"),
+                sql<string>`cast(${document.id} as text)`.as("id"),
+                sql<string | null>`cast(${document.customerId} as text)`.as("customer_id"),
+                sql<string>`cast(${JSON.stringify(document.data)} as text)`.as("data_json"),
+                sql<number>`cast(${document.version} as integer)`.as("version"),
+                sql<number>`cast(${document.createdAt} as bigint)`.as("created_at"),
+                sql<number>`cast(${document.updatedAt} as bigint)`.as("updated_at"),
+              ])
+              .where(held),
+          )
+          .onConflict((oc) =>
+            oc.columns(["kind", "id"]).doUpdateSet((eb) => ({
+              customer_id: eb.ref("excluded.customer_id"),
+              data_json: eb.ref("excluded.data_json"),
+              version: eb.ref("excluded.version"),
+              updated_at: eb.ref("excluded.updated_at"),
+            })),
+          ),
+      );
+      const clockWrites = clocks.map(({ customerId, clock }) =>
+        db
+          .insertInto("payments_fake_clocks")
+          .columns(["customer_id", "now_ms", "updated_at"])
+          .expression(
+            db
+              .selectNoFrom([
+                sql<string>`cast(${customerId} as text)`.as("customer_id"),
+                sql<number>`cast(${clock.nowMs} as bigint)`.as("now_ms"),
+                sql<number>`cast(${clock.updatedAt} as bigint)`.as("updated_at"),
+              ])
+              .where(held),
+          )
+          .onConflict((oc) =>
+            oc.column("customer_id").doUpdateSet((eb) => ({
+              now_ms: eb.ref("excluded.now_ms"),
+              updated_at: eb.ref("excluded.updated_at"),
+            })),
+          ),
+      );
+      const results = await database.batch([...claims, ...writes, ...clockWrites]);
+      return results.slice(0, claims.length).every((result) => result.numAffectedRows === 1);
     },
 
     async delete(keys) {

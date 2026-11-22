@@ -19,7 +19,7 @@
 
 {{/* The payment provider in effect: the configured one, else the application's default. */}}
 {{- define "webflix.paymentProvider" -}}
-{{- .Values.config.billing.paymentProvider | default (ternary "memory" "fake" (eq .Values.config.environment "production")) -}}
+{{- .Values.config.billing.paymentProvider | default (ternary "none" "fake" (eq .Values.config.environment "production")) -}}
 {{- end -}}
 
 {{/* The URL Keycloak is reached at (browsers, API, jobs) and its realm's issuer. */}}
@@ -98,6 +98,8 @@
 {{- include "webflix.setting" (list "WEBFLIX_EXPORT_LINK_TTL_SEC" $c.events.exportLinkTtlSec) }}
 {{- include "webflix.setting" (list "WEBFLIX_RELEASE" (include "webflix.release" .)) }}
 {{- /* personalisation */}}
+{{- /* experiments */}}
+{{- include "webflix.setting" (list "WEBFLIX_EXPERIMENTS_PROPAGATION_SEC" $c.experiments.propagationSec) }}
 {{- include "webflix.setting" (list "WEBFLIX_RECOMMENDATION_STORE" $c.recommendations.store) }}
 {{- include "webflix.setting" (list "WEBFLIX_RECS_DEFAULT_POLICY" $c.recommendations.defaultPolicy) }}
 {{- include "webflix.setting" (list "WEBFLIX_RECS_EXPLORE_SHARE" $c.recommendations.exploreShare) }}
@@ -256,9 +258,12 @@ env:
     value: {{ include "webflix.pipeline.store" . | quote }}
   - name: WEBFLIX_RECS_THREADS
     value: {{ $p.threads | quote }}
-  # Worker processes of each job (--workers; the lake round's scripts pass it on).
+  {{- with $p.workers }}
+  # Worker processes of each job (--workers; the lake round passes it on). Unset: the
+  # pipeline's own default from the container's CPU limit.
   - name: WEBFLIX_RECS_WORKERS
-    value: {{ $p.workers | quote }}
+    value: {{ . | quote }}
+  {{- end }}
   - name: WEBFLIX_ADMIN_API_URL
     value: {{ include "webflix.pipeline.adminUrl" . | quote }}
   {{- with include "webflix.pipeline.tokenUrl" . }}

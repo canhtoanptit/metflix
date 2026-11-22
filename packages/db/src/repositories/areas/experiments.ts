@@ -19,6 +19,8 @@ function toStored(row: ExperimentsTable): StoredExperiment {
       name: row.name,
       description: row.description,
       status: row.status as ExperimentDefinition["status"],
+      statusChangeAt: iso(row.status_change_at),
+      previousStatus: row.previous_status as ExperimentDefinition["previousStatus"],
       unit: row.unit as ExperimentDefinition["unit"],
       layer: row.layer,
       allocation: { start: Number(row.allocation_start), end: Number(row.allocation_end) },
@@ -65,6 +67,8 @@ function toRow(definition: ExperimentDefinition, version: number): ExperimentsTa
     ends_at: epoch(definition.endsAt),
     registered_at: epoch(definition.registeredAt),
     version,
+    previous_status: definition.previousStatus,
+    status_change_at: epoch(definition.statusChangeAt),
     created_at: Date.parse(definition.createdAt),
     updated_at: Date.parse(definition.updatedAt),
   };

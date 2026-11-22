@@ -70,7 +70,7 @@ from webflix_recs.lake import (
     relist_hour,
     write_compacted,
 )
-from webflix_recs.parallel import process_pool
+from webflix_recs.parallel import parallel_map
 from webflix_recs.storage import Storage, get_json, open_storage, put_json
 
 PLAN_KEY = "recs-work/erasure/plan.json"
@@ -307,16 +307,9 @@ def _erase_objects(args: tuple[str, list[str], frozenset[str], str]) -> ObjectOu
 
 def _map(workers: int, function: Callable[[Any], ObjectOutcome], jobs: list[Any]) -> ObjectOutcome:
     total = ObjectOutcome()
-    if workers <= 1 or len(jobs) <= 1:
-        outcomes: Iterable[ObjectOutcome] = (function(job) for job in jobs)
-        for outcome in outcomes:
-            total.counts.merge(outcome.counts)
-            total.pairs |= outcome.pairs
-        return total
-    with process_pool(workers) as pool:
-        for outcome in pool.map(function, jobs, chunksize=4):
-            total.counts.merge(outcome.counts)
-            total.pairs |= outcome.pairs
+    for outcome in parallel_map(function, jobs, workers=workers):
+        total.counts.merge(outcome.counts)
+        total.pairs |= outcome.pairs
     return total
 
 

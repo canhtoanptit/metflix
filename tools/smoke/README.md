@@ -108,7 +108,7 @@ Requirements are detected from outside, never assumed from the mode name:
 | Probes exposed | `/healthz` answers (k8s routing keeps probes internal: skipped there) | `ops.health` |
 | Development issuer | `GET /auth/providers` offers the provider and `/dev-idp/{provider}/.well-known/openid-configuration` answers; a start that redirects to a real issuer skips the journey | `identity.oidc.*`, `identity.password-reset.drops-identities`, `billing.member-journey` |
 | Local mailbox | `GET /diagnostics/mailbox` answers (memory or outbox sender, not in production) | `identity.verify-email`, `identity.password-reset*`, `identity.oidc.auto-link` (and the emails the billing, export and support checks assert when it is there) |
-| Fake payment provider | `GET /billing/config` names `fake` and `/_pay/api/cards` answers | every `billing.*`, `staff.refund` |
+| Fake payment provider | `GET /billing/config` names `fake` and `/_pay/api/cards` answers; `none` (production without a provider) and `stripe` skip with their reason | every `billing.*` but `billing.provider-config`, `staff.refund` |
 | Staff issuer | `/dev-idp/staff` discovery answers and the staff API accepts its token (`GET /me`) | every `staff.*`, `experiments.*` |
 | Events read-back | `GET /diagnostics/events` answers for a signed-in account | `privacy.events`, `privacy.kids-profile`, `privacy.consent` |
 | Consent mode | `GET /privacy/consent` → `mode`; the consent check asserts the mode the deployment runs | `privacy.consent` (and `privacy.events`, `privacy.kids-profile` skip in `off`) |
@@ -153,19 +153,49 @@ Requirements are detected from outside, never assumed from the mode name:
   (alone, after everything else, before the IP-exhausting checks): `billing.provider-events`
   sets the fake provider's webhook delivery policy (unruly, then outage) and restores what it
   found; `staff.curated-row` publishes a collection on the home page and deletes it;
-  `experiments.assignment` starts two experiments in layers of their own and completes them when
-  the run ends. Two suites must not run at once against one deployment (the delivery policy is
+  `experiments.assignment` starts two experiments in layers of their own (`smoke-profile-<run>`,
+  `smoke-device-<run>`, no other experiment shares them) and completes them when the run ends;
+  where a status change is scheduled ahead (`WEBFLIX_EXPERIMENTS_PROPAGATION_SEC`, 60 s on
+  Kubernetes and Cloudflare) they keep assigning their own keys for that long after the run,
+  which touches no other experiment. Two suites must not run at once against one deployment (the delivery policy is
   shared).
 - **Trials use labelled cards.** One trial per card fingerprint (§5.4), deployment-wide, so a
   check that needs a first trial confirms a labelled card no run has used
   (`mastercard:smk-<run>-converts-<random>`); the trial checks pass on every rerun against one
   database. Checks that need the opposite (a checkout that stops at its first payment) share one
   labelled card per run whose trial a throwaway account takes first (it stays trialing).
+- Staff tokens (each persona's, and the jobs' service-account token) are minted once and
+  renewed when less than a minute (or a quarter of a short lifetime) remains; every staff call,
+  including one after a long wait such as a batch export's, asks for the current token. The run's
+  target facts count the mints and renewals.
 - Federated sign-ins are paced within the `oidc` budget (the start and the callback each count):
   a strict deployment (30 per minute per address) gets at most 14 sign-ins a minute from the
   suite, because a callback refused by the limit can only redirect with `?oidc=failed`.
   Password resets and verification requests spend the `email-send` budget (strict: 10 per 15
   minutes per address): a second strict run within 15 minutes waits.
+
+## What to expect per deployment
+
+Observed runs, for telling a regression from the deployment's shape:
+
+- **Dev API configured for the whole suite** (below): every check passes but five Milestone 1
+  checks that cannot apply (no web build served, no external-fallback title, two strict-limit
+  checks under relaxed limits); about 3 minutes.
+- **Local Worker** (`make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10`, 30 s cooling-off): the same,
+  with `privacy.export` completed by the batch job loop.
+- **Kubernetes, production configuration** (Keycloak as the staff issuer, mail over SMTP to a
+  mail catcher, no payment provider): the Milestone 1 checks pass and the Milestone 2 ones skip,
+  each with its reason (no development issuer, no mailbox, Keycloak tokens, a 14-day cooling-off,
+  no read-back, and for billing: the deployment has no payment provider, `GET /billing/config`
+  answering `none`). `billing.provider-config` runs there and asserts what a deployment without a
+  provider must answer.
+- **Kubernetes, conformance variant**: `ops.health` skips (the probes are on the ops port, not
+  routed through the gateway: correct). With several replicas, a checkout stranded by a race
+  between the provider's webhook and the browser's confirmation is a product defect being fixed;
+  experiment status changes now take effect at one stated instant (`statusChangeAt`), which the
+  assignment check waits for (docs/KUBERNETES.md §9.11).
+- Strict limits make a run long (about 16 minutes on the cluster): staff and job tokens (five
+  minutes) are renewed as they near expiry, so the late staff checks keep working.
 
 ## What a deployment must provide for nothing to be skipped
 
@@ -199,7 +229,7 @@ PORT=5750 WEBFLIX_PUBLIC_ORIGIN=http://localhost:5750 WEBFLIX_DATABASE_URL=sqlit
 make smoke BASE_URL=http://localhost:5750
 ```
 
-## Check catalogue (133)
+## Check catalogue (134)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
@@ -380,7 +410,11 @@ device signed out, the old password refused, the address verified, a security al
 address; moved to that address and verified, the account is still `link-required` for the
 dropped identity, until the account holder links it on purpose.
 
-**billing (13)**, the fake provider and its clock: `billing.checkout` refused playback (402
+**billing (14)**, the fake provider and its clock: `billing.provider-config` (every deployment)
+`GET /billing/config` tells the truth: `none` answers `payments_not_configured` to checkout,
+confirmation, promo validation and card setup, serves no fake form or payment webhook, and
+leaves memberships `none`; a deployment advertising the fake must serve its form ·
+`billing.checkout` refused playback (402
 naming `none`), a kids profile cannot start one, the provider's form serves the secret,
 confirming before the card is refused, a card whose trial is spent gets none and pays the plan's
 price (playback refused while `incomplete`), `complete`, entitled with the plan's streams and
@@ -448,7 +482,10 @@ wrong secret gets no token; a member's session opens no operator route and the j
 member route.
 
 **experiments (2)**: `experiments.assignment` [x] two experiments the suite starts (profile and
-device units): a profile's variant is stable across devices and requests, never given to a kids
+device units), live at the instant the staff API's answer states (`statusChangeAt`: null in dev,
+60 s ahead on Kubernetes and Cloudflare): nobody assigned before it (probed while waiting: an
+early assignment means an instance went live early), assigned on the first request after it: a
+profile's variant is stable across devices and requests, never given to a kids
 profile; a device's is stable and 32 devices spread over both variants; a profile experiment
 does not assign anonymous devices; creating and starting are audited ·
 `experiments.recommendation-status` admin only (other roles refused); with a run imported, its

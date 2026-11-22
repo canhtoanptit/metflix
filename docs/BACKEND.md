@@ -303,8 +303,10 @@ ratings so the home page is full on first load.
   SHA-256 verified, each line a lake event of that account inside the window, each `eventId`
   once), deletes both pipeline documents, finishes the export and sends the email; `erased`
   finishes with no events; `deferred` and `failed` keep the request listed; a result for an
-  unknown or finished request does nothing. **Until something runs the job (no deployment
-  schedules it yet), a batch export stays `processing`.** A lost or dead-lettered export job
+  unknown or finished request does nothing. **A batch export stays `processing` until the job
+  runs**: the Kubernetes chart schedules it (its lake round, every 5 minutes, every minute in the
+  conformance variant: docs/KUBERNETES.md §9.6), and on Cloudflare it runs outside Workers
+  (`make cf-export-events`, `make cf-dev CF_JOBS_EVERY=…`). A lost or dead-lettered export job
   never blocks the member: the sweep republishes the job of an export untouched for 15 minutes
   (pending, or processing and not yet waiting for its events) and fails it after a day, which
   frees "one at a time".
@@ -469,7 +471,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_EMAIL_WEBHOOK_SECRET` | unset | identity | Verifies `POST /api/v1/webhooks/email/resend` (Svix-signed, five-minute tolerance); unset: the webhook answers `not_found` |
 | `WEBFLIX_SMTP_HOST`, `_PORT`, `_TLS`, `_USERNAME`, `_PASSWORD` | unset, `1025` (`465` with TLS), `none` | identity | The `smtp` sender. `_TLS`: `none` (Mailpit) or `implicit`; credentials are refused without TLS |
 | `WEBFLIX_DEV_IDP_SECRET` | derived from the first `WEBFLIX_MEDIA_TOKEN_KEYS` secret | identity | Seals the development issuer's codes and sessions (32+ chars); every replica or isolate must share it, which the derived default already does. Its single-use markers live in the identity area's claims table (shared across replicas and isolates). On Kubernetes outside production the chart generates one in its app Secret, shared by every pod |
-| `WEBFLIX_PAYMENT_PROVIDER` | `fake` outside production; `memory` in production | billing | `fake` (packages/payments-fake: state in the mode's database, its form at `/_pay/*`, refused in production), `stripe` (packages/adapters-stripe), `memory` (in-process reference, no form: a production deployment that names no provider can never complete a checkout) |
+| `WEBFLIX_PAYMENT_PROVIDER` | `fake` outside production; `none` in production | billing | `fake` (packages/payments-fake: state in the mode's database, shared safely by every replica and isolate through compare-and-set commits; its form at `/_pay/*`; refused in production), `stripe` (packages/adapters-stripe), `none` (no provider: `GET /billing/config` answers `{"provider":"none"}`, starting or confirming a checkout and validating a promo code answer `503 payments_not_configured`, the webhook route `not_found`; decided from configuration alone, so every replica answers the same), `memory` (the in-process reference for tests; refused in production) |
 | `WEBFLIX_BILLING_GRACE_SEC` | `604800` (7 days) | billing | `past_due` stays entitled this long after the first failed renewal attempt (judged in the provider's time); then `suspended` (`grace_expired`), whether or not the provider still retries |
 | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | billing | Required for `stripe`; the names `tools/stripe` writes to `.cache/stripe/stripe.env`. Never logged. A test secret key in production is refused |
 | `WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET` | development constant | billing | The fake provider's webhook signing secret (24+ chars); every replica or isolate must share it |
@@ -489,7 +491,8 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_RECS_EXPERIMENT` | `recs.learned-vs-rules` | personalisation | The experiment that picks the policy: its control variant gets the rule engine, every other variant learned candidates |
 | `WEBFLIX_RECS_EXPLORE_SHARE` | `0.05` in production, else `0` | personalisation | Share of sessions (by session and UTC day) shown rows and items in random order (`BrowsePage.policy.explore`); 0 keeps local suites that assert row order deterministic |
 | `WEBFLIX_RECS_READ_TIMEOUT_MS` | `250` | personalisation | A recommendation-store read slower than this counts as unavailable: the page is the rule engine's, and the store is skipped for 30 s |
-| `WEBFLIX_EXPERIMENTS` | `database` | experiments | `database` (definitions in the experiments table, read through process memory 30 s and the shared cache 60 s) or `memory` (tests) |
+| `WEBFLIX_EXPERIMENTS` | `database` | experiments | `database` (definitions in the experiments table, read through process memory and the shared cache; every copy is used at most 30 s after its database read) or `memory` (tests) |
+| `WEBFLIX_EXPERIMENTS_PROPAGATION_SEC` | dev `0`, k8s and Cloudflare `60` | experiments | How far ahead a status change (start, pause, stop) takes effect for assignment, at one instant on every replica and isolate (`ExperimentDefinition.statusChangeAt`); must exceed 30 s wherever several instances serve (finding K4) |
 | `WEBFLIX_EXPERIMENTS_NEW_MEMBER_DAYS` | `30` | experiments | A member counts as "new" for experiment targeting this many days after joining |
 | `WEBFLIX_STAFF_VERIFIER` | `oidc` outside production; `memory` in production | admin | `oidc`: staff access tokens validated offline against the staff issuer's published keys (discovery, then its JWKS; Web Crypto, every runtime). `memory`: tokens can only be minted in process, so the staff API admits nobody (production logs `admin.staff_api_closed` until an issuer is configured) |
 | `WEBFLIX_STAFF_ISSUER` | unset: outside production `{WEBFLIX_PUBLIC_ORIGIN}/dev-idp/staff`, the development issuer's staff realm, read in process | admin | The exact staff issuer, e.g. a Keycloak realm `https://sso.example/realms/webflix` (https in production, no trailing slash). Required for `oidc` in production. Pointing the API at Keycloak is this variable only. The Helm chart's optional Keycloak (`keycloak.enabled`) sets it to its realm, `https://<release>-keycloak:8443/realms/webflix` by default (docs/KUBERNETES.md §9.4) |

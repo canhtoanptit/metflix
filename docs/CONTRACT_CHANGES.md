@@ -565,3 +565,38 @@ erasure. Two staff routes, role `admin`, shaped as the job expects (40 staff rou
 - **`GET /system/privacy/exports`** answers the events area's list as it is (`{ requests }`);
   the audit entry of `POST /system/privacy/exports/results` keeps, as `after`, what became of each
   request by id (`completed`, `erased`, `kept`, `ignored`), request ids only.
+
+## 2026-11-22 — experiments fix round: status changes take effect at one instant (additive)
+
+- **`ExperimentDefinition` gains `statusChangeAt` (ISO or null) and `previousStatus` (a status or
+  null)**: when the current `status` takes effect for assignment, at the same instant on every
+  replica and isolate, and the status assignment follows until then (finding K4, several
+  replicas caching the definitions). `PUT /api/admin/v1/experiments/:key/status` answers with
+  the new `status` at once and `statusChangeAt` = now + `WEBFLIX_EXPERIMENTS_PROPAGATION_SEC`
+  (60 s on k8s and Cloudflare, `null` in dev, where it is immediate); starting a draft also sets
+  `startsAt` to that instant when it was earlier or unset. A client that needs the experiment
+  live (the conformance suite) waits until `statusChangeAt` has passed; from then every instance
+  assigns the same way.
+
+## 2026-11-22 — billing fix round 3: no provider says so; checkouts and card changes settle in any order (additive)
+
+- **`BillingConfig` gains a third variant, `{ "provider": "none" }`** (finding K3): a deployment
+  with no payment provider (`WEBFLIX_PAYMENT_PROVIDER=none`, now production's default instead of
+  the in-process `memory`, which production refuses like `fake`) says so instead of advertising
+  the fake's form. Clients switch on `provider`; `none` means memberships cannot be started here.
+- **New error code `payments_not_configured` (503)**: answered by `POST /billing/checkout`,
+  `POST /billing/checkout/:id/confirm`, `POST /billing/promotions/validate` and
+  `POST /billing/payment-method/setup` when the provider is `none` (listed in their `errors`).
+  Not a transient outage: do not retry. `POST /webhooks/payments/:provider` answers `not_found`
+  for every provider then. Every answer comes from configuration alone, identical on every
+  replica; nothing is held per process.
+- **Behaviour, no shape change** (finding K1): a checkout's status follows the membership on
+  every read of the provider, not only when the membership changed, so the order in which the
+  confirmation and the provider's events are handled no longer matters: `confirmCheckout`
+  answers `complete` when the provider's events were processed first, and polling
+  `GET /billing/checkout/:id` settles a checkout whose confirmation stopped half-way. A card
+  change (`GET /billing/payment-method/setup/:id`) is recorded `succeeded` only once its last
+  step (paying an open invoice) is done, and is looked at again on every poll until then.
+- Fake provider (local modes, not the contract): its state is safe to share across replicas and
+  isolates (finding K2); a request that keeps losing the race answers the port's retryable
+  `unavailable` (the API's `service_unavailable`).

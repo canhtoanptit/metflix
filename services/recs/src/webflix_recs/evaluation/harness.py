@@ -199,10 +199,45 @@ def evaluation_population(inputs: EvaluationInputs, log: Any = print) -> Evaluat
         f"evaluating {len(population)} profiles with a discovery in "
         f"[{iso_ms(cutoff)}, {iso_ms(end)})"
     )
+    if not population:
+        return EvaluationPopulation(
+            cutoff, end, eligible, history_all, future, searched, available, [], history_all
+        )
     history = History.build(dataset, catalog, cutoff, profiles=population)
     return EvaluationPopulation(
         cutoff, end, eligible, history_all, future, searched, available, population, history
     )
+
+
+def _no_population_report(
+    inputs: EvaluationInputs, selected: EvaluationPopulation, started: float
+) -> dict[str, Any]:
+    """Nobody to evaluate (no profile discovered anything in the test window): the gate cannot
+    pass, and the report says why instead of failing."""
+    reason = "no eligible profile had a discovery in the test window: nothing to evaluate"
+    return {
+        "format": "webflix.recs-evaluation",
+        "formatVersion": 1,
+        "run": inputs.run_manifest["run"],
+        "recipeHash": inputs.run_manifest["recipeHash"],
+        "cutoff": iso_ms(selected.cutoff),
+        "testWindowEnd": iso_ms(selected.end),
+        "datasetId": inputs.dataset.dataset_id,
+        "profiles": 0,
+        "eligibleProfiles": len(selected.eligible),
+        "results": {},
+        "gate": {
+            "metric": inputs.gate_metric or GATE_METRIC,
+            "candidate": CANDIDATE,
+            "baseline": BASELINE,
+            "level": 0.95,
+            "difference": None,
+            "passed": False,
+            "reason": reason,
+        },
+        "leakCheck": "passed",
+        "seconds": round(time.perf_counter() - started, 2),
+    }
 
 
 def write_rule_engine_input(inputs: EvaluationInputs, work_dir: Path, log: Any = print) -> Path:
@@ -213,14 +248,36 @@ def write_rule_engine_input(inputs: EvaluationInputs, work_dir: Path, log: Any =
     selected = evaluation_population(inputs, log)
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / "engine-input.ndjson"
+    if not selected.population:
+        empty_engine_input(inputs.catalog, selected.cutoff, path)
+        return path
     engine_input(selected.history, inputs.catalog, selected.population, path)
     return path
+
+
+def empty_engine_input(catalog: Catalog, as_of_ms: int, path: Path) -> None:
+    """A rule-engine input with no profile (the Node step then writes empty rankings): what a
+    job writes when there is nothing to evaluate, so the step after it still succeeds."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = {
+        "format": "webflix.rule-engine-input",
+        "formatVersion": 1,
+        "asOf": iso_ms(as_of_ms),
+        "catalogAnchor": catalog.raw["anchor"],
+        "catalogVersion": catalog.version,
+        "titles": [{"id": t["id"], "addedAt": t["addedAt"]} for t in catalog.raw["titles"]],
+        "views": [],
+        "limit": len(catalog),
+    }
+    path.write_bytes(orjson.dumps(header) + b"\n")
 
 
 def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> dict[str, Any]:
     started = time.perf_counter()
     catalog = inputs.catalog
     selected = evaluation_population(inputs, log)
+    if not selected.population:
+        return _no_population_report(inputs, selected, started)
     cutoff, end = selected.cutoff, selected.end
     eligible, history_all = selected.eligible, selected.history_all
     future, searched = selected.future, selected.searched

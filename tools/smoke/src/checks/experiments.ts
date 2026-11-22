@@ -43,7 +43,7 @@ async function runningExperiment(
   api: AdminApiClient,
   key: string,
   unit: "profile" | "device",
-): Promise<{ created: ExperimentDefinition; requestIds: string[] }> {
+): Promise<{ created: ExperimentDefinition; requestIds: string[]; liveAt: number }> {
   const created = await audited(
     () => api.createExperiment({ body: definition(key, unit, "smoke: assignment check") }),
     `POST /experiments (${key})`,
@@ -58,6 +58,8 @@ async function runningExperiment(
     `PUT /experiments/${key}/status running`,
   );
   equal(started.value.status, "running", "status after starting");
+  equal(started.value.previousStatus ?? "draft", "draft", "previousStatus of a started draft");
+  const answeredAt = Date.now();
   ctx.env.onDispose(async () => {
     await api
       .setExperimentStatus({
@@ -66,7 +68,15 @@ async function runningExperiment(
       })
       .catch(() => undefined);
   });
-  return { created: created.value, requestIds: [created.requestId, started.requestId] };
+  // When the experiment is live is the staff API's to say: `statusChangeAt`, the instant the
+  // start takes effect on every replica (null: at once), and never before `startsAt`.
+  const changeAt = started.value.statusChangeAt;
+  const startsAt = started.value.startsAt;
+  const liveAt = Math.max(
+    changeAt ? Date.parse(changeAt) : answeredAt,
+    startsAt ? Date.parse(startsAt) : answeredAt,
+  );
+  return { created: created.value, requestIds: [created.requestId, started.requestId], liveAt };
 }
 
 async function assignment(
@@ -81,32 +91,42 @@ async function assignment(
   return state.experiments?.[key];
 }
 
-/** Poll until the session carries an assignment for `key` (definitions are cached briefly). */
-async function awaitAssignment(
+/**
+ * Until `liveAt` nobody may be assigned (assignment follows the previous status everywhere: an
+ * assignment now means an instance went live early); the probes are repeated while waiting.
+ * Then a short margin for clocks, and the caller expects the assignment on the first request.
+ */
+async function awaitLive(
   ctx: CheckContext,
-  agent: Agent,
-  key: string,
-  deviceId?: string,
-): Promise<string> {
-  const { value, elapsedMs } = await ctx.eventually(
-    `an assignment to ${key} in GET /session`,
-    async () => {
-      const variant = await assignment(agent, key, deviceId);
-      return variant ? { done: true, value: variant } : { done: false, observed: "not assigned" };
-    },
-    { timeoutMs: 100_000, intervalMs: 1_000 },
-  );
-  if (elapsedMs > 2_000)
-    ctx.note(`the new experiment reached sessions after ${Math.round(elapsedMs / 1000)} s`);
-  return value;
+  liveAt: number,
+  probes: { what: string; probe: () => Promise<string | undefined> }[],
+): Promise<void> {
+  let rounds = 0;
+  while (Date.now() < liveAt) {
+    for (const { what, probe } of probes) {
+      const early = await probe();
+      equal(early, undefined, `${what} before the start takes effect (statusChangeAt)`);
+    }
+    rounds += 1;
+    await ctx.sleep(Math.min(2_000, Math.max(0, liveAt - Date.now())));
+  }
+  await ctx.sleep(LIVE_MARGIN_MS);
+  if (rounds > 0) {
+    ctx.note(
+      `the start took effect at statusChangeAt (${rounds} probe rounds before it: none assigned)`,
+    );
+  }
 }
+
+/** Clock difference between the suite and the deployment that the instant is allowed. */
+const LIVE_MARGIN_MS = 2_000;
 
 export const experimentChecks: CheckDefinition[] = [
   {
     id: "experiments.assignment",
     area: "experiments",
     title:
-      "Experiment assignment travels in GET /session: stable for a profile across devices and for an anonymous device, spread over the variants across units, never given to a kids profile",
+      "Experiment assignment travels in GET /session from the instant the staff API states (statusChangeAt; nobody assigned before it), then at once and stable for a profile across devices and for an anonymous device, spread over the variants, never given to a kids profile",
     needs: [needs.staffIssuer],
     tags: ["exclusive"],
     timeoutMs: 300_000,
@@ -117,12 +137,27 @@ export const experimentChecks: CheckDefinition[] = [
       const run = ctx.options.runId;
       const profileKey = `smoke.profile-${run}`;
       const deviceKey = `smoke.device-${run}`;
-      const profileExperiment = await runningExperiment(ctx, api, profileKey, "profile");
-      await runningExperiment(ctx, api, deviceKey, "device");
-
-      // The profile is the unit after sign-in: the same variant on every device and request.
+      // The units, ready before the experiments start, so the time before they are live is probed.
       const viewer = await ctx.env.isolatedViewer("experiments");
-      const variant = await awaitAssignment(ctx, viewer.agent, profileKey);
+      const visitor = ctx.agent("experiments-visitor");
+      const firstDevice = `smk-${run}-device-0`;
+      const profileExperiment = await runningExperiment(ctx, api, profileKey, "profile");
+      const deviceExperiment = await runningExperiment(ctx, api, deviceKey, "device");
+      await awaitLive(ctx, Math.max(profileExperiment.liveAt, deviceExperiment.liveAt), [
+        { what: "the profile's assignment", probe: () => assignment(viewer.agent, profileKey) },
+        {
+          what: "the device's assignment",
+          probe: () => assignment(visitor, deviceKey, firstDevice),
+        },
+      ]);
+
+      // The profile is the unit after sign-in: assigned on the first request once live, the same
+      // variant on every device and request.
+      const variant = await assignment(viewer.agent, profileKey);
+      check(variant, "the profile is not assigned once the experiment is live", {
+        expected: `a variant of ${profileKey} on the first GET /session after statusChangeAt`,
+        observed: "no assignment",
+      });
       check(
         (VARIANTS as readonly string[]).includes(variant),
         "an assignment outside the variants",
@@ -137,25 +172,30 @@ export const experimentChecks: CheckDefinition[] = [
         variant,
         "the profile's variant on another device",
       );
-      equal(
-        await assignment(viewer.agent, profileKey),
-        variant,
-        "the profile's variant on a later request",
-      );
+      for (let index = 0; index < 4; index += 1) {
+        equal(
+          await assignment(index % 2 === 0 ? viewer.agent : second, profileKey),
+          variant,
+          `the profile's variant on later request ${index + 1}`,
+        );
+      }
       // Never a restricted profile (§6.3, §8.1).
       const kids = await ctx.env.createProfile(viewer.account.agent, { name: "Kid", isKids: true });
       const kidsDevice = await ctx.env.login(viewer.account, "experiments-kids");
       await ctx.env.selectProfile(kidsDevice, kids.id);
       equal(await assignment(kidsDevice, profileKey), undefined, "a kids profile's assignment");
 
-      // Before sign-in the device is the unit: stable per device, spread across devices.
-      const visitor = ctx.agent("experiments-visitor");
-      const firstDevice = `smk-${run}-device-0`;
-      const deviceVariant = await awaitAssignment(ctx, visitor, deviceKey, firstDevice);
+      // Before sign-in the device is the unit: assigned at once, stable per device, spread
+      // across devices.
+      const deviceVariant = await assignment(visitor, deviceKey, firstDevice);
+      check(deviceVariant, "the device is not assigned once the experiment is live", {
+        expected: `a variant of ${deviceKey} on the first GET /session?deviceId= after statusChangeAt`,
+        observed: "no assignment",
+      });
       equal(
-        await assignment(visitor, deviceKey, firstDevice),
+        await assignment(ctx.agent("experiments-visitor-2"), deviceKey, firstDevice),
         deviceVariant,
-        "the same device's variant again",
+        "the same device's variant from another connection",
       );
       const seen = new Map<string, number>();
       for (let index = 0; index < 32; index += 1) {

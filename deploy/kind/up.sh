@@ -16,7 +16,9 @@
 #   SKIP_BUILD=1     reuse the images already loaded (fast config-only redeploy)
 #   MEDIA_PROFILE=   fast|full: packaged media to upload (default: whichever exists)
 #   SKIP_MEDIA=1     do not upload media (titles play the external HLS fallback)
-#   RATE_LIMITS=relaxed  the documented relaxed limits instead of the production ones
+#   RATE_LIMITS=     relaxed: the documented relaxed limits instead of the production ones;
+#                    strict: the production limits even on the conformance variant (which is
+#                    relaxed by default). Unset: what the configuration says
 #   K8S_OWNERSHIP=   take (default): fields of release objects changed outside the release
 #                    (kubectl set/scale/edit/patch) are listed and given back to the release;
 #                    strict: list them and stop; off: plain helm upgrade
@@ -162,7 +164,12 @@ deploy_release() { # $1: media checksum this revision seeds with
   log="$(mktemp -t webflix-helm.XXXXXX)"
   local values=(-f "$KIND_DIR/values.yaml")
   [ "$VARIANT" = "conformance" ] && values+=(-f "$KIND_DIR/values-conformance.yaml")
-  [ "${RATE_LIMITS:-strict}" = "relaxed" ] && values+=(-f "$KIND_DIR/values-relaxed-limits.yaml")
+  case "${RATE_LIMITS:-}" in
+    relaxed) values+=(-f "$KIND_DIR/values-relaxed-limits.yaml") ;;
+    strict) values+=(-f "$KIND_DIR/values-strict-limits.yaml") ;;
+    "") ;;
+    *) fail "RATE_LIMITS=$RATE_LIMITS: relaxed or strict" ;;
+  esac
   values+=(--set "api.image.tag=$API_TAG" --set "web.image.tag=$WEB_TAG" --set-string "seed.mediaChecksum=$1")
   values+=(--set "pipeline.image.tag=$RECS_TAG" --set "pipeline.tools.image.tag=$TOOLS_TAG")
   local force=()

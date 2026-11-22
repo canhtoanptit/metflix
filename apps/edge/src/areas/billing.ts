@@ -16,7 +16,8 @@ const forms = new WeakMap<FakePaymentProvider, (request: Request) => Promise<Res
 /**
  * The billing area's port in the Worker, from `WEBFLIX_PAYMENT_PROVIDER`: the fake provider
  * with its state in D1 (default outside production), the Stripe adapter (fetch and Web Crypto,
- * the same code as on Node), or the in-process reference.
+ * the same code as on Node), or the in-process reference (which also stands in for `none`, no
+ * provider: the billing service never calls it then).
  */
 export function createBillingPorts(context: AreaContext): Pick<AreaPorts, "payments"> {
   return { payments: createPaymentProvider(context) };

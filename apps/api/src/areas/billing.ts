@@ -20,8 +20,9 @@ const fakes = new WeakMap<Database, FakePaymentProvider>();
  *   database (SQLite in dev, PostgreSQL on k8s), webhooks delivered in process and verified;
  * - `stripe`: `packages/adapters-stripe` with `STRIPE_*` (webhooks reach
  *   `/api/v1/webhooks/payments/stripe`, e.g. from `make stripe-listen`);
- * - `memory`: the in-process reference (no form; production's default, so a deployment that
- *   names no provider can never complete a checkout).
+ * - `none` (production's default): no provider. The billing service answers from its
+ *   configuration alone (`GET /billing/config` → `none`, checkouts refused), so the port below
+ *   is never called; `memory`, the in-process reference, stands in for it (and serves tests).
  */
 export function createBillingPorts(context: AreaContext): Pick<AreaPorts, "payments"> {
   return { payments: createPaymentProvider(context) };

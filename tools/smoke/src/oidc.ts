@@ -393,7 +393,7 @@ export async function staffAccessToken(agent: Agent, persona: string): Promise<s
 export async function staffTokens(
   agent: Agent,
   persona: string,
-): Promise<{ accessToken: string; idToken: string | null }> {
+): Promise<{ accessToken: string; idToken: string | null; expiresInSec: number | null }> {
   const discovered = await discoverIssuer(agent, "staff");
   if ("absent" in discovered) fail(`the staff issuer is not reachable: ${discovered.absent}`);
   const { document } = discovered;
@@ -456,7 +456,9 @@ export async function staffTokens(
     }).toString(),
   });
   const json =
-    token.status === 200 ? token.json<{ access_token?: unknown; id_token?: unknown }>() : {};
+    token.status === 200
+      ? token.json<{ access_token?: unknown; id_token?: unknown; expires_in?: unknown }>()
+      : {};
   if (typeof json.access_token !== "string") {
     fail(`the staff issuer's token endpoint refused the code for ${persona}`, {
       observed: `${token.status} ${token.exchange.responseBody ?? ""}`,
@@ -466,7 +468,28 @@ export async function staffTokens(
   return {
     accessToken: json.access_token,
     idToken: typeof json.id_token === "string" ? json.id_token : null,
+    expiresInSec: typeof json.expires_in === "number" ? json.expires_in : null,
   };
+}
+
+/**
+ * When an access token stops working: the JWT's `exp` when it is one (Keycloak's and the
+ * development issuer's are), else the token response's `expires_in`, else five minutes (both
+ * issuers' default). Never read for trust: only to renew in time.
+ */
+export function tokenExpiry(token: string, expiresInSec: number | null, issuedAt: number): number {
+  const payload = token.split(".")[1];
+  if (payload) {
+    try {
+      const exp = (
+        JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown }
+      ).exp;
+      if (typeof exp === "number" && Number.isFinite(exp)) return exp * 1000;
+    } catch {
+      // Opaque: fall through to the response's lifetime.
+    }
+  }
+  return issuedAt + (expiresInSec ?? 300) * 1000;
 }
 
 /** The development staff personas: one Webflix role each, and two without any. */

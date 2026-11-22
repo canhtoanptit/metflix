@@ -85,6 +85,11 @@ export const ERROR_CATALOG = {
   checkout_state_conflict: { status: 409, title: "This checkout can't do that right now" },
   /** A webhook whose signature does not verify over its raw body (§5.3). */
   webhook_signature_invalid: { status: 400, title: "Webhook signature verification failed" },
+  /**
+   * The deployment has no payment provider (`GET /billing/config` says `none`): a membership
+   * cannot be started or paid for here until one is configured. Not a transient outage.
+   */
+  payments_not_configured: { status: 503, title: "Payments are not set up on this service" },
   /** An export or deletion of this kind is already pending (§6.3). */
   privacy_request_pending: { status: 409, title: "A request like this is already in progress" },
   /** An experiment change that conflicts with its state or its layer's allocation (§8.1). */

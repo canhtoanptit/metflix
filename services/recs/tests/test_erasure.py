@@ -4,6 +4,7 @@ failure anywhere finishes the job; compaction and erasure never overlap."""
 
 from __future__ import annotations
 
+import base64
 import gzip
 import http.server
 import io
@@ -310,6 +311,8 @@ class StaffApi(http.server.BaseHTTPRequestHandler):
     confirmed: ClassVar[list[dict[str, Any]]] = []
     headers_seen: ClassVar[list[dict[str, str]]] = []
     token_requests: ClassVar[list[str]] = []
+    exports: ClassVar[list[dict[str, Any]]] = []
+    export_results: ClassVar[list[dict[str, Any]]] = []
 
     def log_message(self, *args: object) -> None:
         return None
@@ -328,6 +331,8 @@ class StaffApi(http.server.BaseHTTPRequestHandler):
             self._answer(401, {"code": "unauthenticated"})
         elif self.path.startswith("/api/admin/v1/system/privacy/erasures?limit="):
             self._answer(200, {"subjectKeys": self.pending})
+        elif self.path.startswith("/api/admin/v1/system/privacy/exports?limit="):
+            self._answer(200, {"requests": self.exports})
         else:
             self._answer(404, {"code": "not_found"})
 
@@ -336,8 +341,20 @@ class StaffApi(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         self.headers_seen.append(dict(self.headers))
         if self.path == "/token":
-            self.token_requests.append(body.decode())
+            # Client authentication by HTTP Basic (client_secret_basic), as the product's
+            # issuers expect; the form carries the grant only.
+            self.token_requests.append(f"{self.headers.get('Authorization')}|{body.decode()}")
             self._answer(200, {"access_token": "staff-token", "expires_in": 300})
+        elif self.path == "/api/admin/v1/system/privacy/exports/results":
+            if self.headers.get("X-Webflix-Client") != "web":
+                self._answer(403, {"code": "csrf"})
+                return
+            document = orjson.loads(body)
+            self.export_results.append(document)
+            recorded = {r["requestId"] for r in document["results"] if r["status"] != "deferred"}
+            type(self).exports = [e for e in self.exports if e["requestId"] not in recorded]
+            self.send_response(204)
+            self.end_headers()
         elif self.path == "/api/admin/v1/system/privacy/erasures/confirm":
             if self.headers.get("X-Webflix-Client") != "web":
                 self._answer(403, {"code": "csrf"})
@@ -356,6 +373,7 @@ def staff_api() -> Iterator[str]:
     port = _free_port()
     StaffApi.pending, StaffApi.confirmed, StaffApi.headers_seen = [ERASED], [], []
     StaffApi.token_requests = []
+    StaffApi.exports, StaffApi.export_results = [], []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), StaffApi)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -391,7 +409,9 @@ def test_the_erase_job_reads_and_confirms_through_the_staff_api(
     assert summary["confirmed"] == 2 and summary["verified"]
     (body,) = StaffApi.confirmed
     assert body["subjectKeys"] == sorted([ERASED, ERASED_PROFILE]) and len(body["reason"]) >= 3
-    assert "grant_type=client_credentials" in StaffApi.token_requests[0]
+    authorization, form = StaffApi.token_requests[0].split("|", 1)
+    assert authorization == "Basic " + base64.b64encode(b"webflix-recs:secret").decode()
+    assert form == "grant_type=client_credentials"
     assert all(h.get("Authorization") == "Bearer staff-token" for h in StaffApi.headers_seen[1:])
     # Run again: nothing pending, nothing to confirm, the key is watched.
     code, summary = _run_cli(["--store", str(tmp_path), "--workers", "1", "erase"], capsys)
@@ -485,3 +505,51 @@ def test_compaction_and_erasure_against_an_s3_compatible_store(tmp_path: Path) -
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_export_events_reads_and_records_through_the_staff_api(
+    tmp_path: Path,
+    staff_api: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`export-events` with no file: the pending exports from `GET /system/privacy/exports`,
+    pending erasures from `GET /system/privacy/erasures`, the results to
+    `POST /system/privacy/exports/results`, as the product's contract checks them."""
+    build_store(tmp_path)
+    window = {"from": iso_ms(H1 - HOUR_MS), "to": iso_ms(H2 + HOUR_MS)}
+    StaffApi.exports = [
+        {"requestId": "exp-keep", "accountKey": KEEP, **window},
+        {"requestId": "exp-erased", "accountKey": ERASED, **window},  # its erasure is pending
+    ]
+    monkeypatch.setenv("WEBFLIX_ADMIN_API_URL", f"{staff_api}/api/admin/v1")
+    monkeypatch.setenv("WEBFLIX_STAFF_TOKEN_URL", f"{staff_api}/token")
+    monkeypatch.setenv("WEBFLIX_STAFF_CLIENT_ID", "webflix-recs")
+    monkeypatch.setenv("WEBFLIX_STAFF_CLIENT_SECRET", "secret")
+    monkeypatch.delenv("WEBFLIX_STAFF_TOKEN", raising=False)
+    now = iso_ms(H2 + 3 * HOUR_MS)
+    code, summary = _run_cli(
+        ["--store", str(tmp_path), "--workers", "1", "export-events", "--now", now], capsys
+    )
+    assert code == 0 and summary["recorded"] == 2
+    assert summary["statuses"] == {"complete": 1, "erased": 1}
+    (body,) = StaffApi.export_results
+    assert body["format"] == "webflix.export-events-results" and len(body["reason"]) >= 3
+    by_id = {r["requestId"]: r for r in body["results"]}
+    keep = by_id["exp-keep"]
+    # What the product's ExportResultsBody insists on.
+    assert keep["file"] == "privacy/export-events/exp-keep/events.ndjson.gz"
+    assert keep["manifest"] == "privacy/export-events/exp-keep/manifest.json"
+    assert keep["events"] == 10 and keep["bytes"] > 0 and len(keep["sha256"]) == 64
+    assert by_id["exp-erased"] == {
+        "requestId": "exp-erased",
+        "status": "erased",
+        "events": 0,
+        **window,
+    }
+    # Recorded, so no longer listed: the next round is one list call and nothing else.
+    code, summary = _run_cli(
+        ["--store", str(tmp_path), "--workers", "1", "export-events", "--now", now], capsys
+    )
+    assert code == 0 and summary["requests"] == 0 and "lakeLease" not in summary
+    assert len(StaffApi.export_results) == 1

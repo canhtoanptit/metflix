@@ -97,11 +97,23 @@ async function runOne(definition: CheckDefinition, env: Environment): Promise<Ch
   const notes: string[] = [];
   const controller = new AbortController();
   const timeoutMs = definition.timeoutMs ?? options.checkTimeoutMs;
-  const timer = setTimeout(
-    () =>
-      controller.abort(new TimeoutError(`check timed out after ${Math.round(timeoutMs / 1000)} s`)),
-    timeoutMs,
-  );
+  // Waiting out the deployment's rate limits (a strict profile, a shared address) is not the
+  // check's time: the deadline moves by every Retry-After the check's requests waited.
+  let throttledMs = 0;
+  let timer: ReturnType<typeof setTimeout>;
+  const arm = () => {
+    const remaining = started + timeoutMs + throttledMs - performance.now();
+    if (remaining > 0) {
+      timer = setTimeout(arm, remaining);
+      return;
+    }
+    controller.abort(
+      new TimeoutError(
+        `check timed out after ${Math.round(timeoutMs / 1000)} s${throttledMs > 0 ? ` (plus ${Math.round(throttledMs / 1000)} s waiting on rate limits)` : ""}`,
+      ),
+    );
+  };
+  timer = setTimeout(arm, timeoutMs);
   const ctx: CheckContext = {
     options,
     env,
@@ -148,6 +160,9 @@ async function runOne(definition: CheckDefinition, env: Environment): Promise<Ch
         signal: controller.signal,
         note: (message) => {
           if (!notes.includes(message)) notes.push(message);
+        },
+        onThrottle: (ms) => {
+          throttledMs += ms;
         },
       },
       async () => {

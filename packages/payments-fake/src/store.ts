@@ -56,6 +56,19 @@ export interface FakeClockRecord {
   updatedAt: number;
 }
 
+/**
+ * One operation's writes, applied only if nothing it read has been committed over since
+ * (finding K2: replicas and isolates share one store, so an in-process lock is not enough).
+ * Each guard names a unit of state (`customer:<id>`, `promotions`, `catalogue`) with the version
+ * it had when the operation read that state; every commit to the unit moves its guard on.
+ */
+export interface FakeCommit {
+  /** Guard key → the version read before the documents were (0: never committed). */
+  guards: ReadonlyMap<string, number>;
+  documents: readonly FakeDocument[];
+  clocks?: readonly { customerId: string; clock: FakeClockRecord }[];
+}
+
 export interface FakeStore {
   get(kind: FakeDocumentKind, id: string): Promise<FakeDocument | null>;
   /** One customer's documents of the given kinds. */
@@ -65,8 +78,19 @@ export interface FakeStore {
     kind: FakeDocumentKind,
     options?: { createdAfter?: number; limit?: number },
   ): Promise<FakeDocument[]>;
-  /** Upserts every document atomically (one batch). */
+  /**
+   * Upserts every document atomically (one batch), unconditionally: only for writes that no
+   * concurrent operation can undo (settings, delivery bookkeeping). State goes through `commit`.
+   */
   write(documents: readonly FakeDocument[]): Promise<void>;
+  /** The current versions of guard keys (0 for a key never committed). */
+  guardVersions(keys: readonly string[]): Promise<Map<string, number>>;
+  /**
+   * Compare-and-set, all or nothing: writes the documents and clocks and moves every guard one
+   * version on, only if every guard is still at the version given. False, with nothing written,
+   * when another commit moved one first: the caller reads again and recomputes.
+   */
+  commit(input: FakeCommit): Promise<boolean>;
   delete(keys: readonly { kind: FakeDocumentKind; id: string }[]): Promise<void>;
   /** Claims an idempotency key, or tells what it already holds (`outcome` null: in flight). */
   reserveKey(key: string, fingerprint: string, now: number): Promise<KeyReservation>;
@@ -81,6 +105,7 @@ export class MemoryFakeStore implements FakeStore {
   private readonly documents = new Map<string, FakeDocument>();
   private readonly keys = new Map<string, { fingerprint: string; outcome: string | null }>();
   private readonly clocks = new Map<string, FakeClockRecord>();
+  private readonly guards = new Map<string, number>();
 
   async get(kind: FakeDocumentKind, id: string): Promise<FakeDocument | null> {
     const document = this.documents.get(`${kind}:${id}`);
@@ -112,6 +137,23 @@ export class MemoryFakeStore implements FakeStore {
     for (const document of documents) {
       this.documents.set(`${document.kind}:${document.id}`, structuredClone(document));
     }
+  }
+
+  async guardVersions(keys: readonly string[]): Promise<Map<string, number>> {
+    return new Map(keys.map((key) => [key, this.guards.get(key) ?? 0]));
+  }
+
+  async commit({ guards, documents, clocks = [] }: FakeCommit): Promise<boolean> {
+    // Synchronous from the check to the last write: atomic for every caller of this store.
+    for (const [key, version] of guards) {
+      if ((this.guards.get(key) ?? 0) !== version) return false;
+    }
+    for (const [key, version] of guards) this.guards.set(key, version + 1);
+    for (const document of documents) {
+      this.documents.set(`${document.kind}:${document.id}`, structuredClone(document));
+    }
+    for (const { customerId, clock } of clocks) this.clocks.set(customerId, { ...clock });
+    return true;
   }
 
   async delete(keys: readonly { kind: FakeDocumentKind; id: string }[]): Promise<void> {

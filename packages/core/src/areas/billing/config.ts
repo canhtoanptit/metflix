@@ -6,8 +6,12 @@ import {
   secret,
 } from "../config.ts";
 
-/** `memory` is the in-process reference; `fake` (packages/payments-fake) and `stripe`. */
-export const PAYMENT_PROVIDER_ADAPTERS = ["memory", "fake", "stripe"] as const;
+/**
+ * `none`: no payment provider (production's default until Stripe is configured: memberships
+ * cannot be started, and every replica says so); `memory`: the in-process reference (tests);
+ * `fake` (packages/payments-fake) and `stripe`.
+ */
+export const PAYMENT_PROVIDER_ADAPTERS = ["none", "memory", "fake", "stripe"] as const;
 export const FAKE_DELIVERY_MODES = ["orderly", "unruly", "outage"] as const;
 export const FAKE_RETRIES_EXHAUSTED = ["cancel", "unpaid"] as const;
 
@@ -69,7 +73,7 @@ export function parseFakePromotions(
 }
 
 /**
- * Variables: WEBFLIX_PAYMENT_PROVIDER (default `fake` outside production, `memory` in
+ * Variables: WEBFLIX_PAYMENT_PROVIDER (default `fake` outside production, `none` in
  * production), WEBFLIX_BILLING_GRACE_SEC (default 7 days), STRIPE_SECRET_KEY,
  * STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET, WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET,
  * WEBFLIX_PAYMENTS_FAKE_DELIVERY, WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED,
@@ -78,18 +82,19 @@ export function parseFakePromotions(
 export function loadBillingConfig(input: AreaConfigInput): AreaConfigResult<BillingAreaConfig> {
   const issues: string[] = [];
   const production = input.environment === "production";
-  // The fake's form would let anyone "pay" in production; the in-process reference provider
-  // has no form, so a production deployment that names neither stays closed (no checkout can
-  // ever complete) until Stripe is configured.
+  // A production deployment that names no provider has none (finding K3): it says so
+  // (`GET /billing/config`) and refuses checkouts, the same on every replica, until Stripe is
+  // configured. The fake's form would let anyone "pay"; the in-process reference keeps its
+  // state per process. Neither may serve production.
   const paymentProvider = choice(
     input,
     "WEBFLIX_PAYMENT_PROVIDER",
     PAYMENT_PROVIDER_ADAPTERS,
-    production ? "memory" : "fake",
+    production ? "none" : "fake",
     issues,
   );
-  if (production && paymentProvider === "fake") {
-    issues.push("WEBFLIX_PAYMENT_PROVIDER=fake is not allowed in production");
+  if (production && (paymentProvider === "fake" || paymentProvider === "memory")) {
+    issues.push(`WEBFLIX_PAYMENT_PROVIDER=${paymentProvider} is not allowed in production`);
   }
   const { STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET } = input.vars;
   let stripe: BillingAreaConfig["stripe"] = null;

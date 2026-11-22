@@ -50,16 +50,26 @@ system-wide; every dependency installs from a wheel (no compiler, no system libr
 
 ## Commands
 
-`webflix-recs [--store DIR|s3://bucket/prefix] [--workers N] <command> …` Every command reads and
-writes through the store, logs progress on stderr and prints a JSON summary on stdout (with
-`wallSeconds` and `maxRssMb`). The scheduled jobs and their exit codes are in "Jobs" below.
+`webflix-recs [--store DIR|s3://bucket/prefix] [--workers N] [--lake-serialized] <command> …`
+Every command reads and writes through the store, logs progress on stderr and prints a JSON
+summary on stdout (with `wallSeconds`, `maxRssMb`, and `lakeLease` for the jobs that take the
+lake lease). The scheduled jobs and their exit codes are in "Jobs" below.
+
+**Worker processes** (`--workers`): by default the CPUs this process may actually use (its
+scheduler affinity, capped by its cgroup's CPU quota: a container's limit, not the node's CPU
+count) minus one, from 1 to 12; one worker runs everything in the main process. Workers are
+started with `spawn`, never `fork`: Python 3.13 still forks by default on Linux, and a fork taken
+after polars', boto3's or OpenMP's threads exist can inherit a lock nobody will release (an
+erasure hung that way on Kubernetes). If no worker finishes a task for
+`WEBFLIX_RECS_STALL_SECONDS` (default 1800), the workers are terminated and the command exits 9:
+a job fails instead of hanging.
 
 | Command | Reads | Writes |
 | --- | --- | --- |
 | `simulate --truth DIR [--preset smoke\|medium\|full] [--accounts N --days N --seed N --start ISO --impression-sample-rate R --object-layout hourly\|writer --experiment key[:effect=0.1][:variants=control=50,treatment=50]]` | `catalog/current.json` | `events/…` (lake), `experiments/definitions.json` (when experiments are configured), ground truth in DIR |
 | `compact [--now ISO] [--grace-minutes 15] [--delete-sources] [--erase FILE]` | `events/…` | `events/dt=…/hh=…/part-{sha256-16}.parquet` + `_compaction.json`; `events-quarantine/…`; with `--erase`, then what `erase` writes |
 | `erase [--keys api\|FILE\|-] [--confirm api\|FILE\|-\|none] [--reason TEXT] [--watch-days 30]` | erasure keys (staff API or file), everything that holds subject keys | rewritten lake, compacted hours, quarantine, datasets, artefacts; `recs-work/erasure/plan.json`; the confirmation |
-| `export-events --requests FILE [--results FILE] [--erasures api\|FILE] [--grace-minutes 15] [--keep-days 7] [--force]` | the requests, the lake, the erasure plan | `privacy/export-events/{requestId}/{events.ndjson.gz,manifest.json}`; the results |
+| `export-events [--requests api\|FILE\|-] [--results api\|FILE\|-] [--erasures api\|FILE] [--reason TEXT] [--grace-minutes 15] [--keep-days 7] [--force]` | the requests (staff API or file), the lake, the erasure plan | `privacy/export-events/{requestId}/{events.ndjson.gz,manifest.json}`; the results (staff API or file) |
 | `train-and-score [--as-of ISO] [--phase all\|prepare\|finish] [--work DIR] [--truth DIR] [--params FILE] [--keep-datasets 3]` | lake, catalogue | `recs-work/datasets/asof-…`, `recs-work/runs/…`, `recs-work/evaluations/…`, `recs/v={run}/…`, `recs-work/scored/latest.json` |
 | `build-dataset --dataset ID --as-of ISO` | lake, catalogue | `recs-work/datasets/ID/{playback,actions,impressions,profiles,accounts}.parquet`, `manifest.json` |
 | `train --dataset ID [--as-of ISO] [--params FILE] [--run ID]` | dataset | `recs-work/runs/{run}/{manifest.json,models.npz,ranker.pkl,ranker-naive.pkl,propensity.pkl}` |
@@ -72,16 +82,20 @@ writes through the store, logs progress on stderr and prints a JSON summary on s
 Environment:
 
 * `WEBFLIX_RECS_STORE` (default store), `WEBFLIX_RECS_THREADS` (native thread budget, default
-  min(8, CPUs/2));
+  min(8, usable CPUs / 2)), `WEBFLIX_RECS_STALL_SECONDS` (1800), `WEBFLIX_RECS_LAKE_SERIALIZED`
+  (`true`: the scheduler runs compact, erase and export-events one at a time; see "The lake
+  lease");
 * the S3-compatible store, the same variables as the API: `WEBFLIX_S3_ENDPOINT`,
   `WEBFLIX_S3_REGION`, `WEBFLIX_S3_BUCKET`, `WEBFLIX_S3_ACCESS_KEY_ID`,
   `WEBFLIX_S3_SECRET_ACCESS_KEY`, `WEBFLIX_S3_FORCE_PATH_STYLE`;
-* the staff API, for `erase --keys api` and `analyse-experiments --definitions api`:
+* the staff API, for `erase --keys api`, `export-events --requests api` and
+  `analyse-experiments --definitions api`:
   `WEBFLIX_ADMIN_API_URL` (e.g. `https://webflix.example/api/admin/v1`) and a bearer token, either
   `WEBFLIX_STAFF_TOKEN`, or `WEBFLIX_STAFF_TOKEN_URL` + `WEBFLIX_STAFF_CLIENT_ID` with
-  `WEBFLIX_STAFF_CLIENT_SECRET` (client credentials: a service account of the staff issuer
-  holding `admin` for erasures, `experiments` for definitions, in the `webflix-admin-api`
-  audience) or `WEBFLIX_STAFF_REFRESH_TOKEN`, and optionally `WEBFLIX_STAFF_SCOPE`. In dev the
+  `WEBFLIX_STAFF_CLIENT_SECRET` (client credentials, the client authenticated with HTTP Basic: a
+  service account of the staff issuer holding `admin` for erasures and exports, `experiments`
+  for definitions, in the `webflix-admin-api` audience; tokens fetched again before they expire)
+  or `WEBFLIX_STAFF_REFRESH_TOKEN`, and optionally `WEBFLIX_STAFF_SCOPE`. In dev the
   development issuer's staff realm has such a service account: client `webflix-jobs`, token
   endpoint `{origin}/dev-idp/staff/token` (docs/BACKEND.md, "Jobs (service accounts)").
 
@@ -96,9 +110,9 @@ stdout and logs on stderr.
 | --- | --- | --- | --- | --- | --- |
 | compact | `webflix-recs compact [--delete-sources]` | raw objects of closed hours (end + 15 min grace) | one Parquet file and `_compaction.json` per hour; `events-quarantine/` | an unchanged hour is skipped; a straggler makes its hour recompacted; deleting sources only ever follows the manifest that covers them | hourly, at :20 |
 | erase | `webflix-recs erase` | pending keys from `GET /system/privacy/erasures` (or `--keys FILE`) | every subject-bearing file rewritten, verified; `POST …/confirm` (or `--confirm FILE`) | rewrites only what still matches; keys and discovered profile keys are in the plan before anything is rewritten; nothing confirmed before a full verification passes; confirmed keys watched 30 days | daily, after a compaction |
-| train and score | `webflix-recs train-and-score` (or `--phase prepare`, the Node step, `--phase finish`) | the lake at the knowledge cutoff T, the catalogue | dataset, backtest and production runs, the evaluation (gate), the scored version `recs/v={run}/`, `recs-work/scored/latest.json`; never publishes | ids derive from T and the recipe; a complete version is never rescored (exit 0, `already-scored`) | daily |
-| export events | `webflix-recs export-events --requests FILE --results FILE` | pending export requests (a file today; the product's route later) | each request's events as stored, under `privacy/export-events/{requestId}/`; the results for the product | a complete output for the same account and window is kept, not rewritten; a run that failed half-way writes again; erased subjects yield nothing | every few minutes, or on demand |
-| publish | `webflix-recs publish` | the scored run, the evaluations | `recs/current.json` (and history), or nothing | publishing the current run again is `unchanged`; refused (exit 3) unless an evaluation of the same recipe passed the gate | daily, after train and score |
+| train and score | `webflix-recs train-and-score` (or `--phase prepare`, the Node step, `--phase finish`) | the lake at the knowledge cutoff T, the catalogue | dataset, backtest and production runs, the evaluation (gate), the scored version `recs/v={run}/`, `recs-work/scored/latest.json`; never publishes | ids derive from T and the recipe; a complete version is never rescored (exit 0, `already-scored`); nothing to train yet is exit 0, `nothing-to-train` (below) | daily |
+| export events | `webflix-recs export-events` (`--requests api`, `--results api`, `--erasures api` by default when `WEBFLIX_ADMIN_API_URL` is set) | `GET /system/privacy/exports`, `GET /system/privacy/erasures` | each request's events as stored, under `privacy/export-events/{requestId}/`; `POST /system/privacy/exports/results` | a complete output for the same account and window is kept, not rewritten; a run that failed half-way writes again; erased subjects yield nothing; nothing pending costs one token and one list call (no lease, no store access) | every few minutes |
+| publish | `webflix-recs publish` | the scored run, the evaluations | `recs/current.json` (and history), or nothing | publishing the current run again is `unchanged`; nothing scored is `nothing-to-publish` (exit 0); refused (exit 3) unless an evaluation of the same recipe passed the gate | daily, after train and score |
 | analyse | `webflix-recs analyse-experiments --definitions api` | the lake at T, the product's definitions | `experiments/results/r={run}/…`, then `experiments/results/current.json` | a run is a new computation (`computedAt`); the importer's write is keyed by experiment and `computedAt` | daily |
 
 T, the knowledge cutoff of `train-and-score` and `analyse-experiments`, defaults to the end of
@@ -106,24 +120,51 @@ the last closed hour (now minus the 15-minute grace, floored to the hour): every
 before it is in the lake by then (playback events reach the lake through an outbox within
 minutes of their receipt), so a rerun later reads the same data.
 
+**Nothing to train yet** is an ordinary outcome, not a failure: a fresh lake has no event before
+T, or no eligible profile, or no play before the ranker's window (the backtest at T − 7 days
+needs plays before T − 14 days), or no labelled impressions of both kinds in that window.
+`train-and-score` then exits 0 with `"status": "nothing-to-train"` and the reason, records it in
+`recs-work/scored/latest.json` (`run: null`), and `--phase prepare` still writes a rule-engine
+input with no profile and its state, so the Node step (which writes empty rankings) and
+`--phase finish` (which reports the same status) succeed after it. `publish` then exits 0 with
+`"status": "nothing-to-publish"`. An evaluation whose test window holds no discovery reports zero
+profiles and a gate that did not pass, rather than failing.
+
 **Exit codes** (every command): 0 done (including nothing to do); 1 an unexpected failure (the
 traceback is on stderr; retry is safe for every job); 2 a usage error; 3 `publish` refused
 (the gate did not pass, or the version is invalid); 4 `validate` found the version invalid; 5
 `erase` verification found something left: nothing was confirmed; 6 the staff API refused or
 could not be reached; 7 the rule engine's rankings are unavailable (no Node on PATH and no
 `--phase` split: see below); 8 `export-events` failed for at least one request (the results
-say which; the others completed); 75 the lake is busy (another compaction or erasure holds the lease):
-try again later.
+say which, and were recorded; the others completed); 9 a worker process stopped making progress
+and the pool was stopped (`WEBFLIX_RECS_STALL_SECONDS`); 10 the store cannot hold the lake lease
+(it ignores or refuses conditional writes) and nothing declared that the scheduler serialises
+the lake jobs; 75 the lake is busy (another compaction, erasure or export holds the lease): try
+again later.
 
 **The lake lease.** `compact` and `erase` both rewrite hours (a new Parquet file, a manifest
 flip, deletions), so each holds `recs-work/locks/lake.json` while it runs and refuses to start
 (exit 75) while another holder runs; `export-events` holds it too, so an erasure never
-interleaves with an export of the same member. The lease is created with a conditional write: atomic on the
-filesystem layout (a hard link), and `PutObject` with `If-None-Match: *` on an S3-compatible
-store (verified here against moto only; AWS S3 supports it; check R2's and Garage's current
-documentation before relying on it). A store that answers `NotImplemented` gets check-then-write,
-which is not atomic: there, also schedule the two jobs so they cannot overlap. A lease expires
-after 6 hours, so a job killed half-way does not block the lake. Readers never take it.
+interleaves with an export of the same member. Readers never take it. A lease expires after 6
+hours, so a job killed half-way does not block the lake.
+
+The lease is a create-only write: a hard link on a directory, `PutObject` with
+`If-None-Match: *` on an S3-compatible store. It can only exclude anything where that write is
+refused when the key exists, so **before its first acquisition a job probes the store** (two
+create-only writes on a scratch key; the second must be refused) and refuses to run, exit 10,
+with the reason on stderr, when it is not. What an operator sees:
+
+| Store | Probe | `compact`, `erase`, `export-events` |
+| --- | --- | --- |
+| a directory (dev, tests) | passes (hard links) | run; summary `"lakeLease": "held"` |
+| AWS S3; R2 (its documentation says it evaluates the condition atomically; not tried here) | passes | run; `"held"` |
+| Garage v2.5.0 (accepts the header and overwrites anyway, measured on Kubernetes) | fails | **exit 10**: "…accepted a create-only write (If-None-Match: \*) onto an existing key and overwrote it…" |
+| a store answering `NotImplemented` | fails | exit 10 |
+| any store, with `WEBFLIX_RECS_LAKE_SERIALIZED=true` (or `--lake-serialized`) | not run | run without the lease, a line on stderr says so; `"lakeLease": "scheduler"` |
+
+So on Garage the jobs run only where the scheduler is the lock (one CronJob running erase,
+export-events and compact one after another with `concurrencyPolicy: Forbid`, as the chart's
+lake round does) and declares it.
 
 **The rule engine in a job.** `evaluate` compares against the real milestone 1 engine, which is
 TypeScript (`scripts/rule-engine-rankings.ts`, importing `@webflix/core`); the job image has no
@@ -413,8 +454,8 @@ request and folds in the result; the job does the reading. (The product keeps it
 for small deployments such as dev mode: that is what "Compacted hours" and its fixtures are
 for.) `webflix-recs export-events` (`src/webflix_recs/exports.py`):
 
-1. **Requests**, from a file (the product's operator route does not exist yet; when it does,
-   reading it is wiring, as for erasures): `schemas/export-events-requests.schema.json`,
+1. **Requests**, from the staff API (`--requests api`: `GET /system/privacy/exports`, the
+   default when `WEBFLIX_ADMIN_API_URL` is set) or a file, `schemas/export-events-requests.schema.json`,
    `{"requests": [{"requestId", "accountKey", "from", "to"}]}`: the export request's id (a
    private document name, `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`), the account's pseudonymous key,
    and the receipt window `[from, to)` (RFC 3339 instants).
@@ -453,7 +494,8 @@ manifest whose file does not match) extracts again; one request's failure is rep
 and the others go on (exit 8). Outputs older than `--keep-days` (7) are pruned, a backstop: the
 product deletes them once folded in. An erasure deletes any output of the erased member.
 
-**What the product builds** (events and admin areas), so that the job can run against routes:
+**The product's side** (events and admin areas; built, and what `--requests api` and
+`--results api` call):
 
 * `GET /api/admin/v1/system/privacy/exports?limit=N` (role `admin`): `{requests: [{requestId,
   accountKey, from, to}]}`, the export requests whose events are not extracted yet: `from` = the
@@ -465,11 +507,12 @@ product deletes them once folded in. An erasure deletes any output of the erased
   `LakeEvent`, put them in the export document's `events`, delete the two pipeline documents,
   finish the export (document, email). `erased`: the account is being deleted: no events (the
   erasure handles the request). `deferred` and `failed`: keep listing it.
-* Until those exist: an operator passes the product's pending requests as a file and the results
-  file back.
+* The job posts the results in chunks of at most 500 with a reason (`--reason`, or one naming
+  the job and its instant). With nothing pending it makes one list call and stops: no lease, no
+  store access. A file in and a file out (`--requests FILE --results FILE`) still work.
 
 **Access the job needs**: read `events/`; read `recs-work/erasure/plan.json`; create and delete
-`recs-work/locks/lake.json`; write and delete `privacy/export-events/`; with `--erasures api`, the
+`recs-work/locks/lake.json`; write and delete `privacy/export-events/`; with the `api` sources, the
 staff API with the `admin` role.
 
 ## Dataset rules (`build-dataset`)
@@ -731,7 +774,10 @@ planted data (ALS, co-watch, propensity recovery, EM vs naive ranker, re-ranking
 experiments (A/A over 300 seeds, planted effect against computed power, SRM, the product's
 definitions, layers, device units, the results for the importer), exports of members' events
 (the fixtures' answers, windows, deferral, erased subjects, a failure half-way then a rerun,
-pruning, erasure removing outputs), and the end-to-end pipeline
+pruning, erasure removing outputs, the staff API's list and results routes), the process pools
+(spawned, a stalled pool stopped, budgets from a cgroup quota), the lake lease on stores that
+honour, ignore (Garage's behaviour, on moto) or refuse conditional writes, young lakes (nothing to
+train, every phase and publish exiting 0), and the end-to-end pipeline
 on the real catalogue (the planted leak, restricted profiles absent from lake to artefacts, the
 real rule engine, the gate, atomic publishing, and the scheduled jobs: train-and-score split
 around the Node step, publish behind the gate, an erasure of a member who is in the dataset and

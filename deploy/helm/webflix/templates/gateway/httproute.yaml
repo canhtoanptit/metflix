@@ -4,8 +4,9 @@
 {{- $api := include "webflix.component" (list . "api") }}
 {{- $web := include "webflix.component" (list . "web") }}
 {{- $redirect := and $g.enabled $g.tls.enabled $g.tls.redirectHttp (not $r.parentRefs) }}
-# Routing (docs/BACKEND.md §5): /api, /media and /cdn go to the API (outside production also
-# /dev-idp and, with the fake provider, /_pay), everything else to the web app. The API's ops endpoints (/healthz, /readyz, /metrics) are deliberately not routed.
+# Routing (docs/BACKEND.md §5): /api, /media, /cdn, /dev-idp and /_pay go to the API (the last
+# two serve the development stand-ins outside production, 404 otherwise), everything else to
+# the web app. The API's ops endpoints (/healthz, /readyz, /metrics) are deliberately not routed.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -59,21 +60,15 @@ spec:
           port: 80
       timeouts:
         request: {{ $r.timeouts.media }}
-    {{- if ne .Values.config.environment "production" }}
-    # Development stand-ins, never in production (the API answers 404 there anyway): the
-    # development OpenID issuer (Google, Apple and the staff realm) and, with the fake payment
-    # provider, its payment form. Both are served by the API, ahead of its /api prefix.
+    # The development stand-ins' prefixes belong to the API in every environment: outside
+    # production it serves the development OpenID issuer (Google, Apple and the staff realm) and,
+    # with the fake payment provider, its payment form; in production, or with another provider,
+    # it answers 404 for them, as the Worker does. (Routed to the web app, they would get the
+    # SPA's shell, a 200 page, which says nothing true about the deployment.)
     - matches:
         - path:
             type: PathPrefix
             value: /dev-idp
-      backendRefs:
-        - name: {{ $api }}
-          port: 80
-      timeouts:
-        request: {{ $r.timeouts.api }}
-    {{- if eq (include "webflix.paymentProvider" .) "fake" }}
-    - matches:
         - path:
             type: PathPrefix
             value: /_pay
@@ -82,8 +77,6 @@ spec:
           port: 80
       timeouts:
         request: {{ $r.timeouts.api }}
-    {{- end }}
-    {{- end }}
     - matches:
         - path:
             type: PathPrefix

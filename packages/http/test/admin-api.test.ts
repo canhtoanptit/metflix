@@ -359,6 +359,7 @@ describe("audit entries are inseparable from the identity, billing and events ac
 
 async function customerOf(t: TestApp, accountId: string): Promise<string> {
   const provider = t.services.billing.config().provider;
+  if (provider === "none") throw new Error("no payment provider");
   const customer = await t.deps.repos.billing.getCustomer(accountId, provider);
   if (!customer) throw new Error("no customer");
   return customer.customerId;

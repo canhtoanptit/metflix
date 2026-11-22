@@ -3,15 +3,17 @@
 The pipeline's lake lease (services/recs, `lease.py`) is a create-only `PutObject` with
 `If-None-Match: *`. Garage accepts the header and ignores it (measured on v2.5.0: a second
 create-only write overwrites the first, 16 concurrent writers all "win", the lease is granted
-twice), and its maintainers say conditional writes do not fit its replication model. So with
-the in-chart store the three jobs that rewrite hours (erase, export-events, compact) never run
-as separate CronJobs: this one round runs them in order in one pod, and its CronJob's
-`concurrencyPolicy: Forbid` is the mutual exclusion the lease cannot give.
+twice), and its maintainers say conditional writes do not fit its replication model; the
+pipeline now probes for that and refuses (exit 10) unless WEBFLIX_RECS_LAKE_SERIALIZED=true
+says the scheduler is the lock. So with the in-chart store the three jobs that rewrite hours
+(erase, export-events, compact) never run as separate CronJobs: this one round runs them in
+order in one pod with that variable set, and its CronJob's `concurrencyPolicy: Forbid` is the
+mutual exclusion the lease cannot give.
 
 Per round, each step only when it has something to do:
   1. erase          keys pending at the staff API, or the last run older than ERASE_EVERY_HOURS
                     (the plan's watched keys: late arrivals of erased members)
-  2. export-events  pending data exports (export_round.py)
+  2. export-events  pending data exports (requests from and results to the staff API)
   3. compact        the last compaction older than COMPACT_EVERY_MINUTES
 
 When each step last ran is kept in the bucket (recs-work/k8s/lake-round.json); this job is its
@@ -44,7 +46,7 @@ def enabled(name: str) -> bool:
 def run(args: list[str]) -> int:
     started = time.monotonic()
     code = subprocess.run(args, check=False).returncode  # noqa: S603 - fixed commands
-    log("lake_round.step", command=args[5:7] if args[0] == "webflix-recs" else args[1:2],
+    log("lake_round.step", command=next((a for a in args if a in {"erase", "export-events", "compact"}), args[0]),
         code=code, seconds=round(time.monotonic() - started, 2))
     return code
 
@@ -55,7 +57,9 @@ def main() -> int:
     state: dict[str, float] = get_json(store, STATE_KEY) or {}
     now = time.time()
     codes: list[int] = []
-    recs = ["webflix-recs", "--store", store_url, "--workers", os.environ.get("WEBFLIX_RECS_WORKERS", "1")]
+    recs = ["webflix-recs", "--store", store_url]
+    if os.environ.get("WEBFLIX_RECS_WORKERS"):
+        recs += ["--workers", os.environ["WEBFLIX_RECS_WORKERS"]]
 
     if enabled("LAKE_ERASE"):
         pending = None
@@ -73,7 +77,8 @@ def main() -> int:
                 state["erase"] = now
 
     if enabled("LAKE_EXPORT_EVENTS"):
-        codes.append(run([sys.executable, "/scripts/export_round.py"]))
+        grace = os.environ.get("EXPORT_GRACE_MINUTES", "15")
+        codes.append(run([*recs, "export-events", "--grace-minutes", grace]))
 
     if enabled("LAKE_COMPACT"):
         every = float(os.environ.get("COMPACT_EVERY_MINUTES", "60")) * 60

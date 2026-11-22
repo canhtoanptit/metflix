@@ -172,3 +172,62 @@ describe("labelled cards", () => {
     ).toBeLessThanOrEqual(64);
   });
 });
+
+describe("token expiry", () => {
+  it("reads a JWT's exp, else the response's lifetime, else five minutes", async () => {
+    const { tokenExpiry } = await import("../src/oidc.ts");
+    const payload = Buffer.from(JSON.stringify({ exp: 1_800_000_000 })).toString("base64url");
+    expect(tokenExpiry(`h.${payload}.s`, 60, 0)).toBe(1_800_000_000_000);
+    expect(tokenExpiry("opaque-token", 60, 1_000)).toBe(61_000);
+    expect(tokenExpiry("opaque-token", null, 1_000)).toBe(301_000);
+  });
+});
+
+describe("rate-limit waits and the check's deadline", () => {
+  let server: Server;
+  let base = "";
+  let limited = 0;
+
+  beforeAll(async () => {
+    server = createServer((_req, res) => {
+      limited += 1;
+      if (limited === 1) {
+        res.writeHead(429, { "Content-Type": "application/problem+json", "Retry-After": "1" });
+        res.end(
+          JSON.stringify({
+            type: "urn:webflix:problem:rate_limited",
+            title: "Too many",
+            status: 429,
+            code: "rate_limited",
+            retryAfterSec: 1,
+          }),
+        );
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  it("moves the deadline by the time spent waiting out Retry-After", async () => {
+    const options = parseCli(["-u", base, "--timeout", "1000"], {}).options;
+    const check: CheckDefinition = {
+      id: "t.throttled",
+      area: "ops",
+      title: "",
+      timeoutMs: 800,
+      run: async (ctx) => {
+        await ctx.sleep(500);
+        const result = await ctx.agent("throttled").fetch("/limited");
+        expect(result.status).toBe(200);
+      },
+    };
+    const report = await runChecks([check], options);
+    expect(report.results[0]?.outcome).toBe("pass");
+    expect(report.results[0]?.notes.some((note) => note.includes("throttled"))).toBe(true);
+  });
+});

@@ -300,6 +300,12 @@ of the profiles it assigns: its control variant gets the rule engine, the others
 candidates; unassigned profiles get `WEBFLIX_RECS_DEFAULT_POLICY`. An `experiment.exposure` is
 logged for both arms when the treatment can apply (a fresh model is active), never on
 assignment alone, once per unit and variant (process memory, then a shared-cache marker).
+Replicas and isolates each cache the definitions (a copy is used at most 30 s after its database
+read), so a start, pause or stop is **scheduled** `WEBFLIX_EXPERIMENTS_PROPAGATION_SEC` ahead (60 s
+on k8s and Cloudflare, 0 in dev): staff see the new `status` at once, with `statusChangeAt` saying
+when it takes effect everywhere (a start also sets `startsAt` to it); until then every instance
+assigns as under `previousStatus`, so a unit's assignment never depends on which instance
+answered (finding K4).
 
 **Editorial.** Staff decisions (`services.personalisation`, the staff API's handlers): titles
 pinned to a view's billboard come first (under the same rules), published curated collections

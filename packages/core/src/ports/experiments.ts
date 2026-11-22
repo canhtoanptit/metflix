@@ -101,13 +101,35 @@ export async function hashBucket(
   return Math.floor((value / 0x1_0000_0000) * buckets);
 }
 
+/**
+ * The status assignment follows at `now`: a scheduled change (`statusChangeAt`) takes effect at
+ * its instant, everywhere at once; before it the previous status still holds.
+ */
+export function effectiveStatus(
+  definition: Pick<ExperimentDefinition, "status" | "statusChangeAt" | "previousStatus">,
+  now: number,
+): ExperimentDefinition["status"] {
+  if (
+    definition.statusChangeAt !== null &&
+    definition.previousStatus !== null &&
+    now < Date.parse(definition.statusChangeAt)
+  ) {
+    return definition.previousStatus;
+  }
+  return definition.status;
+}
+
 function eligible(
   definition: ExperimentDefinition,
   unit: ExperimentUnit,
   context: AssignmentContext,
   now: number,
 ): boolean {
-  if (definition.status !== "running" || definition.unit !== unit.type || context.restricted) {
+  if (
+    effectiveStatus(definition, now) !== "running" ||
+    definition.unit !== unit.type ||
+    context.restricted
+  ) {
     return false;
   }
   if (definition.startsAt !== null && Date.parse(definition.startsAt) > now) return false;

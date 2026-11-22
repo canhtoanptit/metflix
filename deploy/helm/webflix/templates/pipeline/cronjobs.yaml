@@ -2,8 +2,9 @@
 {{- if $p.enabled }}
 {{- $j := $p.jobs -}}
 {{- $store := include "webflix.pipeline.store" . -}}
-{{- /* Every webflix-recs invocation: the store and the worker processes (pipeline.workers). */}}
-{{- $root := list "--store" $store "--workers" (toString ($p.workers | int)) -}}
+{{- /* Every webflix-recs invocation: the store, and the worker processes when pipeline.workers is set. */}}
+{{- $root := list "--store" $store -}}
+{{- if $p.workers }}{{- $root = concat $root (list "--workers" (toString ($p.workers | int))) }}{{- end }}
 {{- if and (not (include "webflix.pipeline.tokenUrl" .)) (or $j.erase.enabled $j.exportEvents.enabled $j.analyse.enabled) }}
 {{- fail "webflix: the pipeline's erase, exportEvents and analyse jobs call the staff API with a service account: set pipeline.staffApi.tokenUrl (and existingSecret), or enable keycloak" }}
 {{- end }}
@@ -18,7 +19,6 @@ metadata:
   labels:
     {{- include "webflix.labels" (list . "pipeline") | nindent 4 }}
 data:
-  export_round.py: {{ .Files.Get "files/pipeline/export_round.py" | quote }}
   lake_round.py: {{ .Files.Get "files/pipeline/lake_round.py" | quote }}
   copy_objects.py: {{ .Files.Get "files/pipeline/copy_objects.py" | quote }}
 {{- $serialize := ternary .Values.objectStore.enabled $p.lake.serialize (eq (toString $p.lake.serialize) "auto") }}
@@ -27,6 +27,7 @@ data:
 ---
 {{- /* The lake round (files/pipeline/lake_round.py): erase, export-events, compact in order. */}}
 {{- $env := list
+  (dict "name" "WEBFLIX_RECS_LAKE_SERIALIZED" "value" "true")
   (dict "name" "LAKE_ERASE" "value" (toString $j.erase.enabled))
   (dict "name" "LAKE_EXPORT_EVENTS" "value" (toString $j.exportEvents.enabled))
   (dict "name" "LAKE_COMPACT" "value" (toString $j.compact.enabled))
@@ -56,8 +57,9 @@ data:
 {{- end }}
 {{- if $j.exportEvents.enabled }}
 ---
-{{- $env := list (dict "name" "EXPORT_GRACE_MINUTES" "value" (toString ($j.exportEvents.graceMinutes | int))) }}
-{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "export-events" "command" (list "python" "/scripts/export_round.py") "env" $env)) }}
+{{- /* Requests from, results to the staff API (the default with WEBFLIX_ADMIN_API_URL). */}}
+{{- $args := concat $root (list "export-events" "--grace-minutes" (toString ($j.exportEvents.graceMinutes | int))) }}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "export-events" "args" $args)) }}
 {{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "export-events" "schedule" $j.exportEvents.schedule "pod" $pod) }}
 {{- end }}
 {{- end }}
@@ -85,9 +87,13 @@ recommendation store; it is a no-op when that run is already served.
   (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "prepare" "args" (concat $root (list "train-and-score" "--phase" "prepare" "--work" "/work/train"))))
   (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "rule-engine" "command" (list "node" "services/recs/scripts/rule-engine-rankings.ts" "--input" "/work/train/engine-input.ndjson" "--out-dir" "/work/train")))
   (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "finish" "args" (concat $root (list "train-and-score" "--phase" "finish" "--work" "/work/train"))))
-  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "publish" "command" (list "sh" "-c" "webflix-recs --store \"$WEBFLIX_RECS_STORE\" --workers \"$WEBFLIX_RECS_WORKERS\" publish; code=$?; if [ \"$code\" = 3 ]; then echo 'publish refused by the gate (exit 3): the served run stays' >&2; exit 0; fi; exit \"$code\"")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "publish" "command" (list "sh" "-c" "webflix-recs --store \"$WEBFLIX_RECS_STORE\" publish; code=$?; if [ \"$code\" = 3 ]; then echo 'publish refused by the gate (exit 3): the served run stays' >&2; exit 0; fi; exit \"$code\"")))
 }}
-{{- $main := include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "import" "command" (list "node" "apps/api/src/recs.ts" "import")) }}
+{{- /* The importer exits 1 with "No recs/current.json" until a first run is published (a fresh
+install, a young lake, a gate that has not passed yet): nothing to import, not a failure.
+Every other failure stays one. */}}
+{{- $import := "out=$(node apps/api/src/recs.ts import 2>&1); code=$?; printf '%s\\n' \"$out\"; if [ \"$code\" != 0 ] && printf '%s' \"$out\" | grep -q 'No recs/current.json'; then echo 'nothing published yet: nothing to import' >&2; exit 0; fi; exit \"$code\"" }}
+{{- $main := include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "import" "command" (list "sh" "-c" $import)) }}
 {{- $pod := printf "initContainers:\n%s\ncontainers:\n%s" (join "\n" $init) $main }}
 {{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "train-and-score" "schedule" $j.trainAndScore.schedule "pod" $pod) }}
 {{- end }}

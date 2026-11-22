@@ -379,7 +379,7 @@ def test_the_scheduled_jobs_on_simulated_data(
     )  # fmt: skip
     assert node.returncode == 0, node.stderr
     code, finished = run([*job, "--phase", "finish"])
-    assert code == 0 and finished["status"] == "done"
+    assert code == 0 and finished["status"] == "scored"
     run_id = finished["run"]
     assert finished["dataset"] == dataset_id_for(e2e.end_ms)
     assert (get_json(storage, SCORED_MARKER) or {})["run"] == run_id
@@ -437,3 +437,25 @@ def test_the_scheduled_jobs_on_simulated_data(
             assert key.encode() not in body, info.key
     assert artefacts.validate_version(storage, run_id) == []
     assert artefacts.read_current(storage) is not None
+
+
+def test_nobody_to_evaluate_is_a_refused_gate_not_a_crash(
+    e2e: EndToEnd, trained: dict[str, Any]
+) -> None:
+    """A test window without a single discovery (a quiet week on a young lake): the evaluation
+    reports zero profiles and a gate that did not pass, and the rule engine's input has no
+    profile, so the Node step after it still runs."""
+    from dataclasses import replace as replace_dataclass
+
+    from webflix_recs.evaluation.harness import write_rule_engine_input
+
+    tables = dict(e2e.dataset.tables)
+    tables["playback"] = tables["playback"].filter(pl.col("event_time") < e2e.cutoff_ms)
+    quiet = replace_dataclass(e2e.dataset, tables=tables)
+    models, manifest = trained["backtest"]
+    inputs = EvaluationInputs(e2e.catalog, quiet, models, manifest, bootstrap=20)
+    report = evaluate(inputs, work_dir=e2e.work / "quiet", log=lambda *_: None)
+    assert report["profiles"] == 0
+    assert report["gate"]["passed"] is False and "nothing to evaluate" in report["gate"]["reason"]
+    path = write_rule_engine_input(inputs, e2e.work / "quiet-input", log=lambda *_: None)
+    assert len(path.read_bytes().splitlines()) == 1

@@ -35,6 +35,7 @@ import {
 } from "./cards.ts";
 import {
   CUSTOMER_STATE_KINDS,
+  type FakeClockRecord,
   type FakeDocument,
   type FakeDocumentKind,
   type FakeStore,
@@ -50,6 +51,17 @@ const COLLECTION_DELAY_MS = HOUR_MS;
 const INCOMPLETE_EXPIRY_MS = 23 * HOUR_MS;
 /** The provider's own "trial ending" hint (a hint only: §5.4). */
 const TRIAL_WILL_END_MS = 3 * DAY_MS;
+
+/**
+ * The units of state a commit is checked against (finding K2, store.ts `FakeCommit`): one
+ * customer's documents and clock; the promotions (redemption counts are shared by customers);
+ * the price catalogue.
+ */
+const customerGuard = (customerId: string) => `customer:${customerId}`;
+const PROMOTIONS_GUARD = "promotions";
+const CATALOGUE_GUARD = "catalogue";
+/** Lost compare-and-sets before an operation gives up with a retryable `unavailable`. */
+const MAX_COMMIT_ATTEMPTS = 12;
 
 /**
  * How webhooks reach Webflix. `orderly`: each event once, in order, right after the call that
@@ -214,15 +226,29 @@ class WorkingSet {
   readonly events: ProviderEvent[] = [];
   /** The provider time events are stamped with (moves while due transitions are settled). */
   at: number;
+  /** A new reading for the customer's clock, written with the documents. */
+  clock: { customerId: string; clock: FakeClockRecord } | null = null;
 
   readonly wall: number;
   /** The customer's clock reading; `wall` for global operations. */
   readonly now: number;
+  /** The guard every commit of this set holds (its customer, or a global unit). */
+  readonly scope: string;
+  /** Guard versions read before the documents were. */
+  readonly guards: ReadonlyMap<string, number>;
 
-  constructor(wall: number, now: number, loaded: readonly FakeDocument[]) {
+  constructor(
+    wall: number,
+    now: number,
+    loaded: readonly FakeDocument[],
+    scope: string,
+    guards: ReadonlyMap<string, number>,
+  ) {
     this.wall = wall;
     this.now = now;
     this.at = now;
+    this.scope = scope;
+    this.guards = guards;
     for (const document of loaded) this.documents.set(`${document.kind}:${document.id}`, document);
   }
 
@@ -289,8 +315,10 @@ class WorkingSet {
  *   orderly or as unruly as real delivery (`setDeliveryPolicy`); every event stays listable
  *   (`listEvents`) for reconciliation after an outage.
  * - **State in the database** (`FakeStore`), so it works on every dialect and survives
- *   restarts. Operations on one customer are serialised in process; across processes the last
- *   write wins (good enough for a test double).
+ *   restarts, and safe to share: every operation reads its state, computes, then commits with a
+ *   compare-and-set on what it read, starting over when another process or isolate committed
+ *   first (finding K2). Operations on one customer are also queued in process, which only saves
+ *   pointless retries.
  * - **Its own payment form** (form.ts, `/_pay/*`): card data in local modes goes to the fake,
  *   never to the API.
  */
@@ -760,43 +788,51 @@ export class FakePaymentProvider implements PaymentProvider {
   }
 
   async syncCatalogue(entries: readonly CatalogueEntry[]): Promise<CatalogueSyncResult> {
-    return this.withLock("catalogue", async () => {
-      const wall = this.clock.now();
-      const set = new WorkingSet(wall, wall, await this.store.byKind("price"));
-      const result: CatalogueSyncResult = { created: 0, updated: 0, archived: 0, unchanged: 0 };
-      for (const entry of entries) {
-        const existing = set.get<PriceData>("price", entry.lookupKey);
-        if (
-          existing?.active &&
-          existing.amountMinor === entry.amountMinor &&
-          existing.currency === entry.currency
-        ) {
-          result.unchanged += 1;
-          continue;
+    return this.withLock(CATALOGUE_GUARD, () =>
+      this.optimistic(async () => {
+        const wall = this.clock.now();
+        const guards = await this.store.guardVersions([CATALOGUE_GUARD]);
+        const set = new WorkingSet(
+          wall,
+          wall,
+          await this.store.byKind("price"),
+          CATALOGUE_GUARD,
+          guards,
+        );
+        const result: CatalogueSyncResult = { created: 0, updated: 0, archived: 0, unchanged: 0 };
+        for (const entry of entries) {
+          const existing = set.get<PriceData>("price", entry.lookupKey);
+          if (
+            existing?.active &&
+            existing.amountMinor === entry.amountMinor &&
+            existing.currency === entry.currency
+          ) {
+            result.unchanged += 1;
+            continue;
+          }
+          // A changed amount is a new price that takes over the lookup key; the old one is
+          // archived under its own id (docs/STRIPE.md §7, `transfer_lookup_key`).
+          if (existing) {
+            set.put("price", `${existing.lookupKey}@${existing.id}`, null, {
+              ...existing,
+              active: false,
+            });
+            result.archived += 1;
+          }
+          set.put("price", entry.lookupKey, null, {
+            id: this.newId("price"),
+            lookupKey: entry.lookupKey,
+            productId: entry.productId,
+            productName: entry.productName,
+            amountMinor: entry.amountMinor,
+            currency: entry.currency,
+            active: true,
+          } satisfies PriceData);
+          result.created += 1;
         }
-        // A changed amount is a new price that takes over the lookup key; the old one is
-        // archived under its own id (docs/STRIPE.md §7, `transfer_lookup_key`).
-        if (existing) {
-          set.put("price", `${existing.lookupKey}@${existing.id}`, null, {
-            ...existing,
-            active: false,
-          });
-          result.archived += 1;
-        }
-        set.put("price", entry.lookupKey, null, {
-          id: this.newId("price"),
-          lookupKey: entry.lookupKey,
-          productId: entry.productId,
-          productName: entry.productName,
-          amountMinor: entry.amountMinor,
-          currency: entry.currency,
-          active: true,
-        } satisfies PriceData);
-        result.created += 1;
-      }
-      await this.store.write(set.changed());
-      return result;
-    });
+        return (await this.commit(set)) ? { value: result } : null;
+      }),
+    );
   }
 
   // --- Webhooks and events --------------------------------------------------------------------
@@ -911,17 +947,20 @@ export class FakePaymentProvider implements PaymentProvider {
     if (!Number.isFinite(seconds) || seconds <= 0) {
       throw new PaymentProviderError("invalid_request", "clocks only move forward");
     }
-    const target = await this.withLock(customerId, async () => {
-      const wall = this.clock.now();
-      const now = await this.customerNow(customerId, wall);
-      const goal = now + seconds * 1000;
-      const set = await this.load(customerId, wall, now);
-      set.require<CustomerData>("customer", customerId, "customer");
-      this.settle(set, goal);
-      await this.store.setClock(customerId, { nowMs: goal, updatedAt: wall });
-      await this.commit(set);
-      return goal;
-    });
+    const target = await this.withLock(customerId, () =>
+      this.optimistic(async () => {
+        const wall = this.clock.now();
+        const guards = await this.guardsFor(customerId);
+        const now = await this.customerNow(customerId, wall);
+        // From the reading this attempt saw: two advances of a day move the clock two days.
+        const goal = now + seconds * 1000;
+        const set = await this.load(customerId, wall, now, guards);
+        set.require<CustomerData>("customer", customerId, "customer");
+        this.settle(set, goal);
+        set.clock = { customerId, clock: { nowMs: goal, updatedAt: wall } };
+        return (await this.commit(set)) ? { value: goal } : null;
+      }),
+    );
     await this.deliverPending();
     return target;
   }
@@ -1121,29 +1160,37 @@ export class FakePaymentProvider implements PaymentProvider {
     maxRedemptions?: number;
     appliesTo?: string[];
   }): Promise<void> {
-    const wall = this.clock.now();
     const code = input.code.toUpperCase();
-    await this.store.write([
-      {
-        kind: "promotion",
-        id: code,
-        customerId: null,
-        data: {
-          id: this.newId("promo"),
-          code,
-          percentOff: input.percentOff ?? null,
-          amountOffMinor: input.amountOffMinor ?? null,
-          currency: input.amountOffMinor === undefined ? null : (input.currency ?? "USD"),
-          expiresAt: input.expiresAt ?? null,
-          maxRedemptions: input.maxRedemptions ?? null,
-          timesRedeemed: 0,
-          appliesTo: input.appliesTo ?? null,
-        } satisfies PromotionData,
-        version: 1,
-        createdAt: wall,
-        updatedAt: wall,
-      },
-    ]);
+    const id = this.newId("promo");
+    await this.optimistic(async () => {
+      const wall = this.clock.now();
+      const guards = await this.store.guardVersions([PROMOTIONS_GUARD]);
+      const committed = await this.store.commit({
+        guards,
+        documents: [
+          {
+            kind: "promotion",
+            id: code,
+            customerId: null,
+            data: {
+              id,
+              code,
+              percentOff: input.percentOff ?? null,
+              amountOffMinor: input.amountOffMinor ?? null,
+              currency: input.amountOffMinor === undefined ? null : (input.currency ?? "USD"),
+              expiresAt: input.expiresAt ?? null,
+              maxRedemptions: input.maxRedemptions ?? null,
+              timesRedeemed: 0,
+              appliesTo: input.appliesTo ?? null,
+            } satisfies PromotionData,
+            version: 1,
+            createdAt: wall,
+            updatedAt: wall,
+          },
+        ],
+      });
+      return committed ? { value: undefined } : null;
+    });
   }
 
   // --- Internals: operations ------------------------------------------------------------------
@@ -1201,37 +1248,70 @@ export class FakePaymentProvider implements PaymentProvider {
     }
   }
 
-  /** Loads a customer's working set, settles what fell due, runs `run`, writes the result. */
+  /**
+   * Loads a customer's working set, settles what fell due, runs `run`, commits the result; when
+   * another process committed to this customer first, all of it again from a fresh read (`run`
+   * is synchronous and only touches the set, so running it again is safe).
+   */
   private async mutate<T>(customerId: string, run: (set: WorkingSet) => T): Promise<T> {
-    let emitted = 0;
+    let emitted = false;
     try {
-      return await this.withLock(customerId, async () => {
-        const wall = this.clock.now();
-        const now = await this.customerNow(customerId, wall);
-        const set = await this.load(customerId, wall, now);
-        this.settle(set, now);
-        set.at = now;
-        try {
-          const result = run(set);
-          emitted = set.events.length;
-          await this.commit(set);
-          return result;
-        } catch (error) {
-          // Failed attempts (declines) still leave their trace, as at a real provider.
-          if (error instanceof PaymentProviderError) {
-            emitted = set.events.length;
-            await this.commit(set);
+      return await this.withLock(customerId, () =>
+        this.optimistic(async () => {
+          const wall = this.clock.now();
+          const guards = await this.guardsFor(customerId);
+          const now = await this.customerNow(customerId, wall);
+          const set = await this.load(customerId, wall, now, guards);
+          this.settle(set, now);
+          set.at = now;
+          let outcome: { value: T } | { error: PaymentProviderError };
+          try {
+            outcome = { value: run(set) };
+          } catch (error) {
+            // Failed attempts (declines) still leave their trace, as at a real provider.
+            if (!(error instanceof PaymentProviderError)) throw error;
+            outcome = { error };
           }
-          throw error;
-        }
-      });
+          const events = set.events.length;
+          if (!(await this.commit(set))) return null;
+          if (events > 0) emitted = true;
+          if ("error" in outcome) throw outcome.error;
+          return outcome;
+        }),
+      );
     } finally {
       // Outside the lock: the receiver may read this customer back at once.
-      if (emitted > 0) await this.deliverPending();
+      if (emitted) await this.deliverPending();
     }
   }
 
-  private async load(customerId: string, wall: number, now: number): Promise<WorkingSet> {
+  /**
+   * Runs `attempt` until it commits (it answers null when its compare-and-set lost), with a
+   * short random pause between tries so racing processes spread out.
+   */
+  private async optimistic<T>(attempt: () => Promise<{ value: T } | null>): Promise<T> {
+    for (let tries = 1; ; tries += 1) {
+      const outcome = await attempt();
+      if (outcome) return outcome.value;
+      if (tries >= MAX_COMMIT_ATTEMPTS) {
+        this.logger?.warn("payments_fake.contended", { tries });
+        throw new PaymentProviderError("unavailable", "the state kept changing; retry");
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 4 * tries)));
+    }
+  }
+
+  /** Read first: documents read after their guard are at least as new as its version. */
+  private guardsFor(customerId: string): Promise<Map<string, number>> {
+    return this.store.guardVersions([customerGuard(customerId), PROMOTIONS_GUARD]);
+  }
+
+  private async load(
+    customerId: string,
+    wall: number,
+    now: number,
+    guards: ReadonlyMap<string, number>,
+  ): Promise<WorkingSet> {
     const [state, prices, promotions] = await Promise.all([
       this.store.byCustomer(customerId, CUSTOMER_STATE_KINDS),
       this.store.byKind("price"),
@@ -1249,10 +1329,22 @@ export class FakePaymentProvider implements PaymentProvider {
         createdAt: wall,
         updatedAt: wall,
       }));
-    return new WorkingSet(wall, now, [...state, ...prices, ...promotions, ...seeds]);
+    return new WorkingSet(
+      wall,
+      now,
+      [...state, ...prices, ...promotions, ...seeds],
+      customerGuard(customerId),
+      guards,
+    );
   }
 
-  private async commit(set: WorkingSet): Promise<void> {
+  /**
+   * Writes what the operation changed, with its events and their deliveries, if nothing it read
+   * was committed over since (false: nothing written). Holds the set's own guard, and the
+   * promotions' when it redeemed one (other customers' redemptions count against the same codes).
+   */
+  private async commit(set: WorkingSet): Promise<boolean> {
+    if (set.dirty.size === 0 && set.events.length === 0 && !set.clock) return true;
     const policy = set.events.length > 0 ? await this.deliveryPolicy() : this.defaultDelivery;
     const documents = set.changed();
     for (const event of set.events) {
@@ -1283,9 +1375,21 @@ export class FakePaymentProvider implements PaymentProvider {
         updatedAt: set.wall,
       });
     }
-    await this.store.write(documents);
-    set.dirty.clear();
-    set.events.length = 0;
+    const guards = new Map([[set.scope, set.guards.get(set.scope) ?? 0]]);
+    if (documents.some((document) => document.kind === "promotion")) {
+      guards.set(PROMOTIONS_GUARD, set.guards.get(PROMOTIONS_GUARD) ?? 0);
+    }
+    const committed = await this.store.commit({
+      guards,
+      documents,
+      clocks: set.clock ? [set.clock] : [],
+    });
+    if (committed) {
+      set.dirty.clear();
+      set.events.length = 0;
+      set.clock = null;
+    }
+    return committed;
   }
 
   private async pump(): Promise<{ delivered: number; pending: number }> {

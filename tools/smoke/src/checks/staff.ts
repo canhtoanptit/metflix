@@ -28,8 +28,10 @@ async function staff(
   persona: Persona,
   label = persona,
 ): Promise<AdminApiClient> {
-  const token = await ctx.env.staffToken(STAFF_PERSONAS[persona]);
-  return ctx.agent(`staff-${label}`).staffApi(token);
+  // Asked for before every call: a long run renews it as it nears its expiry.
+  const persona_ = STAFF_PERSONAS[persona];
+  await ctx.env.staffToken(persona_);
+  return ctx.agent(`staff-${label}`).staffApi(() => ctx.env.staffToken(persona_));
 }
 
 /** Run a typed staff call that must succeed; also return the request id it was sent with. */
@@ -172,11 +174,10 @@ export const staffChecks: CheckDefinition[] = [
         "a member's session cookie on the staff API",
       );
       // Mutations need the client header, as on the member API.
-      const adminToken = await ctx.env.staffToken(STAFF_PERSONAS.admin);
       problem(
         await probe.fetch(`${ADMIN_API_BASE_PATH}/plans/sync`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${adminToken}` },
+          headers: { Authorization: `Bearer ${await ctx.env.staffToken(STAFF_PERSONAS.admin)}` },
           body: { reason: "smoke: no client header" },
         }),
         "csrf_check_failed",
@@ -185,7 +186,7 @@ export const staffChecks: CheckDefinition[] = [
       // A staff token never opens a member route.
       problem(
         await probe.fetch("/api/v1/account", {
-          headers: { Authorization: `Bearer ${adminToken}` },
+          headers: { Authorization: `Bearer ${await ctx.env.staffToken(STAFF_PERSONAS.admin)}` },
         }),
         "unauthenticated",
         "a staff token on a member route",
@@ -234,7 +235,8 @@ export const staffChecks: CheckDefinition[] = [
           exchange: wrong.result.exchange,
         },
       );
-      const api = agent.staffApi(token);
+      // The run's job token, renewed near its expiry like every staff token.
+      const api = agent.staffApi(() => ctx.env.jobToken());
       const me = await succeeds(() => api.getStaffSelf(), "GET /me with the job's token");
       equal([...me.roles].sort().join(","), "admin,experiments", "the service account's roles");
       await succeeds(

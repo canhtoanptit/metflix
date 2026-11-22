@@ -24,6 +24,30 @@ tests:
         equal:
           path: spec.jobTemplate.spec.template.spec.containers[0].command
           value: [python, /scripts/lake_round.py]
+      # The pipeline refuses the lake jobs on Garage (exit 10) unless the scheduler is declared the lock.
+      - documentIndex: 1
+        contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_RECS_LAKE_SERIALIZED
+            value: "true"
+  - it: leaves the worker count to the pipeline unless pipeline.workers is set
+    template: pipeline/cronjobs.yaml
+    documentIndex: 2
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].args
+          value: [--store, s3://webflix-media, analyse-experiments, --definitions, api]
+  - it: passes pipeline.workers to every job
+    template: pipeline/cronjobs.yaml
+    documentIndex: 2
+    set:
+      pipeline.workers: 4
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].args
+          value:
+            [--store, s3://webflix-media, --workers, "4", analyse-experiments, --definitions, api]
   - it: runs separate CronJobs on a store that honours conditional writes
     template: pipeline/cronjobs.yaml
     set:
@@ -40,6 +64,17 @@ tests:
         contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].args
           content: s3://acme-media
+      # Each takes the lease itself there: nothing declares the scheduler the lock.
+      - documentIndex: 1
+        notContains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: WEBFLIX_RECS_LAKE_SERIALIZED
+            value: "true"
+      - documentIndex: 3
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].args
+          value: [--store, s3://acme-media, export-events, --grace-minutes, "15"]
   - it: gets the jobs' token from the development issuer outside production
     template: pipeline/cronjobs.yaml
     documentIndex: 1
@@ -101,9 +136,13 @@ tests:
       - equal:
           path: spec.jobTemplate.spec.template.spec.initContainers[5].name
           value: publish
+      # The importer, where "nothing published yet" is not a failure.
       - equal:
-          path: spec.jobTemplate.spec.template.spec.containers[0].command
-          value: [node, apps/api/src/recs.ts, import]
+          path: spec.jobTemplate.spec.template.spec.containers[0].command[0]
+          value: sh
+      - matchRegex:
+          path: spec.jobTemplate.spec.template.spec.containers[0].command[2]
+          pattern: "node apps/api/src/recs.ts import.*No recs/current.json"
   - it: imports the realm with the staff client, the audience, the roles and the jobs' account
     template: keycloak/secrets.yaml
     set:

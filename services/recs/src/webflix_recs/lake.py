@@ -38,7 +38,7 @@ import polars as pl
 
 from webflix_recs import schemas
 from webflix_recs.ids import HOUR_MS, iso_ms, parse_partition, partition_prefix
-from webflix_recs.parallel import process_pool
+from webflix_recs.parallel import parallel_map
 from webflix_recs.storage import ObjectInfo, Storage, get_json, open_storage, put_json
 
 COMPACTION_MANIFEST = "_compaction.json"
@@ -347,16 +347,9 @@ def read_events(
     stats = ReadStats()
     results: list[Any] = []
     jobs = [(location, batch, transform) for batch in batches]
-    if workers <= 1 or len(jobs) <= 1:
-        for job in jobs:
-            result, batch_stats = _read_batch(job)
-            results.append(result)
-            stats.merge(batch_stats)
-    else:
-        with process_pool(workers) as pool:
-            for result, batch_stats in pool.map(_read_batch, jobs):
-                results.append(result)
-                stats.merge(batch_stats)
+    for result, batch_stats in parallel_map(_read_batch, jobs, workers=workers):
+        results.append(result)
+        stats.merge(batch_stats)
     return results, stats, len(hours)
 
 
@@ -602,12 +595,7 @@ def compact(
             total.hours_open += 1
             continue
         jobs.append((location, hour, delete_sources, clock_ms))
-    if workers <= 1:
-        outcomes = [_compact_job(job) for job in jobs]
-    else:
-        with process_pool(workers) as pool:
-            outcomes = list(pool.map(_compact_job, jobs, chunksize=4))
-    for outcome, result in outcomes:
+    for outcome, result in parallel_map(_compact_job, jobs, workers=workers):
         if outcome == "compacted":
             total.hours_compacted += 1
         elif outcome == "upgraded":

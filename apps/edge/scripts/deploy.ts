@@ -370,8 +370,9 @@ const RELEASE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$/;
 /**
  * The deployed release (`app.version` of server events): `--release` (`make cf-deploy
  * CF_RELEASE=…`), else the commit (`-dirty` when the tree has changes), else the time of the
- * deploy. Deliberately not read from the environment: the Kubernetes make fragment exports
- * WEBFLIX_RELEASE as its Helm release name into every recipe.
+ * deploy. Not read from the environment: a release is named here, explicitly, for every deploy.
+ * (The Kubernetes make fragment used to export WEBFLIX_RELEASE, its Helm release name, into
+ * every recipe; it is WEBFLIX_HELM_RELEASE since, docs/KUBERNETES.md §9.3.)
  */
 function releaseName(override: string | undefined): string {
   if (override) {

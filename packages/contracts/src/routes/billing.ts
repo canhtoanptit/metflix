@@ -148,7 +148,7 @@ export const billingRoutes = {
     auth: "public",
     summary: "What the browser needs for the payment form",
     description:
-      "Stripe's publishable key, or the fake provider's own form. Never a secret. The security headers allow Stripe's origins only when Stripe is the configured provider.",
+      "Stripe's publishable key, or the fake provider's own form; `none` when the deployment has no payment provider (checkouts then answer `payments_not_configured`). Never a secret. The security headers allow Stripe's origins only when Stripe is the configured provider.",
     response: BillingConfig,
     examples: { response: { provider: "fake", formUrl: "/_pay/form" } },
   }),
@@ -169,6 +169,7 @@ export const billingRoutes = {
       "promotion_code_invalid",
       "unrestricted_profile_required",
       "demo_account_protected",
+      "payments_not_configured",
     ],
     examples: { request: { planId: "standard" } },
   }),
@@ -194,7 +195,7 @@ export const billingRoutes = {
       "Reads the confirmed card's fingerprint, checks trial eligibility, then creates the subscription with the trial, or as a paid one whose first payment the browser confirms next (`requires_payment`). Limited per account (`payment`).",
     params: IdParams,
     response: Checkout,
-    errors: ["not_found", "checkout_state_conflict", "payment_declined"],
+    errors: ["not_found", "checkout_state_conflict", "payment_declined", "payments_not_configured"],
     rateLimit: "payment",
   }),
   previewPlanChange: defineRoute({
@@ -222,7 +223,7 @@ export const billingRoutes = {
       "The provider's event makes the confirmed card the default; a `past_due` membership's open invoice is then paid explicitly.",
     response: PaymentMethodSetup,
     successStatus: 201,
-    errors: ["subscription_required", "demo_account_protected"],
+    errors: ["subscription_required", "demo_account_protected", "payments_not_configured"],
   }),
   getPaymentMethodSetup: defineRoute({
     method: "GET",
@@ -256,7 +257,7 @@ export const billingRoutes = {
       "Reads the code first (the provider refuses exhausted and expired codes without saying which). Limited per account (`promotion`).",
     body: ValidatePromotionBody,
     response: PromotionQuote,
-    errors: ["promotion_code_invalid"],
+    errors: ["promotion_code_invalid", "payments_not_configured"],
     rateLimit: "promotion",
     examples: { request: { code: "WELCOME50", planId: "standard" } },
   }),

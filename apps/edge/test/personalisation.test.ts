@@ -92,13 +92,16 @@ function countedD1(db: D1Database): D1Database {
 }
 
 if (!env.RECS) throw new Error("wrangler.jsonc must bind RECS");
-const measured: Env = {
+const measured = {
   ...env,
   DB: countedD1(env.DB),
   CACHE: countedKv(env.CACHE),
   RECS: countedKv(env.RECS),
   WEBFLIX_EDGE_CACHE: "off",
-};
+  // One isolate: an experiment started here is live at once (the propagation delay is for
+  // several instances, proven in packages/core's experiment-propagation test).
+  WEBFLIX_EXPERIMENTS_PROPAGATION_SEC: "0",
+} as Env;
 /** Milestone 1's composition: no recommendation store or experiments table to read. */
 const baseline: Env = {
   ...measured,

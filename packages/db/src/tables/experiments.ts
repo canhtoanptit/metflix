@@ -25,6 +25,10 @@ export interface ExperimentsTable {
   version: number;
   created_at: number;
   updated_at: number;
+  /** The status assignment follows until `status_change_at` (0017). */
+  previous_status: string | null;
+  /** When `status` takes effect for assignment (0017); null: in effect. */
+  status_change_at: number | null;
 }
 
 export interface ExperimentResultsTable {

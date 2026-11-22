@@ -67,12 +67,15 @@ export type Entitlement = z.output<typeof Entitlement>;
 
 /**
  * What the browser needs to render the provider's payment form (§5.6): Stripe's publishable key
- * (never a secret), or the fake provider's own form (`/_pay/*`, local modes).
+ * (never a secret), or the fake provider's own form (`/_pay/*`, local modes); `none` when the
+ * deployment has no payment provider (memberships cannot be started: checkouts answer
+ * `payments_not_configured`).
  */
 export const BillingConfig = z
   .discriminatedUnion("provider", [
     z.object({ provider: z.literal("stripe"), publishableKey: z.string().regex(/^pk_/) }),
     z.object({ provider: z.literal("fake"), formUrl: ResourceUrl }),
+    z.object({ provider: z.literal("none") }),
   ])
   .meta({ id: "BillingConfig" });
 export type BillingConfig = z.output<typeof BillingConfig>;

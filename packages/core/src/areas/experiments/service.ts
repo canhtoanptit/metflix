@@ -17,6 +17,7 @@ import {
   type AssignmentContext,
   assignVariants,
   type ExperimentUnit,
+  effectiveStatus,
   type LazyAssignmentContext,
   overlappingAllocations,
   resolveAssignmentContext,
@@ -49,7 +50,13 @@ const RESULTS_MARKER_TTL_SEC = 7 * 24 * 60 * 60;
 /** What staff design (the contract's `CreateExperimentBody` without its `reason`). */
 export type ExperimentDesign = Omit<
   ExperimentDefinition,
-  "status" | "salt" | "registeredAt" | "createdAt" | "updatedAt"
+  | "status"
+  | "statusChangeAt"
+  | "previousStatus"
+  | "salt"
+  | "registeredAt"
+  | "createdAt"
+  | "updatedAt"
 >;
 
 /** A treatment a member actually experienced (milestone 2 §8.1: exposure, not assignment). */
@@ -377,6 +384,8 @@ export function createExperimentsService(
         endsAt: design.endsAt,
         srmThreshold: design.srmThreshold,
         status: "draft",
+        statusChangeAt: null,
+        previousStatus: null,
         salt: hexEncode(randomBytes(8)),
         registeredAt: null,
         createdAt: now,
@@ -444,16 +453,35 @@ export function createExperimentsService(
           detail: `An experiment cannot go from ${from} to ${status}`,
         });
       }
-      const now = toIsoString(clock.now());
+      const nowMs = clock.now();
+      const now = toIsoString(nowMs);
+      // The change takes effect at one instant on every replica and isolate: far enough ahead
+      // that every cached copy of the definitions has been refreshed by then (finding K4).
+      // Until then units are assigned as under the status in effect now.
+      const delayMs = deps.config.experiments.propagationSec * 1000;
+      const effectiveAt = toIsoString(nowMs + delayMs);
+      const scheduled =
+        delayMs > 0
+          ? {
+              statusChangeAt: effectiveAt,
+              previousStatus: effectiveStatus(current.definition, nowMs),
+            }
+          : { statusChangeAt: null, previousStatus: null };
+      const startsAt = current.definition.startsAt;
       const next: ExperimentDefinition = {
         ...current.definition,
+        ...scheduled,
         status,
         updatedAt: now,
-        // Starting pre-registers it: the analysis refuses exposures before registration.
+        // Starting pre-registers it (the analysis refuses exposures before registration), and
+        // it starts no earlier than the change takes effect.
         ...(status === "running" && from === "draft"
           ? {
               registeredAt: current.definition.registeredAt ?? now,
-              startsAt: current.definition.startsAt ?? now,
+              startsAt:
+                startsAt === null || Date.parse(startsAt) < nowMs + delayMs
+                  ? effectiveAt
+                  : startsAt,
             }
           : {}),
       };

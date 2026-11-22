@@ -150,7 +150,7 @@ async function awaitExport(
   }
   const admin = ctx
     .agent("export-operator")
-    .staffApi(await ctx.env.staffToken(STAFF_PERSONAS.admin));
+    .staffApi(() => ctx.env.staffToken(STAFF_PERSONAS.admin));
   const pending = await succeeds(
     () => admin.listPendingExports({ query: { limit: 500 } }),
     "GET /system/privacy/exports",
@@ -797,12 +797,12 @@ export const privacyChecks: CheckDefinition[] = [
     async run(ctx: CheckContext) {
       const admin = ctx
         .agent("exports-admin")
-        .staffApi(await ctx.env.staffToken(STAFF_PERSONAS.admin));
+        .staffApi(() => ctx.env.staffToken(STAFF_PERSONAS.admin));
       const route = `${ADMIN_API_BASE_PATH}/system/privacy/exports`;
       for (const role of ["support", "billing", "content", "experiments"] as const) {
         const api = ctx
           .agent(`exports-${role}`)
-          .staffApi(await ctx.env.staffToken(STAFF_PERSONAS[role]));
+          .staffApi(() => ctx.env.staffToken(STAFF_PERSONAS[role]));
         const refused = await rejects(
           () => api.listPendingExports({ query: {} }),
           "staff_role_required",
@@ -868,11 +868,13 @@ export const privacyChecks: CheckDefinition[] = [
 
       // The job can only point at the request's own documents, and a complete result is verifiable.
       const subject = before.requests[0]?.requestId ?? unknownId;
-      const adminToken = await ctx.env.staffToken(STAFF_PERSONAS.admin);
-      const post = (body: unknown) =>
+      const post = async (body: unknown) =>
         ctx.agent("exports-raw").fetch(`${route}/results`, {
           method: "POST",
-          headers: { ...CSRF, Authorization: `Bearer ${adminToken}` },
+          headers: {
+            ...CSRF,
+            Authorization: `Bearer ${await ctx.env.staffToken(STAFF_PERSONAS.admin)}`,
+          },
           body: body as object,
         });
       const own = `privacy/export-events/${subject}`;

@@ -26,6 +26,8 @@ export function experimentDefinition(
     name: "Learned recommendations against the rule engine",
     description: null,
     status: "running",
+    statusChangeAt: null,
+    previousStatus: null,
     unit: "profile",
     layer: "recs",
     allocation: { start: 0, end: 10_000 },
@@ -106,6 +108,25 @@ export function describeExperimentsContract(
       expect(
         Object.keys(await h().experiments.assign({ type: "device", id: "d1" }, ANYONE, NOW)),
       ).toEqual(["devices"]);
+    });
+
+    it("follows a scheduled status change only from its instant", async () => {
+      const at = new Date(NOW + 60_000).toISOString();
+      const unit = { type: "profile" as const, id: "p1" };
+      // Starting: still assigned as a draft (nothing) until the change takes effect.
+      await h().define([experimentDefinition({ statusChangeAt: at, previousStatus: "draft" })]);
+      expect(await h().experiments.assign(unit, ANYONE, NOW)).toEqual({});
+      expect(Object.keys(await h().experiments.assign(unit, ANYONE, NOW + 60_000))).toEqual([
+        "recs.learned-vs-rules",
+      ]);
+      // Pausing: still assigned until the change takes effect, then not.
+      await h().define([
+        experimentDefinition({ status: "paused", statusChangeAt: at, previousStatus: "running" }),
+      ]);
+      expect(Object.keys(await h().experiments.assign(unit, ANYONE, NOW))).toEqual([
+        "recs.learned-vs-rules",
+      ]);
+      expect(await h().experiments.assign(unit, ANYONE, NOW + 60_000)).toEqual({});
     });
 
     it("never assigns a restricted profile", async () => {

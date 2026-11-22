@@ -697,8 +697,10 @@ key) are deliberately not in `secrets.required`, which would make every deploy r
 locally they cannot come from `.dev.vars` because of the allowlist (pass them with
 `CF_DEV_FLAGS='--var …'`), and in production they are set with `wrangler secret put`.
 
-The release name is not read from the environment: the Kubernetes make fragment exports
-`WEBFLIX_RELEASE` (its Helm release name, `webflix`) into every recipe of the Makefile.
+The release name is not read from the environment: `make cf-deploy` names it explicitly
+(`CF_RELEASE`, else the commit). The Kubernetes make fragment no longer exports a variable of
+this name into the Makefile's recipes: its Helm release name is `WEBFLIX_HELM_RELEASE`
+(docs/KUBERNETES.md §9.3).
 
 ### 10.3 The queue carries billing and behaviour
 
@@ -854,7 +856,7 @@ link) and this tooling also serialises its rounds.
 | Email | yes (D1 outbox: welcome, receipt, reset-password) | Resend | Resend key, verified domain, bounce webhook |
 | Import from outside | yes (local bindings; REST writer against the emulated endpoint) | the real REST API's auth, rate limits and `unsuccessful_keys` | an import of a full-size run with a real token; KV propagation (up to 60 s) |
 | State across a restart | yes: session, membership, mailbox, lake, recommendations, stream slots (D1, KV, R2, Durable Objects) | **Queues durability.** miniflare keeps undelivered messages in memory: a batch acknowledged with 202 and followed by a stop 0.5 s later never reached the lake; one stopped after 4.3 s did. Retries waiting on their backoff are lost the same way | that Queues keeps messages across deploys (Cloudflare documents at-least-once delivery) |
-| Stripe CSP on the SPA | `_headers` staged with exactly Stripe.js's sources for production, none locally (tests) | the browser's enforcement, Stripe.js at run time, wallets (the chart's `Permissions-Policy: payment=()` may block the Payment Request API in Stripe's frame) | the browser suite with Stripe as provider |
+| Stripe CSP on the SPA | `_headers` staged with exactly Stripe.js's sources for production, none locally (tests) | the browser's enforcement, Stripe.js at run time, wallets (the chart's header was `payment=()`, which disables the Payment Request API in Stripe's frames; it is now `payment=(self "https://js.stripe.com" "https://*.js.stripe.com")`, which these `_headers` take from the chart: docs/KUBERNETES.md §9.10) | the browser suite with Stripe as provider |
 | Production composition | yes, in workerd: Stripe, HTTP email, the lake, staff API closed, `/dev-idp` and `/_pay` 404 (`test/production-config.test.ts`) | | the deploy itself (`secrets.required` with `--secrets-file`) |
 
 What survives a local restart without loss, because it is in D1 before any message is sent:

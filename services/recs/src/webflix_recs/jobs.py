@@ -9,6 +9,8 @@ its own job (`publish`), which refuses unless an evaluation of the same recipe p
    milestone 1 engine, whose rankings come from `scripts/rule-engine-rankings.ts`);
 3. train the production run as of T and score it into `recs/v={run}/` (manifest last);
 4. record the scored run in `recs-work/scored/latest.json`, which `publish` reads by default;
+   when there is nothing to train yet (a lake younger than the backtest needs, or without
+   consented plays), record that instead and end cleanly: `publish` then has nothing to publish;
 5. keep the newest `keep_datasets` job datasets (datasets hold behaviour; erasure rewrites the
    ones that remain).
 
@@ -84,14 +86,21 @@ def train_and_score(
         store_evaluation,
     )
     from webflix_recs.catalog import load_catalog  # noqa: PLC0415
-    from webflix_recs.dataset import build_dataset, load_dataset  # noqa: PLC0415
+    from webflix_recs.dataset import EmptyLake, build_dataset, load_dataset  # noqa: PLC0415
     from webflix_recs.evaluation.harness import (  # noqa: PLC0415
         EvaluationInputs,
         evaluate,
         write_rule_engine_input,
     )
     from webflix_recs.provenance import recipe_hash  # noqa: PLC0415
-    from webflix_recs.train import TrainParams, load_run, run_id_for, save_run, train  # noqa: PLC0415
+    from webflix_recs.train import (  # noqa: PLC0415
+        NotEnoughData,
+        TrainParams,
+        load_run,
+        run_id_for,
+        save_run,
+        train,
+    )
 
     if phase not in {"all", "prepare", "finish"}:
         raise ValueError(f"unknown phase {phase!r}")
@@ -101,6 +110,7 @@ def train_and_score(
         params = TrainParams.from_dict(
             {**params.to_dict(), **orjson.loads(Path(params_path).read_bytes())}
         )
+    state: dict[str, Any] = {}
     if phase == "finish":
         state = orjson.loads(_state_path(work).read_bytes())
         as_of_ms = int(state["asOfMs"])
@@ -122,13 +132,20 @@ def train_and_score(
             f"recs/v={production_run}/ is already complete (same cutoff and recipe): nothing to do"
         )
     catalog = load_catalog(storage)
+    if phase == "finish" and state.get("status") == "nothing-to-train":
+        # The prepare phase found nothing to train and said so in the marker: follow it.
+        return {**summary, "status": "nothing-to-train", "reason": state.get("reason")}
     if phase in {"all", "prepare"}:
-        dataset = build_dataset(
-            location, storage, dataset_id=dataset_id, as_of_ms=as_of_ms, workers=workers, log=log
-        ).manifest
-        summary["datasetRows"] = dataset["rows"]
-        data = load_dataset(storage, dataset_id)
-        models, report = train(catalog, data, as_of_ms=backtest_as_of, params=params, log=log)
+        try:
+            dataset = build_dataset(
+                location, storage, dataset_id=dataset_id, as_of_ms=as_of_ms, workers=workers,
+                log=log,
+            ).manifest  # fmt: skip
+            summary["datasetRows"] = dataset["rows"]
+            data = load_dataset(storage, dataset_id)
+            models, report = train(catalog, data, as_of_ms=backtest_as_of, params=params, log=log)
+        except (EmptyLake, NotEnoughData) as nothing:
+            return _nothing_to_train(storage, catalog, summary, str(nothing), as_of_ms, phase, work)
         save_run(
             storage, models, report, dataset=data, catalog=catalog, as_of_ms=backtest_as_of,
             run_id=backtest_run,
@@ -138,10 +155,16 @@ def train_and_score(
             inputs = EvaluationInputs(catalog, data, backtest_models, backtest_manifest)
             path = write_rule_engine_input(inputs, work, log)
             _state_path(work).write_bytes(
-                orjson.dumps({"asOfMs": as_of_ms, "dataset": dataset_id, "run": backtest_run})
+                orjson.dumps(
+                    {
+                        "asOfMs": as_of_ms,
+                        "dataset": dataset_id,
+                        "run": backtest_run,
+                        "status": "prepared",
+                    }
+                )
             )
-            summary["engineInput"] = str(path)
-            return summary
+            return {**summary, "status": "prepared", "engineInput": str(path)}
     data = load_dataset(storage, dataset_id)
     backtest_models, backtest_manifest = load_run(storage, backtest_run)
     externals = None
@@ -165,7 +188,10 @@ def train_and_score(
     )
     summary["evaluation"] = store_evaluation(storage, evaluation)
     summary["gate"] = evaluation["gate"]
-    models, report = train(catalog, data, as_of_ms=as_of_ms, params=params, log=log)
+    try:
+        models, report = train(catalog, data, as_of_ms=as_of_ms, params=params, log=log)
+    except NotEnoughData as nothing:
+        return _nothing_to_train(storage, catalog, summary, str(nothing), as_of_ms, phase, work)
     manifest = save_run(
         storage, models, report, dataset=data, catalog=catalog, as_of_ms=as_of_ms,
         run_id=production_run,
@@ -187,6 +213,7 @@ def train_and_score(
         {
             "format": "webflix.recs-scored",
             "formatVersion": 1,
+            "status": "scored",
             "run": production_run,
             "recipeHash": recipe,
             "asOf": iso_ms(as_of_ms),
@@ -198,7 +225,47 @@ def train_and_score(
     summary["datasetsPruned"] = prune_job_datasets(
         storage, keep=keep_datasets, protect={dataset_id}
     )
-    return summary
+    return {**summary, "status": "scored"}
+
+
+def _nothing_to_train(
+    storage: Storage,
+    catalog: Any,
+    summary: dict[str, Any],
+    reason: str,
+    as_of_ms: int,
+    phase: str,
+    work: Path,
+) -> dict[str, Any]:
+    """Nothing to train at this cutoff (a young lake): an ordinary outcome, not a failure. The
+    marker says so (publish then has nothing to publish), and the prepare phase still leaves an
+    engine input without profiles and its state, so the Node step and the finish phase after it
+    succeed too."""
+    from webflix_recs.evaluation.harness import empty_engine_input  # noqa: PLC0415
+
+    put_json(
+        storage,
+        SCORED_MARKER,
+        {
+            "format": "webflix.recs-scored",
+            "formatVersion": 1,
+            "status": "nothing-to-train",
+            "run": None,
+            "reason": reason,
+            "asOf": iso_ms(as_of_ms),
+            "scoredAt": iso_ms(int(time.time() * 1000)),
+        },
+    )
+    result = {**summary, "status": "nothing-to-train", "reason": reason}
+    if phase == "prepare":
+        work.mkdir(parents=True, exist_ok=True)
+        path = work / "engine-input.ndjson"
+        empty_engine_input(catalog, as_of_ms, path)
+        _state_path(work).write_bytes(
+            orjson.dumps({"asOfMs": as_of_ms, "status": "nothing-to-train", "reason": reason})
+        )
+        result["engineInput"] = str(path)
+    return result
 
 
 def prune_job_datasets(storage: Storage, *, keep: int, protect: set[str]) -> list[str]:
@@ -217,8 +284,15 @@ def prune_job_datasets(storage: Storage, *, keep: int, protect: set[str]) -> lis
 
 
 def latest_scored_run(storage: Storage) -> str | None:
+    """The run the last train-and-score scored, or None (nothing scored yet, or the last job had
+    nothing to train)."""
     marker = get_json(storage, SCORED_MARKER)
     return str(marker["run"]) if isinstance(marker, dict) and marker.get("run") else None
+
+
+def scored_marker(storage: Storage) -> dict[str, Any] | None:
+    marker = get_json(storage, SCORED_MARKER)
+    return marker if isinstance(marker, dict) else None
 
 
 __all__ = [

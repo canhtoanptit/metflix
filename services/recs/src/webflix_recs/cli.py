@@ -25,6 +25,8 @@ EXIT_ERASURE_INCOMPLETE = 5
 EXIT_STAFF_API = 6
 EXIT_RULE_ENGINE_UNAVAILABLE = 7
 EXIT_EXPORT_FAILED = 8
+EXIT_WORKER_STALLED = 9
+EXIT_LEASE_UNSUPPORTED = 10
 EXIT_LAKE_BUSY = 75
 
 DEFAULT_STORE = os.environ.get("WEBFLIX_RECS_STORE", ".cache/recs/store")
@@ -49,7 +51,11 @@ def _peak_rss_mb() -> float:
 
 
 def _workers(value: int | None) -> int:
-    return value if value else max(1, min(12, (os.cpu_count() or 2) - 2))
+    """`--workers`, or the CPUs this process may use (its affinity and cgroup quota) minus one,
+    1 to 12 (parallel.py)."""
+    from webflix_recs.parallel import default_workers  # noqa: PLC0415
+
+    return value if value else default_workers()
 
 
 def _instant(text: str | None, default: int | None = None) -> int:
@@ -205,15 +211,35 @@ def cmd_export_events(args: argparse.Namespace) -> dict[str, Any]:
     from webflix_recs.erasure import parse_keys  # noqa: PLC0415
     from webflix_recs.exports import export_events, parse_requests  # noqa: PLC0415
 
-    text = sys.stdin.read() if args.requests == "-" else Path(args.requests).read_text()
-    requests = parse_requests(orjson.loads(text))
-    erased: list[str] = []
-    if args.erasures == "api":
+    source = args.requests or ("api" if os.environ.get("WEBFLIX_ADMIN_API_URL") else None)
+    if source is None:
+        raise SystemExit("export-events: give --requests api|FILE (or set WEBFLIX_ADMIN_API_URL)")
+    target = args.results or ("api" if source == "api" else "-")
+    erasures = args.erasures or ("api" if source == "api" else None)
+    api = None
+    if "api" in {source, target, erasures}:
         from webflix_recs.admin_api import AdminApi  # noqa: PLC0415
 
-        erased = AdminApi.from_environment().pending_erasures()
-    elif args.erasures:
-        erased = parse_keys(Path(args.erasures).read_text())
+        api = AdminApi.from_environment()
+    more_pending = False
+    if source == "api":
+        assert api is not None
+        listed = api.pending_exports()
+        more_pending = len(listed) >= 500
+        requests = parse_requests({"requests": listed})
+    else:
+        text = sys.stdin.read() if source == "-" else Path(source).read_text()
+        requests = parse_requests(orjson.loads(text))
+    summary: dict[str, Any] = {"command": "export-events", "requests": len(requests)}
+    if not requests:
+        # Nothing pending: one list call, no lease, nothing read or written.
+        return {**summary, "statuses": {}, "morePending": False}
+    erased: list[str] = []
+    if erasures == "api":
+        assert api is not None
+        erased = api.pending_erasures()
+    elif erasures:
+        erased = parse_keys(Path(erasures).read_text())
     now = _instant(args.now, int(time.time() * 1000))
     outcome = export_events(
         args.store,
@@ -227,24 +253,28 @@ def cmd_export_events(args: argparse.Namespace) -> dict[str, Any]:
         log=_log,
     )
     document = outcome.document(now)
-    if args.results and args.results != "-":
-        Path(args.results).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.results).write_bytes(orjson.dumps(document, option=orjson.OPT_INDENT_2) + b"\n")
     statuses: dict[str, int] = {}
     for result in outcome.results:
         statuses[result["status"]] = statuses.get(result["status"], 0) + 1
-    summary: dict[str, Any] = {
-        "command": "export-events",
-        "requests": len(requests),
-        "statuses": statuses,
-        "hoursRead": outcome.hours,
-        "objectsRead": outcome.objects_read,
-        "outputsPruned": outcome.pruned,
-    }
-    if args.results == "-" or not args.results:
+    summary.update(
+        statuses=statuses,
+        morePending=more_pending,
+        hoursRead=outcome.hours,
+        objectsRead=outcome.objects_read,
+        outputsPruned=outcome.pruned,
+    )
+    if target == "api":
+        assert api is not None
+        reason = args.reason or (
+            f"webflix-recs export-events {iso_ms(now)}: events extracted from the lake"
+        )
+        summary["recorded"] = api.record_export_results(document, reason)
+    elif target == "-":
         summary["results"] = document
     else:
-        summary["resultsFile"] = str(Path(args.results).resolve())
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_bytes(orjson.dumps(document, option=orjson.OPT_INDENT_2) + b"\n")
+        summary["resultsFile"] = str(Path(target).resolve())
     if outcome.failed:
         _emit(summary)
         raise SystemExit(EXIT_EXPORT_FAILED)
@@ -414,15 +444,19 @@ def cmd_score(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_publish(args: argparse.Namespace) -> dict[str, Any]:
     from webflix_recs.artefacts import PublishRefused, publish  # noqa: PLC0415
-    from webflix_recs.jobs import latest_scored_run  # noqa: PLC0415
+    from webflix_recs.jobs import latest_scored_run, scored_marker  # noqa: PLC0415
     from webflix_recs.storage import get_json, open_storage  # noqa: PLC0415
 
     storage = open_storage(args.store)
     run = args.run or latest_scored_run(storage)
     if run is None:
-        raise SystemExit(
-            "publish: no --run given and nothing scored (recs-work/scored/latest.json)"
-        )
+        # An ordinary outcome on a young lake: train-and-score had nothing to train.
+        marker = scored_marker(storage) or {}
+        return {
+            "command": "publish",
+            "status": "nothing-to-publish",
+            "reason": marker.get("reason") or "nothing scored yet (recs-work/scored/latest.json)",
+        }
     current = get_json(storage, "recs/current.json")
     if isinstance(current, dict) and current.get("run") == run:
         return {"command": "publish", "status": "unchanged", "run": run}
@@ -523,7 +557,7 @@ def cmd_train_and_score(args: argparse.Namespace) -> dict[str, Any]:
     except AlreadyScored as done:
         _log(str(done))
         return {"command": "train-and-score", "status": "already-scored", "asOf": iso_ms(as_of)}
-    return {"command": "train-and-score", "status": "done", **summary}
+    return {"command": "train-and-score", **summary}
 
 
 # --- parser -------------------------------------------------------------------------------------
@@ -542,7 +576,18 @@ def parser() -> argparse.ArgumentParser:
         "(default: %(default)s)",
     )
     root.add_argument(
-        "--workers", type=int, default=None, help="worker processes (default: CPUs - 2, at most 12)"
+        "--workers",
+        type=int,
+        default=None,
+        help="worker processes (default: the CPUs this process may use, from its affinity and "
+        "cgroup quota, minus one; 1 to 12)",
+    )
+    root.add_argument(
+        "--lake-serialized",
+        action="store_true",
+        help="the scheduler runs compact, erase and export-events one at a time: do not take the "
+        "lake lease (also WEBFLIX_RECS_LAKE_SERIALIZED=true); needed on a store that ignores "
+        "conditional writes (Garage)",
     )
     sub = root.add_subparsers(dest="command", required=True)
 
@@ -620,16 +665,21 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--requests",
-        required=True,
-        help='a JSON file (or - for stdin): {"requests": [{"requestId", "accountKey", "from", '
-        '"to"}]}',
+        help="`api` (GET /api/admin/v1/system/privacy/exports; the default when "
+        'WEBFLIX_ADMIN_API_URL is set), a JSON file or - for stdin ({"requests": [{"requestId", '
+        '"accountKey", "from", "to"}]})',
     )
-    p.add_argument("--results", help="write the per-request results here (default: in the summary)")
+    p.add_argument(
+        "--results",
+        help="`api` (POST /api/admin/v1/system/privacy/exports/results; the default with "
+        "--requests api), a file, or - (in the summary; the default with a requests file)",
+    )
     p.add_argument(
         "--erasures",
-        help="keys whose erasure is pending: `api` (GET /api/admin/v1/system/privacy/erasures) "
-        "or a file; the erasure plan's keys are always honoured",
+        help="keys whose erasure is pending: `api` (GET /api/admin/v1/system/privacy/erasures; "
+        "the default with --requests api) or a file; the erasure plan's keys are always honoured",
     )
+    p.add_argument("--reason", help="audit reason sent with the results")
     p.add_argument("--grace-minutes", type=int, default=15)
     p.add_argument("--keep-days", type=int, default=7, help="prune outputs older than this")
     p.add_argument("--force", action="store_true", help="extract again even if complete")
@@ -754,10 +804,15 @@ def _exit_code(error: Exception) -> int | None:
     from webflix_recs.admin_api import AdminApiError  # noqa: PLC0415
     from webflix_recs.erasure import ErasureIncomplete  # noqa: PLC0415
     from webflix_recs.evaluation.rule_engine import RuleEngineUnavailable  # noqa: PLC0415
-    from webflix_recs.lease import LakeBusy  # noqa: PLC0415
+    from webflix_recs.lease import LakeBusy, LeaseUnsupported  # noqa: PLC0415
+    from webflix_recs.parallel import WorkerStalled  # noqa: PLC0415
 
     if isinstance(error, LakeBusy):
         return EXIT_LAKE_BUSY
+    if isinstance(error, LeaseUnsupported):
+        return EXIT_LEASE_UNSUPPORTED
+    if isinstance(error, WorkerStalled):
+        return EXIT_WORKER_STALLED
     if isinstance(error, ErasureIncomplete):
         return EXIT_ERASURE_INCOMPLETE
     if isinstance(error, AdminApiError):
@@ -769,7 +824,12 @@ def _exit_code(error: Exception) -> int | None:
 
 def main(argv: list[str] | None = None) -> None:
     args = parser().parse_args(argv)
+    from webflix_recs import lease  # noqa: PLC0415
     from webflix_recs.parallel import limit_threads  # noqa: PLC0415
+
+    if args.lake_serialized:
+        os.environ[lease.SERIALIZED_ENV] = "true"
+    lease.LAST_MODE = None
 
     limit_threads()
     started = time.perf_counter()
@@ -781,6 +841,9 @@ def main(argv: list[str] | None = None) -> None:
             raise
         _log(f"{args.command}: {error}")
         raise SystemExit(code) from error
+    mode = lease.last_mode()
+    if mode is not None:
+        summary["lakeLease"] = mode
     summary["wallSeconds"] = round(time.perf_counter() - started, 2)
     summary["maxRssMb"] = _peak_rss_mb()
     _emit(summary)

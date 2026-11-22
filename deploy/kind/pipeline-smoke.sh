@@ -3,12 +3,17 @@
 # bucket (make k8s-pipeline-smoke). The release's CronJobs run the pipeline on the product's
 # own lake, which on a fresh cluster holds a few hundred events; this Job runs every step on a
 # simulated smoke-size lake instead (300 accounts, 21 days ending now), under its own prefix
-# `sim/` of the bucket so the product's lake is never touched, with the same images and the
-# same S3 interface:
+# `sim/` of the bucket (emptied first) so the product's lake is never touched, with the same
+# images and the same S3 interface:
 #
-#   catalogue snapshot (Node) → simulate → compact → train-and-score --phase prepare
-#   → rule engine (Node) → --phase finish → publish (the gate refuses at smoke size: expected)
-#   → analyse-experiments → the product's importers (Node): the scored run, the results
+#   catalogue snapshot (Node) → simulate → compact → erase (one simulated account, verified)
+#   → train-and-score --phase prepare → rule engine (Node) → --phase finish → publish (the gate
+#   refuses at smoke size: expected) → analyse-experiments → the product's importers (Node)
+#
+# WORKERS=N passes --workers N to every pipeline step (default: the pipeline's own, from the
+# container's CPU limit, 2 here: one worker); WORKERS=4 runs the process pools (spawned) for
+# real. The Job is the sim/ prefix's only writer, so its steps declare the scheduler as the
+# lake's lock (WEBFLIX_RECS_LAKE_SERIALIZED=true): Garage ignores the lease's conditional write.
 #
 # The importers read the run back from the bucket through a filesystem copy (`--from`), and
 # import it with `--run` because publishing is refused at this size. Nothing here is a release
@@ -34,15 +39,20 @@ END="$(date -u +%Y-%m-%dT%H:00:00.000Z)"
 START="$(python3 -c "import datetime as d; e=d.datetime.strptime('$END','%Y-%m-%dT%H:%M:%S.000Z'); print((e-d.timedelta(days=21)).strftime('%Y-%m-%dT%H:%M:%S.000Z'))")"
 COMPACT_AT="$(python3 -c "import datetime as d; e=d.datetime.strptime('$END','%Y-%m-%dT%H:%M:%S.000Z'); print((e+d.timedelta(hours=1, minutes=12)).strftime('%Y-%m-%dT%H:%M:%S.000Z'))")"
 
-step "Pipeline at smoke size on $STORE (simulated $START .. $END)"
+step "Pipeline at smoke size on $STORE (simulated $START .. $END, workers: ${WORKERS:-default})"
 kc -n "$NAMESPACE" delete job "$job" --ignore-not-found --wait=true >/dev/null
 
+workers_env=""
+workers_args=""
+[ -n "${WORKERS:-}" ] && workers_args="\"--workers\", \"$WORKERS\", "
+[ -n "${WORKERS:-}" ] && workers_env="
+            - {name: WEBFLIX_RECS_WORKERS, value: \"$WORKERS\"}"
 recs_env='
           envFrom: [{configMapRef: {name: '"$RELEASE"'-config}}]
           env:
             - {name: WEBFLIX_RECS_STORE, value: "'"$STORE"'"}
             - {name: WEBFLIX_RECS_THREADS, value: "2"}
-            - {name: WEBFLIX_RECS_WORKERS, value: "1"}
+            - {name: WEBFLIX_RECS_LAKE_SERIALIZED, value: "true"}'"$workers_env"'
             - name: WEBFLIX_S3_ACCESS_KEY_ID
               valueFrom: {secretKeyRef: {name: '"$RELEASE"'-objectstore, key: access-key-id}}
             - name: WEBFLIX_S3_SECRET_ACCESS_KEY
@@ -55,8 +65,8 @@ recs() { # name, then the arguments of webflix-recs
   local name="$1" args
   shift
   args="$(printf '"%s", ' "$@")"
-  printf '        - name: %s\n          image: %s\n          args: ["--store", "%s", "--workers", "1", %s]%s%s\n' \
-    "$name" "$RECS_IMAGE" "$STORE" "${args%, }" "$recs_env" "$common"
+  printf '        - name: %s\n          image: %s\n          args: ["--store", "%s", %s%s]%s%s\n' \
+    "$name" "$RECS_IMAGE" "$STORE" "$workers_args" "${args%, }" "$recs_env" "$common"
 }
 recs_sh() { # name, shell command
   printf '        - name: %s\n          image: %s\n          command: ["sh", "-c", %s]%s%s\n' \
@@ -67,6 +77,20 @@ tools() { # name, shell command (the API's environment: database, Valkey, bucket
     "$1" "$TOOLS_IMAGE" "$(printf '%s' "$2" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
     "$RELEASE" "$RELEASE" "$RELEASE" "$RELEASE" "$RELEASE" "$RELEASE" "$RELEASE" "$common"
 }
+
+# One simulated account erased from the lake (raw objects and the compacted hours), with the
+# erasure's own verification pass; nothing to confirm (the product does not know the account).
+read -r -d '' ERASE_ONE <<'SH' || true
+key=$(python -c 'import gzip, json, os
+from webflix_recs.storage import open_storage
+s = open_storage(os.environ["WEBFLIX_RECS_STORE"])
+print(next(k for i in s.list("events/") if i.key.endswith(".ndjson.gz")
+           for l in gzip.decompress(s.get(i.key)).splitlines()
+           for k in [(json.loads(l).get("subject") or {}).get("account")] if k))')
+echo "erasing simulated account $key" >&2
+echo "$key" | webflix-recs --store "$WEBFLIX_RECS_STORE" ${WEBFLIX_RECS_WORKERS:+--workers $WEBFLIX_RECS_WORKERS} \
+  erase --keys - --confirm none --reason "pipeline smoke: one simulated account"
+SH
 
 manifest="$(mktemp -t webflix-pipeline-smoke.XXXXXX)"
 trap 'rm -f "$manifest"' EXIT
@@ -94,15 +118,18 @@ spec:
         - {name: scripts, configMap: {name: $RELEASE-pipeline}}
       initContainers:
 EOF
+  # The sim/ prefix starts empty on every run (an earlier run's simulated lake would overlap).
+  recs_sh reset 'python -c "from webflix_recs.storage import open_storage; import os; s = open_storage(os.environ[\"WEBFLIX_RECS_STORE\"]); keys = [i.key for i in s.list(\"\")]; s.delete(keys); print(\"removed\", len(keys), \"objects\")"'
   tools catalog "node services/recs/scripts/export-catalog.ts --store /work/catalog --anchor $END"
   recs_sh catalog-upload "python /scripts/copy_objects.py /work/catalog $STORE catalog/"
   recs simulate simulate --preset smoke --start "$START" --truth /work/truth --experiment recs-aa --experiment "recs-ranking:effect=0.10"
   recs compact compact --now "$COMPACT_AT"
+  recs_sh erase "$ERASE_ONE"
   recs prepare train-and-score --phase prepare --work /work/train --as-of "$END" --truth /work/truth
   tools rule-engine "node services/recs/scripts/rule-engine-rankings.ts --input /work/train/engine-input.ndjson --out-dir /work/train"
   recs finish train-and-score --phase finish --work /work/train --as-of "$END" --truth /work/truth
   # shellcheck disable=SC2016 # expanded by the container's shell, not here
-  recs_sh publish 'webflix-recs --store "$WEBFLIX_RECS_STORE" --workers 1 publish; code=$?; [ "$code" = 3 ] && { echo "publish refused by the gate (exit 3), expected at smoke size" >&2; exit 0; }; exit $code'
+  recs_sh publish 'webflix-recs --store "$WEBFLIX_RECS_STORE" publish; code=$?; [ "$code" = 3 ] && { echo "publish refused by the gate (exit 3), expected at smoke size" >&2; exit 0; }; exit $code'
   recs analyse analyse-experiments --as-of "$END"
   # shellcheck disable=SC2016
   recs_sh fetch-run 'python /scripts/copy_objects.py "$WEBFLIX_RECS_STORE" /work/simstore recs/ experiments/ recs-work/scored/ && python -c "from webflix_recs.storage import open_storage, get_json; print(get_json(open_storage(\"/work/simstore\"), \"recs-work/scored/latest.json\")[\"run\"])" > /work/run.txt && cat /work/run.txt'
@@ -122,7 +149,7 @@ while :; do
   sleep 5
 done
 pod="$(kc -n "$NAMESPACE" get pods -l "job-name=$job" -o 'jsonpath={.items[0].metadata.name}')"
-for container in catalog catalog-upload simulate compact prepare rule-engine finish publish analyse fetch-run import; do
+for container in reset catalog catalog-upload simulate compact erase prepare rule-engine finish publish analyse fetch-run import; do
   printf '\n%s--- %s%s\n' "$C_BOLD" "$container" "$C_RESET"
   kc -n "$NAMESPACE" logs "$pod" -c "$container" 2>/dev/null | tail -n 4 | cut -c1-400 || true
 done

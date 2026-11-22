@@ -15,39 +15,63 @@ export interface RepositoryExperimentsOptions {
   repository: ExperimentsRepository;
   clock: Clock;
   logger: Logger;
-  /** The shared cache (Valkey, Workers KV): one read per location instead of per process. */
+  /** The shared cache (Valkey, Workers KV): one database read per location instead of per process. */
   cache?: KeyValueCache;
-  /** Per process (default 30 s). */
-  memoryTtlMs?: number;
-  /** Shared (default 60 s, the port's "up to a minute"). */
-  sharedTtlSec?: number;
 }
 
-const DefinitionsEnvelope = z.custom<ExperimentDefinition[]>((value) => Array.isArray(value));
+/**
+ * The oldest a copy of the definitions is ever used, counted from when it was read from the
+ * database, on every instance and through every cache level (Workers KV may keep a read up to a
+ * minute at a location: the age travels with the value, so that does not extend it). A status
+ * change is scheduled further ahead than this (`propagationSec`), so every instance has the new
+ * definitions before the change takes effect.
+ */
+export const DEFINITIONS_MAX_AGE_MS = 30_000;
+/** A shared copy older than this is not taken (it would leave too little time to use it). */
+const SHARED_MAX_AGE_MS = 20_000;
+/** The port's minimum; the age stamp, not this, bounds staleness. */
+const SHARED_TTL_SEC = 60;
+
+interface Copy {
+  /** When it was read from the database (epoch ms, the reading instance's clock). */
+  loadedAt: number;
+  definitions: ExperimentDefinition[];
+}
+
+const CopyEnvelope = z.custom<Copy>(
+  (value) =>
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { loadedAt?: unknown }).loadedAt === "number" &&
+    Array.isArray((value as { definitions?: unknown }).definitions),
+);
 const CACHE_KEY = "experiments";
 
 /**
  * `Experiments` over the experiments table (`WEBFLIX_EXPERIMENTS=database`): definitions read
  * through two cache levels (process memory, then the shared cache), because assignment sits on
- * the browse path, which has a budget of two database round trips. A staff change calls
- * `invalidate` (this process at once, the others within the memory TTL: an experiment that is
- * stopped stops assigning within 30 s everywhere). Assignment is `assignVariants`.
+ * the browse path, which has a budget of two database round trips. Every copy carries when it
+ * was read from the database and is used for at most `DEFINITIONS_MAX_AGE_MS` from then, so how
+ * stale an instance can be is bounded whatever the caches do. A staff change does not rely on
+ * reaching the other instances: it is scheduled (`statusChangeAt`,
+ * `WEBFLIX_EXPERIMENTS_PROPAGATION_SEC`) to take effect after every copy has been refreshed, so
+ * all instances switch at one instant. `invalidate` refreshes this process at once. Assignment
+ * is `assignVariants`.
  */
 export function createRepositoryExperiments(options: RepositoryExperimentsOptions): Experiments {
-  const memoryTtlMs = options.memoryTtlMs ?? 30_000;
   const shared = options.cache
     ? createJsonCache(options.cache, {
-        schema: DefinitionsEnvelope,
-        prefix: "webflix:v1:",
-        ttlSec: options.sharedTtlSec ?? 60,
+        schema: CopyEnvelope,
+        prefix: "webflix:v2:",
+        ttlSec: SHARED_TTL_SEC,
       })
     : null;
-  let memo: { definitions: ExperimentDefinition[]; expiresAt: number } | null = null;
+  let memo: Copy | null = null;
 
   async function load(): Promise<ExperimentDefinition[]> {
     const now = options.clock.now();
-    if (memo && memo.expiresAt > now) return memo.definitions;
-    let definitions = shared
+    if (memo && now - memo.loadedAt < DEFINITIONS_MAX_AGE_MS) return memo.definitions;
+    let copy = shared
       ? await shared.get(CACHE_KEY).catch((error: unknown) => {
           options.logger.warn("cache.read_failed", {
             key: CACHE_KEY,
@@ -56,14 +80,19 @@ export function createRepositoryExperiments(options: RepositoryExperimentsOption
           return null;
         })
       : null;
-    if (definitions === null) {
-      definitions = (await options.repository.listExperiments()).map((stored) => stored.definition);
-      await shared?.set(CACHE_KEY, definitions).catch((error: unknown) => {
+    if (copy === null || now - copy.loadedAt >= SHARED_MAX_AGE_MS || copy.loadedAt > now + 5_000) {
+      copy = {
+        loadedAt: options.clock.now(),
+        definitions: (await options.repository.listExperiments()).map(
+          (stored) => stored.definition,
+        ),
+      };
+      await shared?.set(CACHE_KEY, copy).catch((error: unknown) => {
         options.logger.warn("cache.write_failed", { key: CACHE_KEY, error: serializeError(error) });
       });
     }
-    memo = { definitions, expiresAt: options.clock.now() + memoryTtlMs };
-    return definitions;
+    memo = copy;
+    return copy.definitions;
   }
 
   return {

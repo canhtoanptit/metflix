@@ -51,6 +51,12 @@ SHOWING_GAP_MS = 30_000
 QUALIFIED_PLAY_SEC = 30.0
 
 TABLES = ("playback", "actions", "impressions", "profiles", "accounts")
+
+
+class EmptyLake(ValueError):
+    """No event was received before the knowledge cutoff (a lake younger than the cutoff)."""
+
+
 _COMMON = ["eid_hi", "eid_lo", "received_at", "occurred_at", "profile"]
 _PLAYBACK = pl.Enum(sorted(ev.PLAYBACK_TYPES))
 _ACTIONS = pl.Enum(sorted(ev.ACTION_TYPES))
@@ -240,7 +246,7 @@ def build_dataset(
     frames = {name: pl.concat(items, how="vertical") for name, items in parts.items() if items}
     del parts
     if "state" not in frames:
-        raise ValueError(f"no events received before {iso_ms(as_of_ms)} in {storage.describe()}")
+        raise EmptyLake(f"no events received before {iso_ms(as_of_ms)} in {storage.describe()}")
     counts: dict[str, Any] = {
         "read": read_stats.to_dict(),
         "hours": hours,
