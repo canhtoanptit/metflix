@@ -19,6 +19,7 @@ import { CatalogSnapshot } from "./snapshot.ts";
 export class TwoLevel<T, D> {
   private value: { key: string; data: T; expiresAt: number } | undefined;
   private readonly shared: JsonCache<D>;
+  private readonly stamped: JsonCache<{ loadedAt: number; data: D }> | null;
   private readonly options: {
     key: () => string;
     load: () => Promise<D>;
@@ -27,6 +28,7 @@ export class TwoLevel<T, D> {
     logger: Logger;
     memoryTtlMs: number;
     maxSharedBytes: number;
+    maxAgeMs: number | undefined;
   };
 
   constructor(
@@ -42,6 +44,13 @@ export class TwoLevel<T, D> {
       logger: Logger;
       memoryTtlMs: number;
       maxSharedBytes?: number;
+      /**
+       * Never use a copy older than this, counted from its database read, in this process or
+       * through the shared cache (whose own TTL, and Workers KV's caching of a read at each
+       * location, would otherwise keep a copy longer). For data another process changes (an
+       * import, a staff decision) that every instance must see within a bound.
+       */
+      maxAgeMs?: number;
     },
   ) {
     this.shared = createJsonCache(cache, {
@@ -49,7 +58,22 @@ export class TwoLevel<T, D> {
       prefix: options.prefix,
       ttlSec: options.sharedTtlSec,
     });
-    this.options = { maxSharedBytes: 900_000, ...options };
+    const schema = options.schema;
+    this.stamped =
+      options.maxAgeMs === undefined
+        ? null
+        : createJsonCache(cache, {
+            schema: z.custom<{ loadedAt: number; data: D }>(
+              (value) =>
+                typeof value === "object" &&
+                value !== null &&
+                typeof (value as { loadedAt?: unknown }).loadedAt === "number" &&
+                schema.safeParse((value as { data?: unknown }).data).success,
+            ),
+            prefix: `${options.prefix}aged:`,
+            ttlSec: options.sharedTtlSec,
+          });
+    this.options = { maxSharedBytes: 900_000, maxAgeMs: undefined, ...options };
   }
 
   get(): Promise<T> {
@@ -66,36 +90,62 @@ export class TwoLevel<T, D> {
 
   async invalidate(): Promise<void> {
     this.value = undefined;
-    await this.shared.delete(this.options.key()).catch((error: unknown) => {
+    await Promise.all([
+      this.shared.delete(this.options.key()),
+      this.stamped?.delete(this.options.key()),
+    ]).catch((error: unknown) => {
       this.options.logger.warn("cache.invalidate_failed", { error: serializeError(error) });
     });
   }
 
   private async refresh(): Promise<T> {
     const key = this.options.key();
-    let data = await this.shared.get(key).catch((error: unknown) => {
-      // The cache is an optimisation: an outage must not take browse down.
-      this.options.logger.warn("cache.read_failed", { key, error: serializeError(error) });
-      return null;
-    });
-    if (data === null) {
-      data = await this.options.load();
-      const size = JSON.stringify(data).length;
+    const { maxAgeMs } = this.options;
+    const now = this.options.clock.now();
+    let copy = await this.readShared(key);
+    // An aged copy past its bound (or from a clock far ahead) is not used: read the database.
+    if (
+      copy &&
+      maxAgeMs !== undefined &&
+      (now - copy.loadedAt >= maxAgeMs || copy.loadedAt > now + 5_000)
+    ) {
+      copy = null;
+    }
+    if (copy === null) {
+      copy = { loadedAt: this.options.clock.now(), data: await this.options.load() };
+      const size = JSON.stringify(copy.data).length;
       if (size <= this.options.maxSharedBytes) {
-        await this.shared.set(key, data).catch((error: unknown) => {
-          this.options.logger.warn("cache.write_failed", { key, error: serializeError(error) });
-        });
+        await (this.stamped ? this.stamped.set(key, copy) : this.shared.set(key, copy.data)).catch(
+          (error: unknown) => {
+            this.options.logger.warn("cache.write_failed", { key, error: serializeError(error) });
+          },
+        );
       } else {
         this.options.logger.warn("cache.value_too_large", { key, bytes: size });
       }
     }
-    const built = this.options.build(data);
+    const built = this.options.build(copy.data);
+    const memoryUntil = this.options.clock.now() + this.options.memoryTtlMs;
     this.value = {
       key,
       data: built,
-      expiresAt: this.options.clock.now() + this.options.memoryTtlMs,
+      expiresAt:
+        maxAgeMs === undefined ? memoryUntil : Math.min(memoryUntil, copy.loadedAt + maxAgeMs),
     };
     return built;
+  }
+
+  /** The shared copy with when it was read from the database (now, for unaged data). */
+  private async readShared(key: string): Promise<{ loadedAt: number; data: D } | null> {
+    try {
+      if (this.stamped) return await this.stamped.get(key);
+      const data = await this.shared.get(key);
+      return data === null ? null : { loadedAt: this.options.clock.now(), data };
+    } catch (error) {
+      // The cache is an optimisation: an outage must not take browse down.
+      this.options.logger.warn("cache.read_failed", { key, error: serializeError(error) });
+      return null;
+    }
   }
 }
 

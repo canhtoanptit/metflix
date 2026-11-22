@@ -82,6 +82,9 @@ export function createAdminHandlers(container: AppContainer): AdminHandlers {
     syncPlans: async ({ body }, c) => admin.billing.syncPlans(await staff(c), body.reason),
 
     // --- Editorial ------------------------------------------------------------------------
+    searchTitles: ({ query }) => admin.editorial.searchTitles(query),
+    listTitleAvailability: () => admin.editorial.listTitleAvailability(),
+    getTitleAvailability: ({ params }) => admin.editorial.getTitleAvailability(params.titleId),
     getBillboard: ({ params }) => admin.editorial.getBillboard(params.view),
     setBillboard: async ({ params, body }, c) =>
       admin.editorial.setBillboard(await staff(c), params.view, body.titleIds, body.reason),
@@ -138,5 +141,7 @@ export function createAdminHandlers(container: AppContainer): AdminHandlers {
     },
 
     listAuditLog: ({ query }) => admin.audit.list(query),
+    // Any staff member: their own entries only (the caller is the actor, whatever is asked).
+    listOwnAuditLog: async ({ query }, c) => admin.audit.listOwn(await staff(c), query),
   };
 }

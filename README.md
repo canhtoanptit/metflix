@@ -33,10 +33,14 @@ make setup      # pnpm install, then Playwright's Chromium, Firefox and WebKit (
 
 ```sh
 pnpm install
-make dev        # API on http://localhost:4000, web app on http://localhost:5173
+make dev        # API on :4000, web app on http://localhost:5173, staff console at http://localhost:5173/admin/
 ```
 
-Open http://localhost:5173. On first start the API migrates and seeds a SQLite database in
+Open http://localhost:5173. The staff console is at http://localhost:5173/admin/: the web app's
+dev server proxies `/admin` to the console's own dev server (:5174), so both share one origin, as
+they do when deployed (the development staff issuer registers the console's sign-in for that one
+origin). Sign in there by picking a staff persona on the development issuer's page (support,
+billing, content, experiments, admin, or one without a role). On first start the API migrates and seeds a SQLite database in
 `.data/webflix.sqlite` (a few seconds), keeps blobs in `.data/blobs` and everything else in
 process. The API reference is at http://localhost:4000/api/docs. To start from scratch, stop it
 and delete `.data/`. Until `make content` has run, every title plays a public HLS test stream
@@ -44,6 +48,20 @@ from the internet and artwork shows as flat colour.
 
 `make web-mock` runs the web app with no backend at all: a mock API in the browser with its own
 small catalogue ([docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) §6).
+
+The production bundles, served without file watching (steadier for the browser suite while the
+tree changes): start the API for that origin, then build and serve both apps, then run the suite.
+
+```sh
+WEBFLIX_PUBLIC_ORIGIN=http://localhost:4173 pnpm --filter @webflix/api dev   # API on :4000
+make web-preview          # web app on http://localhost:4173, console at /admin/ (served from :4174)
+make e2e TARGET=preview   # or TARGET=dev against make dev
+```
+
+Ports and origins are variables when the defaults are taken: `WEB_PORT` and `ADMIN_PORT` for the
+two servers, `WEBFLIX_API_ORIGIN` and `WEBFLIX_ADMIN_ORIGIN` for what the web server proxies, and
+`WEBFLIX_PUBLIC_ORIGIN` (API and console alike) for the origin people open. The browser suite's
+`admin` project finds the console at `BASE_URL/admin/` (`ADMIN_URL` overrides).
 
 ### Demo media: `make content`
 
@@ -134,7 +152,7 @@ summary. It exits non-zero if either suite has a failure or a flaky test. Report
 | Suite | What it checks | Details |
 | --- | --- | --- |
 | Browser suite | Playwright: every spec in Chromium; sign-in, browse and playback in Firefox and WebKit | [e2e/README.md](e2e/README.md) |
-| Conformance suite | 134 black-box HTTP checks of the contract and the documented behaviour, milestone 2's journeys included (`make smoke-list` prints the current catalogue; what a deployment must provide for none to skip is in the suite's README) | [tools/smoke/README.md](tools/smoke/README.md) |
+| Conformance suite | 143 black-box HTTP checks of the contract and the documented behaviour, milestone 2's journeys included (`make smoke-list` prints the current catalogue; what a deployment must provide for none to skip is in the suite's README) | [tools/smoke/README.md](tools/smoke/README.md) |
 
 The conformance suite ends by exhausting the sign-in budgets of the address it runs from, so
 it runs second, after a 65 s pause ([why the order matters](e2e/README.md#verify-the-browser-suite-then-the-conformance-suite)).
@@ -163,6 +181,7 @@ specific to a runtime lives in an adapter package or in one of the two entrypoin
 | Entrypoints | `apps/api` | Node: `serve`, `worker`, `migrate`, `seed`, `wait` (dev and Kubernetes modes) |
 | | `apps/edge` | The Worker (`fetch`, `queue`, `scheduled`, Durable Objects) and its dev, seed and deploy scripts |
 | Front end | `apps/web` | The React single-page app |
+| | `apps/admin` | The staff console, served at `/admin/` (signs staff in at the staff issuer; calls `/api/admin/v1`) |
 | | `packages/ui` | Design system: tokens, components, icons |
 | | `packages/player` | Video player (hls.js and native HLS) and the preview player |
 | Deployment | `deploy/docker` | Dockerfiles and bake file for the API, web and media-tools images |

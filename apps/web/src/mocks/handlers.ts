@@ -12,7 +12,6 @@ import {
   type ErrorCode,
   KIDS_MATURITY_CEILING,
   MATURITY_LEVELS,
-  MOCK_CARDS,
   type NotificationList,
   type PaymentMethod,
   type Progress,
@@ -27,6 +26,13 @@ import {
   type TitleBadge,
   type TitleCard,
 } from "@webflix/contracts";
+import {
+  billingPaymentMethod,
+  billingSessionFields,
+  createBillingHandlers,
+  requireEntitled,
+  resetBillingForNewAccount,
+} from "./billing.ts";
 import {
   allGenres,
   avatarCatalog,
@@ -47,6 +53,14 @@ import {
 } from "./catalog.ts";
 import { MOCK_TITLES } from "./data/catalog.ts";
 import type { MockTitleSeed } from "./data/types.ts";
+import {
+  elevate,
+  elevationOf,
+  identityAccountFields,
+  identityOf,
+  mockElevated,
+  mockTokenValid,
+} from "./identity.ts";
 import { type MockProfileRecord, type MockState, saveState, toProfile } from "./state.ts";
 
 export class MockProblem extends Error {
@@ -79,6 +93,9 @@ function authenticated(state: MockState): AuthenticatedSession {
   const plan = PLANS.find((candidate) => candidate.id === state.planId) ?? PLANS[1];
   if (!plan) throw new MockProblem("internal_error");
   const active = state.profiles.find((profile) => profile.id === state.activeProfileId) ?? null;
+  const billing = billingSessionFields(state);
+  // No membership is exactly that, as the server says: no subscription, no plan.
+  const member = billing.membership?.status !== "none";
   return {
     authenticated: true,
     account: {
@@ -86,24 +103,28 @@ function authenticated(state: MockState): AuthenticatedSession {
       email: state.account.email,
       createdAt: state.account.createdAt,
       ...(state.account.isDemo ? { isDemo: true as const } : {}),
+      ...identityAccountFields(state),
     },
-    subscription: {
-      planId: state.planId,
-      status: state.subscriptionStatus,
-      startedAt: state.account.createdAt,
-      currentPeriodEnd: iso(-12 * 86_400_000),
-      canceledAt: state.subscriptionStatus === "active" ? null : iso(86_400_000),
-    },
-    plan,
+    subscription: member
+      ? {
+          planId: state.planId,
+          status: state.subscriptionStatus,
+          startedAt: state.account.createdAt,
+          currentPeriodEnd: iso(-12 * 86_400_000),
+          canceledAt: state.subscriptionStatus === "active" ? null : iso(86_400_000),
+        }
+      : null,
+    plan: member ? plan : null,
     profiles: state.profiles.map(toProfile),
     activeProfile: active ? toProfile(active) : null,
+    ...billing,
   };
 }
 
 const SEEDED_CARD: PaymentMethod = { brand: "visa", last4: "4242", expMonth: 8, expYear: 2029 };
 
-function paymentMethodOf(state: MockState): PaymentMethod {
-  return state.paymentMethod ?? SEEDED_CARD;
+function paymentMethodOf(state: MockState): PaymentMethod | null {
+  return billingPaymentMethod(state, SEEDED_CARD);
 }
 
 function requireAccount(state: MockState): void {
@@ -163,7 +184,13 @@ function parentalControlsInUse(state: MockState): boolean {
 }
 
 function checkPassword(state: MockState, password: string | undefined): void {
-  if (password === undefined) throw new MockProblem("password_required");
+  // Milestone 2: a fresh account-holder proof stands in for the password; an account created
+  // through an issuer has no password, so none proves anything for it.
+  if (password === undefined) {
+    if (mockElevated(state)) return;
+    throw new MockProblem("password_required");
+  }
+  if (!identityOf(state).hasPassword) throw new MockProblem("password_required");
   if (password !== state.account.password) throw new MockProblem("current_password_invalid");
 }
 
@@ -177,7 +204,8 @@ function checkUnlock(
     if (proof.currentPin !== profile.pin) throw new MockProblem("profile_pin_invalid");
   } else if (proof?.currentPassword !== undefined) {
     checkPassword(state, proof.currentPassword);
-  } else {
+  } else if (!mockElevated(state)) {
+    // Milestone 2: a fresh account-holder proof unlocks any profile, like the password.
     throw new MockProblem("profile_unlock_required");
   }
 }
@@ -338,6 +366,19 @@ function buildRows(view: BrowseView, profile: MockProfileRecord): Row[] {
     }
   }
 
+  // Milestone 2: a profile the recommendation model scored gets "Top Picks" after Continue
+  // Watching (a kids or lowered-ceiling profile never does: the server uses the rule engine).
+  if (mockLearned(profile) && (view === "home" || view === "series" || view === "movies")) {
+    const picks = shuffled(pool, `${view}-top-picks-${profile.id}`).slice(0, 18);
+    rows.push(
+      cardRow(
+        rowBase(view, "top-picks", `Top Picks for ${profile.name}`, "top-picks"),
+        "standard",
+        cards(picks),
+      ),
+    );
+  }
+
   // One ranked row per view, as the server has it: the overall list on Home, the view's type
   // on Series and Movies (New & Popular shows both typed lists further down).
   if (view === "home" || view === "series" || view === "movies") {
@@ -381,6 +422,27 @@ function buildRows(view: BrowseView, profile: MockProfileRecord): Row[] {
     rows.push(
       cardRow(rowBase(view, "originals", "Only on Webflix", "originals"), "tall", cards(originals)),
     );
+  }
+
+  // Milestone 2: a curated collection staff published on Home, in its curated order.
+  if (view === "home") {
+    const curated = MOCK_COLLECTION.map((id) => seedById.get(id)).filter(
+      (seed): seed is MockTitleSeed => !!seed && pool.includes(seed),
+    );
+    if (curated.length >= 4) {
+      rows.push(
+        cardRow(
+          rowBase(
+            view,
+            "collection-after-dark",
+            "After Dark: Stories for Late Nights",
+            "collection",
+          ),
+          "standard",
+          cards(curated),
+        ),
+      );
+    }
   }
 
   const newest = [...pool].sort((a, b) => b.year - a.year).slice(0, 16);
@@ -480,6 +542,24 @@ function buildRows(view: BrowseView, profile: MockProfileRecord): Row[] {
 
 const ROWS_PER_PAGE = 6;
 
+/** The mock's curated collection (milestone 2 editorial rows): its titles in curated order. */
+const MOCK_COLLECTION = [
+  "t-small-hours",
+  "t-the-drowned-choir",
+  "t-velvet-static",
+  "t-undertow",
+  "t-the-eleventh-floor",
+  "t-cold-ledger",
+  "t-house-of-cinders",
+  "t-the-wakeful",
+  "t-concrete-psalm",
+];
+
+/** Whether the mock serves this profile learned recommendations (never kids or lowered ceilings). */
+function mockLearned(profile: MockProfileRecord): boolean {
+  return !profile.isKids && profile.maturityCeiling === "18+";
+}
+
 function billboardSeed(view: BrowseView, profile: MockProfileRecord): MockTitleSeed {
   const pool = allowed(profile);
   const preferred =
@@ -507,6 +587,7 @@ export const handlers: MockHandlers = {
   login: ({ body }, state) => {
     if (
       body.email.trim().toLowerCase() !== state.account.email ||
+      !identityOf(state).hasPassword ||
       body.password !== state.account.password
     ) {
       throw new MockProblem("invalid_credentials");
@@ -520,17 +601,15 @@ export const handlers: MockHandlers = {
     if (body.email.trim().toLowerCase() === state.account.email && state.profiles.length > 0) {
       throw new MockProblem("email_already_registered");
     }
-    // Milestone 2: `payment` and `planId` are optional (sign-up before checkout).
-    if (body.payment?.cardNumber.replaceAll(/\D/g, "") === "4000000000000002") {
-      throw new MockProblem("payment_declined", { declineReason: "card_declined" });
-    }
     state.signedIn = true;
     state.account = {
       ...state.account,
       email: body.email.trim().toLowerCase(),
       password: body.password,
     };
-    if (body.planId) state.planId = body.planId;
+    // Milestone 2 (§5.1): the account comes first, without a membership or a card; the plan is
+    // chosen and paid at checkout. Milestone 1's `planId` and `payment` are ignored here.
+    resetBillingForNewAccount(state);
     state.profiles = [];
     state.activeProfileId = null;
     return persist(state, authenticated(state));
@@ -568,43 +647,6 @@ export const handlers: MockHandlers = {
     return persist(state, authenticated(state));
   },
 
-  getAccount: (_input, state) => {
-    requireAccountHolder(state);
-    const session = authenticated(state);
-    return {
-      account: session.account,
-      subscription: session.subscription,
-      plan: session.plan,
-      paymentMethod: paymentMethodOf(state),
-    };
-  },
-
-  updatePaymentMethod: ({ body }, state) => {
-    requireAccountHolder(state);
-    requireNotDemo(state);
-    const number = body.payment.cardNumber.replaceAll(/\D/g, "");
-    if (number === MOCK_CARDS.declined) {
-      throw new MockProblem("payment_declined", { declineReason: "card_declined" });
-    }
-    if (number === MOCK_CARDS.insufficientFunds) {
-      throw new MockProblem("payment_declined", { declineReason: "insufficient_funds" });
-    }
-    state.paymentMethod = {
-      brand: number.startsWith("4") ? "visa" : number.startsWith("5") ? "mastercard" : "other",
-      last4: number.slice(-4),
-      expMonth: body.payment.expMonth,
-      expYear: body.payment.expYear,
-    };
-    persist(state, null);
-    const session = authenticated(state);
-    return {
-      account: session.account,
-      subscription: session.subscription,
-      plan: session.plan,
-      paymentMethod: paymentMethodOf(state),
-    };
-  },
-
   getShowcase: () => {
     const ceiling = MATURITY_LEVELS.indexOf(SHOWCASE_MATURITY_CEILING);
     return {
@@ -628,8 +670,14 @@ export const handlers: MockHandlers = {
     requireAccountHolder(state);
     requireNotDemo(state);
     checkPassword(state, body.currentPassword);
-    if (body.email) state.account.email = body.email.trim().toLowerCase();
-    if (body.newPassword) state.account.password = body.newPassword;
+    if (body.email && body.email.trim().toLowerCase() !== state.account.email) {
+      state.account.email = body.email.trim().toLowerCase();
+      identityOf(state).emailVerified = false;
+    }
+    if (body.newPassword) {
+      state.account.password = body.newPassword;
+      identityOf(state).hasPassword = true;
+    }
     persist(state, null);
     const session = authenticated(state);
     return {
@@ -638,32 +686,6 @@ export const handlers: MockHandlers = {
       plan: session.plan,
       paymentMethod: paymentMethodOf(state),
     };
-  },
-
-  listPlans: () => ({ items: PLANS }),
-
-  changePlan: ({ body }, state) => {
-    requireAccountHolder(state);
-    requireNotDemo(state);
-    state.planId = body.planId;
-    state.subscriptionStatus = "active";
-    const session = persist(state, authenticated(state));
-    return { subscription: session.subscription, plan: session.plan };
-  },
-
-  cancelMembership: (_input, state) => {
-    requireAccountHolder(state);
-    requireNotDemo(state);
-    state.subscriptionStatus = "canceling";
-    const session = persist(state, authenticated(state));
-    return { subscription: session.subscription, plan: session.plan };
-  },
-
-  resumeMembership: (_input, state) => {
-    requireAccountHolder(state);
-    state.subscriptionStatus = "active";
-    const session = persist(state, authenticated(state));
-    return { subscription: session.subscription, plan: session.plan };
   },
 
   listDevices: (_input, state) => {
@@ -788,6 +810,79 @@ export const handlers: MockHandlers = {
     return avatarCatalog();
   },
 
+  // --- Milestone 2 sign-in (mocks/identity.ts) -------------------------------------------------
+
+  listSignInProviders: () => ({
+    items: [
+      { id: "google", displayName: "Google" },
+      { id: "apple", displayName: "Apple" },
+    ],
+  }),
+
+  getElevation: (_input, state) => {
+    requireAccount(state);
+    return elevationOf(state);
+  },
+
+  elevate: ({ body }, state) => {
+    requireAccount(state);
+    if (!identityOf(state).hasPassword) throw new MockProblem("password_required");
+    if (body.password !== state.account.password) {
+      throw new MockProblem("current_password_invalid");
+    }
+    elevate(state);
+    return persist(state, elevationOf(state));
+  },
+
+  listIdentities: (_input, state) => {
+    requireAccountHolder(state);
+    const identity = identityOf(state);
+    return { items: identity.identities, hasPassword: identity.hasPassword };
+  },
+
+  unlinkIdentity: ({ params }, state) => {
+    requireAccountHolder(state);
+    requireNotDemo(state);
+    if (!mockElevated(state)) throw new MockProblem("reauthentication_required");
+    const identity = identityOf(state);
+    if (!identity.identities.some((linked) => linked.provider === params.provider)) {
+      throw new MockProblem("not_found");
+    }
+    if (!identity.hasPassword && identity.identities.length <= 1) {
+      throw new MockProblem("identity_last_sign_in_method");
+    }
+    identity.identities = identity.identities.filter(
+      (linked) => linked.provider !== params.provider,
+    );
+    persist(state, null);
+  },
+
+  requestEmailVerification: (_input, state) => {
+    requireAccount(state);
+  },
+
+  confirmEmailVerification: ({ body }, state) => {
+    if (!mockTokenValid(body.token)) throw new MockProblem("verification_token_invalid");
+    identityOf(state).emailVerified = true;
+    persist(state, null);
+  },
+
+  requestPasswordReset: () => undefined,
+
+  confirmPasswordReset: ({ body }, state) => {
+    if (!mockTokenValid(body.token)) throw new MockProblem("verification_token_invalid");
+    requireNotDemo(state);
+    state.account.password = body.newPassword;
+    const identity = identityOf(state);
+    identity.hasPassword = true;
+    identity.emailVerified = true;
+    identity.elevatedUntil = null;
+    // Every device is signed out, this one too.
+    state.signedIn = false;
+    state.activeProfileId = null;
+    persist(state, null);
+  },
+
   getBrowse: ({ query }, state) => {
     const profile = requireProfile(state);
     const view = query?.view ?? "home";
@@ -799,6 +894,8 @@ export const handlers: MockHandlers = {
       billboard: offset === 0 ? billboardFor(seed, viewerOf(profile, titleId(seed)), view) : null,
       rows: rows.slice(offset, offset + ROWS_PER_PAGE),
       nextCursor: offset + ROWS_PER_PAGE < rows.length ? `r${offset + ROWS_PER_PAGE}` : null,
+      // Milestone 2: which ranking policy built the page (never an exploration page in mock mode).
+      policy: { id: mockLearned(profile) ? "learned:mock" : "rules", explore: false },
     };
   },
 
@@ -1032,6 +1129,7 @@ export const handlers: MockHandlers = {
 
   createPlaybackSession: ({ body }, state) => {
     const profile = requireProfile(state);
+    requireEntitled(state, (code, extensions) => new MockProblem(code, extensions));
     const seed = seedById.get(body.titleId);
     if (!seed) throw new MockProblem("not_found");
     const progress = profile.progress[body.titleId];
@@ -1077,4 +1175,18 @@ export const handlers: MockHandlers = {
   endPlaybackSession: (_input, state) => {
     requireProfile(state);
   },
+
+  // --- Milestone 2 billing (mocks/billing.ts) ---------------------------------------------------
+  ...createBillingHandlers({
+    problem: (code, extensions) => new MockProblem(code, extensions),
+    requireAccount,
+    requireAccountHolder,
+    requireNotDemo,
+    unrestricted: (state) => {
+      const standing = standingOfSession(state);
+      return standing === "gate" || standing === "unrestricted";
+    },
+    session: authenticated,
+    persist: (state) => saveState(state),
+  }),
 };

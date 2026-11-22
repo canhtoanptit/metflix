@@ -11,6 +11,7 @@ import { NotFoundPage, RouteErrorPage } from "../errors/ErrorPages.tsx";
 import { DocumentTitle } from "../head/DocumentTitle.tsx";
 import { queries } from "../query/queries.ts";
 import { Splash } from "../Splash.tsx";
+import { PrivacyShell } from "../telemetry/PrivacyShell.tsx";
 import type { RouterContext } from "./context.ts";
 
 const MockToolbar = __WEBFLIX_DEVTOOLS__
@@ -35,6 +36,8 @@ function RootLayout() {
       <DocumentTitle />
       <SessionWatcher />
       <RouteProgress />
+      {/* Before the page: after the skip link, the consent prompt is the first stop for a keyboard. */}
+      <PrivacyShell />
       <Outlet />
       {MockToolbar ? (
         <Suspense fallback={null}>

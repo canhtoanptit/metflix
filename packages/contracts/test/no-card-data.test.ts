@@ -4,30 +4,18 @@
  * carry a card number or a security code (an expiry next to the last four digits is display
  * data the provider returns, not card data on its own).
  *
- * Milestone 1's mock sign-up, plan change and card replacement still accept a card (the web's
- * sign-up uses them until the provider's payment form replaces it), so those exact fields are
- * listed below. The billing owner empties this list together with the web checkout (§11); a
- * card field anywhere else fails the test.
+ * Milestone 1's mock sign-up, plan change and card replacement accepted a card; they no longer
+ * do (the list below is empty), and a card field anywhere fails the test.
  */
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { adminRoutes, defineRoute, type RouteSpec, type RouteTable, routes } from "../src/index.ts";
 
-/** `<operationId> <location> <dot path>` of every legacy card field still accepted. */
-const LEGACY_CARD_FIELDS = [
-  "signup body payment.cardNumber",
-  "signup body payment.expMonth",
-  "signup body payment.expYear",
-  "signup body payment.cvc",
-  "changePlan body payment.cardNumber",
-  "changePlan body payment.expMonth",
-  "changePlan body payment.expYear",
-  "changePlan body payment.cvc",
-  "updatePaymentMethod body payment.cardNumber",
-  "updatePaymentMethod body payment.expMonth",
-  "updatePaymentMethod body payment.expYear",
-  "updatePaymentMethod body payment.cvc",
-];
+/**
+ * Every legacy card field still accepted: none. Milestone 1's mock card left sign-up, plan
+ * change and card replacement together with the web checkout (§11.1); the list stays empty.
+ */
+const LEGACY_CARD_FIELDS: string[] = [];
 
 type Kind = "number" | "expiry" | "code";
 
@@ -132,7 +120,7 @@ describe("no card data in any route schema", () => {
     expect(found.filter((hit) => !LEGACY_CARD_FIELDS.includes(hit))).toEqual([]);
   });
 
-  it("every listed legacy field still exists (the list only ever shrinks to empty)", () => {
+  it("no legacy card field is left (the list is empty)", () => {
     expect(cardFields(routes).sort()).toEqual([...LEGACY_CARD_FIELDS].sort());
   });
 

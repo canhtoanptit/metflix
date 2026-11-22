@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { Billboard as BillboardData } from "@webflix/contracts";
+import type { Billboard as BillboardData, BrowseView, RankingPolicy } from "@webflix/contracts";
 import type { PreviewPlayerHandle } from "@webflix/player";
 import {
   Button,
@@ -13,6 +13,7 @@ import {
   ResponsiveImage,
   Skeleton,
   useMediaQuery,
+  useMergedRefs,
   VolumeHighIcon,
   VolumeMuteIcon,
 } from "@webflix/ui";
@@ -26,10 +27,21 @@ import {
   useState,
 } from "react";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
+import { TelemetryScope } from "../../../app/telemetry/index.ts";
 import { offerClipHandoff } from "../common/clipHandoff.ts";
 import { genreLine } from "../common/format.ts";
 import { clipHasAudio, usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
 import { TitleTreatment } from "../common/TitleTreatment.tsx";
+import {
+  billboardRowId,
+  noteTitleOpen,
+  type Placement,
+  track,
+  useCardImpression,
+  usePlacementContext,
+  useRowView,
+  watchedSeconds,
+} from "../common/telemetry.ts";
 import { playLabel, watchLink } from "../common/watch.ts";
 import { useMyListToggle } from "../library/useMyListToggle.ts";
 import { usePreviewOpen } from "../preview/store.ts";
@@ -46,9 +58,43 @@ export const BILLBOARD_COLLAPSE_DELAY_MS = 3500;
 
 type Phase = "still" | "playing" | "ended";
 
-export function Billboard({ billboard }: { billboard: BillboardData }) {
+interface BillboardProps {
+  billboard: BillboardData;
+  view: BrowseView;
+  /** The ranking policy of the page that brought it. */
+  policy: RankingPolicy | null;
+}
+
+/** The billboard is the page's first module: `rowRank` 1, its one card `rank` 1. */
+function billboardPlacement(view: BrowseView, policy: RankingPolicy | null): Placement {
+  return { rowId: billboardRowId(view), rowRank: 1, rank: 1, policy };
+}
+
+/**
+ * What the billboard reports: one row view and one impression per appearance (it is a module
+ * with one card), and its title opens (More info, Play) from that place.
+ */
+function useBillboardTelemetry(
+  billboard: BillboardData,
+  view: BrowseView,
+  policy: RankingPolicy | null,
+) {
+  const placement = billboardPlacement(view, policy);
+  const rowView = useRowView({ rowKind: "billboard", itemCount: 1, placement });
+  const impression = useCardImpression({ titleId: billboard.title.id, placement });
+  return {
+    ref: useMergedRefs<HTMLElement>(rowView, impression),
+    context: usePlacementContext(placement),
+  };
+}
+
+export function Billboard({ billboard, view, policy }: BillboardProps) {
   const phone = useMediaQuery(PHONE_QUERY);
-  return phone ? <BillboardCard billboard={billboard} /> : <BillboardHero billboard={billboard} />;
+  return phone ? (
+    <BillboardCard billboard={billboard} view={view} policy={policy} />
+  ) : (
+    <BillboardHero billboard={billboard} view={view} policy={policy} />
+  );
 }
 
 /**
@@ -58,8 +104,9 @@ export function Billboard({ billboard }: { billboard: BillboardData }) {
  * is scrolled half out of view or the tab is hidden; it never starts when the profile turned
  * previews off, under reduced motion or data saver.
  */
-function BillboardHero({ billboard }: { billboard: BillboardData }) {
+function BillboardHero({ billboard, view, policy }: BillboardProps) {
   const { title } = billboard;
+  const telemetry = useBillboardTelemetry(billboard, view, policy);
   const { titleId: overlayTitle, open } = useTitleOverlay();
   const previewOpen = usePreviewOpen();
   const previewsEnabled = usePreviewsEnabled();
@@ -70,6 +117,7 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
   const [collapsed, setCollapsed] = useState(false);
   const video = useRef<PreviewPlayerHandle>(null);
   const sectionRef = useRef<HTMLElement>(null);
+  const sectionTelemetryRef = useMergedRefs<HTMLElement>(sectionRef, telemetry.ref);
   const synopsisRef = useRef<HTMLParagraphElement>(null);
   const [shift, setShift] = useState(0);
   // Footage and motion previews both play here; only a clip with sound gets a sound control.
@@ -113,7 +161,7 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
 
   return (
     <section
-      ref={sectionRef}
+      ref={sectionTelemetryRef}
       aria-label={`Featured: ${title.name}`}
       className="relative h-[56.25vw] max-h-dvh min-h-[28rem] w-full overflow-hidden bg-canvas"
     >
@@ -135,8 +183,18 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
               active={active}
               muted={muted}
               onMutedChange={setMuted}
-              onFirstFrame={() => setPhase("playing")}
-              onEnded={() => setPhase("ended")}
+              onFirstFrame={() => {
+                setPhase("playing");
+                track("preview.start", { titleId: title.id }, telemetry.context);
+              }}
+              onEnded={() => {
+                setPhase("ended");
+                track(
+                  "preview.complete",
+                  { titleId: title.id, watchedSec: watchedSeconds(video.current) },
+                  telemetry.context,
+                );
+              }}
               onError={() => setPhase("still")}
               fade="--duration-cinematic"
             />
@@ -180,7 +238,12 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
         </p>
         <div className="mt-[0.4vw] flex flex-wrap items-center gap-3">
           <Button size="hero" variant="primary" icon={PlayIcon} asChild>
-            <Link {...watchLink(title.id)}>{playLabel(target)}</Link>
+            <Link
+              {...watchLink(title.id)}
+              onClick={() => track("title.open", { titleId: title.id }, telemetry.context)}
+            >
+              {playLabel(target)}
+            </Link>
           </Button>
           <Button
             size="hero"
@@ -189,6 +252,7 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
             onClick={() => {
               // The detail hero continues this clip from this frame (same title, same clip).
               offerClipHandoff(title.id, phase === "playing" ? video.current?.media : null, sound);
+              noteTitleOpen(title.id, telemetry.context);
               open(title.id, { origin: sectionRef.current });
             }}
           >
@@ -213,6 +277,7 @@ function BillboardHero({ billboard }: { billboard: BillboardData }) {
               video.current?.restart();
               void video.current?.play().catch(() => {});
               setPhase("playing");
+              track("preview.start", { titleId: title.id }, telemetry.context);
             }}
           >
             <RefreshIcon size="inherit" />
@@ -263,11 +328,16 @@ function RoundControl({
  * and moods, Play and My List — the pattern people know from streaming apps. No autoplay on
  * phones: video previews are a desktop affordance, and data matters.
  */
-function BillboardCard({ billboard }: { billboard: BillboardData }) {
+function BillboardCard({ billboard, view, policy }: BillboardProps) {
   const { title } = billboard;
+  const telemetry = useBillboardTelemetry(billboard, view, policy);
   const tags = [...title.moods.slice(0, 2), ...genreLine(title, 1)];
   return (
-    <section aria-label={`Featured: ${title.name}`} className="relative px-gutter pt-3">
+    <section
+      ref={telemetry.ref}
+      aria-label={`Featured: ${title.name}`}
+      className="relative px-gutter pt-3"
+    >
       <div
         aria-hidden
         className="pointer-events-none absolute inset-x-0 -top-nav bottom-1/3 opacity-60"
@@ -280,29 +350,36 @@ function BillboardCard({ billboard }: { billboard: BillboardData }) {
           <ResponsiveImage image={title.images.poster} alt="" fill priority sizes="19rem" />
         </div>
         {/* Below the artwork, never on it: posters carry their own title treatment. */}
-        <div className="flex flex-col items-center gap-3 px-4 pt-3 pb-4">
-          <h2 className="sr-only">{title.name}</h2>
-          {tags.length > 0 ? (
-            <p className="flex flex-wrap items-center justify-center gap-x-2 type-body-sm text-fg">
-              {tags.map((tag, index) => (
-                <span key={tag} className="flex items-center gap-2">
-                  {index > 0 ? (
-                    <span aria-hidden className="text-fg-subtle">
-                      •
-                    </span>
-                  ) : null}
-                  {tag}
-                </span>
-              ))}
-            </p>
-          ) : null}
-          <div className="grid w-full grid-cols-2 gap-3">
-            <Button variant="primary" size="md" icon={PlayIcon} asChild>
-              <Link {...watchLink(title.id)}>{playLabel(billboard.playTarget)}</Link>
-            </Button>
-            <BillboardListButton billboard={billboard} />
+        <TelemetryScope context={telemetry.context}>
+          <div className="flex flex-col items-center gap-3 px-4 pt-3 pb-4">
+            <h2 className="sr-only">{title.name}</h2>
+            {tags.length > 0 ? (
+              <p className="flex flex-wrap items-center justify-center gap-x-2 type-body-sm text-fg">
+                {tags.map((tag, index) => (
+                  <span key={tag} className="flex items-center gap-2">
+                    {index > 0 ? (
+                      <span aria-hidden className="text-fg-subtle">
+                        •
+                      </span>
+                    ) : null}
+                    {tag}
+                  </span>
+                ))}
+              </p>
+            ) : null}
+            <div className="grid w-full grid-cols-2 gap-3">
+              <Button variant="primary" size="md" icon={PlayIcon} asChild>
+                <Link
+                  {...watchLink(title.id)}
+                  onClick={() => track("title.open", { titleId: title.id }, telemetry.context)}
+                >
+                  {playLabel(billboard.playTarget)}
+                </Link>
+              </Button>
+              <BillboardListButton billboard={billboard} />
+            </div>
           </div>
-        </div>
+        </TelemetryScope>
       </div>
     </section>
   );

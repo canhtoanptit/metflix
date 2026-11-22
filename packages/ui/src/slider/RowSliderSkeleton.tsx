@@ -72,7 +72,7 @@ export function RowHeaderLink({
       )}
       {...rest}
     >
-      {children}
+      <span className="wf-row-link__text">{children}</span>
       <ChevronRightIcon size="sm" />
     </a>
   );

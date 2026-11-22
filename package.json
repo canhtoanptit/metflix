@@ -9,7 +9,7 @@
     "pnpm": ">=10.5.0 <11"
   },
   "scripts": {
-    "dev": "turbo run dev --filter=@webflix/api --filter=@webflix/web",
+    "dev": "turbo run dev --filter=@webflix/api --filter=@webflix/web --filter=@webflix/admin",
     "typecheck": "turbo run typecheck",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

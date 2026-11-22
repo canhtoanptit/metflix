@@ -206,26 +206,62 @@ export async function patiently(
   throw new Error(`still rate limited: ${method} ${path}`);
 }
 
-export const PAYMENT = {
-  method: "card",
-  cardNumber: "4242424242424242",
-  expMonth: 12,
-  expYear: 2035,
-  cvc: "123",
-  nameOnCard: "Kind Verify",
-};
+/**
+ * Why a script that needs a member account cannot run against this deployment, or null. A member
+ * comes about only through a checkout at the payment provider (or is the seeded demo account, or
+ * a staff grant: principle 4, no card ever reaches Webflix); these scripts check out with the
+ * fake provider's test cards, which production configurations do not have.
+ */
+export async function memberUnavailable(device: Device): Promise<string | null> {
+  const config = (await device.request("GET", "/api/v1/billing/config")).json as {
+    provider?: string;
+  } | null;
+  if (config?.provider === "fake") return null;
+  return `this needs a member account, and a member comes about only through a checkout at the payment provider (or is the seeded demo account, or a staff grant): these scripts check out with the fake provider's test cards, and this deployment's payment provider is ${config?.provider ?? "unknown"} (GET /api/v1/billing/config)`;
+}
 
-/** A new account on `planId` with one profile selected; returns the device and credentials. */
+/**
+ * A new member on `planId` with one profile selected; returns the device and credentials. The
+ * account signs up without a card and becomes a member at checkout, the card confirmed at the
+ * fake provider (a card of its own: the trial, nothing charged). Without the fake provider the
+ * script stops here, saying why (exit 0: skipped, not failed).
+ */
 export async function newAccount(planId: "basic" | "standard" | "premium") {
   const device = new Device("signup");
+  const unavailable = await memberUnavailable(device);
+  if (unavailable) {
+    console.log(`SKIP ${unavailable}`);
+    process.exit(0);
+  }
   const email = `verify-${randomUUID().slice(0, 8)}@example.com`;
   const password = "kind-verify-password";
   const signup = await patiently(device, "POST", "/api/v1/auth/signup", {
-    body: { email, password, planId, payment: PAYMENT },
+    body: { email, password },
   });
   if (signup.status !== 201 && signup.status !== 200) {
     throw new Error(`signup failed: ${signup.status} ${signup.text}`);
   }
+  const start = await patiently(device, "POST", "/api/v1/billing/checkout", { body: { planId } });
+  if (start.status !== 201) throw new Error(`checkout failed: ${start.status} ${start.text}`);
+  const started = start.json as { id: string; clientSecret: string | null };
+  const card = await device.request("POST", "/_pay/api/confirm", {
+    body: { clientSecret: started.clientSecret, card: `visa:verify-${randomUUID().slice(0, 8)}` },
+  });
+  if (card.status !== 200) throw new Error(`card confirmation failed: ${card.status} ${card.text}`);
+  const confirm = await patiently(device, "POST", `/api/v1/billing/checkout/${started.id}/confirm`);
+  if (confirm.status !== 200) {
+    throw new Error(`checkout confirmation failed: ${confirm.status} ${confirm.text}`);
+  }
+  let status = (confirm.json as { status: string }).status;
+  for (let poll = 0; status !== "complete" && poll < 80; poll += 1) {
+    await sleep(250);
+    status = (
+      (await device.request("GET", `/api/v1/billing/checkout/${started.id}`)).json as {
+        status: string;
+      }
+    ).status;
+  }
+  if (status !== "complete") throw new Error(`the checkout ended ${status}`);
   const avatars = (await device.request("GET", "/api/v1/avatars")).json as {
     groups: { avatars: { id: string }[] }[];
   };

@@ -4,6 +4,7 @@ import {
   type Clock,
   hexEncode,
   type Logger,
+  type NextInvoicePreview,
   type PaymentFailureCode,
   type PaymentProvider,
   PaymentProviderError,
@@ -580,6 +581,28 @@ export class FakePaymentProvider implements PaymentProvider {
     return this.mutate(customerId, (set) => this.prorate(set, input));
   }
 
+  /** What the next renewal (or a trial's first invoice) will charge, as `renew` will compute it. */
+  async previewNextInvoice(subscriptionId: string): Promise<NextInvoicePreview | null> {
+    const customerId = await this.customerOf("subscription", subscriptionId);
+    if (!customerId) return null;
+    return this.mutate(customerId, (set) => {
+      const subscription = set.get<SubscriptionData>("subscription", subscriptionId);
+      if (!subscription || subscription.cancelAtPeriodEnd) return null;
+      if (!["trialing", "active", "past_due"].includes(subscription.status)) return null;
+      const price = this.activePrice(set, subscription.priceLookupKey);
+      const customer = set.require<CustomerData>("customer", subscription.customerId, "customer");
+      return {
+        at:
+          subscription.status === "trialing"
+            ? (subscription.trialEnd ?? subscription.currentPeriodEnd)
+            : subscription.currentPeriodEnd,
+        // The full price (promotions apply to the first invoice only), less any credit.
+        amountMinor: Math.max(0, price.amountMinor + Math.min(0, customer.balanceMinor)),
+        currency: price.currency,
+      };
+    });
+  }
+
   async changePlan(
     input: { subscriptionId: string; priceLookupKey: string; prorationDate: number },
     call: ProviderCall,
@@ -989,6 +1012,9 @@ export class FakePaymentProvider implements PaymentProvider {
       if (setup.status === "requires_action" && card !== null && card !== setup.pendingCard) {
         setup.status = "requires_confirmation";
       }
+      // Like a SetupIntent back at `requires_payment_method`: a declined card can be followed
+      // by another one on the same setup (the same page), until one succeeds.
+      if (setup.status === "failed" && card !== null) setup.status = "requires_confirmation";
       if (setup.status !== "requires_confirmation" && setup.status !== "requires_action") {
         throw new PaymentProviderError("invalid_request", "this setup is complete");
       }
@@ -1646,7 +1672,8 @@ export class FakePaymentProvider implements PaymentProvider {
       if (invoice.subscriptionId === subscription.id && invoice.status === "open") {
         invoice.status = "void";
         invoice.nextPaymentAttempt = null;
-        invoice.secret = null;
+        // The secret still names it (the form reports it as no longer payable); it is only
+        // offered to the browser while the invoice is open.
         set.touch("invoice", invoice.id);
         this.emit(set, "invoice.voided", { subscription, invoiceId: invoice.id }, null);
       }
@@ -1833,7 +1860,7 @@ export class FakePaymentProvider implements PaymentProvider {
     invoice.amountDueMinor = 0;
     invoice.paidAt = set.at;
     invoice.nextPaymentAttempt = null;
-    invoice.secret = null;
+    // Kept: a second submission of the form is told it was paid (offered only while open).
     set.touch("invoice", invoice.id);
     const subscription = set.get<SubscriptionData>("subscription", invoice.subscriptionId);
     this.emit(

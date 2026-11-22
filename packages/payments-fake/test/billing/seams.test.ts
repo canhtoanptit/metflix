@@ -40,12 +40,12 @@ describe("billing's seams with the other areas", () => {
     const before = await h.services.auth.sessionState(auth);
     expect(before.membership).toMatchObject({ status: "none" });
     expect(before.entitlement?.entitled).toBe(false);
-    expect(before.subscription).toMatchObject({ planId: "basic", status: "ended" });
+    expect(before).toMatchObject({ subscription: null, plan: null });
     await h.subscribe(auth);
     const after = await h.services.auth.sessionState(auth);
     expect(after.membership).toMatchObject({ status: "trialing", planId: "standard" });
     expect(after.subscription).toMatchObject({ planId: "standard", status: "active" });
-    expect(after.plan.id).toBe("standard");
+    expect(after.plan?.id).toBe("standard");
   });
 
   it("tells other areas the plan held now and staff each member's status", async () => {

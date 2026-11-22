@@ -19,6 +19,7 @@
     "@webflix/contracts": "workspace:*",
     "@webflix/email": "workspace:^",
     "hyparquet": "1.32.0",
+    "hyparquet-writer": "0.18.0",
     "zod": "catalog:"
   },
   "peerDependencies": {
@@ -30,7 +31,6 @@
     }
   },
   "devDependencies": {
-    "hyparquet-writer": "0.18.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

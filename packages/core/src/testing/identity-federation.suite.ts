@@ -83,6 +83,12 @@ export const FEDERATION_FAULTS_COVERED = [
 
 const API = "/api/v1";
 const CLIENT = { "X-Webflix-Client": "web" };
+/** What a browser sends when a person follows a link (Fetch Metadata). */
+const NAVIGATE = {
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Dest": "document",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+};
 const PASSWORD = "correct horse battery";
 
 /** Faults that break a token or the authorisation response: the sign-in must fail outright. */
@@ -120,10 +126,13 @@ export function describeFederatedSignIn(
       return `${label}-${Date.now().toString(36)}-${counter}@example.test`;
     };
 
-    /** A browser: its own cookie jar and client address, every request through the deployment. */
-    function browser() {
+    /**
+     * A browser: its own cookie jar and client address (`address` for a check that must not share
+     * a rate-limit bucket), every request through the deployment.
+     */
+    function browser(address?: string) {
       const cookies = new Map<string, string>();
-      const ip = `198.51.100.${(counter % 250) + 1}`;
+      const ip = address ?? `198.51.100.${(counter % 250) + 1}`;
       const header = () => [...cookies].map(([key, value]) => `${key}=${value}`).join("; ");
       /** The request with this browser's cookies and address, as it would leave the browser. */
       const prepare = (request: Request): Request => {
@@ -297,8 +306,8 @@ export function describeFederatedSignIn(
             authenticated: true,
             account: { email, emailVerified: true, hasPassword: false },
           });
-          // Until billing serves `membership: none`, the stand-in is a membership that has ended.
-          expect(signedUp.subscription?.status).toBe("ended");
+          // No membership is exactly that: no subscription or plan stands in for it.
+          expect(signedUp).toMatchObject({ subscription: null, plan: null });
 
           const again = browser();
           expect(
@@ -381,6 +390,92 @@ export function describeFederatedSignIn(
         expect(repeated.headers.get("Location")).toBe(`${h().origin}/apple?oidc=failed`);
         expect(repeated.headers.get("Content-Type") ?? "").not.toMatch(/json/);
         expect((await session(b)).authenticated).toBe(false);
+      });
+
+      it("sends a browser back from a refused start with the reason; a script gets the problem document", async () => {
+        const b = await passwordAccount(unique("refused-start"));
+        await becomeHolder(b);
+        const link = (headers: Record<string, string>, returnTo = "/account") =>
+          b.send(
+            new Request(
+              `${h().origin}${API}/auth/oidc/google/start?intent=link&returnTo=${encodeURIComponent(returnTo)}`,
+              { headers },
+            ),
+          );
+        // A followed link without a fresh proof: back where it came from, the reason marked.
+        const navigated = await link(NAVIGATE);
+        expect(navigated.status).toBe(303);
+        expect(navigated.headers.get("Location")).toBe(
+          `${h().origin}/account?oidc=failed&oidcError=reauthentication_required`,
+        );
+        expect(navigated.headers.get("Content-Type") ?? "").not.toMatch(/json/);
+        expect(navigated.headers.getSetCookie().some((line) => line.includes("_oidc_"))).toBe(
+          false,
+        );
+        // A browser without Fetch Metadata asks for HTML: the same answer.
+        expect((await link({ Accept: "text/html" })).headers.get("Location")).toBe(
+          navigated.headers.get("Location"),
+        );
+        // A programmatic caller, or the page's own fetch: the problem document, as before.
+        const scriptedHeaders: Record<string, string>[] = [
+          {},
+          { "Sec-Fetch-Mode": "cors", Accept: "text/html" },
+        ];
+        for (const headers of scriptedHeaders) {
+          const scripted = await link(headers);
+          expect(scripted.status).toBe(403);
+          expect(((await scripted.json()) as { code: string }).code).toBe(
+            "reauthentication_required",
+          );
+        }
+        // `returnTo` is checked as the route checks it: anything else goes to the root.
+        expect((await link(NAVIGATE, "//evil.example/x")).headers.get("Location")).toBe(
+          `${h().origin}/?oidc=failed&oidcError=validation_failed`,
+        );
+        // Signed out, a proof cannot even start.
+        const signedOut = await browser().send(
+          new Request(
+            `${h().origin}${API}/auth/oidc/google/start?intent=reauth&returnTo=/account`,
+            {
+              headers: NAVIGATE,
+            },
+          ),
+        );
+        expect(signedOut.headers.get("Location")).toBe(
+          `${h().origin}/account?oidc=failed&oidcError=unauthenticated`,
+        );
+      });
+
+      it("keeps the rate limit: a browser is sent back to try again later, a script gets 429", async () => {
+        const b = browser("203.0.113.30");
+        let refused: Response | null = null;
+        // The `oidc` budget: 30 a minute by default, 300 in a Node dev configuration.
+        for (let attempt = 0; attempt < 400 && refused === null; attempt += 1) {
+          const response = await b.send(
+            new Request(`${h().origin}${API}/auth/oidc/google/start?returnTo=/signin`, {
+              headers: NAVIGATE,
+            }),
+          );
+          if (response.status !== 302) refused = response;
+        }
+        expect(refused?.status).toBe(303);
+        expect(refused?.headers.get("Location")).toBe(
+          `${h().origin}/signin?oidc=failed&oidcError=rate_limited`,
+        );
+        expect(refused?.headers.get("Retry-After")).toBeNull();
+        const scripted = await start(b, "google");
+        expect(scripted.status).toBe(429);
+        expect(((await scripted.json()) as { code: string }).code).toBe("rate_limited");
+        // The callback of a sign-in started before the limit: back to its returnTo, same reason.
+        const callback = await b.send(
+          new Request(`${h().origin}${API}/auth/oidc/google/callback?code=c&state=s`, {
+            headers: NAVIGATE,
+          }),
+        );
+        expect(callback.status).toBe(303);
+        expect(callback.headers.get("Location")).toBe(
+          `${h().origin}/signin?oidc=failed&oidcError=rate_limited`,
+        );
       });
 
       it("does not offer an issuer the deployment does not configure", async () => {

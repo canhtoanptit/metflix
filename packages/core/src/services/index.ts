@@ -66,7 +66,7 @@ export function createServices(deps: ServiceDependencies): Services {
     // only while a running experiment targets them.
     memberFacts: async (accountId) => {
       const details = await account.getAccount(accountId);
-      return { plan: details.plan.id, joinedAt: Date.parse(details.account.createdAt) };
+      return { plan: details.plan?.id ?? null, joinedAt: Date.parse(details.account.createdAt) };
     },
   });
   const modules = Object.values(areas);

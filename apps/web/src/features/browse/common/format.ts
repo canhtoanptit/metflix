@@ -67,8 +67,10 @@ export function maturityGuidance(rating: Maturity): string {
  */
 export function qualityLabel(
   title: Pick<TitleCard, "bestVideoQuality">,
-  plan: Pick<Plan, "maxVideoHeight">,
+  plan: Pick<Plan, "maxVideoHeight"> | null,
 ): string | null {
+  // No membership, no plan to play it on.
+  if (!plan) return null;
   const tier = effectiveVideoQuality(title.bestVideoQuality, plan.maxVideoHeight);
   return tier ? videoQualityLabel(tier) : null;
 }

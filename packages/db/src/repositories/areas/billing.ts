@@ -51,6 +51,10 @@ function toMembership(row: MembershipsTable): MembershipRecord {
       row.payment_method_json === null ? null : (JSON.parse(row.payment_method_json) as StoredCard),
     trialRedeemedAt: numOrNull(row.trial_redeemed_at),
     clockOffsetMs: num(row.clock_offset_ms ?? 0),
+    nextInvoice:
+      row.next_invoice_json === null || row.next_invoice_json === undefined
+        ? null
+        : (JSON.parse(row.next_invoice_json) as MembershipRecord["nextInvoice"]),
     version: num(row.version),
     providerSyncedAt: num(row.provider_synced_at),
     createdAt: num(row.created_at),
@@ -80,6 +84,7 @@ function fromMembership(record: MembershipRecord): MembershipsTable {
       record.paymentMethod === null ? null : JSON.stringify(record.paymentMethod),
     trial_redeemed_at: record.trialRedeemedAt,
     clock_offset_ms: record.clockOffsetMs,
+    next_invoice_json: record.nextInvoice === null ? null : JSON.stringify(record.nextInvoice),
     version: record.version,
     provider_synced_at: record.providerSyncedAt,
     created_at: record.createdAt,

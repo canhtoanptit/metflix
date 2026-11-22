@@ -148,6 +148,20 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
         .map(copy);
     },
 
+    async deletionsStoppingMembership(limit) {
+      tick();
+      return [...requests.values()]
+        .filter(
+          (record) =>
+            record.kind === "deletion" &&
+            record.status === "scheduled" &&
+            record.membershipStep === "stopping",
+        )
+        .sort((a, b) => a.updatedAt - b.updatedAt || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
     async addErasures(records) {
       tick();
       for (const record of records) {

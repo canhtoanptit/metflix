@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { Profile, TitleDetail } from "@webflix/contracts";
 import {
@@ -19,7 +20,13 @@ import {
 } from "@webflix/ui";
 import { type ReactNode, useEffect, useRef } from "react";
 import { describeError } from "../../app/query/errors.ts";
+import { qk } from "../../app/query/keys.ts";
+import { membershipOf, useSession } from "../../app/session/session.ts";
+import { deletionTitle, useScheduledDeletion } from "../member/billing/deletion.tsx";
+import { HrefLink } from "../member/billing/HrefLink.tsx";
+import { describePaywall } from "../member/billing/paywall.ts";
 import { possessive } from "../member/shared/format.ts";
+import { standingOf } from "../member/shared/privileges.ts";
 import type { WatchBlock } from "./lifecycle.ts";
 
 function minutesAgo(iso: string): string {
@@ -69,6 +76,16 @@ interface Copy {
 export function WatchStatus(props: WatchStatusProps) {
   const { block, title, profile, planName, returnTo, retrying, onRetry, onBack } = props;
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const queryClient = useQueryClient();
+  // Read without assuming a session: the signed-out screen renders after the session ended.
+  const session = useSession();
+  const membershipPlanId = session.authenticated ? membershipOf(session).membership.planId : null;
+  const deletion = useScheduledDeletion(block.kind === "membership");
+  // Refused for the membership: the session learns the server's state too, so the profile gate
+  // and Account say the same thing.
+  useEffect(() => {
+    if (block.kind === "membership") void queryClient.invalidateQueries({ queryKey: qk.session() });
+  }, [block.kind, queryClient]);
   const name = title?.name ?? "This title";
   const backButton = (
     <Button variant="outline" size="lg" onClick={onBack}>
@@ -124,7 +141,7 @@ export function WatchStatus(props: WatchStatusProps) {
               <>
                 {" "}
                 Need more screens?{" "}
-                <Link to="/account/plan" className={link}>
+                <Link to="/account/membership/plan" className={link}>
                   Change plan
                 </Link>
               </>
@@ -170,19 +187,49 @@ export function WatchStatus(props: WatchStatusProps) {
         ),
       };
       break;
-    case "membership":
+    case "membership": {
+      // Milestone 2: the status the server named decides the way back (billing/paywall.ts).
+      const status =
+        block.membershipStatus ?? (block.subscriptionStatus === "ended" ? "canceled" : undefined);
+      const paywall = describePaywall(status, { titleName: name, planId: membershipPlanId });
+      const holder = standingOf(profile) === "unrestricted";
+      // A scheduled deletion refuses a restart (or a first payment): keeping the account comes
+      // first, so that is the way forward (a card change, for an unpaid one, still works).
+      if (holder && deletion && status !== "suspended" && status !== "past_due") {
+        copy = {
+          icon: CreditCardIcon,
+          title: deletionTitle(deletion.scheduledFor),
+          body: `Your membership can't be restarted until you keep your account, so ${name} can't be played now. Keeping it is one step in Privacy, and nothing has been charged.`,
+          primary: (
+            <Button variant="accent" size="lg" asChild>
+              <Link to="/account/privacy">Go to Privacy</Link>
+            </Button>
+          ),
+          secondary: backButton,
+        };
+        break;
+      }
       copy = {
         icon: CreditCardIcon,
-        title: "Your membership has ended",
-        body: `Restart your membership to watch ${name}. Your profiles, My List and progress are all saved.`,
-        primary: (
+        title: paywall.title,
+        body: holder
+          ? paywall.body
+          : `${paywall.body} Membership is managed from a profile without parental controls: ask the account holder, or switch profile.`,
+        primary: holder ? (
           <Button variant="accent" size="lg" asChild>
-            <Link to="/account/plan">Restart membership</Link>
+            <HrefLink href={paywall.action.href}>{paywall.action.label}</HrefLink>
+          </Button>
+        ) : (
+          <Button variant="primary" size="lg" asChild>
+            <Link to="/profiles" search={{ redirect: returnTo }}>
+              Switch profile
+            </Link>
           </Button>
         ),
         secondary: backButton,
       };
       break;
+    }
     case "maturity":
       copy = {
         icon: LockIcon,

@@ -85,6 +85,12 @@ export interface AreaSeams {
    */
   forgetProfileBehaviour(input: { accountId: string; profileId: string }): Promise<void>;
   /**
+   * Events area: whether the account's deletion is scheduled (its cooling-off period is
+   * running). Billing refuses whatever would make the membership renew again meanwhile
+   * (`account_deletion_scheduled`). One read of the account's privacy requests.
+   */
+  accountDeletionScheduled(accountId: string): Promise<boolean>;
+  /**
    * Experiments area: a unit's assignments (key → variant), e.g. the ranking policy a profile's
    * browse page uses. Logging the exposure is the caller's, when the treatment is experienced.
    */

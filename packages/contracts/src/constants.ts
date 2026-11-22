@@ -46,13 +46,6 @@ export const PAYMENT_DECLINE_REASONS = [
   "insufficient_funds",
   "expired_card",
 ] as const;
-/** Test cards understood by the mock billing provider. Any other valid number is approved. */
-export const MOCK_CARDS = {
-  approved: "4242424242424242",
-  declined: "4000000000000002",
-  insufficientFunds: "4000000000009995",
-} as const;
-
 // --- Profiles ---------------------------------------------------------------------------------
 export const MAX_PROFILES_PER_ACCOUNT = 5;
 export const PROFILE_NAME_MAX_LENGTH = 30;
@@ -210,6 +203,13 @@ export const OIDC_OUTCOMES = [
 ] as const;
 export type OidcOutcome = (typeof OIDC_OUTCOMES)[number];
 export const OIDC_RESULT_PARAM = "oidc";
+/**
+ * Beside `?oidc=failed` when the API refused a federated sign-in's start (or, for `rate_limited`,
+ * its callback) that was a browser navigation: the `ErrorCode` the problem document would have
+ * carried (`rate_limited`, `reauthentication_required`, `unauthenticated`...), so the page it
+ * lands on can say what to do next. Absent from every other outcome.
+ */
+export const OIDC_ERROR_PARAM = "oidcError";
 /** Ways to prove it is the account holder (§4.2). */
 export const REAUTH_METHODS = ["password", ...OIDC_PROVIDERS] as const;
 /** How long a proof of being the account holder lasts (`sessions.elevated_until`, §4.2). */
@@ -255,6 +255,9 @@ export const TRIAL_DAYS = 7;
  * - `complete`: the membership is `trialing` or `active`;
  * - `failed`, `expired`: start a new checkout.
  */
+/** What became of a checkout's promo code (`Checkout.promotionOutcome`). */
+export const PROMOTION_OUTCOMES = ["pending", "applied", "not_applied_trial"] as const;
+
 export const CHECKOUT_STATUSES = [
   "requires_setup",
   "requires_payment",

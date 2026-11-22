@@ -26,16 +26,18 @@ import {
   createR2BlobStore,
   type KvBulkWriter,
 } from "@webflix/adapters-cloudflare/storage";
+import { catalog, demoAccount } from "@webflix/catalog";
+import { MediaManifest } from "@webflix/contracts";
 import {
   type BlobStore,
   createHmacTokenSigner,
   createJsonLogger,
   createMediaTokens,
-  createMockBillingProvider,
   createPbkdf2PasswordHasher,
   createServices,
   createUuidV7Generator,
   type JobQueue,
+  publishDemoRecommendations,
   RECS_POINTER_KEY,
   type RecommendationStore,
   type StreamGate,
@@ -53,6 +55,7 @@ import { loadEdgeConfig } from "../../src/env.ts";
 import type { Platform } from "./platform.ts";
 import { WRANGLER_CONFIG } from "./platform.ts";
 import { toolingSecrets } from "./secrets.ts";
+import { readManifestText } from "./seed.ts";
 
 export const LAKE_PREFIX = "events/";
 
@@ -237,7 +240,6 @@ export function personalisationService(
       createHmacTokenSigner({ keys: config.core.media.tokenKeys, clock }),
       clock,
     ),
-    billing: createMockBillingProvider(),
     clock,
     ids: createUuidV7Generator({ clock }),
     logger: createJsonLogger({
@@ -254,5 +256,32 @@ export async function importRun(platform: Platform, options: { run?: string; fro
   return personalisation.importRecommendations({
     ...(options.run ? { run: options.run } : {}),
     ...(options.from ? { artefacts: await fsStore(options.from) } : {}),
+  });
+}
+
+/**
+ * A demo run for the local Worker (docs/RECOMMENDATIONS.md, "A demo run"): lists for the demo
+ * account's profiles, filed under the keys the Worker derives with its own pseudonym key (the
+ * clone's `.dev.vars`), published into R2 (version, then pointer) and imported by the same
+ * importer as `importRun`, checksums included. Local only: production's pseudonym key is never
+ * available to the tools, and a demo run is not something to serve there.
+ */
+export async function importDemoRun(platform: Platform, options: { replace: boolean }) {
+  if (platform.target !== "local") {
+    throw new Error(
+      "A demo run is for the local Worker only: the tools never hold production's pseudonym key",
+    );
+  }
+  const text = await readManifestText(platform.env);
+  return publishDemoRecommendations({
+    personalisation: personalisationService(platform),
+    blobs: createR2BlobStore(platform.env.MEDIA),
+    catalog,
+    demoAccount,
+    manifest: text === null ? null : MediaManifest.parse(JSON.parse(text)),
+    // What the Worker itself derives profile keys with (not the tooling's throwaway secrets).
+    pseudonymKey: loadEdgeConfig(platform.env).core.events.pseudonymKey,
+    now: Date.now(),
+    replace: options.replace,
   });
 }

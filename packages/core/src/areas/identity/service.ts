@@ -3,10 +3,12 @@ import {
   ELEVATION_TTL_SEC,
   type Elevation,
   EMAIL_VERIFICATION_TTL_SEC,
+  type ErrorCode,
   type IdentityList,
   type LinkedIdentity,
   type Mailbox,
   type MaturityLevel,
+  OIDC_ERROR_PARAM,
   OIDC_PROVIDERS,
   OIDC_RESULT_PARAM,
   type OidcIntent,
@@ -14,6 +16,7 @@ import {
   type OidcProvider,
   PASSWORD_RESET_TTL_SEC,
   type REAUTH_METHODS,
+  ReturnPath,
   type SignInProviders,
   type WebhookAck,
 } from "@webflix/contracts";
@@ -143,10 +146,21 @@ export interface IdentityService extends AreaModule {
   signInProviders(): SignInProviders;
   /**
    * Where a callback the handler never ran for (refused by validation or the rate limit) sends
-   * the browser: its transaction's `returnTo`, if the cookie opens, with `?oidc=failed`. Opens
-   * the cookie only (nothing is claimed or stored); the transaction is abandoned either way.
+   * the browser: its transaction's `returnTo`, if the cookie opens, with `?oidc=failed` (and
+   * `oidcError=<error>` when given). Opens the cookie only (nothing is claimed or stored); the
+   * transaction is abandoned either way.
    */
-  abandonedCallbackLocation(provider: string, transaction: string | undefined): Promise<string>;
+  abandonedCallbackLocation(
+    provider: string,
+    transaction: string | undefined,
+    error?: ErrorCode,
+  ): Promise<string>;
+  /**
+   * Where a refused start sends a browser navigation (it must not land on a problem document):
+   * the `returnTo` it asked for when that is a valid same-origin path, `/` otherwise, with
+   * `?oidc=failed&oidcError=<error>`. Configuration only, no I/O.
+   */
+  refusedStartLocation(returnTo: string | undefined, error: ErrorCode): string;
   /** The cookie name of a provider's transaction (one per provider, so two tabs do not collide). */
   transactionCookieName(provider: string, secure: boolean): string;
   listIdentities(auth: AuthContext): Promise<IdentityList>;
@@ -236,11 +250,12 @@ export function createIdentityService(
   const callbackUri = (provider: OidcProvider) =>
     `${origin}${API_BASE_PATH}/auth/oidc/${provider}/callback`;
 
-  function withOutcome(returnTo: string, outcome: OidcOutcome): string {
+  function withOutcome(returnTo: string, outcome: OidcOutcome, error?: ErrorCode): string {
     let url = new URL(returnTo, origin);
     // The return path was validated as same-origin at the start; never follow anything else.
     if (url.origin !== origin) url = new URL("/", origin);
     url.searchParams.set(OIDC_RESULT_PARAM, outcome);
+    if (error !== undefined) url.searchParams.set(OIDC_ERROR_PARAM, error);
     return url.href;
   }
 
@@ -674,9 +689,9 @@ export function createIdentityService(
       };
     },
 
-    async abandonedCallbackLocation(provider, transaction) {
+    async abandonedCallbackLocation(provider, transaction, error) {
       if (!(OIDC_PROVIDERS as readonly string[]).includes(provider) || !transaction) {
-        return withOutcome("/", "failed");
+        return withOutcome("/", "failed", error);
       }
       const parsed = Transaction.safeParse(
         await transactions.open(transaction, `oidc:${provider}`),
@@ -684,7 +699,15 @@ export function createIdentityService(
       return withOutcome(
         parsed.success && parsed.data.p === provider ? parsed.data.r : "/",
         "failed",
+        error,
       );
+    },
+
+    refusedStartLocation(returnTo, error) {
+      // The same validation as the route's query: anything else (another origin, a scheme, a
+      // protocol-relative or backslashed path) falls back to the root.
+      const path = ReturnPath.safeParse(returnTo);
+      return withOutcome(path.success ? path.data : "/", "failed", error);
     },
 
     transactionCookieName(provider, secure) {

@@ -51,7 +51,8 @@ describe("wrangler.jsonc", () => {
   it("sends every server-owned path to the Worker before the asset layer", async () => {
     // The same prefixes the web app's dev server proxies to the API (apps/web/vite.config.ts).
     const vite = await readFile(join(EDGE, "..", "web", "vite.config.ts"), "utf8");
-    const proxied = /\[((?:\s*"\/[a-z]+",?\s*)+)\]\.map/.exec(vite)?.[1]?.match(/"\/[a-z]+"/g);
+    // Prefixes may hold "-" and "_" (milestone 2's /dev-idp and /_pay).
+    const proxied = /\[((?:\s*"\/[a-z_-]+",?\s*)+)\]\.map/.exec(vite)?.[1]?.match(/"\/[a-z_-]+"/g);
     expect(proxied?.length).toBeGreaterThan(0);
     const first = production.assets?.run_worker_first;
     expect(Array.isArray(first)).toBe(true);

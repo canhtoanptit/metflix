@@ -92,6 +92,12 @@ export const ERROR_CATALOG = {
   payments_not_configured: { status: 503, title: "Payments are not set up on this service" },
   /** An export or deletion of this kind is already pending (§6.3). */
   privacy_request_pending: { status: 409, title: "A request like this is already in progress" },
+  /**
+   * The account's deletion is scheduled (its cooling-off period is running): its membership
+   * cannot start renewing again (resume, a new checkout, a plan change) until the member keeps
+   * the account (`DELETE /account/deletion`).
+   */
+  account_deletion_scheduled: { status: 409, title: "This account is being deleted" },
   /** An experiment change that conflicts with its state or its layer's allocation (§8.1). */
   experiment_conflict: { status: 409, title: "That change conflicts with the experiment" },
   /** A valid staff token without the role the route needs (§8.3). */

@@ -39,9 +39,9 @@ import { api } from "../../../app/api.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { useAuthenticatedSession } from "../../../app/session/session.ts";
 import { MemberHeader } from "../shared/Chrome.tsx";
+import { IdentityNotConfirmed, useConfirmIdentity } from "../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { languageName, possessive } from "../shared/format.ts";
-import { PasswordPrompt } from "../shared/PasswordPrompt.tsx";
 import {
   describeMemberError,
   hasParentalControls,
@@ -115,9 +115,46 @@ function useLeave() {
 }
 
 /**
+ * What the member typed, kept for this tab while they confirm it's them at a provider: that
+ * round trip reloads the page, and coming back to an empty form would lose their changes.
+ */
+function keepDraft(key: string, form: ProfileForm): void {
+  try {
+    sessionStorage.setItem(`webflix:profile-draft:${key}`, JSON.stringify(form));
+  } catch {
+    // Without storage the member fills the form again: still correct.
+  }
+}
+
+function forgetDraft(key: string): void {
+  try {
+    sessionStorage.removeItem(`webflix:profile-draft:${key}`);
+  } catch {
+    // Nothing kept.
+  }
+}
+
+/** The draft, only when the page is the return from confirming for `confirmId`. */
+function useReturnedDraft(key: string, confirmId: string): ProfileForm | null {
+  const router = useRouter();
+  const [draft] = useState<ProfileForm | null>(() => {
+    if (new URLSearchParams(router.state.location.searchStr).get("confirm") !== confirmId) {
+      return null;
+    }
+    try {
+      const raw = sessionStorage.getItem(`webflix:profile-draft:${key}`);
+      return raw ? (JSON.parse(raw) as ProfileForm) : null;
+    } catch {
+      return null;
+    }
+  });
+  return draft;
+}
+
+/**
  * Add a profile. While parental controls are in use (a kids profile, a lowered maturity rating
- * or a lock), adding one needs the account password, asked for in place on save. A PIN can be
- * added once the profile exists (it needs the account password).
+ * or a lock), adding one needs the account-holder proof ("Confirm it's you"), asked for on save.
+ * A PIN can be added once the profile exists (it needs the proof too).
  */
 export function NewProfilePage() {
   const session = useAuthenticatedSession();
@@ -127,61 +164,69 @@ export function NewProfilePage() {
   const avatars = useQuery(queries.avatars());
   const list = useQuery(queries.profiles());
   const parentalControls = list.data?.parentalControls ?? hasParentalControls(session.profiles);
-  const [askPassword, setAskPassword] = useState(false);
+  const [resumed, setResumed] = useState(false);
+  const identity = useConfirmIdentity({
+    id: "add-profile",
+    purpose: "add a profile",
+    onResume: () => setResumed(true),
+  });
+  const draft = useReturnedDraft("new", "add-profile");
   const taken = new Set(session.profiles.map((profile) => profile.avatar.id));
   const suggested =
     avatars.data?.groups
       .flatMap((group) => group.avatars)
       .find((avatar) => !taken.has(avatar.id)) ?? null;
-  const [form, setForm] = useState<ProfileForm>({
-    name: "",
-    avatar: null,
-    isKids: false,
-    maturityCeiling: DEFAULT_MATURITY_CEILING,
-    ...DEFAULT_PROFILE_SETTINGS,
-  });
+  const [form, setForm] = useState<ProfileForm>(
+    () =>
+      draft ?? {
+        name: "",
+        avatar: null,
+        isKids: false,
+        maturityCeiling: DEFAULT_MATURITY_CEILING,
+        ...DEFAULT_PROFILE_SETTINGS,
+      },
+  );
   const values = { ...form, avatar: form.avatar ?? suggested };
 
+  // The server decides whether the proof is needed (parental controls may have been turned on
+  // from another device since the page loaded): `run` asks for it only when refused.
   const create = useMutation({
-    mutationFn: (currentPassword: string | undefined) => {
-      if (!values.avatar) throw new Error("No avatar");
-      return api().createProfile({
-        body: {
-          name: values.name.trim(),
-          avatarId: values.avatar.id,
-          isKids: values.isKids,
-          maturityCeiling: values.maturityCeiling,
-          settings: {
-            autoplayNextEpisode: values.autoplayNextEpisode,
-            autoplayPreviews: values.autoplayPreviews,
-            subtitleLanguage: values.subtitleLanguage,
+    mutationFn: () => {
+      const avatar = values.avatar;
+      if (!avatar) throw new Error("No avatar");
+      return identity.run(() =>
+        api().createProfile({
+          body: {
+            name: values.name.trim(),
+            avatarId: avatar.id,
+            isKids: values.isKids,
+            maturityCeiling: values.maturityCeiling,
+            settings: {
+              autoplayNextEpisode: values.autoplayNextEpisode,
+              autoplayPreviews: values.autoplayPreviews,
+              subtitleLanguage: values.subtitleLanguage,
+            },
           },
-          ...(currentPassword ? { currentPassword } : {}),
-        },
-      });
+        }),
+      );
     },
     meta: { silent: true },
-    // Parental controls may have been turned on from another device since the page loaded.
-    onError: (error) => {
-      if (ApiError.is(error, "password_required")) setAskPassword(true);
-    },
     onSuccess: (profile) => {
-      setAskPassword(false);
+      forgetDraft("new");
       upsertSessionProfile(queryClient, profile);
       toast.success(`${profile.name} is ready`, { description: "Choose it on Who's watching." });
       leave();
     },
   });
 
-  const save = () => {
+  const save = async () => {
     create.reset();
-    if (parentalControls) setAskPassword(true);
-    else create.mutate(undefined);
-  };
-
-  const closePassword = () => {
-    setAskPassword(false);
-    create.reset();
+    // Known to need the proof: ask first, rather than send a request that will be refused.
+    if (parentalControls) {
+      keepDraft("new", values);
+      if (!(await identity.confirm())) return;
+    }
+    create.mutate();
   };
 
   if (demo) {
@@ -228,38 +273,25 @@ export function NewProfilePage() {
         form={values}
         onChange={setForm}
         otherNames={session.profiles.map((profile) => profile.name)}
-        saving={create.isPending && !askPassword}
-        error={askPassword ? null : create.error}
-        onSave={save}
+        saving={create.isPending && !identity.open}
+        error={create.error instanceof IdentityNotConfirmed ? null : create.error}
+        onSave={() => void save()}
         onCancel={leave}
         loosening={false}
         notice={
-          parentalControls ? (
+          resumed ? (
+            <FormAlert tone="positive" title="You're confirmed">
+              Add the profile to finish.
+            </FormAlert>
+          ) : parentalControls ? (
             <FormAlert tone="info" icon={LockIcon}>
-              Parental controls are on for this account, so you'll be asked for your account
-              password when you add the profile.
+              Parental controls are on for this account, so you'll be asked to confirm it's you when
+              you add the profile.
             </FormAlert>
           ) : null
         }
       />
-
-      <Dialog
-        open={askPassword}
-        onOpenChange={(open) => {
-          if (!open) closePassword();
-        }}
-      >
-        <DialogContent title="Confirm it's you" size="sm">
-          <PasswordPrompt
-            intro="Parental controls are on for this account, so adding a profile needs your account password."
-            submitLabel="Add profile"
-            pending={create.isPending}
-            error={ApiError.is(create.error, "password_required") ? null : create.error}
-            onCancel={closePassword}
-            onSubmit={(password) => create.mutate(password)}
-          />
-        </DialogContent>
-      </Dialog>
+      {identity.prompt}
     </EditorShell>
   );
 }
@@ -289,8 +321,9 @@ export function EditProfilePage() {
 }
 
 /**
- * Proof is asked for only where the server needs it: the account password to loosen parental
- * controls (higher rating, Kids off, any PIN change), and the PIN or password to change or
+ * Proof is asked for only where the server needs it: the account-holder proof ("Confirm it's
+ * you": the password or a fresh sign-in) to loosen parental controls (higher rating, Kids off,
+ * any PIN change), and the PIN or that proof to change or
  * delete a locked profile from another profile or the gate. The server's answer still decides:
  * a profile locked elsewhere since the page loaded asks for its proof on the first refusal.
  */
@@ -300,29 +333,66 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const leave = useLeave();
-  const [form, setForm] = useState<ProfileForm>(() => formFrom(profile));
-  const [proof, setProof] = useState<"password" | "unlock" | null>(null);
+  const draft = useReturnedDraft(profile.id, "edit-profile");
+  const [form, setForm] = useState<ProfileForm>(() => draft ?? formFrom(profile));
+  const [proof, setProof] = useState<"unlock" | null>(null);
   const [lockDialog, setLockDialog] = useState<"set" | "remove" | null>(null);
   const [deleting, setDeleting] = useState<"confirm" | "unlock" | null>(null);
+  const [resumed, setResumed] = useState(false);
+  const [pinResumed, setPinResumed] = useState(false);
   const isLast = session.profiles.length <= 1;
   const isActive = session.activeProfile?.id === profile.id;
   const locked = needsUnlock(session.activeProfile, profile);
   const raising = raisesCeiling(profile.maturityCeiling, form.maturityCeiling);
   const kidsOff = profile.isKids && !form.isKids;
 
+  // "Confirm it's you", per action. Back from confirming at a provider, each reopens its own.
+  const saveProof = useConfirmIdentity({
+    id: "edit-profile",
+    purpose: raising
+      ? `raise ${possessive(profile.name)} maturity rating to ${MATURITY_COPY[form.maturityCeiling].label}`
+      : kidsOff
+        ? `turn off Kids profile for ${profile.name}`
+        : `change ${profile.name}`,
+    onResume: () => setResumed(true),
+  });
+  const deleteProof = useConfirmIdentity({
+    id: "delete-profile",
+    purpose: `delete ${profile.name}`,
+    onResume: () => setDeleting("confirm"),
+  });
+  const pinSetProof = useConfirmIdentity({
+    id: "pin-set",
+    purpose: profile.isLocked ? `change ${possessive(profile.name)} PIN` : `lock ${profile.name}`,
+    onResume: () => {
+      setPinResumed(true);
+      setLockDialog("set");
+    },
+  });
+  const pinRemoveProof = useConfirmIdentity({
+    id: "pin-remove",
+    purpose: `remove the lock from ${profile.name}`,
+    onResume: () => {
+      setPinResumed(true);
+      setLockDialog("remove");
+    },
+  });
+
   const save = useMutation({
     mutationFn: (given: ProfileProof | undefined) =>
-      api().updateProfile({
-        params: { id: profile.id },
-        body: { ...profileChanges(profile, form), ...given },
-      }),
+      saveProof.run(() =>
+        api().updateProfile({
+          params: { id: profile.id },
+          body: { ...profileChanges(profile, form), ...given },
+        }),
+      ),
     meta: { silent: true },
     onError: (error) => {
-      if (ApiError.is(error, "password_required")) setProof("password");
-      else if (ApiError.is(error, "profile_unlock_required")) setProof("unlock");
+      if (ApiError.is(error, "profile_unlock_required")) setProof("unlock");
     },
     onSuccess: (updated) => {
       setProof(null);
+      forgetDraft(profile.id);
       upsertSessionProfile(queryClient, updated);
       toast.success("Profile saved");
       leave();
@@ -344,15 +414,19 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
     },
   });
 
-  const submit = () => {
+  const submit = async () => {
     const changes = profileChanges(profile, form);
     if (Object.keys(changes).length === 0) {
       leave();
       return;
     }
     save.reset();
-    if (raising || kidsOff) setProof("password");
-    else if (locked) setProof("unlock");
+    keepDraft(profile.id, form);
+    if (raising || kidsOff) {
+      // Loosening needs the account-holder proof (which also unlocks a locked profile): ask
+      // first, rather than send a request that will be refused.
+      if (await saveProof.confirm()) save.mutate(undefined);
+    } else if (locked) setProof("unlock");
     else save.mutate(undefined);
   };
 
@@ -361,12 +435,16 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
     save.reset();
   };
 
+  /** Prove it is the account holder instead of the PIN, then save without one. */
+  const saveAsAccountHolder = async () => {
+    setProof(null);
+    save.reset();
+    if (await saveProof.confirm()) save.mutate(undefined);
+  };
+
   // The refusal that opened a proof dialog is its question, not an error to show in it.
-  const proofError =
-    ApiError.is(save.error, "password_required") ||
-    ApiError.is(save.error, "profile_unlock_required")
-      ? null
-      : save.error;
+  const proofError = ApiError.is(save.error, "profile_unlock_required") ? null : save.error;
+  const saveError = save.error instanceof IdentityNotConfirmed ? null : save.error;
 
   return (
     <EditorShell title="Edit profile">
@@ -377,22 +455,26 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
         otherNames={session.profiles
           .filter((item) => item.id !== profile.id)
           .map((item) => item.name)}
-        saving={save.isPending && proof === null}
-        error={proof ? null : save.error}
-        onSave={submit}
+        saving={save.isPending && proof === null && !saveProof.open}
+        error={proof ? null : saveError}
+        onSave={() => void submit()}
         onCancel={leave}
         loosening={raising || kidsOff}
         detailsFixed={demo}
         notice={
-          demo ? (
+          resumed ? (
+            <FormAlert tone="positive" title="You're confirmed">
+              Save your changes to finish.
+            </FormAlert>
+          ) : demo ? (
             <FormAlert tone="info" title="This is the shared demo account">
               Its profiles keep their name, picture, maturity rating and lock. Playback settings are
               yours to change.
             </FormAlert>
           ) : locked ? (
             <FormAlert tone="info" icon={LockIcon}>
-              {profile.name} is locked. You'll be asked for {possessive(profile.name)} PIN or your
-              account password when you save.
+              {profile.name} is locked. You'll be asked for {possessive(profile.name)} PIN, or to
+              confirm it's you, when you save.
             </FormAlert>
           ) : null
         }
@@ -466,40 +548,15 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
           if (!open) closeProof();
         }}
       >
-        {proof === "password" ? (
-          <DialogContent title="Confirm it's you" size="sm">
-            <PasswordPrompt
-              intro={
-                <>
-                  {raising ? (
-                    <>
-                      {kidsOff ? "Turning off Kids profile and raising " : "Raising "}
-                      {possessive(profile.name)} maturity rating to{" "}
-                      <span className="text-fg">{MATURITY_COPY[form.maturityCeiling].label}</span>{" "}
-                      lets it show more mature titles.
-                    </>
-                  ) : kidsOff ? (
-                    `Turning off Kids profile gives ${profile.name} the regular Webflix home.`
-                  ) : null}{" "}
-                  Enter your account password to confirm.
-                </>
-              }
-              submitLabel="Save changes"
-              pending={save.isPending}
-              error={proofError}
-              onCancel={closeProof}
-              onSubmit={(password) => save.mutate({ currentPassword: password })}
-            />
-          </DialogContent>
-        ) : proof === "unlock" ? (
+        {proof === "unlock" ? (
           <DialogContent title="Profile lock is on" size="sm">
             <UnlockPrompt
               profile={profile}
               purpose="save your changes"
-              submitLabel="Save changes"
               pending={save.isPending}
               error={proofError}
               onSubmit={(given) => save.mutate(given)}
+              onAccountHolder={() => void saveAsAccountHolder()}
             />
           </DialogContent>
         ) : null}
@@ -508,8 +565,12 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
       <PinLockDialog
         profile={profile}
         mode={lockDialog}
+        run={lockDialog === "remove" ? pinRemoveProof.run : pinSetProof.run}
+        resumed={pinResumed}
         onOpenChange={(open) => {
-          if (!open) setLockDialog(null);
+          if (open) return;
+          setLockDialog(null);
+          setPinResumed(false);
         }}
       />
 
@@ -550,14 +611,24 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
             <UnlockPrompt
               profile={profile}
               purpose="delete it"
-              submitLabel="Delete profile"
               pending={remove.isPending}
               error={ApiError.is(remove.error, "profile_unlock_required") ? null : remove.error}
               onSubmit={(given) => remove.mutate(given)}
+              onAccountHolder={() => {
+                setDeleting(null);
+                void deleteProof.confirm().then((confirmed) => {
+                  if (confirmed) remove.mutate(undefined);
+                });
+              }}
             />
           </DialogContent>
         ) : null}
       </Dialog>
+
+      {saveProof.prompt}
+      {deleteProof.prompt}
+      {pinSetProof.prompt}
+      {pinRemoveProof.prompt}
     </EditorShell>
   );
 }
@@ -641,7 +712,7 @@ function ProfileEditor({
   error: unknown;
   onSave: () => void;
   onCancel: () => void;
-  /** The change loosens parental controls (higher rating, Kids off): saving asks for the password. */
+  /** The change loosens parental controls (higher rating, Kids off): saving asks for the proof. */
   loosening: boolean;
   /** Name, picture, Kids and maturity rating can't change (the demo account): settings only. */
   detailsFixed?: boolean;
@@ -750,7 +821,7 @@ function ProfileEditor({
           form.isKids
             ? "Kids profiles can show titles rated 7+ and under."
             : mode === "edit"
-              ? "Choose the most mature titles this profile can see. Raising it needs your account password."
+              ? "Choose the most mature titles this profile can see. Raising it asks you to confirm it's you."
               : "Choose the most mature titles this profile can see."
         }
       >
@@ -773,7 +844,7 @@ function ProfileEditor({
         </RadioGroup>
         {loosening ? (
           <FormAlert tone="info" icon={LockIcon}>
-            You'll be asked for your account password when you save.
+            You'll be asked to confirm it's you when you save.
           </FormAlert>
         ) : null}
       </Section>

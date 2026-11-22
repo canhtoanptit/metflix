@@ -252,6 +252,53 @@ export function describePaymentProviderContract(
       expect(preview.creditMinor).toBeGreaterThan(0);
     });
 
+    it("previews the next invoice: the plan's price when a trial ends, less a downgrade's credit, none while cancelling", async () => {
+      const { customer, setup } = await customerWithCard("visa");
+      const trial = await h().provider.createSubscription(
+        {
+          customerId: customer.id,
+          priceLookupKey: h().prices.basic.lookupKey,
+          paymentMethodId: setup?.paymentMethod?.id ?? null,
+          trialDays: 7,
+          promotionId: null,
+        },
+        key(),
+      );
+      expect(await h().provider.previewNextInvoice(trial.id)).toEqual({
+        at: trial.trialEnd,
+        amountMinor: h().prices.basic.amountMinor,
+        currency: h().prices.basic.currency.toUpperCase(),
+      });
+      await h().provider.setCancelAtPeriodEnd(
+        { subscriptionId: trial.id, cancelAtPeriodEnd: true },
+        key(),
+      );
+      expect(await h().provider.previewNextInvoice(trial.id)).toBeNull();
+
+      const { subscription } = await activeSubscription(h().prices.premium.lookupKey);
+      const preview = await h().provider.previewPlanChange({
+        subscriptionId: subscription.id,
+        priceLookupKey: h().prices.basic.lookupKey,
+        prorationDate: subscription.currentPeriodStart ?? 0,
+      });
+      await h().provider.changePlan(
+        {
+          subscriptionId: subscription.id,
+          priceLookupKey: h().prices.basic.lookupKey,
+          prorationDate: preview.prorationDate,
+        },
+        key(),
+      );
+      // Exactly what the plan change's preview said the next renewal would be.
+      expect(await h().provider.previewNextInvoice(subscription.id)).toEqual({
+        at: preview.nextRenewal?.at,
+        amountMinor: preview.nextRenewal?.amountMinor,
+        currency: h().prices.basic.currency.toUpperCase(),
+      });
+      await h().provider.cancelNow({ subscriptionId: subscription.id }, key());
+      expect(await h().provider.previewNextInvoice(subscription.id)).toBeNull();
+    });
+
     it("cancels at the period end (still active) and undoes it; cancels now (ended)", async () => {
       const { subscription } = await activeSubscription();
       const pending = await h().provider.setCancelAtPeriodEnd(

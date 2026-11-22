@@ -1,10 +1,10 @@
-import { MOCK_CARDS, type PlaybackSession, type TitleCard } from "@webflix/contracts";
-import { approvedCard, type Environment, type TestAccount } from "../env.ts";
+import type { PlaybackSession, TitleCard } from "@webflix/contracts";
+import type { Environment, TestAccount } from "../env.ts";
 import { check, equal, fail, problem, rejects, succeeds } from "../expect.ts";
 import type { Agent, HttpResult } from "../http.ts";
 import { expectedSpec } from "../limits.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
-import { API, CSRF, tallyStatuses } from "./util.ts";
+import { API, CSRF } from "./util.ts";
 
 /** Sign in `account` on a new device and select its (only) profile. */
 async function device(
@@ -160,7 +160,7 @@ export const planChecks: CheckDefinition[] = [
       );
       await succeeds(() => beat(a, older), "heartbeat of the oldest stream after the downgrade");
       const session = await succeeds(() => a.api.getSession(), "GET /session");
-      equal(session.authenticated && session.plan.id, "basic", "plan in the session bootstrap");
+      equal(session.authenticated && session.plan?.id, "basic", "plan in the session bootstrap");
       const capped = await start(a, title.id, "A restarts on Basic");
       equal(capped.maxVideoHeight, 720, "maxVideoHeight on Basic");
       const upgraded = await succeeds(
@@ -170,20 +170,25 @@ export const planChecks: CheckDefinition[] = [
       equal(upgraded.plan.id, "premium", "plan after upgrade");
       const bAgain = await start(b, title.id, "B starts on Premium");
       const cNow = await start(c, title.id, "C starts on Premium");
-      const declined = await rejects(
-        () =>
-          a.api.changePlan({
-            body: {
-              planId: "standard",
-              payment: { ...approvedCard(), cardNumber: MOCK_CARDS.declined },
-            },
-          }),
-        "payment_declined",
-        "plan change with a declined card",
-      );
-      equal(declined.problem.declineReason, "card_declined", "declineReason");
+      // Card data is refused before anything changes (a card goes to the provider only).
+      const withCard = await a.fetch(`${API}/account/subscription`, {
+        method: "PUT",
+        headers: CSRF,
+        body: {
+          planId: "standard",
+          payment: {
+            method: "card",
+            cardNumber: "4000 0000 0000 0002",
+            expMonth: 12,
+            expYear: new Date().getUTCFullYear() + 3,
+            cvc: "123",
+            nameOnCard: "Smoke Test",
+          },
+        },
+      });
+      problem(withCard, "validation_failed", "a plan change carrying a card");
       const account = await succeeds(() => a.api.getAccount(), "GET /account");
-      equal(account.plan.id, "premium", "plan after a declined change (unchanged)");
+      equal(account.plan?.id, "premium", "plan after the refused change (unchanged)");
       for (const [agent, item] of [
         [a, capped],
         [b, bAgain],
@@ -216,7 +221,7 @@ export const planChecks: CheckDefinition[] = [
       );
       const state = await succeeds(() => api.getSession(), "GET /session");
       equal(
-        state.authenticated && state.subscription.status,
+        state.authenticated && state.subscription?.status,
         "canceling",
         "session subscription status",
       );
@@ -231,120 +236,57 @@ export const planChecks: CheckDefinition[] = [
       equal(resumed.subscription.status, "active", "status after resume");
       equal(resumed.subscription.canceledAt, null, "canceledAt after resume");
       const account = await succeeds(() => api.getAccount(), "GET /account");
-      equal(account.subscription.status, "active", "account status after resume");
+      equal(account.subscription?.status, "active", "account status after resume");
     },
   },
   {
-    id: "plans.payment-method",
+    id: "plans.payment-budget",
     area: "plans",
     title:
-      "PUT /account/payment-method: verified like sign-up, declines change nothing, only brand, last four and expiry kept, limited per account",
+      "Money-moving requests are limited per account (`payment`): the checkout's confirmation and every plan change count; another account is unaffected",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("payment-method", { plan: "standard" });
-      await ctx.env.holder(account);
-      const agent = ctx.agent("payment-method", { retryOn429: false });
-      for (const [name, value] of account.agent.jar.snapshot()) agent.jar.set(name, value);
-      const api = agent.api;
-      const before = await succeeds(() => api.getAccount(), "GET /account");
-      const update = (payment: unknown) =>
-        agent.fetch(`${API}/account/payment-method`, {
-          method: "PUT",
-          headers: CSRF,
-          body: { payment },
-          retryOn429: false,
-        });
-      let verifications = 0;
-
-      // Declined exactly like at sign-up, and nothing changes.
-      for (const [payment, reason] of [
-        [{ ...approvedCard(), cardNumber: MOCK_CARDS.declined }, "card_declined"],
-        [{ ...approvedCard(), cardNumber: MOCK_CARDS.insufficientFunds }, "insufficient_funds"],
-        [{ ...approvedCard(), expMonth: 1, expYear: 2020 }, "expired_card"],
-      ] as const) {
-        verifications += 1;
-        const declined = problem(await update(payment), "payment_declined", reason);
-        equal(declined.declineReason, reason, "declineReason");
-      }
-      verifications += 1;
-      problem(await update({ ...approvedCard(), cvc: "1" }), "validation_failed", "a bad CVC");
-      const unchanged = await succeeds(() => api.getAccount(), "GET /account after declines");
-      equal(
-        JSON.stringify(unchanged.paymentMethod),
-        JSON.stringify(before.paymentMethod),
-        "payment method after declined cards",
-      );
-
-      // An approved card replaces it; nothing but brand, last four and expiry comes back.
-      const expYear = new Date().getUTCFullYear() + 4;
-      verifications += 1;
-      const replaced = await update({
-        ...approvedCard(),
-        cardNumber: "5555 5555 5555 4444",
-        expMonth: 3,
-        expYear,
-      });
-      equal(replaced.status, 200, "PUT /account/payment-method", replaced.exchange);
-      const raw = replaced.json<{
-        paymentMethod: Record<string, unknown>;
-        subscription: unknown;
-      }>();
-      equal(
-        JSON.stringify(raw.paymentMethod),
-        JSON.stringify({ brand: "mastercard", last4: "4444", expMonth: 3, expYear }),
-        "stored payment method (exactly these members)",
-      );
-      equal(
-        JSON.stringify(raw.subscription),
-        JSON.stringify(before.subscription),
-        "membership after a card change",
-      );
-      const after = await succeeds(() => api.getAccount(), "GET /account after the update");
-      equal(after.paymentMethod?.last4, "4444", "GET /account last4");
-
-      // Card verifications are limited per account; a plan change with a card counts too. Dev
-      // keeps the production budget here, so both documented profiles agree.
+      // Dev keeps the production budget here, so both documented profiles agree.
       const spec = expectedSpec(ctx.env, "payment", "strict");
       if (!spec) ctx.skip("custom --rate-limits without a payment limit: nothing to compare with");
-      let admitted = 0;
+      const account = await ctx.env.signup("payment-budget", { plan: "standard" });
+      await ctx.env.holder(account);
+      const agent = ctx.agent("payment-budget", { retryOn429: false });
+      for (const [name, value] of account.agent.jar.snapshot()) agent.jar.set(name, value);
+      const change = (planId: "basic" | "standard") =>
+        agent.fetch(`${API}/account/subscription`, {
+          method: "PUT",
+          headers: CSRF,
+          body: { planId },
+          retryOn429: false,
+        });
+      // The checkout's confirmation already spent one.
+      let admitted = 1;
       let limited: HttpResult | null = null;
       while (!limited && admitted < spec.limit + 5) {
-        const result = await update(approvedCard());
+        const result = await change(admitted % 2 === 1 ? "basic" : "standard");
         if (result.status === 429) limited = result;
         else {
-          equal(result.status, 200, "a card update within the limit", result.exchange);
+          equal(result.status, 200, "a plan change within the limit", result.exchange);
           admitted += 1;
         }
       }
-      check(limited, "card verifications are never rate limited", {
+      check(limited, "plan changes are never rate limited", {
         expected: `429 after ${spec.limit} per ${spec.windowSec}s`,
-        observed: `${verifications + admitted} verifications admitted`,
+        observed: `${admitted} admitted`,
       });
-      if (verifications + admitted !== spec.limit) {
-        fail("the account's card verifications were limited at a different count", {
+      if (admitted !== spec.limit) {
+        fail("the account's money-moving requests were limited at a different count", {
           expected: `${spec.limit} admitted (payment ${spec.limit}/${spec.windowSec}s, per account)`,
-          observed: `${verifications + admitted} admitted (${verifications} before the burst)`,
+          observed: `${admitted} admitted (the checkout's confirmation included)`,
         });
       }
-      problem(limited, "rate_limited", "a card update over the limit");
-      const withCard = await agent.fetch(`${API}/account/subscription`, {
-        method: "PUT",
-        headers: CSRF,
-        body: { planId: "standard", payment: approvedCard() },
-        retryOn429: false,
-      });
-      problem(withCard, "rate_limited", "a plan change carrying a card, over the limit");
-      const withoutCard = await agent.fetch(`${API}/account/subscription`, {
-        method: "PUT",
-        headers: CSRF,
-        body: { planId: "standard" },
-        retryOn429: false,
-      });
-      check(withoutCard.status === 200, "a plan change without a card was limited", {
-        expected: "200 (it verifies no card)",
-        observed: tallyStatuses([withoutCard]),
-        exchange: withoutCard.exchange,
-      });
-      ctx.note(`limited after ${spec.limit} card verifications (${spec.limit}/${spec.windowSec}s)`);
+      problem(limited, "rate_limited", "a plan change over the limit");
+      // Per account: another account's plan change still goes through.
+      const other = await ctx.env.viewer("payment-budget-other", { plan: "standard" });
+      await succeeds(
+        () => other.agent.api.changePlan({ body: { planId: "basic" } }),
+        "another account's plan change",
+      );
     },
   },
 ];

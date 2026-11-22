@@ -20,6 +20,7 @@
     "@tanstack/react-router": "catalog:",
     "@webflix/contracts": "workspace:*",
     "@webflix/player": "workspace:*",
+    "@webflix/telemetry": "workspace:*",
     "@webflix/ui": "workspace:*",
     "motion": "catalog:",
     "radix-ui": "catalog:",

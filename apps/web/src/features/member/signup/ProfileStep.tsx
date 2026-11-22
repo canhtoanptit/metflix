@@ -20,6 +20,7 @@ import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { useApplySession } from "../../../app/session/session.ts";
+import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AvatarPicker } from "../profiles/AvatarPicker.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
@@ -129,6 +130,8 @@ export function ProfileStep() {
         });
       }
       if (!firstId) throw new Error("No profile created");
+      // The session's profile changes: nothing queued at the gate goes out under the profile.
+      discardPendingEvents();
       return api().selectProfile({ body: { profileId: firstId } });
     },
     meta: { silent: true },

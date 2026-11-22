@@ -11,6 +11,7 @@ import {
   DataExport,
   type LakeEvent,
   type PrivacyRequest,
+  type PrivacyTerms,
   type RecentEventsQuery,
 } from "@webflix/contracts";
 import type { TestAccount } from "../env.ts";
@@ -19,8 +20,10 @@ import { type Agent, isApiError } from "../http.ts";
 import { awaitMail } from "../mail.ts";
 import { needs } from "../needs.ts";
 import { STAFF_PERSONAS } from "../oidc.ts";
+import { advancePast, confirmCard, paidMembership, RENEWAL_SETTLE_SEC } from "../payments.ts";
 import { deviceId, EventStream } from "../telemetry.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
+import { spentCard } from "./billing.ts";
 import { audited, auditOf } from "./staff.ts";
 import { API, CSRF, maturityRank, unique } from "./util.ts";
 
@@ -134,18 +137,33 @@ async function awaitExport(
   agent: Agent,
   started: { id: string; requestedAt: string },
   event: ClientEventInput | null,
+  terms: PrivacyTerms,
 ): Promise<PrivacyRequest> {
-  const inlineBudget = Math.min(ctx.options.eventualTimeoutMs, 30_000);
-  const begun = Date.now();
   let request: PrivacyRequest | undefined;
-  while (Date.now() - begun < inlineBudget) {
-    request = await exportStatus(agent, started.id);
-    if (request?.status === "completed" && request.downloadUrl) return request;
-    await ctx.sleep(500);
+  if (terms.exportMode === "inline") {
+    // The deployment says the export job reads the events itself: ready within its typical time.
+    const budget = Math.max(ctx.options.eventualTimeoutMs, 2 * terms.exportTypicalSec * 1000);
+    const begun = Date.now();
+    while (Date.now() - begun < budget) {
+      request = await exportStatus(agent, started.id);
+      if (request?.status === "completed" && request.downloadUrl) return request;
+      await ctx.sleep(500);
+    }
+    fail("an inline export did not complete in twice its typical time", {
+      expected: `completed within ${Math.round(budget / 1000)} s (terms: inline, typically ${terms.exportTypicalSec} s)`,
+      observed: `status ${request?.status ?? "unlisted"}`,
+    });
   }
+  // Batch (terms.exportMode): the pipeline's export-events job reads the events.
   if (!(await ctx.env.staffIssuer()).available) {
+    const begun = Date.now();
+    while (Date.now() - begun < ctx.options.exportWaitMs) {
+      request = await exportStatus(agent, started.id);
+      if (request?.status === "completed" && request.downloadUrl) return request;
+      await ctx.sleep(5_000);
+    }
     ctx.skip(
-      `the export is still ${request?.status ?? "unlisted"} after ${Math.round(inlineBudget / 1000)} s, and without a staff token the suite cannot tell batch mode (WEBFLIX_EXPORT_EVENTS=batch waits for the pipeline's export-events job) from an export that never finishes`,
+      `batch export mode (GET /privacy/requests terms.exportMode, typically ${terms.exportTypicalSec} s): the export is still ${request?.status ?? "unlisted"} after ${Math.round(ctx.options.exportWaitMs / 1000)} s, and without a staff token the suite cannot see the job's rounds. Fix the deployment one of two ways: run the pipeline's export-events job on a schedule shorter than --export-wait, or set WEBFLIX_EXPORT_EVENTS=inline where it is allowed (dev; refused at startup on Kubernetes and Cloudflare)`,
     );
   }
   const admin = ctx
@@ -157,8 +175,10 @@ async function awaitExport(
   );
   const entry = pending.requests.find((item) => item.requestId === started.id);
   if (!entry) {
-    fail("the export neither completed nor waits for the pipeline's job", {
-      expected: `completed within ${Math.round(inlineBudget / 1000)} s (inline), or listed at GET /api/admin/v1/system/privacy/exports (batch)`,
+    request = await exportStatus(agent, started.id);
+    if (request?.status === "completed" && request.downloadUrl) return request;
+    fail("a batch export is neither complete nor listed for the pipeline's job", {
+      expected: "listed at GET /api/admin/v1/system/privacy/exports until its events are extracted",
       observed: `status ${request?.status ?? "unlisted"}, not among ${pending.requests.length} pending exports`,
     });
   }
@@ -706,7 +726,20 @@ export const privacyChecks: CheckDefinition[] = [
       problem(refused, "privacy_request_pending", "the second concurrent export");
       const startedRequest = started[0]?.json<{ id: string; requestedAt: string }>();
       check(startedRequest, "the started export has no body");
-      const done = await awaitExport(ctx, agent, startedRequest, collected ? event : null);
+      const terms = (await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests"))
+        .terms;
+      const done = await awaitExport(ctx, agent, startedRequest, collected ? event : null, terms);
+      if (done.completedAt && done.expiresAt) {
+        const ttl = (Date.parse(done.expiresAt) - Date.parse(done.completedAt)) / 1000;
+        check(
+          Math.abs(ttl - terms.exportLinkTtlSec) <= 60,
+          "the export link's lifetime is not the one the terms state",
+          {
+            expected: `${terms.exportLinkTtlSec} s (terms.exportLinkTtlSec)`,
+            observed: `${Math.round(ttl)} s (${done.completedAt} → ${done.expiresAt})`,
+          },
+        );
+      }
       const link = agent.ownPath(done.downloadUrl ?? "");
       check(link, "the export link points to another origin", {
         observed: String(done.downloadUrl),
@@ -777,13 +810,42 @@ export const privacyChecks: CheckDefinition[] = [
       );
       problem(await agent.fetch(tampered), "not_found", "a tampered export link");
       if ((await ctx.env.mailbox()).available) {
+        // The email opens the web app's page, the token in the fragment (never sent with the
+        // page load); the page downloads through the API route with it.
         const [mail] = await awaitMail(ctx, agent, account.email, "data-export-ready");
-        check(
-          mail?.links.some(
-            (candidate) => agent.ownPath(candidate)?.split("?")[0] === link.split("?")[0],
-          ),
-          "the export email does not carry the link",
-          { observed: mail?.links.join(", ") },
+        check(mail, "no data-export-ready email");
+        const page = `/account/privacy/exports/${encodeURIComponent(startedRequest.id)}`;
+        const emailed = mail.links
+          .map((candidate) => {
+            try {
+              return new URL(candidate);
+            } catch {
+              return null;
+            }
+          })
+          .find((url) => url !== null && url.pathname === page);
+        check(emailed, "the export email does not link to the web app's export page", {
+          expected: `{origin}${page}#token=…`,
+          observed: mail.links.join(", "),
+        });
+        check(agent.sameDeployment(emailed.href), "the export email links to another origin", {
+          observed: emailed.href,
+        });
+        equal(
+          emailed.search,
+          "",
+          "the export page link's query (the token belongs in the fragment)",
+        );
+        const token = new URLSearchParams(emailed.hash.slice(1)).get("token");
+        check(token, "the export page link has no #token=", { observed: emailed.href });
+        const viaEmail = await agent.fetch(
+          `${API}/privacy/exports/${encodeURIComponent(startedRequest.id)}?token=${encodeURIComponent(token)}`,
+        );
+        status(viaEmail, 200, "the export downloaded with the emailed token");
+        equal(
+          viaEmail.json<{ requestId?: unknown }>().requestId,
+          startedRequest.id,
+          "the document behind the emailed link",
         );
       }
     },
@@ -987,6 +1049,312 @@ export const privacyChecks: CheckDefinition[] = [
     },
   },
   {
+    id: "privacy.terms",
+    area: "privacy",
+    title:
+      "The privacy terms are served before anything is asked: cooling-off, export link lifetime, export mode and typical time, retention periods, the same for every account",
+    async run(ctx: CheckContext) {
+      const first = await ctx.env.bareHolder("terms");
+      const list = await succeeds(
+        () => first.agent.api.listPrivacyRequests(),
+        "GET /privacy/requests",
+      );
+      equal(list.items.length, 0, "requests of a new account");
+      const terms = list.terms;
+      for (const [name, value] of Object.entries({
+        deletionCoolingOffSec: terms.deletionCoolingOffSec,
+        exportLinkTtlSec: terms.exportLinkTtlSec,
+        exportTypicalSec: terms.exportTypicalSec,
+        eventsRetentionDays: terms.eventsRetentionDays,
+        aggregatesRetentionDays: terms.aggregatesRetentionDays,
+      })) {
+        check(
+          Number.isInteger(value) && value > 0,
+          `terms.${name} is not a positive whole number`,
+          {
+            observed: String(value),
+          },
+        );
+      }
+      check(
+        ["inline", "batch"].includes(terms.exportMode),
+        "terms.exportMode is neither inline nor batch",
+        {
+          observed: terms.exportMode,
+        },
+      );
+      check(
+        terms.aggregatesRetentionDays >= terms.eventsRetentionDays,
+        "aggregates are kept for less time than the raw events they summarise",
+        { observed: JSON.stringify(terms) },
+      );
+      const second = await ctx.env.bareHolder("terms-other");
+      const other = (
+        await succeeds(() => second.agent.api.listPrivacyRequests(), "GET /privacy/requests")
+      ).terms;
+      equal(JSON.stringify(other), JSON.stringify(terms), "the terms another account is shown");
+      problem(
+        await ctx.agent("terms-anonymous").fetch(`${API}/privacy/requests`),
+        "unauthenticated",
+        "GET /privacy/requests signed out",
+      );
+      ctx.note(
+        `cooling-off ${terms.deletionCoolingOffSec} s, export ${terms.exportMode} (typically ${terms.exportTypicalSec} s), link ${terms.exportLinkTtlSec} s, events ${terms.eventsRetentionDays} days, aggregates ${terms.aggregatesRetentionDays} days`,
+      );
+    },
+  },
+  {
+    id: "privacy.deletion.membership",
+    area: "privacy",
+    title:
+      "A scheduled deletion stops the renewals: the membership ends (no renewal charged when its period closes inside the cooling-off); keeping the account leaves it ending and resumable, and resuming renews again",
+    needs: [needs.fakePayments],
+    timeoutMs: 180_000,
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const first = await env.bareHolder("deletion-renewals");
+      const terms = (
+        await succeeds(() => first.agent.api.listPrivacyRequests(), "GET /privacy/requests")
+      ).terms;
+      if (terms.deletionCoolingOffSec < 8) {
+        ctx.skip(
+          `the cooling-off period (${terms.deletionCoolingOffSec} s) is too short to act inside it`,
+        );
+      }
+      // A paying member schedules the deletion; the period's close then passes on the clock.
+      const card = await spentCard(ctx);
+      await paidMembership(ctx, first.agent, { planId: "standard", card });
+      const before = await succeeds(() => first.agent.api.getAccount(), "GET /account");
+      check(before.membership?.nextInvoice, "a paying member has no next invoice", {
+        observed: JSON.stringify(before.membership),
+      });
+      const periodEnd = before.membership?.currentPeriodEnd;
+      check(periodEnd, "no period end");
+      await succeeds(
+        () => first.agent.api.elevate({ body: { password: first.password } }),
+        "POST /session/elevation",
+      );
+      const scheduled = await succeeds(
+        () => first.agent.api.requestAccountDeletion(),
+        "POST /account/deletion",
+      );
+      check(scheduled.scheduledFor, "a deletion without scheduledFor");
+      const stopped = await ctx.eventually("the deletion stops the renewals", async () => {
+        const list = await succeeds(
+          () => first.agent.api.listPrivacyRequests(),
+          "GET /privacy/requests",
+        );
+        const membership = list.items.find((item) => item.id === scheduled.id)?.membership;
+        return membership?.status === "ending"
+          ? { done: true, value: membership }
+          : { done: false, observed: JSON.stringify(membership ?? null) };
+      });
+      const expectedEnd = Math.min(Date.parse(periodEnd), Date.parse(scheduled.scheduledFor));
+      equal(
+        stopped.value.endsAt ? Date.parse(stopped.value.endsAt) : null,
+        expectedEnd,
+        "endsAt (the earlier of the period's close and the erasure)",
+      );
+      equal(stopped.value.resumable, false, "resumable while the deletion is scheduled");
+      const ending = await succeeds(() => first.agent.api.getAccount(), "GET /account");
+      equal(ending.membership?.cancelAtPeriodEnd, true, "the membership is set to end");
+      equal(ending.membership?.nextInvoice ?? null, null, "no next invoice once renewals stopped");
+      const paidBefore = (
+        await succeeds(() => first.agent.api.listInvoices({ query: {} }), "invoices")
+      ).items.filter((invoice) => invoice.amountPaid.amountMinor > 0).length;
+      await advancePast(first.agent, periodEnd, RENEWAL_SETTLE_SEC, "past the period's close");
+      const afterClose = await succeeds(
+        () => first.agent.api.getAccount(),
+        "GET /account after the close",
+      );
+      equal(afterClose.membership?.status, "canceled", "the membership after its period closed");
+      const paidAfter = (
+        await succeeds(() => first.agent.api.listInvoices({ query: {} }), "invoices")
+      ).items.filter((invoice) => invoice.amountPaid.amountMinor > 0).length;
+      equal(paidAfter, paidBefore, "renewals charged after a deletion was scheduled");
+      check(
+        Date.now() < Date.parse(scheduled.scheduledFor),
+        "the cooling-off ran out before the check could keep the account",
+        {
+          observed: `now ${new Date().toISOString()}, erasure at ${scheduled.scheduledFor}`,
+        },
+      );
+      await succeeds(() => first.agent.api.cancelAccountDeletion(), "keep the account");
+
+      // Another paying member keeps the account at once: still ending, resumable, then resumed.
+      const second = await env.bareHolder("deletion-resume");
+      await paidMembership(ctx, second.agent, { planId: "standard", card });
+      const plan = await succeeds(() => second.agent.api.getAccount(), "GET /account");
+      await succeeds(
+        () => second.agent.api.elevate({ body: { password: second.password } }),
+        "POST /session/elevation",
+      );
+      const request = await succeeds(
+        () => second.agent.api.requestAccountDeletion(),
+        "POST /account/deletion",
+      );
+      await ctx.eventually("the deletion stops the renewals", async () => {
+        const list = await succeeds(
+          () => second.agent.api.listPrivacyRequests(),
+          "GET /privacy/requests",
+        );
+        const status_ = list.items.find((item) => item.id === request.id)?.membership?.status;
+        return status_ === "ending"
+          ? { done: true, value: null }
+          : { done: false, observed: String(status_) };
+      });
+      await succeeds(
+        () => second.agent.api.cancelAccountDeletion(),
+        "DELETE /account/deletion (keep)",
+      );
+      const kept = (
+        await succeeds(() => second.agent.api.listPrivacyRequests(), "GET /privacy/requests")
+      ).items.find((item) => item.id === request.id);
+      equal(kept?.status, "canceled", "the deletion after keeping the account");
+      equal(kept?.membership?.status, "ending", "the membership after keeping the account");
+      equal(kept?.membership?.resumable, true, "resumable after keeping the account");
+      equal(
+        kept?.membership?.endsAt ? Date.parse(kept.membership.endsAt) : null,
+        plan.membership?.currentPeriodEnd ? Date.parse(plan.membership.currentPeriodEnd) : null,
+        "endsAt once kept (the period's close)",
+      );
+      equal(
+        (await succeeds(() => second.agent.api.getAccount(), "GET /account")).membership
+          ?.cancelAtPeriodEnd,
+        true,
+        "still set to end",
+      );
+      await succeeds(
+        () => second.agent.api.resumeMembership(),
+        "POST /account/subscription/resume",
+      );
+      const resumed = await succeeds(
+        () => second.agent.api.getAccount(),
+        "GET /account after resuming",
+      );
+      equal(resumed.membership?.cancelAtPeriodEnd, false, "renewing again after resuming");
+      check(resumed.membership?.nextInvoice, "no next invoice after resuming", {
+        observed: JSON.stringify(resumed.membership),
+      });
+      const after = (
+        await succeeds(() => second.agent.api.listPrivacyRequests(), "GET /privacy/requests")
+      ).items.find((item) => item.id === request.id);
+      equal(
+        after?.membership?.status,
+        "renewing",
+        "the deletion's membership effect after resuming",
+      );
+      equal(after?.membership?.resumable, false, "resumable after resuming");
+    },
+  },
+  {
+    id: "privacy.deletion.blocks-billing",
+    area: "privacy",
+    title:
+      "While a deletion is scheduled the member cannot renew the membership again: resume, a plan change, a new checkout and confirming one started before are refused (409 account_deletion_scheduled), a preview and a card change stay allowed, and keeping the account lifts the rule at once",
+    needs: [needs.fakePayments],
+    timeoutMs: 180_000,
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const card = await spentCard(ctx);
+      const post = (agent: Agent, path: string, body?: object) =>
+        agent.fetch(`${API}${path}`, {
+          method: "POST",
+          headers: CSRF,
+          ...(body === undefined ? {} : { body }),
+        });
+
+      // A paying member.
+      const paying = await env.bareHolder("deletion-blocks");
+      await paidMembership(ctx, paying.agent, { planId: "standard", card });
+      await succeeds(
+        () => paying.agent.api.elevate({ body: { password: paying.password } }),
+        "POST /session/elevation",
+      );
+      const request = await succeeds(
+        () => paying.agent.api.requestAccountDeletion(),
+        "POST /account/deletion",
+      );
+      try {
+        problem(
+          await post(paying.agent, "/account/subscription/resume"),
+          "account_deletion_scheduled",
+          "resuming the membership",
+        );
+        const preview = await post(paying.agent, "/billing/subscription/preview", {
+          planId: "premium",
+        });
+        status(preview, 200, "previewing a plan change (allowed)");
+        const token = preview.json<{ previewToken: string }>().previewToken;
+        problem(
+          await paying.agent.fetch(`${API}/account/subscription`, {
+            method: "PUT",
+            headers: CSRF,
+            body: { planId: "premium", previewToken: token },
+          }),
+          "account_deletion_scheduled",
+          "changing plan",
+        );
+        status(
+          await post(paying.agent, "/billing/payment-method/setup"),
+          201,
+          "replacing the card (allowed)",
+        );
+        const effect = (
+          await succeeds(() => paying.agent.api.listPrivacyRequests(), "GET /privacy/requests")
+        ).items.find((item) => item.id === request.id)?.membership;
+        check(
+          effect?.status === "ending" || effect?.status === "stopping",
+          "the member made the membership renew during the deletion",
+          {
+            expected: "ending (renewals stopped)",
+            observed: JSON.stringify(effect ?? null),
+          },
+        );
+      } finally {
+        await paying.agent.api.cancelAccountDeletion().catch(() => undefined);
+      }
+      // Keeping the account lifts the rule at once.
+      await succeeds(
+        () => paying.agent.api.resumeMembership(),
+        "resuming once the account is kept",
+      );
+
+      // No membership: a checkout started before the request cannot be confirmed, nor a new one started.
+      const bare = await env.bareHolder("deletion-blocks-checkout");
+      const before = await succeeds(
+        () => bare.agent.api.startCheckout({ body: { planId: "basic" } }),
+        "a checkout started before the deletion",
+      );
+      check(before.clientSecret, "no client secret");
+      await succeeds(
+        () => bare.agent.api.elevate({ body: { password: bare.password } }),
+        "POST /session/elevation",
+      );
+      await succeeds(() => bare.agent.api.requestAccountDeletion(), "POST /account/deletion");
+      try {
+        problem(
+          await post(bare.agent, "/billing/checkout", { planId: "basic" }),
+          "account_deletion_scheduled",
+          "starting a checkout",
+        );
+        await confirmCard(bare.agent, before.clientSecret, card, "the earlier checkout's card");
+        problem(
+          await post(bare.agent, `/billing/checkout/${before.id}/confirm`),
+          "account_deletion_scheduled",
+          "confirming a checkout started before the deletion",
+        );
+        equal(
+          (await succeeds(() => bare.agent.api.getAccount(), "GET /account")).membership?.status,
+          "none",
+          "membership during the deletion",
+        );
+      } finally {
+        await bare.agent.api.cancelAccountDeletion().catch(() => undefined);
+      }
+    },
+  },
+  {
     id: "privacy.deletion",
     area: "privacy",
     title:
@@ -1015,8 +1383,14 @@ export const privacyChecks: CheckDefinition[] = [
         status: string;
         scheduledFor: string | null;
         requestedAt: string;
+        membership: { status: string } | null;
       }>();
       equal(request?.status, "scheduled", "deletion status");
+      equal(
+        request?.membership?.status,
+        "none",
+        "the deletion's membership effect for an account without one",
+      );
       check(
         request?.scheduledFor && Date.parse(request.scheduledFor) > Date.parse(request.requestedAt),
         "no cooling-off period",
@@ -1025,9 +1399,19 @@ export const privacyChecks: CheckDefinition[] = [
         },
       );
       if (request?.scheduledFor) {
-        ctx.note(
-          `cooling-off: ${Math.round((Date.parse(request.scheduledFor) - Date.parse(request.requestedAt)) / 1000)} s`,
+        const cooling = (Date.parse(request.scheduledFor) - Date.parse(request.requestedAt)) / 1000;
+        const terms = (
+          await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests")
+        ).terms;
+        check(
+          Math.abs(cooling - terms.deletionCoolingOffSec) <= 1,
+          "the deletion's cooling-off is not the one the terms state",
+          {
+            expected: `${terms.deletionCoolingOffSec} s (terms.deletionCoolingOffSec)`,
+            observed: `${cooling} s`,
+          },
         );
+        ctx.note(`cooling-off: ${Math.round(cooling)} s`);
       }
       await succeeds(() => agent.api.cancelAccountDeletion(), "DELETE /account/deletion");
       const list = await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests");
@@ -1053,6 +1437,13 @@ export const privacyChecks: CheckDefinition[] = [
     async run(ctx: CheckContext) {
       const account = await ctx.env.bareHolder("erasure");
       const agent = account.agent;
+      const terms = (await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests"))
+        .terms;
+      if (terms.deletionCoolingOffSec > 60) {
+        ctx.skip(
+          `the cooling-off period is ${terms.deletionCoolingOffSec} s (GET /privacy/requests terms; WEBFLIX_DELETION_COOLING_OFF_SEC, 14 days by default) and the suite waits at most 60 s: a conformance deployment sets it to 30 s or less, with a scheduler tick of 30 s or less (WEBFLIX_SCHEDULER_INTERVAL_SEC on Node, the Worker's cron)`,
+        );
+      }
       await succeeds(
         () => agent.api.elevate({ body: { password: account.password } }),
         "POST /session/elevation",

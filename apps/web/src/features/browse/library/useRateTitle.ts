@@ -4,6 +4,8 @@ import { toast } from "@webflix/ui";
 import { api } from "../../../app/api.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { optimisticUpdate, patchTitleViewer } from "../../../app/query/optimistic.ts";
+import { useTelemetryScope } from "../../../app/telemetry/index.ts";
+import { track } from "../common/telemetry.ts";
 import { markBrowseStale } from "./cache.ts";
 
 export interface RateVariables {
@@ -22,6 +24,8 @@ export const RATING_LABELS: Record<RatingValue, string> = {
 /** Rate (or un-rate) a title, optimistically everywhere the title appears. */
 export function useRateTitle() {
   const queryClient = useQueryClient();
+  // Where the rating was given (a card's preview, the details): reported once the server has it.
+  const where = useTelemetryScope();
   return useMutation({
     mutationFn: ({ titleId, value }: RateVariables) =>
       value
@@ -36,6 +40,10 @@ export function useRateTitle() {
       toast.error("Couldn't save your rating", {
         description: name ? `Your rating for ${name} is unchanged.` : "Please try again.",
       });
+    },
+    onSuccess: (_data, { titleId, value }) => {
+      if (value) track("rating.set", { titleId, value }, where);
+      else track("rating.clear", { titleId }, where);
     },
     onSettled: () => markBrowseStale(queryClient),
   });

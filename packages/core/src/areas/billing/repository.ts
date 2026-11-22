@@ -50,6 +50,11 @@ export interface MembershipRecord {
   trialRedeemedAt: number | null;
   /** Provider time minus ours (a test clock); 0 in real time. */
   clockOffsetMs: number;
+  /**
+   * The next invoice as the provider previewed it at the last write (provider time); null when
+   * there is none (cancelling, ended, not live) or it was not computed yet.
+   */
+  nextInvoice: { at: number; amountMinor: number; currency: string } | null;
   version: number;
   providerSyncedAt: number;
   createdAt: number;

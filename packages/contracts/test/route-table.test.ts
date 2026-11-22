@@ -128,7 +128,6 @@ describe("route table", () => {
       "GET /titles/:id/similar",
       "GET /titles/:id/popularity",
       "GET /showcase",
-      "PUT /account/payment-method",
       "GET /search",
       "GET /my-list",
       "PUT /my-list/:titleId",
@@ -163,6 +162,7 @@ describe("route table", () => {
       "GET /diagnostics/mailbox",
       "GET /billing/config",
       "POST /billing/checkout",
+      "GET /billing/checkout",
       "GET /billing/checkout/:id",
       "POST /billing/checkout/:id/confirm",
       "POST /billing/subscription/preview",
@@ -231,6 +231,11 @@ describe("route table", () => {
       // Fix round: the operator's side of members' data exports (the pipeline's export-events).
       "GET /system/privacy/exports",
       "POST /system/privacy/exports/results",
+      // Console findings: finding titles, reading availability, one's own audit entries.
+      "GET /titles",
+      "GET /titles/availability",
+      "GET /titles/:titleId/availability",
+      "GET /audit/mine",
     ];
     const actual = adminEntries.map(([, route]) => `${route.method} ${route.path}`);
     expect(actual.sort()).toEqual(staff.sort());

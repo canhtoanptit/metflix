@@ -13,7 +13,7 @@ import type { AuthContext, ServiceDependencies } from "./context.ts";
 import { type ChargeCredentialCheck, createCredentialChecks } from "./credentials.ts";
 import { presentDevice, presentSubscription } from "./presenters.ts";
 import { requireNotDemo } from "./privileges.ts";
-import { BILLING_PERIOD_MS, type CardInput, effectiveSubscription } from "./subscriptions.ts";
+import { effectiveSubscription } from "./subscriptions.ts";
 
 export interface UpdateAccountInput {
   /** Absent: the session's fresh account-holder proof stands in for it (§4.2). */
@@ -24,7 +24,6 @@ export interface UpdateAccountInput {
 
 export interface ChangePlanInput {
   planId: PlanId;
-  payment?: CardInput | undefined;
 }
 
 /**
@@ -33,7 +32,7 @@ export interface ChangePlanInput {
  * sign-in details, membership and other devices whoever is signed in to it.
  */
 export function createAccountService(deps: ServiceDependencies) {
-  const { repos, clock, passwords, billing, streamGate, logger } = deps;
+  const { repos, clock, passwords, streamGate, logger } = deps;
   const credentials = createCredentialChecks(deps);
 
   /** Queue an identity email; a queue outage is logged, never undoes the change. */
@@ -68,8 +67,8 @@ export function createAccountService(deps: ServiceDependencies) {
   }
 
   /**
-   * Billing's: the account with milestone 1's mock membership, for the mock-billing changes
-   * below. An account created without payment has none: it starts a checkout instead.
+   * Billing's: the account with milestone 1's simulated membership (the seeded demo account's),
+   * for the changes below. An account without one starts a checkout instead.
    */
   async function load(accountId: string) {
     const loaded = await readAccount(deps, accountId);
@@ -92,22 +91,9 @@ export function createAccountService(deps: ServiceDependencies) {
     };
   }
 
-  async function charge(card: CardInput | SubscriptionRecord["card"], amountMinor: number) {
-    if (!card) {
-      throw new AppError("payment_declined", {
-        declineReason: "card_declined",
-        detail: "No payment method on file. Add a card to continue.",
-      });
-    }
-    const result = await billing.charge({ card, amountMinor, currency: "USD", now: clock.now() });
-    if (!result.approved) throw new AppError("payment_declined", { declineReason: result.reason });
-    return result.card;
-  }
-
   /**
-   * Billing's: the mock-billing changes below are milestone 1's and only apply to a mock
-   * membership; a provider membership changes through `services.billing` (the handlers route
-   * there), so it is never overwritten by a mock charge.
+   * Billing's: the changes below only apply to milestone 1's simulated membership; a provider
+   * membership changes through `services.billing` (the handlers route there).
    */
   async function requireMockMembership(accountId: string): Promise<void> {
     const record = await repos.billing.getMembership(accountId);
@@ -115,14 +101,6 @@ export function createAccountService(deps: ServiceDependencies) {
       throw new AppError("checkout_state_conflict", {
         detail: "This membership is managed by the payment provider.",
       });
-    }
-  }
-
-  /** On a plan with fewer screens, end the newest streams beyond the new limit. */
-  async function trimStreams(accountId: string, limit: number): Promise<void> {
-    const leases = await streamGate.list(accountId);
-    for (const lease of leases.slice(limit)) {
-      await streamGate.release(accountId, lease.playbackSessionId);
     }
   }
 
@@ -185,67 +163,18 @@ export function createAccountService(deps: ServiceDependencies) {
       return this.getAccount(accountId);
     },
 
-    async changePlan(accountId: string, input: ChangePlanInput): Promise<Membership> {
-      requireNotDemo(accountId);
-      await requireMockMembership(accountId);
-      const { subscription } = await load(accountId);
-      const now = clock.now();
-      const current = getPlan(subscription.planId);
-      const next = getPlan(input.planId);
-      const effective = effectiveSubscription(subscription, now);
-      let updated: SubscriptionRecord;
-
-      if (effective.status === "ended") {
-        // Restarting an ended membership: a full new period, charged now.
-        const card = await charge(
-          input.payment ?? subscription.card,
-          next.monthlyPrice.amountMinor,
-        );
-        updated = {
-          ...subscription,
-          planId: next.id,
-          currentPeriodEnd: now + BILLING_PERIOD_MS,
-          canceledAt: null,
-          card,
-          updatedAt: now,
-        };
-      } else {
-        if (next.id === current.id && !input.payment) return membership(subscription);
-        // Upgrades pay the prorated difference for the rest of the period; downgrades and a
-        // new card on the same plan verify the card with a zero-amount authorisation.
-        const remaining = Math.max(0, effective.currentPeriodEnd - now) / BILLING_PERIOD_MS;
-        const difference = next.monthlyPrice.amountMinor - current.monthlyPrice.amountMinor;
-        const amount = Math.max(0, Math.round(difference * remaining));
-        const card =
-          amount > 0 || input.payment
-            ? await charge(input.payment ?? subscription.card, amount)
-            : subscription.card;
-        updated = {
-          ...subscription,
-          planId: next.id,
-          currentPeriodEnd: effective.currentPeriodEnd,
-          card,
-          updatedAt: now,
-        };
-      }
-      await repos.accounts.saveSubscription(updated);
-      if (next.maxStreams < current.maxStreams) await trimStreams(accountId, next.maxStreams);
-      logger.info("account.plan_changed", { accountId, from: current.id, to: next.id });
-      return membership(updated);
-    },
-
     /**
-     * Replace the card on file: verified with a zero-amount authorisation, declined exactly like
-     * at sign-up (nothing changes then). Only what `StoredCard` holds is kept.
+     * Milestone 1's simulated membership (the seeded demo account's) cannot change plan: nothing
+     * can be charged here any more (principle 4). A provider membership changes through
+     * `services.billing` (the handlers route there).
      */
-    async updatePaymentMethod(accountId: string, payment: CardInput): Promise<AccountDetails> {
+    async changePlan(accountId: string, _input: ChangePlanInput): Promise<Membership> {
       requireNotDemo(accountId);
       await requireMockMembership(accountId);
-      const { subscription } = await load(accountId);
-      const card = await charge(payment, 0);
-      await repos.accounts.saveSubscription({ ...subscription, card, updatedAt: clock.now() });
-      logger.info("account.payment_method_updated", { accountId, brand: card.brand });
-      return this.getAccount(accountId);
+      await load(accountId);
+      throw new AppError("checkout_state_conflict", {
+        detail: "This membership cannot change plan. Start a checkout for a new membership.",
+      });
     },
 
     async cancel(accountId: string): Promise<Membership> {
@@ -265,27 +194,23 @@ export function createAccountService(deps: ServiceDependencies) {
       return membership(updated);
     },
 
+    /**
+     * Undoes a cancellation still in its period (allowed on the demo account: it can only bring
+     * a membership back). An ended membership is never restarted here: nothing can be charged;
+     * a new membership starts with a checkout.
+     */
     async resume(accountId: string): Promise<Membership> {
-      // Allowed on the demo account: it can only bring a membership back.
       await requireMockMembership(accountId);
       const { subscription } = await load(accountId);
       const now = clock.now();
       const effective = effectiveSubscription(subscription, now);
       if (effective.status === "active") return membership(subscription);
-      let updated: SubscriptionRecord;
-      if (effective.status === "canceling") {
-        updated = { ...subscription, canceledAt: null, updatedAt: now };
-      } else {
-        const plan = getPlan(subscription.planId);
-        const card = await charge(subscription.card, plan.monthlyPrice.amountMinor);
-        updated = {
-          ...subscription,
-          currentPeriodEnd: now + BILLING_PERIOD_MS,
-          canceledAt: null,
-          card,
-          updatedAt: now,
-        };
+      if (effective.status === "ended") {
+        throw new AppError("checkout_state_conflict", {
+          detail: "This membership has ended. Start a checkout to restart it.",
+        });
       }
+      const updated: SubscriptionRecord = { ...subscription, canceledAt: null, updatedAt: now };
       await repos.accounts.saveSubscription(updated);
       return membership(updated);
     },

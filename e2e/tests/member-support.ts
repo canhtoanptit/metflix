@@ -8,13 +8,14 @@ import { type BrowserContext, expect, type Page } from "@playwright/test";
 import { signIn, type TestAccount } from "./api.ts";
 
 export {
-  CARDS,
+  becomeMember,
   CLIENT_HEADERS,
   createAccount,
   DEMO,
   PASSWORD,
   selectProfile,
   signIn,
+  signUp,
   type TestAccount,
   uniqueEmail,
 } from "./api.ts";
@@ -137,15 +138,4 @@ export async function videoState(page: Page) {
       };
     })
     .catch((error: Error) => ({ unavailable: error.message }));
-}
-
-/** Fill the card form of the payment step / plan change. */
-export async function fillCard(page: Page, number: string): Promise<void> {
-  await page.getByLabel("Card number").fill(number);
-  await page.getByLabel("Expiry (MM / YY)").fill("");
-  await page
-    .getByLabel("Expiry (MM / YY)")
-    .pressSequentially(`12${String((new Date().getFullYear() + 3) % 100)}`);
-  await page.getByLabel("Security code").fill("123");
-  await page.getByLabel("Name on card").fill("E2E Tester");
 }

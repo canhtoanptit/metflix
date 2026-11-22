@@ -1,0 +1,333 @@
+/**
+ * Account › Privacy against a real API, each test on a fresh account: "Download your data" (a
+ * fresh "Confirm it's you", a wait the member can leave and come back to, the download here and
+ * in the email) and "Delete your account" (everything said before committing, a cooling-off
+ * period with a clear state, keeping the account in one click, and, where the deployment's
+ * cooling-off is short, the erasure itself).
+ */
+import { readFile } from "node:fs/promises";
+import type { Page } from "@playwright/test";
+import {
+  addProfile,
+  createBareAccount,
+  freshCard,
+  requireFakeProvider,
+  subscribe,
+} from "./billing-support.ts";
+import { expect, test } from "./fixtures.ts";
+import { answerIssuer, giveProfile, requireDevIssuer } from "./identity-support.ts";
+import { createAccount, expectAccessible, PASSWORD, uniqueEmail } from "./member-support.ts";
+
+async function confirmItsMe(page: Page): Promise<void> {
+  const dialog = page.getByRole("dialog", { name: "Confirm it's you" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Webflix password").fill(PASSWORD);
+  await dialog.getByRole("button", { name: "Confirm" }).click();
+  await expect(dialog).toBeHidden();
+}
+
+test("download your data: confirm it's you, wait (or leave and come back), then download it here or from the email", async ({
+  page,
+  newDevice,
+}) => {
+  test.setTimeout(120_000);
+  const request = page.context().request;
+  const account = await createAccount(request, { tag: "export" });
+  await page.goto("/account/privacy");
+  const section = page.getByRole("region", { name: "Download your data" });
+  await expect(section.getByRole("button", { name: "Ask for my data" })).toBeVisible();
+  await expect(section).toContainText(account.email);
+  await expectAccessible(page);
+
+  await section.getByRole("button", { name: "Ask for my data" }).click();
+  await confirmItsMe(page);
+  // Either still being prepared, or (a fast dev server) already done; both are honest states.
+  await expect(section.getByText(/^(Preparing your data|Your data is ready)$/)).toBeVisible();
+
+  // Leave and come back: the request lives on the server, the page picks it up.
+  await page.goto("/browse");
+  await page.goto("/account/privacy");
+  // Inline exports (dev) finish in seconds; a batch export (Kubernetes, Cloudflare) waits for the
+  // deployment's export job, which can take many minutes: the page says so, and that is all a
+  // browser spec can see until the job has run.
+  const ready = section.getByText("Your data is ready");
+  try {
+    await expect(ready).toBeVisible({ timeout: 60_000 });
+  } catch (error) {
+    const list = (await (await request.get("/api/v1/privacy/requests")).json()) as {
+      items: { kind: string; status: string }[];
+    };
+    const status = list.items.find((item) => item.kind === "export")?.status;
+    if (status !== "processing") throw error;
+    await expect(section.getByText("Preparing your data")).toBeVisible();
+    test.skip(
+      true,
+      "the export is still processing after 60 s: a batch export finishes when the deployment's export job runs (WEBFLIX_EXPORT_EVENTS=batch)",
+    );
+  }
+  await expectAccessible(page);
+  const download = page.waitForEvent("download");
+  await section.getByRole("link", { name: "Download your data" }).click();
+  const file = await download;
+  const document = JSON.parse(await readFile(await file.path(), "utf8")) as {
+    format: string;
+    account: { email: string };
+  };
+  expect(document.format).toBe("webflix.data-export");
+  expect(document.account.email).toBe(account.email);
+
+  // The email links to the app, the token in the fragment (where the deployment has a mailbox
+  // to read back): opened on another device, signed out, it asks to sign in, comes back to the
+  // same page after signing in and choosing a profile, and downloads the same copy.
+  const mailbox = await request.get(
+    `/api/v1/diagnostics/mailbox?to=${encodeURIComponent(account.email)}`,
+  );
+  if (mailbox.status() !== 200) return;
+  const items = ((await mailbox.json()) as { items: { template: string; links: string[] }[] })
+    .items;
+  const mail = items.find((item) => item.template === "data-export-ready");
+  expect(mail, "the data-export-ready email").toBeTruthy();
+  const emailed = mail?.links.find((link) =>
+    /\/account\/privacy\/exports\/[^/#?]+#token=/.test(link),
+  );
+  expect(emailed, `the email's link (${mail?.links.join(", ")})`).toBeTruthy();
+  const link = new URL(emailed ?? "");
+  const phone = await newDevice();
+  const tab = await phone.newPage();
+  await tab.goto(`${link.pathname}${link.hash}`);
+  await expect(tab.getByRole("heading", { name: "Sign in to download your data" })).toBeVisible();
+  // The token is taken off the address bar (it never reaches a server, a log or history).
+  await expect.poll(() => new URL(tab.url()).hash).toBe("");
+  await expectAccessible(tab);
+  await tab.getByRole("link", { name: "Sign in" }).click();
+  await tab.getByLabel("Email address").fill(account.email);
+  await tab.getByLabel("Password", { exact: true }).fill(account.password);
+  await tab.getByRole("button", { name: "Sign in" }).click();
+  await expect(tab.getByRole("heading", { name: "Choose your profile to continue" })).toBeVisible();
+  await tab.getByRole("link", { name: "Choose a profile" }).click();
+  await tab.getByRole("button", { name: /^Sam/ }).click();
+  await expect(tab.getByRole("heading", { name: "Your data is ready" })).toBeVisible();
+  const second = tab.waitForEvent("download");
+  await tab.getByRole("button", { name: "Download your data" }).click();
+  const secondFile = await second;
+  const secondDocument = JSON.parse(await readFile(await secondFile.path(), "utf8")) as {
+    requestId: string;
+  };
+  expect(secondDocument.requestId).toBe(decodeURIComponent(link.pathname.split("/").at(-1) ?? ""));
+  await expect(tab.getByRole("heading", { name: "Your download has started" })).toBeVisible();
+});
+
+test("delete your account: said plainly first, scheduled after a cooling-off period, kept in one click", async ({
+  page,
+}) => {
+  const request = page.context().request;
+  await createAccount(request, { tag: "delete" });
+  await page.goto("/account/privacy");
+  const section = page.getByRole("region", { name: "Delete your account" });
+  // Everything that matters before the button.
+  for (const term of ["When you ask", "What we keep", "Your membership"]) {
+    await expect(section.getByText(term, { exact: true })).toBeVisible();
+  }
+  await expect(section).toContainText("invoices, payments and refunds");
+
+  await section.getByRole("button", { name: "Delete my account" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Delete your account?" });
+  await expect(confirm).toContainText("It will be deleted on");
+  // Keeping the account is the dialog's way out.
+  await confirm.getByRole("button", { name: "Keep my account" }).click();
+  await expect(confirm).toBeHidden();
+  await section.getByRole("button", { name: "Delete my account" }).click();
+  await confirm.getByRole("button", { name: "Delete my account" }).click();
+  await confirmItsMe(page);
+
+  const scheduled = page.getByText(/^Your account will be deleted on /);
+  await expect(scheduled).toBeVisible();
+  // Coming back: the state is the server's, and it comes first on the page.
+  await page.reload();
+  await expect(scheduled).toBeVisible();
+  const first = page.getByRole("main").getByRole("region").first();
+  await expect(first).toHaveAccessibleName("Delete your account");
+  await expectAccessible(page);
+  const list = (await (await request.get("/api/v1/privacy/requests")).json()) as {
+    items: { kind: string; status: string }[];
+  };
+  expect(list.items.find((item) => item.kind === "deletion")?.status).toBe("scheduled");
+
+  // Keeping it asks for nothing more.
+  await page.getByRole("button", { name: "Keep my account" }).click();
+  await expect(page.getByText("Your account is staying").first()).toBeVisible();
+  await expect(section.getByRole("button", { name: "Delete my account" })).toBeVisible();
+  const after = (await (await request.get("/api/v1/privacy/requests")).json()) as {
+    items: { kind: string; status: string }[];
+  };
+  expect(after.items.find((item) => item.kind === "deletion")?.status).toBe("canceled");
+});
+
+test("when the cooling-off period ends, the account is gone and this browser is signed out", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const request = page.context().request;
+  await createAccount(request, { tag: "erase" });
+  await page.goto("/account/privacy");
+  const section = page.getByRole("region", { name: "Delete your account" });
+  await section.getByRole("button", { name: "Delete my account" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete your account?" })
+    .getByRole("button", { name: "Delete my account" })
+    .click();
+  await confirmItsMe(page);
+  await expect(page.getByText(/^Your account will be deleted on /)).toBeVisible();
+  const list = (await (await request.get("/api/v1/privacy/requests")).json()) as {
+    items: { kind: string; scheduledFor: string | null }[];
+  };
+  const due = Date.parse(list.items.find((item) => item.kind === "deletion")?.scheduledFor ?? "");
+  const wait = due - Date.now();
+  test.skip(
+    !(wait < 90_000),
+    `the cooling-off period is ${Math.round(wait / 1000)} s here (WEBFLIX_DELETION_COOLING_OFF_SEC); the erasure is proven where it is short`,
+  );
+  // The member comes back after it: the session is gone, the app says so by asking to sign in.
+  await expect
+    .poll(async () => (await (await request.get("/api/v1/session")).json()).authenticated, {
+      timeout: wait + 60_000,
+      intervals: [2000],
+    })
+    .toBe(false);
+  await page.goto("/account/privacy");
+  await expect(page).toHaveURL(/\/login/);
+});
+
+test("a member without a password confirms at their provider, comes back, and picks up where they left off", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  await requireDevIssuer(request, "google");
+  const email = uniqueEmail("privacy-oidc");
+  await page.goto("/login");
+  await page.getByRole("link", { name: "Continue with Google" }).click();
+  await answerIssuer(page, { email });
+  await expect(page.getByRole("heading", { name: "Welcome to Webflix" })).toBeVisible();
+  await giveProfile(page.context().request, "Sam");
+
+  // Download your data: the provider proves it's them, and the request goes ahead on return
+  // (asking for a copy changes nothing, so there is nothing to confirm twice).
+  await page.goto("/account/privacy");
+  const exportSection = page.getByRole("region", { name: "Download your data" });
+  await exportSection.getByRole("button", { name: "Ask for my data" }).click();
+  const prompt = page.getByRole("dialog", { name: "Confirm it's you" });
+  await expect(prompt).toContainText("To download your data, confirm you're the account holder.");
+  await prompt.getByRole("link", { name: "Continue with Google" }).click();
+  await answerIssuer(page, { email });
+  await expect(exportSection.getByText(/^(Preparing your data|Your data is ready)$/)).toBeVisible();
+
+  // Delete your account: on return the confirmation is asked again, never acted on alone.
+  await page.context().clearCookies({ name: "webflix_session" });
+  await page.goto("/login");
+  await page.getByRole("link", { name: "Continue with Google" }).click();
+  await expect(page.getByRole("heading", { name: "Who's watching?" })).toBeVisible();
+  await page.getByRole("button", { name: /^Sam/ }).click();
+  await page.goto("/account/privacy");
+  const deletion = page.getByRole("region", { name: "Delete your account" });
+  await deletion.getByRole("button", { name: "Delete my account" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete your account?" })
+    .getByRole("button", { name: "Delete my account" })
+    .click();
+  await prompt.getByRole("link", { name: "Continue with Google" }).click();
+  await answerIssuer(page, { email });
+  const confirmAgain = page.getByRole("alertdialog", { name: "Delete your account?" });
+  await expect(confirmAgain).toBeVisible();
+  const before = (await (await page.context().request.get("/api/v1/privacy/requests")).json()) as {
+    items: { kind: string; status: string }[];
+  };
+  expect(before.items.some((item) => item.kind === "deletion")).toBe(false);
+  await confirmAgain.getByRole("button", { name: "Delete my account" }).click();
+  await expect(page.getByText(/^Your account will be deleted on /)).toBeVisible();
+});
+
+/** Press Tab until `target` has focus (as a keyboard user would), at most `limit` times. */
+async function tabTo(page: Page, target: ReturnType<Page["locator"]>, limit = 40): Promise<void> {
+  for (let press = 0; press < limit; press += 1) {
+    if (await target.evaluate((element) => element === document.activeElement)) return;
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
+}
+
+test("with the keyboard alone: change a choice, schedule the deletion, keep the account", async ({
+  page,
+}) => {
+  const request = page.context().request;
+  await createAccount(request, { tag: "privacy-keys" });
+  await page.goto("/account/privacy");
+  const personalisation = page.getByRole("switch", { name: "Personalised recommendations" });
+  await expect(personalisation).toBeVisible();
+  const before = await personalisation.getAttribute("aria-checked");
+  await tabTo(page, personalisation);
+  await page.keyboard.press("Space");
+  await expect(personalisation).not.toHaveAttribute("aria-checked", before ?? "");
+
+  await tabTo(page, page.getByRole("button", { name: "Delete my account" }));
+  await page.keyboard.press("Enter");
+  const confirm = page.getByRole("alertdialog", { name: "Delete your account?" });
+  await expect(confirm).toBeVisible();
+  await tabTo(page, confirm.getByRole("button", { name: "Delete my account" }), 4);
+  await page.keyboard.press("Enter");
+  const identity = page.getByRole("dialog", { name: "Confirm it's you" });
+  await expect(identity.getByLabel("Webflix password")).toBeFocused();
+  await page.keyboard.type(PASSWORD);
+  await page.keyboard.press("Enter");
+  // The new state is announced where focus lands.
+  const notice = page.getByRole("alert").filter({ hasText: /^Your account will be deleted on / });
+  await expect(notice).toBeFocused();
+  await tabTo(page, page.getByRole("button", { name: "Keep my account" }), 4);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Delete my account" })).toBeVisible();
+});
+
+test("a deletion stops the renewals, said before and while scheduled; a kept account can resume its membership", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const request = page.context().request;
+  await requireFakeProvider(request);
+  await createBareAccount(request, "delete-member");
+  await subscribe(request, { planId: "standard", card: freshCard("visa") });
+  await addProfile(request, "Sam");
+  await page.goto("/account/privacy");
+  const section = page.getByRole("region", { name: "Delete your account" });
+  // Before committing: the membership ends, and nothing more is charged.
+  await expect(
+    section.getByText(/Your membership will end on .+, and you won't be charged again\./),
+  ).toBeVisible();
+  await section.getByRole("button", { name: "Delete my account" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Delete your account?" });
+  await expect(confirm).toContainText("you won't be charged again");
+  await confirm.getByRole("button", { name: "Delete my account" }).click();
+  await confirmItsMe(page);
+  // While scheduled: what the deletion did to the membership, and no way to resume it yet.
+  await expect(
+    page.getByText(/^Your membership ends on .+\. You won't be charged again\.$/),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Resume membership" })).toHaveCount(0);
+  const session = (await (await request.get("/api/v1/session")).json()) as {
+    membership: { cancelAtPeriodEnd: boolean };
+  };
+  expect(session.membership.cancelAtPeriodEnd).toBe(true);
+
+  // Kept: the membership stays set to end, and one action resumes it, saying the next bill.
+  await page.getByRole("button", { name: "Keep my account" }).click();
+  const resume = page.getByRole("button", { name: "Resume membership" });
+  await expect(resume).toBeVisible();
+  await expect(page.getByText(/it renews on .+ at .+ a month, as before\./)).toBeVisible();
+  await expectAccessible(page);
+  await resume.click();
+  await expect(page.getByText("Your membership will continue").first()).toBeVisible();
+  await expect(resume).toHaveCount(0);
+  const after = (await (await request.get("/api/v1/session")).json()) as {
+    membership: { cancelAtPeriodEnd: boolean };
+  };
+  expect(after.membership.cancelAtPeriodEnd).toBe(false);
+});

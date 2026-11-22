@@ -74,7 +74,7 @@ export const mediaChecks: CheckDefinition[] = [
       equal(session.display.titleType, "movie", "display.titleType");
       equal(
         session.maxVideoHeight,
-        viewer.account.session.plan.maxVideoHeight,
+        viewer.account.session.plan?.maxVideoHeight,
         "maxVideoHeight (plan cap)",
       );
       check(

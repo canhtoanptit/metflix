@@ -45,7 +45,7 @@ test("add, edit, lock, unlock and delete a profile", async ({ page }) => {
   const pip = (await profiles(page)).find((profile) => profile.name === "Pip");
   expect(pip).toMatchObject({ isKids: true, maturityCeiling: "7+" });
 
-  // Edit: a name clash is caught, turning kids off and raising the rating asks for the password.
+  // Edit: a name clash is caught, turning kids off and raising the rating asks to confirm it's you.
   await page.goto("/profiles/manage");
   await page.getByRole("link", { name: "Edit Pip" }).click();
   await page.getByRole("textbox", { name: "Name" }).fill("sam");
@@ -58,12 +58,13 @@ test("add, edit, lock, unlock and delete a profile", async ({ page }) => {
   await page.getByRole("radio", { name: /13\+ · Teens/ }).click();
   await page.getByRole("button", { name: "Save" }).click();
   const confirm = page.getByRole("dialog", { name: "Confirm it's you" });
-  await confirm.getByLabel("Account password").fill("wrong-password-1");
-  await confirm.getByRole("button", { name: "Save changes" }).click();
-  await expect(confirm.getByLabel("Account password")).toHaveAccessibleDescription(/isn't right/);
+  await expect(confirm).toContainText("To raise Pip's maturity rating to 13+");
+  await confirm.getByLabel("Webflix password").fill("wrong-password-1");
+  await confirm.getByRole("button", { name: "Confirm" }).click();
+  await expect(confirm.getByLabel("Webflix password")).toHaveAccessibleDescription(/isn't right/);
   await expectAccessible(page);
-  await confirm.getByLabel("Account password").fill(PASSWORD);
-  await confirm.getByRole("button", { name: "Save changes" }).click();
+  await confirm.getByLabel("Webflix password").fill(PASSWORD);
+  await confirm.getByRole("button", { name: "Confirm" }).click();
   await expect(page).toHaveURL(/\/profiles\/manage/);
   expect((await profiles(page)).find((profile) => profile.id === pip?.id)).toMatchObject({
     name: "Pip Junior",
@@ -71,13 +72,14 @@ test("add, edit, lock, unlock and delete a profile", async ({ page }) => {
     maturityCeiling: "13+",
   });
 
-  // Lock with a PIN (PIN, then password), then the gate asks for it.
+  // Lock with a PIN, then the gate asks for it. The proof just given still holds (five
+  // minutes), so the lock is not asked for again.
   await page.getByRole("link", { name: "Edit Pip Junior" }).click();
   await page.getByRole("button", { name: "Add a PIN" }).click();
   const lock = page.getByRole("dialog", { name: "Lock this profile" });
   await lock.getByLabel("Digit 1 of 4").pressSequentially("2580");
-  await lock.getByLabel("Account password").fill(PASSWORD);
   await lock.getByRole("button", { name: "Save PIN" }).click();
+  await expect(page.getByRole("dialog", { name: "Confirm it's you" })).toHaveCount(0);
   await expect(page.getByText("Locked with a PIN")).toBeVisible();
   await page.goto("/profiles");
   await page.getByRole("button", { name: /^Pip Junior/ }).click();
@@ -93,7 +95,6 @@ test("add, edit, lock, unlock and delete a profile", async ({ page }) => {
   await page.goto(`/profiles/${pip?.id}/edit`);
   await page.getByRole("button", { name: "Remove lock" }).click();
   const unlock = page.getByRole("dialog", { name: "Remove profile lock" });
-  await unlock.getByLabel("Account password").fill(PASSWORD);
   await unlock.getByRole("button", { name: "Remove lock" }).click();
   await expect(page.getByText("Not locked")).toBeVisible();
   await page.getByRole("button", { name: "Delete profile" }).click();

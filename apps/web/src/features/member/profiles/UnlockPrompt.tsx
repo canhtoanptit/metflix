@@ -3,37 +3,35 @@ import { Avatar, Button, PinInput } from "@webflix/ui";
 import { useEffect, useState } from "react";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { possessive } from "../shared/format.ts";
-import { PasswordPrompt } from "../shared/PasswordPrompt.tsx";
 import { describeMemberError, type ProfileProof } from "../shared/privileges.ts";
 import { RetryTimer } from "../shared/RetryTimer.tsx";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 
 /**
  * Proof for changing or deleting a locked profile from another profile or the gate, placed
- * inside a dialog: its PIN, or the account password instead (which unlocks every profile).
- * `onSubmit` performs the real request with the proof; its failures come back as `error` and
- * are shown with the method that caused them.
+ * inside a dialog: its PIN, or "Confirm it's you" as the account holder instead (which unlocks
+ * every profile). `onSubmit` performs the real request with the PIN; its failures come back as
+ * `error`. `onAccountHolder` closes this prompt and asks for the account-holder proof
+ * (`useConfirmIdentity`), then repeats the request without a PIN.
  */
 export function UnlockPrompt({
   profile,
   purpose,
-  submitLabel,
   pending,
   error,
   onSubmit,
+  onAccountHolder,
 }: {
   profile: Profile;
   /** Completes "Enter Theo's PIN to …": "save your changes". */
   purpose: string;
-  /** The password step's button. */
-  submitLabel: string;
   pending: boolean;
   /** The last failure of `onSubmit`'s request. */
   error: unknown;
   onSubmit: (proof: ProfileProof) => void;
+  onAccountHolder: () => void;
 }) {
-  const [method, setMethod] = useState<"pin" | "password">("pin");
-  const [sentWith, setSentWith] = useState<"pin" | "password" | null>(null);
+  const [sentWith, setSentWith] = useState<"pin" | null>(null);
   const [pin, setPin] = useState("");
   const [attempt, setAttempt] = useState(0);
   const rate = useRetryAfter();
@@ -47,22 +45,6 @@ export function UnlockPrompt({
     setPin("");
     setAttempt((count) => count + 1);
   }, [pinFailure, track]);
-
-  if (method === "password") {
-    return (
-      <PasswordPrompt
-        intro={`Enter your account password to ${purpose}. It works for every profile on the account.`}
-        submitLabel={submitLabel}
-        pending={pending}
-        error={sentWith === "password" ? error : null}
-        onCancel={() => setMethod("pin")}
-        onSubmit={(password) => {
-          setSentWith("password");
-          onSubmit({ currentPassword: password });
-        }}
-      />
-    );
-  }
 
   const message = ApiError.is(pinFailure, "profile_pin_invalid")
     ? "Incorrect PIN. Please try again."
@@ -104,8 +86,8 @@ export function UnlockPrompt({
           {pending ? "Checking the PIN…" : ""}
         </p>
       )}
-      <Button variant="link" size="sm" onClick={() => setMethod("password")}>
-        Use the account password instead
+      <Button variant="link" size="sm" onClick={onAccountHolder}>
+        Confirm it's you instead
       </Button>
     </div>
   );

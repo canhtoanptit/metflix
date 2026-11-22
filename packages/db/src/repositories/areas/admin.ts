@@ -132,6 +132,9 @@ export function createAdminRepository(database: Database): AdminRepository {
         query = query.where("target_type", "=", filter.targetType);
       }
       if (filter.targetId !== undefined) query = query.where("target_id", "=", filter.targetId);
+      if (filter.requestId !== undefined) {
+        query = query.where("request_id", "=", filter.requestId);
+      }
       if (filter.outcome !== undefined) {
         // Rows written before the column had a value read as `succeeded`.
         const outcome = filter.outcome;

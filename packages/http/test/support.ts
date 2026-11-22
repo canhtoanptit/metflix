@@ -19,7 +19,8 @@ import { type AppContainer, type AppEnv, createApp } from "../src/index.ts";
 
 export const SEGMENT_BYTES = bytesOf(10_000, 7);
 export const SEGMENT_PATH = "720p/seg0.m4s";
-export const APPROVED_CARD = {
+/** What a sign-up with a card looked like (milestone 1): now refused by validation. */
+export const LEGACY_CARD = {
   method: "card" as const,
   cardNumber: "4242 4242 4242 4242",
   expMonth: 12,
@@ -27,7 +28,6 @@ export const APPROVED_CARD = {
   cvc: "123",
   nameOnCard: "Test Viewer",
 };
-export const DECLINED_CARD = { ...APPROVED_CARD, cardNumber: "4000000000000002" };
 
 export interface TestApp extends TestServices {
   app: Hono<AppEnv>;
@@ -113,20 +113,30 @@ export async function createTestApp(
   return { ...test, app, blobs, container, device, request };
 }
 
-/** Sign up a new account and land on a fresh profile (the onboarding journey). */
+/**
+ * Becomes a member the one way there is (§5.1): a checkout over HTTP, the card confirmed with
+ * the in-memory provider the way its form would (a card whose trial was used pays at once).
+ */
+export async function subscribe(t: TestApp, device: Device, planId: PlanId = "standard") {
+  const started = await device.api.startCheckout({ body: { planId } });
+  await t.ports.payments.confirmSetup(started.clientSecret ?? "", "visa");
+  let checkout = await device.api.confirmCheckout({ params: { id: started.id } });
+  if (checkout.status === "requires_payment") {
+    await t.ports.payments.confirmPayment(checkout.clientSecret ?? "", "visa");
+    checkout = await device.api.getCheckout({ params: { id: started.id } });
+  }
+  if (checkout.status !== "complete") throw new Error(`checkout ended ${checkout.status}`);
+  return checkout;
+}
+
+/** Sign up, become a member at checkout, and land on a fresh profile (the onboarding journey). */
 export async function onboard(
   t: TestApp,
   options: { email: string; planId?: PlanId; userAgent?: string },
 ): Promise<{ device: Device; profileId: string }> {
   const device = t.device(options.userAgent);
-  await device.api.signup({
-    body: {
-      email: options.email,
-      password: "correct horse battery",
-      planId: options.planId ?? "standard",
-      payment: APPROVED_CARD,
-    },
-  });
+  await device.api.signup({ body: { email: options.email, password: "correct horse battery" } });
+  await subscribe(t, device, options.planId ?? "standard");
   const profile = await device.api.createProfile({ body: { name: "Me", avatarId: "av-fox" } });
   await device.api.selectProfile({ body: { profileId: profile.id } });
   return { device, profileId: profile.id };

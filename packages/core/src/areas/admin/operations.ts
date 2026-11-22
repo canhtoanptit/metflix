@@ -41,10 +41,13 @@ import type {
   PendingExports,
   PlanId,
   PlanSyncResult,
+  RecommendationImportAnswer,
   RecommendationStatus,
   Refund,
+  StaffTitlePage,
   SystemHealth,
   TitleAvailability,
+  TitleAvailabilityList,
 } from "@webflix/contracts";
 import { AppError } from "../../errors.ts";
 import { toIsoString } from "../../ports/clock.ts";
@@ -52,6 +55,11 @@ import type { ServiceDependencies } from "../../services/context.ts";
 import type { ConsentPurposeName } from "../events/repository.ts";
 import type { ExperimentDesign } from "../experiments/service.ts";
 import type { AreaServices } from "../index.ts";
+import {
+  inspectRecommendations,
+  RECS_POINTER_KEY,
+  RecommendationImportError,
+} from "../personalisation/importer.ts";
 import type { AvailabilityChange, CollectionDesign } from "../personalisation/service.ts";
 import { type AuditTrail, asJson, type StaffContext, staffAction } from "./audit.ts";
 import type { DeadLetters } from "./dead-letters.ts";
@@ -133,6 +141,14 @@ export interface StaffOperations {
     syncPlans(context: StaffContext, reason: string): Promise<PlanSyncResult>;
   };
   editorial: {
+    searchTitles(query: {
+      q?: string | undefined;
+      ids?: string | undefined;
+      cursor?: string | undefined;
+      limit?: number | undefined;
+    }): Promise<StaffTitlePage>;
+    listTitleAvailability(): Promise<TitleAvailabilityList>;
+    getTitleAvailability(titleId: string): Promise<TitleAvailability>;
     getBillboard(view: BrowseView): Promise<EditorialBillboard>;
     setBillboard(
       context: StaffContext,
@@ -190,11 +206,19 @@ export interface StaffOperations {
     }): Promise<DeadLetterPage>;
     replayDeadLetter(context: StaffContext, id: string, reason: string): Promise<DeadLetter>;
     recommendations(): Promise<RecommendationStatus>;
-    importRecommendations(context: StaffContext, reason: string): Promise<RecommendationStatus>;
+    importRecommendations(
+      context: StaffContext,
+      reason: string,
+    ): Promise<RecommendationImportAnswer>;
     rollbackRecommendations(context: StaffContext, reason: string): Promise<RecommendationStatus>;
   };
   audit: {
     list(query: AuditQuery): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
+    /** The caller's own entries, `before`/`after` withheld (see `AuditTrail.listOwn`). */
+    listOwn(
+      context: StaffContext,
+      query: Omit<AuditQuery, "actorId">,
+    ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
   };
 }
 
@@ -524,6 +548,11 @@ export function createStaffOperations(
   };
 
   const editorial: StaffOperations["editorial"] = {
+    searchTitles: (query) => areas().personalisation.staffTitles(query),
+    listTitleAvailability: async () => ({
+      items: await areas().personalisation.listTitleAvailability(),
+    }),
+    getTitleAvailability: (titleId) => areas().personalisation.titleAvailability(titleId),
     getBillboard: (view) => areas().personalisation.getBillboard(view),
     setBillboard(context, view, titleIds, reason) {
       return selfAudited(
@@ -653,12 +682,57 @@ export function createStaffOperations(
     recommendations: () => areas().personalisation.recommendationStatus(),
 
     importRecommendations(context, reason) {
-      return trail.audited<RecommendationStatus>({
+      return trail.audited<RecommendationImportAnswer>({
         context,
         action: "system.recommendations_import_requested",
         target: recommendations,
         reason,
-        run: () => areas().personalisation.requestImport(),
+        run: async () => {
+          const { personalisation } = areas();
+          const answer = (
+            outcome: RecommendationImportAnswer["outcome"],
+            run: string | null,
+            detail: string | null,
+            status: RecommendationStatus,
+          ): RecommendationImportAnswer => ({ ...status, outcome, run, detail });
+          // What the importer would find, said up front (the pipeline's importer reports
+          // "nothing published" as an ordinary outcome; a queued job would only fail later).
+          const blobs = deps.recommendationArtefacts;
+          if (!blobs) {
+            return answer(
+              "no_artefact_store",
+              null,
+              "This deployment has no store to import recommendation runs from.",
+              await personalisation.recommendationStatus(),
+            );
+          }
+          if ((await blobs.head(RECS_POINTER_KEY)) === null) {
+            return answer(
+              "nothing_published",
+              null,
+              `No run is published (${RECS_POINTER_KEY} is absent).`,
+              await personalisation.recommendationStatus(),
+            );
+          }
+          let published: string;
+          try {
+            published = (await inspectRecommendations(blobs)).run;
+          } catch (error) {
+            if (!(error instanceof RecommendationImportError)) throw error;
+            return answer(
+              "invalid",
+              null,
+              error.message,
+              await personalisation.recommendationStatus(),
+            );
+          }
+          const status = await personalisation.recommendationStatus();
+          if (status.activeModel?.run === published) {
+            return answer("already_served", published, null, status);
+          }
+          return answer("queued", published, null, await personalisation.requestImport());
+        },
+        after: (result) => ({ outcome: result.outcome, run: result.run }),
       });
     },
 
@@ -676,5 +750,16 @@ export function createStaffOperations(
     },
   };
 
-  return { members, privacy, billing, editorial, experiments, system, audit: { list: trail.list } };
+  return {
+    members,
+    privacy,
+    billing,
+    editorial,
+    experiments,
+    system,
+    audit: {
+      list: trail.list,
+      listOwn: (context, query) => trail.listOwn(context.staff.subject, query),
+    },
+  };
 }

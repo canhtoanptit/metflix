@@ -116,6 +116,10 @@ cf-reset: cf-stop ## Delete the instance's local state (D1, KV, R2, Durable Obje
 CF_RECS_STORE ?= .cache/recs/cf/store
 CF_RECS_RUN ?=
 CF_RECS_RUN_FLAG := $(if $(CF_RECS_RUN),--run $(CF_RECS_RUN),)
+# CF_RECS_DEMO=1: cf-recs-import publishes and imports a demo run for the demo account's profiles
+# instead (local only; docs/RECOMMENDATIONS.md, "A demo run").
+CF_RECS_DEMO ?=
+CF_RECS_DEMO_FLAG := $(if $(CF_RECS_DEMO),--demo,)
 
 cf-lake-pull: ## Copy the event lake (R2 events/) into CF_RECS_STORE, a pipeline store directory
 	@$(CF_OPS) lake pull --store $(abspath $(CF_RECS_STORE)) $(CF_INSTANCE)
@@ -123,8 +127,8 @@ cf-lake-pull: ## Copy the event lake (R2 events/) into CF_RECS_STORE, a pipeline
 cf-recs-push: ## Copy the run CF_RECS_STORE published into R2, pointer last (CF_RECS_RUN=<run>: that version, no pointer)
 	@$(CF_OPS) recs push --target $(or $(ENV),local) --store $(abspath $(CF_RECS_STORE)) $(CF_INSTANCE) $(CF_RECS_RUN_FLAG)
 
-cf-recs-import: ## Import the run R2 publishes (or CF_RECS_RUN) into D1 and KV from outside the Worker; ENV=production
-	@$(CF_OPS) recs import --target $(or $(ENV),local) $(CF_INSTANCE) $(CF_RECS_RUN_FLAG)
+cf-recs-import: ## Import the run R2 publishes (or CF_RECS_RUN) into D1 and KV from outside the Worker; ENV=production; CF_RECS_DEMO=1: a demo run
+	@$(CF_OPS) recs import --target $(or $(ENV),local) $(CF_INSTANCE) $(CF_RECS_RUN_FLAG) $(CF_RECS_DEMO_FLAG)
 
 cf-recs-status: ## The recommendation model the Worker serves and the last import
 	@$(CF_OPS) recs status --target $(or $(ENV),local) $(CF_INSTANCE)

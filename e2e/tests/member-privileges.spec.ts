@@ -47,7 +47,7 @@ test("a kids profile can switch profiles, and nothing else", async ({ page }) =>
   await expect(page.getByRole("link", { name: "Manage profiles" })).toBeVisible();
 });
 
-test("adding a profile while parental controls are in use asks for the password", async ({
+test("adding a profile while parental controls are in use asks to confirm it's you", async ({
   page,
 }) => {
   const request = page.context().request;
@@ -58,11 +58,12 @@ test("adding a profile while parental controls are in use asks for the password"
   await page.getByRole("textbox", { name: "Name" }).fill("Guest");
   await page.getByRole("button", { name: "Add profile" }).click();
   const confirm = page.getByRole("dialog", { name: "Confirm it's you" });
-  await confirm.getByLabel("Account password").fill("not-the-password-1");
-  await confirm.getByRole("button", { name: "Add profile" }).click();
-  await expect(confirm.getByLabel("Account password")).toHaveAccessibleDescription(/isn't right/);
-  await confirm.getByLabel("Account password").fill(PASSWORD);
-  await confirm.getByRole("button", { name: "Add profile" }).click();
+  await expect(confirm).toContainText("To add a profile, confirm you're the account holder.");
+  await confirm.getByLabel("Webflix password").fill("not-the-password-1");
+  await confirm.getByRole("button", { name: "Confirm" }).click();
+  await expect(confirm.getByLabel("Webflix password")).toHaveAccessibleDescription(/isn't right/);
+  await confirm.getByLabel("Webflix password").fill(PASSWORD);
+  await confirm.getByRole("button", { name: "Confirm" }).click();
   await expect(page).toHaveURL(/\/profiles(\/manage)?$/);
   const profiles = (await (await request.get("/api/v1/profiles")).json()) as {
     items: Array<{ name: string; maturityCeiling: string }>;
@@ -72,7 +73,7 @@ test("adding a profile while parental controls are in use asks for the password"
   expect(profiles.items.find((profile) => profile.name === "Guest")?.maturityCeiling).toBe("18+");
 });
 
-test("a locked profile asks for its PIN to change it, and its PIN or the password to delete it", async ({
+test("a locked profile asks for its PIN to change it, and its PIN or the account holder to delete it", async ({
   page,
 }) => {
   const request = page.context().request;
@@ -93,7 +94,7 @@ test("a locked profile asks for its PIN to change it, and its PIN or the passwor
 
   // Changing it from Sam's session: said up front, then asked for at save.
   await page.goto(`/profiles/${pip}/edit`);
-  await expect(page.getByText("Pip is locked. You'll be asked for Pip's PIN")).toBeVisible();
+  await expect(page.getByText("Pip is locked. You'll be asked for Pip's PIN, or to")).toBeVisible();
   await page.getByRole("textbox", { name: "Name" }).fill("Pip Two");
   await page.getByRole("button", { name: "Save" }).click();
   const unlock = page.getByRole("dialog", { name: "Profile lock is on" });
@@ -109,7 +110,7 @@ test("a locked profile asks for its PIN to change it, and its PIN or the passwor
     .poll(async () => (await profiles()).map((profile) => profile.name))
     .toContain("Pip Two");
 
-  // Deleting it: confirm, then prove it, here with the account password instead of the PIN.
+  // Deleting it: confirm, then prove it, here as the account holder instead of with the PIN.
   await page.goto(`/profiles/${pip}/edit`);
   await page.getByRole("button", { name: "Delete profile" }).click();
   await page
@@ -120,9 +121,11 @@ test("a locked profile asks for its PIN to change it, and its PIN or the passwor
   await expect(
     proof.getByText("Enter Pip Two's PIN to delete it.", { exact: false }),
   ).toBeVisible();
-  await proof.getByRole("button", { name: "Use the account password instead" }).click();
-  await proof.getByLabel("Account password").fill(PASSWORD);
-  await proof.getByRole("button", { name: "Delete profile" }).click();
+  await proof.getByRole("button", { name: "Confirm it's you instead" }).click();
+  const confirm = page.getByRole("dialog", { name: "Confirm it's you" });
+  await expect(confirm).toContainText("To delete Pip Two, confirm you're the account holder.");
+  await confirm.getByLabel("Webflix password").fill(PASSWORD);
+  await confirm.getByRole("button", { name: "Confirm" }).click();
   await expect.poll(async () => (await profiles()).map((profile) => profile.name)).toEqual(["Sam"]);
 });
 

@@ -12,6 +12,7 @@
  *   node scripts/ops.ts lake pull   --store <dir>              event lake (R2) → pipeline store
  *   node scripts/ops.ts recs push   --store <dir> [--run <r>]  pipeline artefacts → R2
  *   node scripts/ops.ts recs import [--run <r>] [--from <dir>] import a run from outside the Worker
+ *   node scripts/ops.ts recs import --demo [--replace]       publish and import a demo run (local)
  *   node scripts/ops.ts recs status | recs rollback
  *   node scripts/ops.ts jobs export|erase|compact|run   the pipeline's privacy jobs against the
  *                                                       running local Worker (lib/pipeline-jobs.ts)
@@ -44,7 +45,13 @@ import {
   type Target,
   WRANGLER_CONFIG,
 } from "./lib/platform.ts";
-import { importRun, personalisationService, pullLake, pushRecs } from "./lib/recs.ts";
+import {
+  importDemoRun,
+  importRun,
+  personalisationService,
+  pullLake,
+  pushRecs,
+} from "./lib/recs.ts";
 import { completeDevVars, isGenerated } from "./lib/secrets.ts";
 import { MANIFEST_KEY, readManifestText, seed, seedsDemo } from "./lib/seed.ts";
 
@@ -75,7 +82,10 @@ const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status|dev-
                               readers must stop caching under the old generation first)
   --force                     media: re-check every object; seed: re-apply even if unchanged
                               (resets the demo account)
-  --demo | --no-demo          seed: the demo account (default: locally yes, in production no)
+  --demo | --no-demo          seed: the demo account (default: locally yes, in production no);
+                              recs import --demo: publish and import a demo run for the demo
+                              account's profiles (local; run id *-de00de00, manifest code.demo)
+  --replace                   recs import --demo: even while a fresh pipeline run is served
   --store <dir>               lake, recs push: a pipeline store directory (filesystem BlobStore
                               layout, e.g. .cache/recs/<preset>/store)
   --run <run>                 recs: a version (recs/v=<run>/) instead of the published pointer
@@ -290,7 +300,13 @@ async function recsCommand(
   sub: string | undefined,
   target: Target,
   instance: LocalInstance,
-  values: { store?: string | undefined; run?: string | undefined; from?: string | undefined },
+  values: {
+    store?: string | undefined;
+    run?: string | undefined;
+    from?: string | undefined;
+    demo?: boolean | undefined;
+    replace?: boolean | undefined;
+  },
 ): Promise<number> {
   switch (sub) {
     case "push": {
@@ -305,6 +321,17 @@ async function recsCommand(
       return 0;
     }
     case "import":
+      if (values.demo) {
+        await withPlatform(target, instance, async (platform) => {
+          const { demo, imported } = await importDemoRun(platform, {
+            replace: values.replace === true,
+          });
+          say(
+            `recs demo run ${demo.run} (lists for ${demo.profiles.map((p) => p.profileId).join(", ")}; none for ${demo.skipped.join(", ") || "-"}): ${JSON.stringify(imported)}`,
+          );
+        });
+        return 0;
+      }
       await withPlatform(target, instance, async (platform) => {
         const started = Date.now();
         const result = await importRun(platform, {
@@ -359,6 +386,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       "recs-bin": { type: "string" },
       run: { type: "string" },
       from: { type: "string" },
+      replace: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });

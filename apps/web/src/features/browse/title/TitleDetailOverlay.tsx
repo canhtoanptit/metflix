@@ -27,6 +27,7 @@ import {
 } from "../../../app/overlay/titleOverlay.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
+import { TelemetryScope } from "../../../app/telemetry/index.ts";
 import { takeClipHandoff } from "../common/clipHandoff.ts";
 import { canAnimate, durationMs, easing } from "../common/motion.ts";
 import { findCachedCard } from "../library/cache.ts";
@@ -236,74 +237,88 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
   const blocking = detail.isError && !title;
 
   return (
-    <RadixDialog.Root
-      open
-      onOpenChange={(open) => {
-        if (!open && !closing) close();
-      }}
-    >
-      <RadixDialog.Portal>
-        <RadixDialog.Overlay
-          ref={scrollerRef}
-          data-testid="title-overlay"
-          className="fixed inset-0 z-(--z-overlay) overflow-y-auto overscroll-contain"
-        >
-          <div ref={backdropRef} aria-hidden className="fixed inset-0 bg-scrim" />
-          <div className="relative flex min-h-full justify-center sm:px-6 sm:py-8 md:py-10">
-            <RadixDialog.Content
-              ref={attachPanel}
-              aria-describedby={undefined}
-              onOpenAutoFocus={(event) => {
-                event.preventDefault();
-                (playRef.current ?? panelRef.current)?.focus({ preventScroll: true });
-              }}
-              onCloseAutoFocus={(event) => {
-                event.preventDefault();
-                const target =
-                  takeOverlayReturnFocus() ??
-                  (opener?.isConnected && opener !== document.body ? opener : null);
-                target?.focus({ preventScroll: true });
-              }}
-              onEscapeKeyDown={(event) => {
-                // A control with its own Escape (the rating choices) closes first.
-                if ((event.target as Element | null)?.closest?.("[data-escape-local]")) {
+    // What the member does in the details (list, rating, the hero clip, More Like This) is
+    // reported from the details, whatever opened them.
+    <TelemetryScope context={DETAIL_SCOPE}>
+      <RadixDialog.Root
+        open
+        onOpenChange={(open) => {
+          if (!open && !closing) close();
+        }}
+      >
+        <RadixDialog.Portal>
+          <RadixDialog.Overlay
+            ref={scrollerRef}
+            data-testid="title-overlay"
+            className="fixed inset-0 z-(--z-overlay) overflow-y-auto overscroll-contain"
+          >
+            <div ref={backdropRef} aria-hidden className="fixed inset-0 bg-scrim" />
+            <div className="relative flex min-h-full justify-center sm:px-6 sm:py-8 md:py-10">
+              <RadixDialog.Content
+                ref={attachPanel}
+                aria-describedby={undefined}
+                onOpenAutoFocus={(event) => {
                   event.preventDefault();
-                }
-              }}
-              tabIndex={-1}
-              // Every transform below is written for a top-left origin.
-              style={{ transformOrigin: "0 0" }}
-              className="relative w-full max-w-detail self-start text-fg outline-none max-sm:min-h-dvh"
-            >
-              {/* The panel's surface, separate from its content so the picture can fly in
+                  (playRef.current ?? panelRef.current)?.focus({ preventScroll: true });
+                }}
+                onCloseAutoFocus={(event) => {
+                  event.preventDefault();
+                  const target =
+                    takeOverlayReturnFocus() ??
+                    (opener?.isConnected && opener !== document.body ? opener : null);
+                  target?.focus({ preventScroll: true });
+                }}
+                onEscapeKeyDown={(event) => {
+                  // A control with its own Escape (the rating choices) closes first.
+                  if ((event.target as Element | null)?.closest?.("[data-escape-local]")) {
+                    event.preventDefault();
+                  }
+                }}
+                tabIndex={-1}
+                // Every transform below is written for a top-left origin.
+                style={{ transformOrigin: "0 0" }}
+                className="relative w-full max-w-detail self-start text-fg outline-none max-sm:min-h-dvh"
+              >
+                {/* The panel's surface, separate from its content so the picture can fly in
                   ahead of it. */}
-              <div
-                ref={frameRef}
-                aria-hidden
-                className="absolute inset-0 bg-surface-2 shadow-xl sm:rounded-dialog"
-              />
-              <RadixDialog.Title className="sr-only">{name}</RadixDialog.Title>
-              {phone ? (
-                // Phones: a bar that stays at the top. Clear over the picture; once the page
-                // scrolls past it, solid with the title, so the close button never sits on text.
                 <div
-                  data-testid="detail-phone-bar"
-                  data-solid={barSolid || undefined}
-                  className={cx(
-                    "sticky top-0 z-(--z-raised) -mb-14 flex h-14 items-center gap-3 ps-5 pe-3",
-                    "border-b transition-colors duration-base ease-standard",
-                    barSolid ? "border-line-subtle bg-surface-2" : "border-transparent",
-                  )}
-                >
-                  <p
-                    aria-hidden
+                  ref={frameRef}
+                  aria-hidden
+                  className="absolute inset-0 bg-surface-2 shadow-xl sm:rounded-dialog"
+                />
+                <RadixDialog.Title className="sr-only">{name}</RadixDialog.Title>
+                {phone ? (
+                  // Phones: a bar that stays at the top. Clear over the picture; once the page
+                  // scrolls past it, solid with the title, so the close button never sits on text.
+                  <div
+                    data-testid="detail-phone-bar"
+                    data-solid={barSolid || undefined}
                     className={cx(
-                      "min-w-0 flex-1 truncate type-title text-fg transition-opacity duration-base ease-standard",
-                      barSolid ? "opacity-100" : "opacity-0",
+                      "sticky top-0 z-(--z-raised) -mb-14 flex h-14 items-center gap-3 ps-5 pe-3",
+                      "border-b transition-colors duration-base ease-standard",
+                      barSolid ? "border-line-subtle bg-surface-2" : "border-transparent",
                     )}
                   >
-                    {name}
-                  </p>
+                    <p
+                      aria-hidden
+                      className={cx(
+                        "min-w-0 flex-1 truncate type-title text-fg transition-opacity duration-base ease-standard",
+                        barSolid ? "opacity-100" : "opacity-0",
+                      )}
+                    >
+                      {name}
+                    </p>
+                    <RadixDialog.Close asChild>
+                      <IconButton
+                        ref={closeRef}
+                        label="Close"
+                        icon={CloseIcon}
+                        variant="glass"
+                        size="md"
+                      />
+                    </RadixDialog.Close>
+                  </div>
+                ) : (
                   <RadixDialog.Close asChild>
                     <IconButton
                       ref={closeRef}
@@ -311,60 +326,58 @@ export function TitleDetailOverlay({ titleId, closing, onExited }: TitleDetailOv
                       icon={CloseIcon}
                       variant="glass"
                       size="md"
+                      className="absolute end-3 top-3 z-(--z-raised)"
                     />
                   </RadixDialog.Close>
-                </div>
-              ) : (
-                <RadixDialog.Close asChild>
-                  <IconButton
-                    ref={closeRef}
-                    label="Close"
-                    icon={CloseIcon}
-                    variant="glass"
-                    size="md"
-                    className="absolute end-3 top-3 z-(--z-raised)"
-                  />
-                </RadixDialog.Close>
-              )}
+                )}
 
-              {blocking ? (
-                <BlockedTitle
-                  error={detail.error}
-                  onRetry={() => detail.refetch()}
-                  onClose={close}
-                />
-              ) : (
-                <>
-                  <DetailHero
-                    key={titleId}
-                    pictureRef={heroRef}
-                    originImage={originImage}
-                    handoff={titleId === handoff?.titleId ? handoff : null}
-                    title={title}
-                    seed={seed}
-                    entered={entered && !closing}
-                    playRef={playRef}
-                    phone={phone}
+                {blocking ? (
+                  <BlockedTitle
+                    error={detail.error}
+                    onRetry={() => detail.refetch()}
+                    onClose={close}
                   />
-                  <div ref={bodyRef} className="relative px-5 pb-12 sm:px-10 md:px-12">
-                    {title ? (
-                      <DetailBody title={title} phone={phone} />
-                    ) : (
-                      <div className="grid gap-8 pt-2 md:grid-cols-[2fr_1fr]">
-                        <SkeletonText lines={4} />
-                        <SkeletonText lines={3} />
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </RadixDialog.Content>
-          </div>
-        </RadixDialog.Overlay>
-      </RadixDialog.Portal>
-    </RadixDialog.Root>
+                ) : (
+                  <>
+                    <DetailHero
+                      key={titleId}
+                      pictureRef={heroRef}
+                      originImage={originImage}
+                      handoff={titleId === handoff?.titleId ? handoff : null}
+                      title={title}
+                      seed={seed}
+                      entered={entered && !closing}
+                      playRef={playRef}
+                      phone={phone}
+                    />
+                    <div ref={bodyRef} className="relative px-5 pb-12 sm:px-10 md:px-12">
+                      {title ? (
+                        <DetailBody title={title} phone={phone} />
+                      ) : (
+                        <div className="grid gap-8 pt-2 md:grid-cols-[2fr_1fr]">
+                          <SkeletonText lines={4} />
+                          <SkeletonText lines={3} />
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </RadixDialog.Content>
+            </div>
+          </RadixDialog.Overlay>
+        </RadixDialog.Portal>
+      </RadixDialog.Root>
+    </TelemetryScope>
   );
 }
+
+const DETAIL_SCOPE = {
+  surface: "title-detail",
+  rowId: null,
+  rowRank: null,
+  rank: null,
+  policy: null,
+} as const;
 
 /**
  * Phones: whether the overlay has scrolled the picture out from under its top bar (the bar then
@@ -427,14 +440,25 @@ function BlockedTitle({
 }) {
   const described = describeError(error);
   const restricted = ApiError.is(error, "maturity_restricted");
+  // A title that left Webflix (or is outside its availability window) answers exactly like one
+  // that never existed: the same words for both, and a way back.
+  const gone = ApiError.is(error, "not_found");
   return (
-    <div className="relative px-6 pt-16 pb-12">
+    <div className="relative px-6 pt-16 pb-12" data-testid="title-unavailable">
       <ErrorState
-        title={restricted ? "Not available on this profile" : described.title}
+        title={
+          restricted
+            ? "Not available on this profile"
+            : gone
+              ? "This title isn't available"
+              : described.title
+        }
         description={
           restricted
             ? "This title is rated above this profile's maturity setting."
-            : described.description
+            : gone
+              ? "It may have left Webflix, or the link may be incomplete. There's plenty more to watch."
+              : described.description
         }
         reference={described.reference}
         action={
@@ -444,7 +468,7 @@ function BlockedTitle({
                 Try again
               </Button>
             ) : null}
-            <Button variant="outline" onClick={onClose}>
+            <Button variant={described.retryable ? "outline" : "primary"} onClick={onClose}>
               Back to browsing
             </Button>
           </>

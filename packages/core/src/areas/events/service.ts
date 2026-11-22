@@ -139,6 +139,8 @@ export interface EventsService extends AreaModule {
   subjectKey(kind: SubjectKind, id: string): Promise<string>;
   /** The `AreaSeams.forgetProfileBehaviour` seam (see areas/module.ts). */
   forgetProfileBehaviour(input: { accountId: string; profileId: string }): Promise<void>;
+  /** The `AreaSeams.accountDeletionScheduled` seam (see areas/module.ts). */
+  accountDeletionScheduled(accountId: string): Promise<boolean>;
   staff: EventsStaffMethods;
 }
 
@@ -372,7 +374,10 @@ export function createEventsService(
     requestExport: (auth) => privacy.requestExport(auth),
 
     async listPrivacyRequests(auth) {
-      return { items: await privacy.list(auth.session.accountId, { withLink: true }) };
+      return {
+        items: await privacy.list(auth.session.accountId, { withLink: true }),
+        terms: privacy.terms(),
+      };
     },
 
     downloadExport: (auth, requestId, token) => privacy.download(auth, requestId, token),
@@ -412,6 +417,13 @@ export function createEventsService(
         },
       ]);
       deps.logger.info("events.profile_behaviour_forgotten", {});
+    },
+
+    async accountDeletionScheduled(accountId) {
+      const requests = await deps.repos.events.listPrivacyRequests(accountId);
+      return requests.some(
+        (request) => request.kind === "deletion" && request.status === "scheduled",
+      );
     },
     staff,
   };

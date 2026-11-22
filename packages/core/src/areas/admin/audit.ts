@@ -131,6 +131,15 @@ export interface AuditTrail {
     },
   ): Promise<void>;
   list(query: AuditQuery): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
+  /**
+   * The entries `subject` made, for a staff member without the admin role: `before` and `after`
+   * withheld (they can hold member data the caller's role does not, or no longer, cover), except
+   * the error code an action ended with (`after.error`).
+   */
+  listOwn(
+    subject: string,
+    query: Omit<AuditQuery, "actorId">,
+  ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
   /** Marks `unknown` what stayed `pending` past `PENDING_AUDIT_TIMEOUT_MS`; how many. */
   sweepPendingAudit(): Promise<number>;
 }
@@ -199,11 +208,13 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
       canonical(asked) === canonical(spec.parameters ?? null);
     if (!same) {
       throw new AppError("staff_action_conflict", {
+        auditId: first.id,
         detail: `This idempotency key was used for another request (audit entry ${first.id}).`,
       });
     }
     if (first.outcome !== "succeeded") {
       throw new AppError("staff_action_conflict", {
+        auditId: first.id,
         detail:
           first.outcome === "pending"
             ? `The first attempt with this key is still running (audit entry ${first.id}).`
@@ -212,6 +223,35 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
     }
     log.info("admin.idempotent_replay", { auditId: first.id, action: first.action });
     return spec.replay ? spec.replay(first.after) : (first.after as T);
+  }
+
+  async function listPage(
+    query: AuditQuery,
+  ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }> {
+    const limit = query.limit ?? DEFAULT_AUDIT_PAGE;
+    let before: { createdAt: number; id: string } | null = null;
+    if (query.cursor !== undefined) {
+      const decoded = decodeCursor(query.cursor, AuditCursor);
+      if (!decoded) throw invalidCursor();
+      before = { createdAt: decoded.c, id: decoded.i };
+    }
+    const rows = await repos.admin.listAudit(
+      {
+        actorId: query.actorId,
+        targetType: query.targetType,
+        targetId: query.targetId,
+        outcome: query.outcome,
+        requestId: query.requestId,
+      },
+      { before, limit: limit + 1 },
+    );
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      items: page.map(presentAuditEntry),
+      nextCursor:
+        rows.length > limit && last ? encodeCursor({ c: last.createdAt, i: last.id }) : null,
+    };
   }
 
   async function settle(
@@ -260,6 +300,15 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
         await settle(pending.id, failureOutcome(error, spec.singleStep ?? true), {
           error: errorCode(error),
         });
+        // A billing action (the ones with a key) that a dependency left unanswered may have
+        // taken effect: the area's "try again in a moment" would invite a second attempt, so the
+        // staff member is told what is known instead.
+        if (key !== null && error instanceof AppError && error.code === "service_unavailable") {
+          throw new AppError("service_unavailable", {
+            detail: `This change could not be confirmed (a service did not answer in time), so it is not known whether it took effect: see audit entry ${pending.id}. Check the member before acting again. Sending this same request again with the same idempotency key never acts twice; a new key might.`,
+            cause: error,
+          });
+        }
         throw error;
       }
       await settle(pending.id, "succeeded", spec.after ? spec.after(result) : asJson(result));
@@ -292,29 +341,20 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
       }
     },
 
-    async list(query) {
-      const limit = query.limit ?? DEFAULT_AUDIT_PAGE;
-      let before: { createdAt: number; id: string } | null = null;
-      if (query.cursor !== undefined) {
-        const decoded = decodeCursor(query.cursor, AuditCursor);
-        if (!decoded) throw invalidCursor();
-        before = { createdAt: decoded.c, id: decoded.i };
-      }
-      const rows = await repos.admin.listAudit(
-        {
-          actorId: query.actorId,
-          targetType: query.targetType,
-          targetId: query.targetId,
-          outcome: query.outcome,
-        },
-        { before, limit: limit + 1 },
-      );
-      const page = rows.slice(0, limit);
-      const last = page.at(-1);
+    list: (query) => listPage(query),
+
+    async listOwn(subject, query) {
+      const page = await listPage({ ...query, actorId: subject });
       return {
-        items: page.map(presentAuditEntry),
-        nextCursor:
-          rows.length > limit && last ? encodeCursor({ c: last.createdAt, i: last.id }) : null,
+        items: page.items.map((item) => {
+          const error = (item.after as { error?: unknown } | null)?.error;
+          return {
+            ...item,
+            before: null,
+            after: typeof error === "string" ? { error } : null,
+          };
+        }),
+        nextCursor: page.nextCursor,
       };
     },
 

@@ -1,5 +1,6 @@
 import type { EpisodeRef, Progress, RowLayout, TitleCard } from "@webflix/contracts";
 import { useSyncExternalStore } from "react";
+import type { TelemetryContext } from "../../../app/telemetry/index.ts";
 
 /**
  * One hover preview at a time, for the whole signed-in shell. Rows and grids *request* a
@@ -33,6 +34,10 @@ export interface PreviewRequest {
    * was ready in time, and the preview loads its artwork itself.
    */
   art?: string | null;
+  /** Where the card sits (surface, row, positions, policy): what the preview reports with. */
+  context?: TelemetryContext | null;
+  /** Called when the card is opened from the preview (details or Play). */
+  onOpen?: () => void;
 }
 
 interface State {

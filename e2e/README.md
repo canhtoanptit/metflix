@@ -132,6 +132,16 @@ Watching, and sign-out. A fresh account has nothing another spec can touch, so n
 putting back and nothing needs to run serially. Second devices are `newDevice()` contexts
 (throttled like the page and closed after the test).
 
+`createAccount` is HTTP only and makes a member the only way there is (no card ever reaches
+Webflix): it signs up (`{email, password}`), checks out at the fake payment provider
+(`becomeMember`: `POST /billing/checkout`, the card confirmed at `/_pay/api/confirm` with a
+labelled test card of its own, `POST /billing/checkout/:id/confirm`), moves the account's test
+clock past the trial so the membership is active and paid, then creates and selects the profile.
+It takes about as long as milestone 1's sign-up with a card did (password hashing dominates:
+median 146 ms against 135 ms for sign-up, profile and selection alone, measured on a dev API). It
+needs the fake provider: against a deployment without it (production configuration) the specs that
+need a member cannot run. `signUp` alone gives an account without a membership.
+
 **Content-Security-Policy violations fail the spec.** Every browser context watches the
 console, and a CSP violation (a blocked script, style, image, media or connection) fails the
 spec that caused it, with the blocked URL and the directive. A blocked resource is a broken page
@@ -207,7 +217,8 @@ hls.js path like the other desktop engines.
 - Import `test` and `expect` from `./fixtures.ts`, and account and catalogue helpers from
   `./api.ts`.
 - Read-only on the demo account: `test.use({ demo: "Alex" })`. Anything that changes data:
-  `createAccount(page.context().request, { tag })`.
+  `createAccount(page.context().request, { tag })` (a paying member; `signUp` for an account
+  without one).
 - Never hard-code a title id, an asset, a duration or which title has a clip.
 - Assert on the destination screen, not on the URL alone. The URL changes as navigation starts,
   while the previous screen (and its fields) is still on screen.

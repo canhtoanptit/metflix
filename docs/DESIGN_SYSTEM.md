@@ -62,7 +62,7 @@ Built on Radix primitives (focus management, roles, keyboard) and the tokens abo
 | Disclosure | `Tabs` (`underline`/`pill`), `Accordion` (`faq`/`plain`) | Use `SegmentedControl`, not `Tabs`, when nothing is shown or hidden as panels. |
 | Layout | `Gutter`, `PageContainer`, `Stack`, `Cluster`, `Surface`, `Separator`, `SkipLink`, `LazyMount`, `UiProvider` | `LazyMount` mounts rows shortly before they scroll into view; give it a same-size placeholder. |
 | Browse | `RowSlider`, `RowSliderSkeleton`, `RowHeaderLink`, `TitleTile`, `TitleTileSkeleton`, `sliderImageSizes` | See §4. |
-| Hooks | `useReducedMotion`, `useCanHover`, `useMediaQuery`, `useInView`, `mergeRefs`, `useLatest` | |
+| Hooks | `useReducedMotion`, `useCanHover`, `useMediaQuery`, `useInView`, `mergeRefs`, `useMergedRefs`, `useLatest` | Combine a component's ref with a ref that starts something (an observer, `useImpressionRef`) with `useMergedRefs`: stable across renders, and every ref's cleanup runs. `mergeRefs` keeps cleanups too but makes a new ref per call, so React re-attaches it on every render: plain refs only. |
 | Testing | `@webflix/ui/testing`: `installDomPolyfills`, `setMediaMatcher`, `expectNoA11yViolations` | |
 
 ---
@@ -110,6 +110,10 @@ Rows load the artwork of their off-page cards once seen and idle, or when a pagi
 
 Card corners: the Originals mark top-start, the one badge the server picked (Top 10 or a status ribbon) top-end; the foot belongs to the artwork's own title treatment. A ribbon is one line: on narrow frames (under 11rem: posters, phones) it says one short word (`TITLE_BADGE_SHORT_LABELS`: "New", "Leaving"), so it never reaches the mark; the full label stays in the link's name. Durations and other metadata go under the picture, not on it. Progress reads as time left from one shared formatter (`formatTimeLeft`, `formatTimeLeftSpoken`, `progressFraction` in `@webflix/contracts`): "12m left", seconds under two minutes, "Finished" under a full bar once completed.
 
+**Milestone 2 rows** (`home/BrowseRow.tsx`, `RowHeading`). Rows are still drawn from `layout`; the heading alone marks two kinds, inside the heading's own line so a row and its loading placeholder keep one height: the personal row (`top-picks`, "Top Picks for {name}") carries the profile's picture before the server's title and claims nothing more; a curated collection (`collection`) is signed with the Originals' eyebrow, the W mark and "Collection" (above the title on phones), and is named "Collection: {name}". The learned billboard is not marked: staff-pinned titles share that slot, so the page cannot tell a model's pick from an editor's. A row that disappears (a collection withdrawn, the page recomposed) ends quietly where it is: row pages are silent queries. A title staff made unavailable answers `not_found` like one that never existed; the detail overlay says "This title isn't available" with a way back.
+
+**Behaviour events** (`common/telemetry.ts`, over the app's telemetry module). Positions are 1-based and are what the member saw: the billboard is module 1 (`{view}:billboard`), rows follow in screen order across batches (an empty row takes no number), a card's `rank` is its place in its row; each row keeps the `policy` of the batch that brought it. An impression is one per appearance: a card that leaves the screen entirely and returns is observed again. Opens report from the overlay host with the context the clicked card noted (`cardLinkProps`, `noteTitleOpen`); Play from a card's preview or the billboard is an open too (the ranker credits a card only through a `title.open` from it). Pages whose ranking depends on an experiment assignment are cached per assignment (`common/queries.ts`, `app/session/experiments.ts`; a client-side experiment reads its variant with `useExperimentVariant`).
+
 ---
 
 ## 5. App platform (`apps/web`)
@@ -128,11 +132,13 @@ src/
                               /my-list, /search, /title/$titleId (→ overlay)
       shell/  home/  genre/  my-list/  search/  title/  notifications/  library/
     member/                   MEMBER + WATCH ENGINEER
-      routes.tsx              /, /login, /logout, /signup (+ /plan, /payment, /profile),
-                              /profiles, /profiles/manage, /profiles/new,
-                              /profiles/$profileId/edit, /account (+ /plan, /cancel,
-                              /devices, /security), /account/activity
-      marketing/  auth/  signup/  profiles/  account/
+      routes.tsx              /, /login, /logout, /signup (+ /plan, /payment, /confirm,
+                              /profile), /profiles, /profiles/manage, /profiles/new,
+                              /profiles/$profileId/edit, /account (+ /membership, with
+                              /plan, /cancel, /payment, /invoices, /checkout, /confirm
+                              under it; /devices, /security), /account/activity
+      marketing/  auth/  signup/  profiles/  account/  billing/ (checkout, the
+                              provider's form, membership copy: shared by signup/ and account/)
     watch/                    MEMBER + WATCH ENGINEER — /watch/$titleId?episode=&t=
   mocks/  reference/          platform (dev only)
 ```

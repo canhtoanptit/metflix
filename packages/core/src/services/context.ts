@@ -12,7 +12,6 @@ import type { StreamGate } from "../ports/stream-gate.ts";
 import type { MediaTokens } from "../ports/token-signer.ts";
 import type { Repositories } from "../repositories/ports.ts";
 import type { ProfileRecord, SessionRecord } from "../repositories/records.ts";
-import type { BillingProvider } from "./subscriptions.ts";
 
 /**
  * Everything the application services need: ports only, no runtime or driver. Milestone 2's
@@ -28,7 +27,6 @@ export interface ServiceDependencies extends AreaPorts {
   jobs: JobQueue;
   passwords: PasswordHasher;
   mediaTokens: MediaTokens;
-  billing: BillingProvider;
   clock: Clock;
   ids: IdGenerator;
   logger: Logger;

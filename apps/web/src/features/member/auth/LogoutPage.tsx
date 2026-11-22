@@ -4,6 +4,7 @@ import { Button, CheckCircleIcon, Spinner } from "@webflix/ui";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { sessionCache } from "../../../app/session/session.ts";
+import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberHeader } from "../shared/Chrome.tsx";
 import { useCountdown } from "../shared/useRetryAfter.ts";
@@ -25,6 +26,9 @@ export function LogoutPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // Events queued as this member must not be sent once the server no longer knows them (they
+    // would be stamped anonymous) nor reach the next person to sign in on this device.
+    discardPendingEvents();
     api()
       .logout()
       .catch(() => {

@@ -265,6 +265,72 @@ describe("consent and pausing", () => {
     expect(server.sent[0]?.body.consent).toEqual({ analytics: true, personalisation: false });
   });
 
+  it("discards what is queued at once: nothing of it is ever sent", async () => {
+    const { sdk, server } = telemetry();
+    sdk.track("list.add", { titleId: "t-1" });
+    sdk.track("list.add", { titleId: "t-2" });
+    sdk.discard();
+    expect(sdk.pending).toBe(0);
+    await vi.runAllTimersAsync();
+    await sdk.flush();
+    expect(server.sent).toHaveLength(0);
+  });
+
+  it("abandons a request in flight: aborted, and its answer never removes newer events", async () => {
+    const answers: ((response: Response) => void)[] = [];
+    const signals: AbortSignal[] = [];
+    const sent: Sent[] = [];
+    const fetch = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), init: init ?? {}, body: JSON.parse(String(init?.body)) });
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<Response>((resolve) => answers.push(resolve));
+    }) as unknown as typeof globalThis.fetch;
+    const { sdk } = telemetry({ fetch });
+    sdk.track("list.add", { titleId: "t-old" });
+    const first = sdk.flush();
+    expect(sent).toHaveLength(1);
+    sdk.discard();
+    expect(signals[0]?.aborted).toBe(true);
+    sdk.track("list.add", { titleId: "t-new" });
+    // The abandoned request's answer arrives anyway (it had left before the abort).
+    answers[0]?.(new Response(JSON.stringify({ accepted: 1, dropped: 0 }), { status: 202 }));
+    await first;
+    expect(sdk.pending).toBe(1);
+    const second = sdk.flush();
+    answers[1]?.(new Response(JSON.stringify({ accepted: 1, dropped: 0 }), { status: 202 }));
+    await second;
+    expect(sent.map((request) => request.body.events.map((event) => event.payload))).toEqual([
+      [{ titleId: "t-old" }],
+      [{ titleId: "t-new" }],
+    ]);
+    expect(sdk.pending).toBe(0);
+  });
+
+  it("shuts down without sending when asked not to flush", async () => {
+    const { sdk, server } = telemetry();
+    sdk.track("list.add", { titleId: "t-1" });
+    sdk.discard();
+    sdk.shutdown({ flush: false });
+    sdk.track("list.add", { titleId: "t-2" });
+    await vi.runAllTimersAsync();
+    expect(server.sent).toHaveLength(0);
+  });
+
+  it("records when a held event happened, not when it was handed over", async () => {
+    const { sdk, server } = telemetry();
+    sdk.track(
+      "title.open",
+      { titleId: "t-1" },
+      {},
+      { occurredAt: Date.UTC(2026, 10, 22, 9, 59, 58) },
+    );
+    await sdk.flush();
+    expect(server.sent[0]?.body.events[0]?.occurredAt).toBe("2026-11-22T09:59:58.000Z");
+    expect(server.sent[0]?.body.events[0]?.eventId.slice(0, 8)).toBe(
+      uuidV7(Date.UTC(2026, 10, 22, 9, 59, 58)).slice(0, 8),
+    );
+  });
+
   it("collects nothing while disabled (a kids profile is active)", () => {
     const { sdk } = telemetry();
     sdk.setEnabled(false);
@@ -326,12 +392,114 @@ describe("sampling and impressions", () => {
     see(0.8);
     await vi.advanceTimersByTimeAsync(1000);
     expect(sdk.pending).toBe(1);
+    // Still partly on screen, then back: the same appearance, no second impression.
+    const counted = () =>
+      sdk.pending + server.sent.flatMap((request) => request.body.events).length;
     see(0.1);
     see(0.9);
     await vi.advanceTimersByTimeAsync(5000);
+    expect(counted()).toBe(1);
+    // Gone entirely, then back for a second: a new appearance, a new impression.
+    see(0);
+    see(0.9);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(counted()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(counted()).toBe(2);
     await sdk.flush();
     const impressions = server.sent.flatMap((request) => request.body.events);
-    expect(impressions).toHaveLength(1); // once per card
+    expect(impressions).toHaveLength(2); // once per appearance
     expect(impressions[0]?.context).toMatchObject({ rowRank: 2, rank: 5, rowId: "home:trending" });
+  });
+
+  /** One fake IntersectionObserver class that records every instance and its targets. */
+  function fakeObservers() {
+    const instances: {
+      callback: (entries: unknown[]) => void;
+      targets: Set<Element>;
+      disconnected: boolean;
+    }[] = [];
+    class FakeObserver {
+      callback: (entries: unknown[]) => void;
+      targets = new Set<Element>();
+      disconnected = false;
+      constructor(callback: (entries: unknown[]) => void) {
+        this.callback = callback;
+        instances.push(this);
+      }
+      observe(target: Element) {
+        this.targets.add(target);
+      }
+      unobserve(target: Element) {
+        this.targets.delete(target);
+      }
+      disconnect() {
+        this.targets.clear();
+        this.disconnected = true;
+      }
+    }
+    const see = (element: Element, ratio: number) =>
+      instances
+        .filter((instance) => instance.targets.has(element))
+        .forEach((instance) => {
+          instance.callback([
+            { target: element, isIntersecting: ratio > 0, intersectionRatio: ratio },
+          ]);
+        });
+    return {
+      instances,
+      see,
+      Observer: FakeObserver as unknown as TelemetryOptions["IntersectionObserver"],
+    };
+  }
+
+  it("serves every card and row with one observer, until each one is stopped", async () => {
+    const fake = fakeObservers();
+    const { sdk, server } = telemetry({ IntersectionObserver: fake.Observer });
+    const cards = Array.from({ length: 40 }, () => document.createElement("div"));
+    const stops = cards.map((card, index) =>
+      sdk.observeImpression(card, { titleId: `t-${index}`, context: { rank: index + 1 } }),
+    );
+    const row = document.createElement("section");
+    sdk.observeRowView(row, { rowKind: "trending", itemCount: 40, context: { rowRank: 2 } });
+    expect(fake.instances).toHaveLength(1);
+    expect(fake.instances[0]?.targets.size).toBe(41);
+    for (const card of cards.slice(0, 6)) fake.see(card, 1);
+    fake.see(row, 0.7);
+    await vi.advanceTimersByTimeAsync(1000);
+    // Still observed after counting: a card that leaves and comes back counts again.
+    expect(fake.instances[0]?.targets.size).toBe(41);
+    stops[10]?.();
+    expect(fake.instances[0]?.targets.size).toBe(40);
+    await sdk.flush();
+    const events = server.sent.flatMap((request) => request.body.events);
+    expect(events.filter((event) => event.type === "impression")).toHaveLength(6);
+    expect(events.find((event) => event.type === "row.view")?.payload).toEqual({
+      rowKind: "trending",
+      itemCount: 40,
+      sampleRate: 1,
+    });
+    sdk.shutdown();
+    expect(fake.instances[0]?.disconnected).toBe(true);
+  });
+
+  it("does not count a second spent in a background tab", async () => {
+    const fake = fakeObservers();
+    const { sdk } = telemetry({ IntersectionObserver: fake.Observer, document, window });
+    const card = document.createElement("div");
+    sdk.observeImpression(card, { titleId: "t-1" });
+    fake.see(card, 1);
+    await vi.advanceTimersByTimeAsync(500);
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sdk.pending).toBe(0);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(sdk.pending).toBe(0); // a full second again, from coming back
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sdk.pending).toBe(1);
+    sdk.shutdown({ flush: false });
   });
 });

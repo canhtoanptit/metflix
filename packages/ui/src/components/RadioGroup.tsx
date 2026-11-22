@@ -18,10 +18,12 @@ export interface RadioGroupProps {
 }
 
 /**
- * One choice from a few (arrow keys move between options). Children: `RadioItem` or `RadioCard`.
+ * One choice from a few. Every arrow key moves between options, as in a native radio group, so
+ * cards laid out in a row (plans) answer Left and Right as well as Up and Down; pass
+ * `orientation` only to limit the keys to one axis. Children: `RadioItem` or `RadioCard`.
  * Stacks by default; pass layout utilities to arrange cards (`className="grid md:grid-cols-3"`).
  */
-export function RadioGroup({ className, orientation = "vertical", ...rest }: RadioGroupProps) {
+export function RadioGroup({ className, orientation, ...rest }: RadioGroupProps) {
   return (
     <RadixRadioGroup.Root
       orientation={orientation}

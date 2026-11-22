@@ -1,9 +1,12 @@
 import {
   API_BASE_PATH,
   DataExport,
+  type DeletionMembership,
   type JsonValue,
   LakeEvent,
+  type MembershipState,
   type PrivacyRequest,
+  type PrivacyTerms,
 } from "@webflix/contracts";
 import * as z from "zod";
 import { hexEncode, utf8Decode, utf8Encode } from "../../encoding.ts";
@@ -24,7 +27,11 @@ import { sendTemplatedEmail } from "../identity/email.ts";
 import type { AreaModule } from "../module.ts";
 import { privacyEraseJob, privacyExportJob } from "./jobs.ts";
 import type { OtherAreas } from "./neighbours.ts";
-import { PARTIAL_EXPORT_SUFFIX, type PrivacyRequestRecord } from "./repository.ts";
+import {
+  type MembershipStep,
+  PARTIAL_EXPORT_SUFFIX,
+  type PrivacyRequestRecord,
+} from "./repository.ts";
 
 const Instant = z
   .string()
@@ -92,6 +99,29 @@ const SWEEP_BATCH = 25;
 const RECOVER_EXPORT_AFTER_MS = 15 * 60_000;
 const GIVE_UP_EXPORT_AFTER_MS = 24 * 3600_000;
 const EXPORT_TOKEN_PURPOSE = "privacy-export";
+/** Deletions whose renewals are still being stopped, retried per sweep (provider calls). */
+const MEMBERSHIP_RETRY_BATCH = 10;
+
+/**
+ * The web app's page the export email links to: `{origin}{EXPORT_LANDING_PATH}/{id}#token=…`.
+ * It asks the member to sign in, then downloads through `GET /privacy/exports/:id?token=`.
+ */
+export const EXPORT_LANDING_PATH = "/account/privacy/exports";
+
+/** Billing's view of the membership, as the privacy state reads it (its service's answer). */
+interface LiveMembership {
+  state: MembershipState;
+  entitlement: { entitled: boolean };
+}
+
+/** When the membership ends if nothing changes: the trial's end while trialing, else the period's. */
+function periodEnd(state: MembershipState): number | null {
+  const end =
+    state.status === "trialing"
+      ? (state.trialEndsAt ?? state.currentPeriodEnd)
+      : (state.currentPeriodEnd ?? state.trialEndsAt);
+  return end === null ? null : Date.parse(end);
+}
 
 async function pipe(bytes: Uint8Array, transform: TransformStream<Uint8Array, Uint8Array>) {
   const stream = new Blob([new Uint8Array(bytes)]).stream().pipeThrough(transform);
@@ -164,10 +194,52 @@ export function createPrivacy(
     );
   }
 
+  /**
+   * What a deletion did to the membership. `live` is billing's current answer, read only for
+   * the account's latest deletion while it can still matter (scheduled or cancelled); without
+   * it the stored step speaks.
+   */
+  function membershipView(
+    record: PrivacyRequestRecord,
+    live: LiveMembership | null,
+    now: number,
+  ): DeletionMembership | null {
+    if (record.kind !== "deletion" || record.membershipStep === null) return null;
+    const plain = (status: DeletionMembership["status"]): DeletionMembership => ({
+      status,
+      endsAt: null,
+      resumable: false,
+    });
+    const step = record.membershipStep;
+    if (record.status === "processing" || record.status === "completed") {
+      return plain(step === "none" ? "none" : "ended"); // the erasure ends it
+    }
+    if (step === "none") return plain("none");
+    if (step === "stopping" && (record.status === "scheduled" || live === null)) {
+      return plain("stopping");
+    }
+    let endsAt = record.membershipEndsAt;
+    if (live) {
+      if (!live.entitlement.entitled) return plain(step === "ending" ? "ended" : "none");
+      if (!live.state.cancelAtPeriodEnd) return plain("renewing");
+      endsAt = periodEnd(live.state) ?? endsAt;
+    } else if (endsAt !== null && endsAt <= now) {
+      return plain("ended");
+    }
+    if (record.status === "scheduled" && record.scheduledFor !== null && endsAt !== null) {
+      endsAt = Math.min(endsAt, record.scheduledFor);
+    }
+    return {
+      status: "ending",
+      endsAt: endsAt === null ? null : toIsoString(endsAt),
+      resumable: record.status === "canceled" && live !== null,
+    };
+  }
+
   /** The member's view of a request. Staff never receive the download link. */
   async function present(
     record: PrivacyRequestRecord,
-    options: { withLink: boolean },
+    options: { withLink: boolean; live?: LiveMembership | null },
   ): Promise<PrivacyRequest> {
     const now = clock.now();
     const link = options.withLink && downloadable(record, now);
@@ -183,7 +255,79 @@ export function createPrivacy(
         record.kind === "export" && record.expiresAt !== null && record.exportBlobKey !== null
           ? toIsoString(record.expiresAt)
           : null,
+      membership: membershipView(record, options.live ?? null, now),
     };
+  }
+
+  /** What a member may want to know before asking (configuration only: no database read). */
+  function terms(): PrivacyTerms {
+    const settings = config.events;
+    return {
+      deletionCoolingOffSec: settings.deletionCoolingOffSec,
+      exportLinkTtlSec: settings.exportLinkTtlSec,
+      exportMode: settings.exportEvents,
+      exportTypicalSec: settings.exportTypicalSec,
+      eventsRetentionDays: settings.rawRetentionDays,
+      aggregatesRetentionDays: settings.aggregateRetentionDays,
+    };
+  }
+
+  /** Billing's current answer for the account, or null when it cannot give one right now. */
+  async function liveMembership(accountId: string): Promise<LiveMembership | null> {
+    try {
+      return await otherAreas().billing.membership(accountId, null);
+    } catch (error) {
+      logger.warn("privacy.membership_unreadable", { error: serializeError(error) });
+      return null;
+    }
+  }
+
+  /**
+   * A deletion stops the membership's renewals (it ends at the close of its period) through
+   * billing's service, never its repository. Never throws for billing's answer: no membership
+   * a provider renews is `none`; anything else (the provider briefly unavailable, a membership
+   * still renewing afterwards) leaves the step `stopping` for the sweep to try again.
+   */
+  async function stopRenewals(record: PrivacyRequestRecord): Promise<PrivacyRequestRecord> {
+    const billing = otherAreas().billing;
+    let outcome: { membershipStep: MembershipStep; membershipEndsAt: number | null };
+    try {
+      await billing.cancel(record.accountId);
+      const after = await billing.membership(record.accountId, null);
+      if (after.entitlement.entitled && !after.state.cancelAtPeriodEnd) {
+        throw new Error(`the membership still renews (${after.state.status})`);
+      }
+      outcome =
+        after.entitlement.entitled && after.state.cancelAtPeriodEnd
+          ? { membershipStep: "ending", membershipEndsAt: periodEnd(after.state) }
+          : { membershipStep: "none", membershipEndsAt: null };
+    } catch (error) {
+      if (error instanceof AppError && error.code === "subscription_required") {
+        outcome = { membershipStep: "none", membershipEndsAt: null };
+      } else {
+        logger.warn("privacy.deletion_renewals_not_stopped", {
+          requestId: record.id,
+          error: serializeError(error),
+        });
+        const lastError = `renewals not stopped yet: ${String((error as Error)?.message ?? error)}`;
+        // Touched, so the next sweep tries the others first.
+        await repos.events.transitionPrivacyRequest(record.id, ["scheduled"], {
+          lastError: lastError.slice(0, 500),
+          updatedAt: clock.now(),
+        });
+        return record;
+      }
+    }
+    await repos.events.transitionPrivacyRequest(record.id, ["scheduled", "canceled"], {
+      ...outcome,
+      lastError: null,
+      updatedAt: clock.now(),
+    });
+    logger.info("privacy.deletion_renewals_stopped", {
+      requestId: record.id,
+      membership: outcome.membershipStep,
+    });
+    return { ...record, ...outcome };
   }
 
   // --- Export -------------------------------------------------------------------------------
@@ -321,7 +465,11 @@ export function createPrivacy(
   }
 
   async function sendExportEmail(record: PrivacyRequestRecord, to: string): Promise<void> {
-    const link = `${config.publicOrigin}${downloadPath(record.id, await exportToken(record))}`;
+    // The web app's page, which can ask the member to sign in first (the email is usually
+    // opened later, elsewhere). The token rides in the fragment, like identity's links: never
+    // sent to a server by the page load, never in an access log or a Referer.
+    const token = await exportToken(record);
+    const link = `${config.publicOrigin}${EXPORT_LANDING_PATH}/${encodeURIComponent(record.id)}#token=${encodeURIComponent(token)}`;
     // Identity's templates and suppression list; at most one message per export.
     const outcome = await sendTemplatedEmail(deps, {
       to,
@@ -656,6 +804,10 @@ export function createPrivacy(
         logger.info("privacy.export_requeued", { requestId: record.id });
       }
     }
+    // Deletions whose membership renewals billing could not stop yet: tried again every tick.
+    for (const record of await repos.events.deletionsStoppingMembership(MEMBERSHIP_RETRY_BATCH)) {
+      await stopRenewals(record);
+    }
     for (const record of await repos.events.expiredExports(now, SWEEP_BATCH)) {
       if (record.exportBlobKey === null) continue;
       await eventSink.deleteDocument(record.exportBlobKey);
@@ -685,6 +837,8 @@ export function createPrivacy(
         expiresAt: null,
         lastError: null,
         updatedAt: now,
+        membershipStep: null,
+        membershipEndsAt: null,
       };
       if (!(await repos.events.createPrivacyRequest(record))) {
         throw new AppError("privacy_request_pending");
@@ -705,8 +859,22 @@ export function createPrivacy(
 
     async list(accountId: string, options: { withLink: boolean }): Promise<PrivacyRequest[]> {
       const records = await repos.events.listPrivacyRequests(accountId);
-      return Promise.all(records.map((record) => present(record, options)));
+      // Billing's current answer, for the latest deletion only, and only while it can matter.
+      const latest = records.find((record) => record.kind === "deletion");
+      const asks =
+        latest !== undefined &&
+        (latest.status === "scheduled" || latest.status === "canceled") &&
+        (latest.membershipStep === "ending" ||
+          (latest.membershipStep === "stopping" && latest.status === "canceled"));
+      const live = asks ? await liveMembership(accountId) : null;
+      return Promise.all(
+        records.map((record) =>
+          present(record, { ...options, live: record === latest ? live : null }),
+        ),
+      );
     },
+
+    terms,
 
     async download(auth: AuthContext, requestId: string, token: string): Promise<DataExport> {
       const notFound = () => new AppError("not_found", { detail: "No such export" });
@@ -742,11 +910,22 @@ export function createPrivacy(
         expiresAt: null,
         lastError: null,
         updatedAt: now,
+        membershipStep: "stopping",
+        membershipEndsAt: null,
       };
+      // Recorded first, whatever billing answers next; then the renewals stop (or the sweep
+      // keeps trying until they do).
       if (!(await repos.events.createPrivacyRequest(record))) {
         throw new AppError("privacy_request_pending");
       }
-      return present(record, { withLink: false });
+      const stored = await stopRenewals(record).catch((error: unknown) => {
+        logger.warn("privacy.deletion_renewals_not_stopped", {
+          requestId: record.id,
+          error: serializeError(error),
+        });
+        return record;
+      });
+      return present(stored, { withLink: false });
     },
 
     /** Cancel the account's deletion while its cooling-off period runs; false when none. */

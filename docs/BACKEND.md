@@ -11,7 +11,7 @@ web app can rely on. Companion documents: `docs/DECISIONS.md` (why things are th
 | --- | --- | --- |
 | `packages/core` | Application services (`createServices`), repository ports, recommendation engine, catalog/popularity caches, mock billing, seeder, jobs and scheduler, in-memory repositories (`@webflix/core/memory`), contract suites and test harness (`@webflix/core/testing`) | portable (Web APIs only) |
 | `packages/db` | Kysely schema, migrations (authored once), repositories, SQL search index. Entry points: `@webflix/db` (portable), `@webflix/db/sqlite` (node:sqlite), `@webflix/db/postgres` (pg), `@webflix/db/d1` (D1 binding, portable). Generated D1 SQL in `packages/db/migrations/d1/` | portable + Node-only subpaths |
-| `packages/http` | `createApp(container)`: the 80 member routes and the 40-route staff API (every route is implemented; a route registered without a handler would answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
+| `packages/http` | `createApp(container)`: the 80 member routes and the 44-route staff API (every route is implemented; a route registered without a handler would answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
 | `apps/api` | Node entrypoint: `serve`, `worker`, `migrate`, `seed`; composition of adapters from env | Node |
 
 ## 2. Running the API
@@ -61,12 +61,14 @@ ratings so the home page is full on first load.
   database cannot be reached: retry. Privileges (below) add `password_required`,
   `profile_unlock_required`, `unrestricted_profile_required` and `demo_account_protected` (all
   403); a rendition above the plan's cap answers `media_quality_restricted` (403).
-- **Mock payments** (`MOCK_CARDS` in `@webflix/contracts`): `4242 4242 4242 4242` approves;
-  **`4000 0000 0000 0002` → `card_declined`**, **`4000 0000 0000 9995` → `insufficient_funds`**,
-  any card with an expiry month in the past → `expired_card`; any other well-formed number
-  approves. Sign-up with a declined card creates nothing. A plan change with a declined card
-  changes nothing. Memberships renew every 30 days automatically; cancel → `canceling` until
-  `currentPeriodEnd`, then `ended`.
+- **No card data, ever** (principle 4): no route accepts a card number, expiry or security code.
+  Sign-up (`{email, password}`) and a plan change (`{planId, previewToken?}`) have strict bodies:
+  milestone 1's `planId` + `payment` at sign-up, or `payment` on a plan change, is refused with
+  `validation_failed` (the issue names the keys, never their values) and creates nothing.
+  `PUT /account/payment-method` is gone: a card is replaced through the provider
+  (`POST /billing/payment-method/setup`). A member account comes about only through a checkout at
+  the payment provider, or is the seeded demo account (milestone 1's simulated membership, which
+  renews by itself and can only be resumed), or comes from staff (an existing membership extended).
 - **Profiles.** Up to 5. Kids profiles are capped at 7+. Deleting the last profile answers
   `profile_last_remaining`. Who may add, change or delete one, and who may manage the account,
   is the privilege table below.
@@ -130,11 +132,9 @@ ratings so the home page is full on first load.
   / `full-hd` / `4k`, absent for external fallback media); show
   `effectiveVideoQuality(bestVideoQuality, plan.maxVideoHeight)` with `videoQualityLabel`
   (`@webflix/contracts`), never more than the plan allows.
-- **Payment method**: `PUT /account/payment-method` `{payment}` replaces the card (verified like
-  sign-up; a decline changes nothing) and answers `AccountDetails`.
-- **Billing (milestone 2)**: an account signed up without payment has membership `none`
-  (`GET /session` and `GET /account` carry `membership` and `entitlement`; their required
-  `subscription`/`plan` show an ended Basic membership). Checkout: `POST /billing/checkout`
+- **Billing (milestone 2)**: a new account has membership `none` (`GET /session` and
+  `GET /account` carry `membership` and `entitlement`), and its `subscription` and `plan` are
+  null: no membership is represented as exactly that. Checkout: `POST /billing/checkout`
   (`requires_setup` + client secret) → the provider's form confirms the card (Stripe's Payment
   Element with `GET /billing/config`'s publishable key, or the fake's form at `/_pay/form?secret=…`)
   → `POST /billing/checkout/:id/confirm` (trial: `processing`; no trial: `requires_payment`, the
@@ -166,7 +166,7 @@ ratings so the home page is full on first load.
   | `signup` | client address | 5/60 s | 60/60 s | `POST /auth/signup` |
   | `email-lookup` | client address | 20/60 s | 300/60 s | `GET /auth/email-status` |
   | `profile-pin` | account | 5/60 s | 60/60 s | every PIN or password check after sign-in: a PIN for a locked profile (`PUT /session/profile`), `PATCH /account`, `POST /session/elevation` (milestone 2, every attempt), and `POST /profiles`, `PATCH`/`DELETE /profiles/:id` when they verify a PIN or the password. Switching to an unlocked profile never counts |
-  | `payment` | account | 10/600 s | 10/600 s | card verifications: `PUT /account/payment-method`, a plan change that carries a card |
+  | `payment` | account | 10/600 s | 10/600 s | money-moving requests: `POST /billing/checkout/:id/confirm` and every plan change (`PUT /account/subscription`) |
   | `playback-start` | account | 60/60 s | 60/60 s | `POST /playback/sessions` |
   | `oidc` (milestone 2) | client address | 30/60 s | 300/60 s | `GET /auth/oidc/:provider/start`, both callbacks |
   | `email-send` (milestone 2) | client address | 10/900 s | 120/60 s | `POST /auth/email-verification`, `POST /auth/password-reset` |
@@ -192,7 +192,15 @@ ratings so the home page is full on first load.
     `cancelled`, `failed` (never more detail; the server logs `identity.oidc_failed` with the
     reason). The callbacks never answer JSON: a request refused before the handler (invalid
     query or form, the `oidc` rate limit) is the same `?oidc=failed` redirect
-    (`identity.oidc_refused` in the logs). The transaction is a sealed cookie (`webflix_oidc_<provider>`, `__Host-` on https,
+    (`identity.oidc_refused` in the logs; `&oidcError=rate_limited` for the rate limit). A
+    refused start that a browser followed (`Sec-Fetch-Mode: navigate`, or `Accept: text/html`
+    without Fetch Metadata) is sent back too: `303` to its `returnTo` (`/` if invalid) with
+    `?oidc=failed&oidcError=<code>` (`OIDC_ERROR_PARAM`: `rate_limited` "try again in a
+    moment", `reauthentication_required` "confirm it's you again", `unauthenticated`,
+    `unrestricted_profile_required`, `profile_required`, `demo_account_protected`,
+    `validation_failed`, `not_found`; `identity.oidc_start_refused` in the logs). Any other
+    caller of the start (a script, the conformance suite, the page's own `fetch`) still gets
+    the problem document. The transaction is a sealed cookie (`webflix_oidc_<provider>`, `__Host-` on https,
     ten minutes, `SameSite=None` for Apple's cross-site form post).
   - *Linking rule*: an issuer identity is keyed by (issuer, subject). It signs in to an existing
     account by address only when the issuer verified the address **and** the account verified
@@ -221,9 +229,8 @@ ratings so the home page is full on first load.
     the address verified, drops issuer identities linked under another address, and sends a
     security alert. Email and password changes alert the (previous) address; a new address must
     be verified again.
-  - *Sign-up without a card*: `POST /auth/signup {email, password}` creates the account with no
-    membership. Until billing serves `membership: none`, the session presents it as an `ended`
-    Basic membership (a stand-in; `GET /account` needs billing's projection).
+  - *Sign-up*: `POST /auth/signup {email, password}` (strict: nothing else) creates the account
+    with no membership: `membership.status` `none`, `subscription` and `plan` null.
   - *Local mailbox*: `GET /api/v1/diagnostics/mailbox?to=` (memory or outbox sender, never in
     production) returns the messages and their links, for the suites.
 - **Durations**: wherever a title or episode has packaged media, every duration the API returns
@@ -286,7 +293,14 @@ ratings so the home page is full on first load.
   through identity's `data-export-ready` template (the suppression list applies; the link stays
   listed either way); `GET /privacy/requests` lists it with `downloadUrl` until `expiresAt`.
   The link (`GET /privacy/exports/:id?token=`) works only for its account, signed in as the
-  account holder; it answers the document as an attachment.
+  account holder; it answers the document as an attachment. **The email links to the web app**,
+  not to that route: `{WEBFLIX_PUBLIC_ORIGIN}/account/privacy/exports/{requestId}#token={token}`
+  (both URI-encoded; the same token as `downloadUrl`, in the fragment so the page load never
+  sends it to a server, as identity's links do). That page asks the member to sign in as the
+  account holder, then downloads through `GET /api/v1/privacy/exports/{requestId}?token={token}`.
+  **The terms before asking**: `GET /privacy/requests` answers `{ items, terms }`, `terms` being
+  `PrivacyTerms { deletionCoolingOffSec, exportLinkTtlSec, exportMode, exportTypicalSec,
+  eventsRetentionDays, aggregatesRetentionDays }` from configuration (no database read).
   **Where the events come from** is `WEBFLIX_EXPORT_EVENTS` (§4). `inline` (dev's default): the
   job reads the retention window itself, by the pipeline's reader contract for compacted hours
   (services/recs README, "Compacted hours: the contract for readers": a version 2 manifest's
@@ -323,6 +337,29 @@ ratings so the home page is full on first load.
   since the lake's compaction drops an account's events by account key) and each restricted
   profile's key. Recording a key twice keeps one entry; recording a confirmed key again re-opens
   it.
+  **No renewal is charged during the cooling-off.** Scheduling the deletion records it first,
+  then stops the membership's renewals through billing's service (`cancel`: it ends at the close
+  of its current period; a period closing inside the cooling-off simply ends it, otherwise the
+  erasure ends it). Whatever billing answers, the deletion stands: no membership a provider
+  renews (none, ended, milestone 1's mock, which charges nothing) is recorded as `none`; any
+  failure (the provider unavailable, a membership still renewing afterwards) leaves it
+  `stopping`, and the `privacy.sweep` job tries again on every tick (10 per tick, least recently
+  tried first) until billing confirms or the member keeps the account. Keeping the account
+  (`DELETE /account/deletion`) leaves the membership set to end: the privacy state offers to
+  resume it, never silently turns billing back on. `PrivacyRequest.membership`
+  (`DeletionMembership { status, endsAt, resumable }`) reports it on each deletion: `stopping`,
+  `ending` (until `endsAt`: while scheduled the earlier of the period's close and
+  `scheduledFor`, once cancelled the period's close), `renewing`, `ended` or `none`;
+  `resumable` when the deletion is `canceled` and the membership is still set to end (the web
+  calls `POST /account/subscription/resume`). For the account's latest deletion, while it is
+  scheduled or cancelled, the list reads billing's current state (one `memberships` read).
+  **While the deletion is scheduled the member cannot make the membership renew again**:
+  billing refuses resume, a new checkout (and the confirmation of one started before), and a
+  plan change with `409 account_deletion_scheduled` ("Keep your account first"), asking the
+  events area's seam `accountDeletionScheduled(accountId)`. Keeping the account lifts it at
+  once. Staff actions (a complimentary period, a trial extension) are allowed: deliberate and
+  audited. Milestone 1's mock membership (`services.account`) is not guarded: it charges
+  nothing. So `renewing` during a scheduled deletion can only come from staff or the provider.
 - **A profile that becomes restricted** (kids, or a maturity restriction): identity calls the
   seam `forgetProfileBehaviour({ accountId, profileId })`, which queues that profile's
   pseudonymous key for erasure (listed by `pendingErasures`, dropped by `compact --erase`, then
@@ -398,18 +435,32 @@ For the admin console (`createAdminApiClient({ accessToken })`) and for operator
   as the change; member, billing, privacy and system actions are written before they run and
   settled after, so no such action exists without its entry. Reading a member's record, their
   privacy view or a member search is audited too (`member.viewed`, `member.privacy_viewed`,
-  `member.searched` with the query), before the data is returned.
+  `member.searched` with the query), before the data is returned. `requestId` filters by the
+  `X-Request-Id` an action was sent with (the console sends its own, so an unanswered request
+  is matched to its entry). Without the admin role, `GET /audit/mine` lists the caller's own
+  entries (same filters), `before` and `after` withheld except `after.error`: what an action on
+  a member held is not readable through it, even by someone whose role has since changed.
 - **Idempotency.** The billing actions (refund, cancel, extend a trial, complimentary period)
   require `idempotencyKey` (16-64 of `[A-Za-z0-9_-]`, a UUID fits): generate one per submitted
   form and send it again on every retry of that form. A retry of a request that succeeded answers
   the first response again; while the first is running, after it failed or ended `unknown`, or
-  with other parameters or another staff member, it answers `409 staff_action_conflict` and acts
-  on nothing.
+  with other parameters or another staff member, it answers `409 staff_action_conflict`
+  (`auditId`: the first attempt's entry) and acts on nothing. A billing action a service left
+  unanswered answers `503` saying its outcome is unknown and naming its audit entry, never "try
+  again": repeating it with the same key is safe, a new key might act twice.
 - **What staff see.** A member's record has no password hash (only `hasPassword`), no token, no
   issuer subject and no card details, and its invoices have no hosted-invoice or PDF link (bearer
   links to the member's invoice). The privacy view has the consent and the requests, never an
   export's download link (`downloadUrl` is always null) and never the member's behaviour events.
   Dead letters are listed without their payloads.
+- **Titles and availability** (role `content`). `GET /titles` finds titles by name (`q`, as
+  members' search matches, every maturity level, unavailable titles included), resolves chosen
+  ids in order (`ids`, comma-separated) or lists the catalogue by name; each title is `{ id, name,
+  type, releaseYear, maturity, card }`. `GET /titles/:titleId/availability` reads a title's
+  override (none: `available: true`, no window, `updatedAt: null`); `GET /titles/availability`
+  lists every override with the title's name and `unavailableNow`. Until the personalisation
+  service offers these reads, the admin area reads its catalogue snapshot and overrides
+  (`areas/admin/catalogue.ts`, marked as a stand-in).
 - **Operators.** `GET /system/privacy/erasures` lists the pseudonymous keys (deleted accounts,
   profiles made restricted) the lake's compaction must drop (`compact --erase FILE`); `POST /system/privacy/erasures/confirm` records
   that it did. `GET /system/privacy/exports` lists the data exports whose events the pipeline's
@@ -417,8 +468,10 @@ For the admin console (`createAdminApiClient({ accessToken })`) and for operator
   `POST /system/privacy/exports/results` takes the job's results document, whose `file` and
   `manifest` can only name that request's own `privacy/export-events/{requestId}/` documents.
   Both audited like the erasure routes (calling them from `export-events` is the pipeline
-  owner's wiring, as it was for `erase`). `POST /system/recommendations/rollback` serves
-  the previous model run again.
+  owner's wiring, as it was for `erase`). `POST /system/recommendations/import` says what it
+  found (`outcome`: `queued`, `nothing_published`, `already_served`, `invalid` with `detail`,
+  `no_artefact_store`) and queues only a new published run; `POST /system/recommendations/rollback`
+  serves the previous model run again.
   Dead letters: the job processor records a job that fails its last attempt (the fifth, every
   queue's setting) in `job_dead_letters` in every mode; `POST /system/dead-letters/:id/replay`
   publishes it again, once. `GET /system/health` probes the database, the cache and the
@@ -484,6 +537,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_EVENTS_RETENTION_DAYS` / `WEBFLIX_AGGREGATES_RETENTION_DAYS` | `396` / `1126` | events | Raw events 13 months, aggregates 37 months; the data export reads raw events this far back |
 | `WEBFLIX_DELETION_COOLING_OFF_SEC` | `1209600` (14 days) | events | A requested account deletion waits this long (cancellable) before the erasure job runs |
 | `WEBFLIX_EXPORT_LINK_TTL_SEC` | `604800` (7 days) | events | How long a data export's signed link and its document stay available (then the sweep deletes the document) |
+| `WEBFLIX_EXPORT_TYPICAL_SEC` | `60` with `WEBFLIX_EXPORT_EVENTS=inline`; `1800` with `batch` | events | How long an export normally takes here, request to email: what members are told before asking (`PrivacyTerms.exportTypicalSec`). Set it from the pipeline's `export-events` schedule plus its grace (the chart's default, 5 minutes plus 15, fits 1800; its conformance variant, every minute plus 1, about 180) |
 | `WEBFLIX_EXPORT_EVENTS` | `inline` in dev; `batch` on k8s and Cloudflare | events | Where a data export's events come from (§3 "Download your data"). `inline`: the export job reads the account's events across the raw retention itself (small deployments: one job reads up to 13 months of hours). `batch`: the pipeline's `export-events` job extracts them and the result is recorded through `GET /system/privacy/exports` and `POST /system/privacy/exports/results`. `inline` is refused on Cloudflare (a Worker invocation cannot read the retention window). On Kubernetes the chart's pipeline runs `export-events` in its lake round every 5 minutes (docs/KUBERNETES.md §9.6) |
 | `WEBFLIX_RELEASE` | `dev` | events | `app.version` of server events (1-40 of `[A-Za-z0-9._+-]`): set it to the deployed release. The Helm chart sets the API image's tag (`config.events.release` overrides); the kind make fragment no longer exports a variable of this name (its Helm release name is `WEBFLIX_HELM_RELEASE`) |
 | `WEBFLIX_RECOMMENDATION_STORE` | `database` | personalisation | Where imported models live: `database` (SQLite in dev, PostgreSQL on k8s, D1 for everything on Cloudflare), `kv` (Cloudflare only: per-profile lists in Workers KV `RECS`, models and neighbours in D1; wrangler.jsonc sets it), `memory` (tests) |
@@ -569,6 +623,17 @@ API (it opens the database with the `worker` role). The staff API's
 nothing new was published (one pointer and one manifest read). In the Worker an import is bounded
 by one invocation's KV budget: a run with more than 800 profile lists is refused up front (`422
 recommendation_import_too_large`, naming `make cf-recs-import`, the importer outside the Worker).
+Other processes (the API replicas beside a CLI or a Kubernetes Job) serve the new run within
+30 s: no copy of the served model is used more than 30 s after its database read, whatever cache
+holds it (docs/RECOMMENDATIONS.md, "When a new run is served").
+
+`node apps/api/src/recs.ts demo [--replace] [--to <dir>]` publishes a demo run for the demo
+account's profiles into the mode's artefact store (version, then pointer, in the pipeline's
+format) and imports it with the same importer, checksums included: for a demo where no pipeline
+run is fresh. It is labelled as such (run id `*-de00de00`, manifest `code.demo: true`), refused
+while a fresh pipeline run is served unless `--replace`, and `--to` only writes it into a
+filesystem store. The local Worker's equivalent is `make cf-recs-import CF_RECS_DEMO=1`, the
+cluster's `make k8s-recs-demo` (docs/RECOMMENDATIONS.md, "A demo run").
 
 `node apps/api/src/recs.ts experiments-import [--from <dir>]` imports the experiment results the
 pipeline's `analyse-experiments` published (`experiments/results/current.json`, each result
@@ -850,8 +915,8 @@ Milestone 2: the seven port suites (`describeIdentityProviderContract`,
 (the event sink also over a blob store); each adapter runs its suite in the runtime it ships to.
 The area repository suites (`describe<Area>RepositoryContract`) run on memory, SQLite,
 PostgreSQL and D1. `packages/http/test/milestone2.test.ts` covers the uniform 501, the staff
-guard and the new route kinds; `packages/contracts/test/no-card-data.test.ts` refuses card
-fields outside `LEGACY_CARD_FIELDS`. The staff API: `packages/http/test/admin-guard.test.ts`
+guard and the new route kinds; `packages/contracts/test/no-card-data.test.ts` refuses any card
+field in any route (`LEGACY_CARD_FIELDS` is empty). The staff API: `packages/http/test/admin-guard.test.ts`
 (every staff route against every role, no token, a member session; a staff token on every
 member route), `admin-api.test.ts` (each action, its audit entry, the write-ahead entry under
 failure, refund idempotency, least data), `staff-verifier.test.ts` (the OpenID verifier against

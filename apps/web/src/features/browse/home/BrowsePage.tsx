@@ -1,6 +1,6 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { BrowseView, Row } from "@webflix/contracts";
+import type { BrowsePage, BrowseView, Row } from "@webflix/contracts";
 import {
   Avatar,
   Button,
@@ -15,12 +15,15 @@ import {
 import { useEffect, useMemo } from "react";
 import { SectionErrorBoundary } from "../../../app/errors/ErrorPages.tsx";
 import { describeError } from "../../../app/query/errors.ts";
-import { queries } from "../../../app/query/queries.ts";
+import { useAssignmentKey } from "../../../app/session/experiments.ts";
+import { TelemetryScope } from "../../../app/telemetry/index.ts";
+import { browsePageQuery } from "../common/queries.ts";
 import { useBrowseProfile } from "../common/session.ts";
+import { type Placement, viewSurface } from "../common/telemetry.ts";
 import { GenreMenuEntry as GenreMenu } from "../shell/menus.tsx";
 import { PHONE_QUERY } from "../shell/TopNav.tsx";
 import { Billboard, BillboardSkeleton } from "./Billboard.tsx";
-import { BrowseRow } from "./BrowseRow.tsx";
+import { BrowseRow, RowHeading } from "./BrowseRow.tsx";
 
 const VIEW_TITLES: Record<BrowseView, string> = {
   home: "Home",
@@ -34,18 +37,51 @@ const EAGER_ROWS = 3;
 /** Skeleton rows shown on first load, by layout (the usual top of a home page). */
 const FIRST_LOAD_LAYOUTS: Row["layout"][] = ["continue", "ranked", "standard", "standard"];
 
+/** A row as the member sees it: where it sits on the page and the policy that ranked it. */
+export interface PlacedRow {
+  row: Row;
+  placement: Placement & { rowRank: number };
+}
+
+/**
+ * The page's modules in screen order, numbered as the member sees them: the billboard is module 1
+ * (when there is one), then every row that has something to show, across all batches loaded so
+ * far. Each row keeps the ranking policy of the batch that brought it. A row with nothing in it
+ * is not drawn, so it takes no number.
+ */
+export function placeRows(pages: readonly BrowsePage[] | undefined): PlacedRow[] {
+  const hasBillboard = (pages?.[0]?.billboard ?? null) !== null;
+  let rowRank = hasBillboard ? 1 : 0;
+  const placed: PlacedRow[] = [];
+  for (const page of pages ?? []) {
+    for (const row of page.rows) {
+      if (row.items.length === 0) continue;
+      rowRank += 1;
+      placed.push({ row, placement: { rowId: row.id, rowRank, policy: page.policy ?? null } });
+    }
+  }
+  return placed;
+}
+
 /**
  * A browse view: billboard, then rows. The first batch of rows arrives with the billboard; later
  * batches load as the person scrolls towards the end (`nextCursor`), each row paging its own
  * items. Skeletons keep the final geometry, so nothing shifts as data lands.
+ *
+ * What the server sends decides what is drawn: a personal row (Top Picks) or curated collections
+ * when it has them, the rule engine's rows when it has no model for this profile (new, kids,
+ * no run imported, the store slow). The page never waits for, or reserves room for, a row the
+ * server may not send.
  */
 function BrowseScreen({ view }: { view: BrowseView }) {
-  const browse = useInfiniteQuery(queries.browse(view));
+  const assignments = useAssignmentKey();
+  const browse = useInfiniteQuery(browsePageQuery(view, assignments));
   const phone = useMediaQuery(PHONE_QUERY);
   const profile = useBrowseProfile();
   const pages = browse.data?.pages;
   const billboard = pages?.[0]?.billboard ?? null;
-  const rows = useMemo(() => pages?.flatMap((page) => page.rows) ?? [], [pages]);
+  const rows = useMemo(() => placeRows(pages), [pages]);
+  const policy = pages?.[0]?.policy ?? null;
   const hasHero = view !== "new-popular" && (billboard !== null || browse.isPending);
   const typed = view === "series" || view === "movies";
   const kidsHome = profile.isKids && view === "home";
@@ -71,77 +107,88 @@ function BrowseScreen({ view }: { view: BrowseView }) {
   }
 
   return (
-    <main
-      id="main"
-      data-kids={profile.isKids || undefined}
-      className={cx(
-        "relative pb-8",
-        // Kids: friendlier, rounder cards (the card radius token mapped to a larger one).
-        profile.isKids && "[--radius-card:var(--radius-xl)]",
-      )}
-      aria-busy={browse.isPending || undefined}
-    >
-      {phone && view !== "new-popular" ? (
-        <div className="pt-nav">
-          <CategoryBar view={view} />
-        </div>
-      ) : null}
+    <TelemetryScope context={{ surface: viewSurface(view), policy }}>
+      <main
+        id="main"
+        data-kids={profile.isKids || undefined}
+        data-policy={policy?.id}
+        className={cx(
+          "relative pb-8",
+          // Kids: friendlier, rounder cards (the card radius token mapped to a larger one).
+          profile.isKids && "[--radius-card:var(--radius-xl)]",
+        )}
+        aria-busy={browse.isPending || undefined}
+      >
+        {phone && view !== "new-popular" ? (
+          <div className="pt-nav">
+            <CategoryBar view={view} />
+          </div>
+        ) : null}
 
-      {hasHero ? (
-        <>
-          {typed && !phone ? <ViewHeader view={view} /> : null}
-          <h1 className="sr-only">
-            {view === "home" ? `${profile.name}'s home` : VIEW_TITLES[view]}
-          </h1>
-          {billboard ? <Billboard billboard={billboard} /> : <BillboardSkeleton />}
-        </>
-      ) : (
-        <header
+        {hasHero ? (
+          <>
+            {typed && !phone ? <ViewHeader view={view} /> : null}
+            <h1 className="sr-only">
+              {view === "home" ? `${profile.name}'s home` : VIEW_TITLES[view]}
+            </h1>
+            {billboard ? (
+              <Billboard billboard={billboard} view={view} policy={policy} />
+            ) : (
+              <BillboardSkeleton />
+            )}
+          </>
+        ) : (
+          <header
+            className={cx(
+              "px-gutter pb-6",
+              phone
+                ? "pt-[calc(var(--spacing-nav)+0.75rem)]"
+                : "pt-[calc(var(--spacing-nav)+2rem)]",
+            )}
+          >
+            <h1 className="type-headline text-fg">{VIEW_TITLES[view]}</h1>
+            {view === "new-popular" ? (
+              <p className="mt-2 type-body text-fg-muted">
+                What's arrived on Webflix and what everyone is watching today.
+              </p>
+            ) : null}
+          </header>
+        )}
+
+        <div
           className={cx(
-            "px-gutter pb-6",
-            phone ? "pt-[calc(var(--spacing-nav)+0.75rem)]" : "pt-[calc(var(--spacing-nav)+2rem)]",
+            "relative z-(--z-raised) flex flex-col gap-row-gap",
+            hasHero && !phone ? "-mt-[6vw]" : phone && hasHero ? "mt-8" : null,
           )}
         >
-          <h1 className="type-headline text-fg">{VIEW_TITLES[view]}</h1>
-          {view === "new-popular" ? (
-            <p className="mt-2 type-body text-fg-muted">
-              What's arrived on Webflix and what everyone is watching today.
-            </p>
-          ) : null}
-        </header>
-      )}
-
-      <div
-        className={cx(
-          "relative z-(--z-raised) flex flex-col gap-row-gap",
-          hasHero && !phone ? "-mt-[6vw]" : phone && hasHero ? "mt-8" : null,
-        )}
-      >
-        {kidsHome && !browse.isPending ? <KidsGreeting /> : null}
-        {browse.isPending ? (
-          FIRST_LOAD_LAYOUTS.map((layout, index) => (
-            <RowSliderSkeleton key={index} layout={layout} />
-          ))
-        ) : rows.length === 0 ? (
-          <EmptyBrowse view={view} />
-        ) : (
-          rows.map((row, index) => (
-            <SectionErrorBoundary key={row.id} fallback={() => null}>
-              {index < EAGER_ROWS ? (
-                <BrowseRow row={row} view={view} priority={index === 0} />
-              ) : (
-                <LazyMount
-                  placeholder={<RowSliderSkeleton layout={row.layout} title={row.title} />}
-                >
-                  <BrowseRow row={row} view={view} />
-                </LazyMount>
-              )}
-            </SectionErrorBoundary>
-          ))
-        )}
-        {browse.data ? <MoreRows query={browse} /> : null}
-      </div>
-    </main>
+          {kidsHome && !browse.isPending ? <KidsGreeting /> : null}
+          {browse.isPending ? (
+            FIRST_LOAD_LAYOUTS.map((layout, index) => (
+              <RowSliderSkeleton key={index} layout={layout} />
+            ))
+          ) : rows.length === 0 ? (
+            <EmptyBrowse view={view} />
+          ) : (
+            rows.map(({ row, placement }, index) => (
+              <SectionErrorBoundary key={row.id} fallback={() => null}>
+                {index < EAGER_ROWS ? (
+                  <BrowseRow row={row} view={view} placement={placement} priority={index === 0} />
+                ) : (
+                  <LazyMount
+                    placeholder={
+                      <RowSliderSkeleton layout={row.layout} title={<RowHeading row={row} />} />
+                    }
+                  >
+                    <BrowseRow row={row} view={view} placement={placement} />
+                  </LazyMount>
+                )}
+              </SectionErrorBoundary>
+            ))
+          )}
+          {browse.data ? <MoreRows query={browse} /> : null}
+        </div>
+      </main>
+    </TelemetryScope>
   );
 }
 

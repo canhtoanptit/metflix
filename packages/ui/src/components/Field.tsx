@@ -4,6 +4,7 @@ import {
   type LabelHTMLAttributes,
   type ReactNode,
   type Ref,
+  type TextareaHTMLAttributes,
   useContext,
   useId,
 } from "react";
@@ -135,7 +136,12 @@ export const CONTROL_SURFACE = cx(
   "autofill:shadow-[inset_0_0_0_100px_var(--color-surface-2)] autofill:[-webkit-text-fill-color:var(--color-fg)]",
 );
 
-const INPUT_SIZES = { md: "h-11 px-3.5 text-md", lg: "h-14 px-4 text-md" } as const;
+const INPUT_SIZES = {
+  /** Dense tools (the staff console): 36px, like `Button size="sm"` plus its border. */
+  sm: "h-9 px-3 text-sm",
+  md: "h-11 px-3.5 text-md",
+  lg: "h-14 px-4 text-md",
+} as const;
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
   size?: keyof typeof INPUT_SIZES;
@@ -146,4 +152,26 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
 export function Input({ size = "md", className, ...rest }: InputProps) {
   const props = useFieldControl(rest);
   return <input className={cx(CONTROL_SURFACE, INPUT_SIZES[size], className)} {...props} />;
+}
+
+export interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
+  size?: "sm" | "md";
+  ref?: Ref<HTMLTextAreaElement>;
+}
+
+/** Multi-line text (a reason, a note), wired to its `Field` like `Input`. */
+export function Textarea({ size = "md", className, rows = 3, ...rest }: TextareaProps) {
+  const props = useFieldControl(rest);
+  return (
+    <textarea
+      rows={rows}
+      className={cx(
+        CONTROL_SURFACE,
+        "block resize-y",
+        size === "sm" ? "px-3 py-2 text-sm" : "px-3.5 py-2.5 text-md",
+        className,
+      )}
+      {...props}
+    />
+  );
 }

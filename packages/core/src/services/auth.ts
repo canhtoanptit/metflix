@@ -13,14 +13,12 @@ import {
   type IssuedSession,
 } from "../areas/identity/sessions.ts";
 import type { AreaSeams } from "../areas/module.ts";
-import { getPlan } from "../domain/plans.ts";
 import { AppError } from "../errors.ts";
 import { serializeError } from "../ports/logger.ts";
 import { UniqueViolationError } from "../repositories/ports.ts";
 import type { AuthContext, ClientInfo, ServiceDependencies } from "./context.ts";
 import { type ChargeCredentialCheck, createCredentialChecks } from "./credentials.ts";
 import { isDemoAccount, requireNotDemo } from "./privileges.ts";
-import { BILLING_PERIOD_MS, type CardInput } from "./subscriptions.ts";
 
 export { hashSessionToken, type IssuedSession } from "../areas/identity/sessions.ts";
 
@@ -42,14 +40,10 @@ export interface LoginGuard {
 }
 
 /**
- * Sign-up with a password: milestone 1's body (`planId` and `payment`: account, membership and
- * session at once) or milestone 2's (neither: an account without a membership, §5.1).
+ * Sign-up with a password (§5.1): the account and a session, without a membership. The plan is
+ * chosen and paid at checkout; no card ever reaches this service (principle 4).
  */
-export type SignupInput = Omit<SignupBody, "payment" | "planId"> &
-  (
-    | { planId: SignupBody["planId"] & string; payment: CardInput }
-    | { planId?: undefined; payment?: undefined }
-  );
+export type SignupInput = SignupBody;
 
 export function createAuthService(
   deps: ServiceDependencies,
@@ -106,7 +100,6 @@ export function createAuthService(
         throw new AppError("email_already_registered");
       }
       const now = clock.now();
-      // Hashed before the card is charged: nothing that can fail on our side comes after it.
       const passwordHash = await passwords.hash(body.password);
       const accountId = ids.next();
       const session = await sessions.newSession(accountId, client, true);
@@ -119,54 +112,14 @@ export function createAuthService(
         updatedAt: now,
       };
 
-      if (body.payment === undefined) {
-        // Milestone 2 (§5.1): the account comes first, without a membership; billing's checkout
-        // follows. Nothing is charged here.
-        try {
-          await repos.identity.createAccount({ account, session: session.record, identity: null });
-        } catch (error) {
-          if (error instanceof UniqueViolationError) throw new AppError("email_already_registered");
-          throw error;
-        }
-        logger.info("auth.signup", { accountId, membership: "none" });
-      } else {
-        const plan = getPlan(body.planId);
-        const charge = await deps.billing.charge({
-          card: body.payment,
-          amountMinor: plan.monthlyPrice.amountMinor,
-          currency: plan.monthlyPrice.currency,
-          now,
-        });
-        if (!charge.approved) {
-          await emit("auth.signup", "failure", null);
-          throw new AppError("payment_declined", { declineReason: charge.reason });
-        }
-        try {
-          await repos.accounts.createWithSession({
-            account: {
-              id: accountId,
-              email: body.email,
-              passwordHash,
-              createdAt: now,
-              updatedAt: now,
-            },
-            subscription: {
-              accountId,
-              planId: plan.id,
-              startedAt: now,
-              currentPeriodEnd: now + BILLING_PERIOD_MS,
-              canceledAt: null,
-              card: charge.card,
-              updatedAt: now,
-            },
-            session: session.record,
-          });
-        } catch (error) {
-          if (error instanceof UniqueViolationError) throw new AppError("email_already_registered");
-          throw error;
-        }
-        logger.info("auth.signup", { accountId, planId: plan.id });
+      // The account comes first, without a membership; billing's checkout follows (§5.1).
+      try {
+        await repos.identity.createAccount({ account, session: session.record, identity: null });
+      } catch (error) {
+        if (error instanceof UniqueViolationError) throw new AppError("email_already_registered");
+        throw error;
       }
+      logger.info("auth.signup", { accountId, membership: "none" });
       await queueVerification(accountId);
       await emit("auth.signup", "success", accountId);
       return sessions.issued(session);

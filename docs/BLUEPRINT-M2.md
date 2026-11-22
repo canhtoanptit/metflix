@@ -291,9 +291,10 @@ the billing journeys once per mode against the Stripe sandbox. A Stripe-lane che
 reach Stripe skips with that reason; it never passes silently.
 
 ### 5.6 Contract changes
-- Removed: every request field carrying card data (`payment` on sign-up, plan change and
-  payment-method update). A contract test fails if any route schema contains a card number,
-  expiry or security-code field.
+- Removed: every request field carrying card data (`payment` on sign-up and plan change; the
+  payment-method update route itself). A contract test fails if any route schema contains a card
+  number, expiry or security-code field; the bodies are strict, so a card sent anyway is refused.
+- `subscription` and `plan` on the session and `GET /account` are null without a membership.
 - Added: checkout start and status, payment-method setup, invoices, promo validation, webhook
   endpoints, provider configuration for the web (`GET /billing/config`: publishable key or
   simulator URL), trial information on plans.
@@ -486,9 +487,12 @@ Handlers and services are split into one module per area (`identity`, `billing`,
 1. **Foundation.** Contracts (routes, events, error codes), ports with in-memory implementations
    and contract suites, migrations for all three dialects, the area module skeleton and
    composition wiring. No service logic. The foundation is additive: milestone 1 keeps working
-   and every gate stays green when it lands. The card-data fields of §5.6 are therefore not
-   removed here; the contract test that forbids them arrives with an explicit list of the legacy
-   fields still allowed, and the billing owner empties that list together with the web checkout.
+   and every gate stays green when it lands. The card-data fields of §5.6 were therefore not
+   removed here; the contract test that forbids them arrived with an explicit list of the legacy
+   fields still allowed. Done with the web checkout (2026-11-23): the list is empty, sign-up and
+   plan-change bodies are strict (a card is refused with `validation_failed`),
+   `PUT /account/payment-method` is removed, and `subscription`/`plan` are null on the session
+   and the account when there is no membership.
 2. **Parallel build.** Identity, email and the development issuer; billing, the fake provider and
    the Stripe adapter; events, lake and privacy; the Python pipeline; experimentation and
    recommendation serving; admin API. Platform work for Kubernetes and Cloudflare starts as soon

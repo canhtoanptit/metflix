@@ -18,6 +18,13 @@ export interface FakePaymentFormOptions {
  * - `GET  {base}/form?secret=…&return=/path`   the form (test cards by name or number)
  * - `POST {base}/form`                         confirm (form post); 303 to the challenge or back
  * - `GET|POST {base}/challenge`                the 3-D Secure stand-in: complete or fail
+ *
+ * Like a real provider's hosted page, it always leads back: with a `return` path the browser
+ * is sent there with `payment=succeeded` or `payment=failed` (a decline, a failed challenge, a
+ * payment that can no longer be made), and every problem page links back with `payment=failed`.
+ * A declined card can be followed by another on the same page (the setup or the first payment
+ * stays confirmable, as at Stripe); a second submission of something already confirmed is sent
+ * back as succeeded.
  * - `POST {base}/api/confirm`                  the same as JSON, for suites: `{ clientSecret, card?, challenge? }`
  *
  * A card is a test card by name or number, or a labelled one, `visa:run-42`: the same behaviour
@@ -66,7 +73,12 @@ export function createFakePaymentForm(
     } catch (error) {
       if (error instanceof PaymentProviderError) {
         if (path.startsWith("/api/")) return json({ error: error.code }, statusFor(error));
-        return page(statusFor(error), "Cannot continue", `<p>${escapeHtml(messageFor(error))}</p>`);
+        const back = safeReturn(url.searchParams.get("return"));
+        return page(
+          statusFor(error),
+          "Cannot continue",
+          `<p>${escapeHtml(messageFor(error))}</p>${backLink(back)}`,
+        );
       }
       throw error;
     }
@@ -89,10 +101,11 @@ export function createFakePaymentForm(
     const secret = url.searchParams.get("secret") ?? "";
     const back = safeReturn(url.searchParams.get("return"));
     const described = await fake.describeSecret(secret);
-    if (!described) return page(404, "Nothing to confirm", "<p>This link is not valid.</p>");
-    const done =
-      described.kind === "setup" ? described.status === "succeeded" : described.status !== "open";
-    if (done) return finished(back, "succeeded");
+    if (!described) {
+      return page(404, "Nothing to confirm", `<p>This link is not valid.</p>${backLink(back)}`);
+    }
+    const settled = settledOutcome(described);
+    if (settled) return finished(back, settled);
     const heading =
       described.kind === "setup"
         ? "Add a card"
@@ -115,7 +128,7 @@ export function createFakePaymentForm(
 <fieldset><legend>Choose a test card</legend>${onFile}${cards}</fieldset>
 <label class="number">Or type a test card number <input name="number" inputmode="numeric" autocomplete="off"></label>
 <button type="submit">${described.kind === "setup" ? "Save card" : "Pay"}</button>
-</form>`,
+</form>${backLink(back, "Cancel and return")}`,
     );
   }
 
@@ -131,14 +144,42 @@ export function createFakePaymentForm(
         return page(
           422,
           "Not a test card",
-          `<p>Use one of the test cards listed on the form.</p><p><a href="${escapeHtml(formHref(secret, back))}">Back</a></p>`,
+          `<p>Use one of the test cards listed on the form.</p><p><a href="${escapeHtml(formHref(secret, back))}">Try another card</a></p>${backLink(back)}`,
         );
       }
     } else if (form.get("card")) {
       card = parseCardChoice(form.get("card") ?? "")?.choice ?? null;
     }
-    const outcome = await confirm(secret, card);
-    return afterConfirm(outcome, secret, back, url);
+    return confirmed(secret, back, url, () => confirm(secret, card));
+  }
+
+  /**
+   * Confirms unless it is already settled (a second submission: sent back as it ended), and
+   * turns a refusal into a page that leads back instead of a dead end.
+   */
+  async function confirmed(
+    secret: string,
+    back: string | null,
+    url: URL,
+    run: () => Promise<FormOutcome>,
+  ): Promise<Response> {
+    const described = await fake.describeSecret(secret);
+    if (!described) {
+      return page(404, "Nothing to confirm", `<p>This link is not valid.</p>${backLink(back)}`);
+    }
+    const settled = settledOutcome(described);
+    if (settled) return finished(back, settled);
+    try {
+      return afterConfirm(await run(), secret, back, url);
+    } catch (error) {
+      if (!(error instanceof PaymentProviderError)) throw error;
+      const retry = `<p><a href="${escapeHtml(formHref(secret, back))}">Try again</a></p>`;
+      return page(
+        statusFor(error),
+        "Cannot continue",
+        `<p>${escapeHtml(messageFor(error))}</p>${retry}${backLink(back)}`,
+      );
+    }
   }
 
   function challengePage(url: URL): Response {
@@ -153,7 +194,7 @@ export function createFakePaymentForm(
 <input type="hidden" name="return" value="${escapeHtml(back ?? "")}">
 <button type="submit" name="outcome" value="complete">Complete authentication</button>
 <button type="submit" name="outcome" value="fail" class="secondary">Fail authentication</button>
-</form>`,
+</form>${backLink(back, "Cancel and return")}`,
     );
   }
 
@@ -161,12 +202,8 @@ export function createFakePaymentForm(
     const form = await readForm(request);
     const secret = form.get("secret") ?? "";
     const back = safeReturn(form.get("return"));
-    const outcome = await confirm(
-      secret,
-      null,
-      form.get("outcome") === "fail" ? "fail" : "complete",
-    );
-    return afterConfirm(outcome, secret, back, url);
+    const challenge = form.get("outcome") === "fail" ? "fail" : "complete";
+    return confirmed(secret, back, url, () => confirm(secret, null, challenge));
   }
 
   function afterConfirm(
@@ -182,6 +219,8 @@ export function createFakePaymentForm(
       return redirect(`${target.pathname}${target.search}`);
     }
     if (outcome.status === "failed") {
+      // Back to the merchant, who reports the decline (and offers the form again).
+      if (back) return finished(back, "failed");
       return page(
         402,
         "Card declined",
@@ -191,12 +230,11 @@ export function createFakePaymentForm(
     return finished(back, "succeeded");
   }
 
-  function finished(back: string | null, status: "succeeded"): Response {
-    if (back) {
-      const separator = back.includes("?") ? "&" : "?";
-      return redirect(`${back}${separator}payment=${status}`);
-    }
-    return page(200, "Done", "<p>Confirmed. You can close this page.</p>");
+  function finished(back: string | null, status: "succeeded" | "failed"): Response {
+    if (back) return redirect(returnHref(back, status));
+    return status === "succeeded"
+      ? page(200, "Done", "<p>Confirmed. You can close this page.</p>")
+      : page(402, "Not paid", "<p>This payment can no longer be made.</p>");
   }
 
   function formHref(secret: string, back: string | null): string {
@@ -246,6 +284,31 @@ function parsePolicy(body: Partial<Record<string, unknown>> | null): DeliveryPol
     maxDelayMs,
     ...(typeof body.seed === "number" ? { seed: body.seed } : {}),
   };
+}
+
+/**
+ * How a confirmation already ended, or null while it can still be confirmed: a setup that
+ * succeeded, a first payment paid (succeeded) or no longer payable (voided: failed). A declined
+ * setup or an open invoice can take another card.
+ */
+function settledOutcome(
+  described: NonNullable<Awaited<ReturnType<FakePaymentProvider["describeSecret"]>>>,
+): "succeeded" | "failed" | null {
+  if (described.kind === "setup") return described.status === "succeeded" ? "succeeded" : null;
+  if (described.status === "open") return null;
+  return described.status === "paid" ? "succeeded" : "failed";
+}
+
+function returnHref(back: string, status: "succeeded" | "failed"): string {
+  const separator = back.includes("?") ? "&" : "?";
+  return `${back}${separator}payment=${status}`;
+}
+
+/** The way back to the merchant from any page, the outcome marked failed. */
+function backLink(back: string | null, label = "Return to Webflix"): string {
+  return back
+    ? `<p><a class="back" href="${escapeHtml(returnHref(back, "failed"))}">${escapeHtml(label)}</a></p>`
+    : "";
 }
 
 /** Only a same-origin absolute path: never another origin, a scheme or a protocol-relative URL. */

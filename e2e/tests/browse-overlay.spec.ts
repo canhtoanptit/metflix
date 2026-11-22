@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { escapeRegExp } from "./api.ts";
 import { row, visibleCards } from "./browse-support.ts";
 import { expect, test } from "./fixtures.ts";
 
@@ -112,6 +113,37 @@ test("keyboard: focus starts inside, stays inside, and Escape restores it to the
   if (await dialog.isVisible()) await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page.locator(":focus")).toHaveAccessibleName(new RegExp(`^${name}(,|$)`));
+});
+
+test("one Escape closes the details from wherever Tab left focus, back to the card", async ({
+  page,
+}) => {
+  await page.goto("/browse");
+  const trending = row(page, "Trending Now");
+  await trending.scrollIntoViewIfNeeded();
+  const link = visibleCards(trending).nth(1).locator("a");
+  await link.focus();
+  const name = await link.evaluate(
+    (element) => element.querySelector(".sr-only")?.textContent ?? "",
+  );
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /^Rate / })).toBeVisible();
+  // Tab past the controls that show a tooltip on focus (My List, the rating) at a typist's pace,
+  // and press Escape at once: a tooltip still fading out must not take the Escape.
+  for (let step = 0; step < 8; step += 1) {
+    await page.keyboard.press("Tab");
+    const focused = await page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+    if (focused?.startsWith("Rate ")) break;
+  }
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page).not.toHaveURL(/title=/);
+  await expect(page.locator(":focus")).toHaveAccessibleName(
+    new RegExp(`^${escapeRegExp(name)}(,|$)`),
+  );
 });
 
 test("Play goes to the watch page with the title (and the episode to resume)", async ({ page }) => {

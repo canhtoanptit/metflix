@@ -1,11 +1,12 @@
 import * as z from "zod";
-import { AccountDetails, ChangePlanBody, Membership, UpdatePaymentMethodBody } from "../account.ts";
+import { AccountDetails, ChangePlanBody, Membership } from "../account.ts";
 import {
   AdvanceBillingClockBody,
   BillingClock,
   BillingConfig,
   Checkout,
   InvoicePage,
+  OpenCheckout,
   PaymentMethodSetup,
   PaymentWebhookParams,
   PlanChangePreview,
@@ -20,44 +21,10 @@ import { PlanList } from "../plans.ts";
 import { defineRoute } from "../route.ts";
 
 const IdParams = z.object({ id: Id });
-const exampleCard = {
-  method: "card",
-  cardNumber: "4242 4242 4242 4242",
-  expMonth: 12,
-  expYear: 2031,
-  cvc: "123",
-  nameOnCard: "Sam Rivera",
-};
-const exampleAccountDetails = {
-  account: {
-    id: "0193a1d2-7c4e-7a10-8f00-5d1e2b3c4d5e",
-    email: "sam@example.com",
-    createdAt: "2026-09-02T18:04:11.000Z",
-  },
-  subscription: {
-    planId: "standard",
-    status: "active",
-    startedAt: "2026-09-02T18:04:11.000Z",
-    currentPeriodEnd: "2026-12-01T18:04:11.000Z",
-    canceledAt: null,
-  },
-  plan: {
-    id: "standard",
-    name: "Standard",
-    monthlyPrice: { amountMinor: 1549, currency: "USD" },
-    maxStreams: 2,
-    maxQuality: "1080p",
-    maxVideoHeight: 1080,
-    features: ["Full HD", "Watch on 2 screens at a time"],
-    highlighted: true,
-  },
-  paymentMethod: { brand: "visa", last4: "4242", expMonth: 12, expYear: 2031 },
-};
-
 /**
- * Routes of the `billing` area. Plans and the membership (milestone 1's mock billing, until
- * replaced), and milestone 2's provider configuration, checkout, plan-change previews, card
- * replacement, invoices, promo codes, payment webhooks and the fake provider's clock
+ * Routes of the `billing` area. Plans and the membership, the provider configuration, checkout,
+ * plan-change previews, card replacement, invoices, promo codes, payment webhooks and the fake
+ * provider's clock
  * (docs/BLUEPRINT-M2.md §5). Part of `routes` (src/routes.ts): the key is the operation id and the
  * client method name.
  */
@@ -88,7 +55,7 @@ export const billingRoutes = {
     auth: "account-holder",
     summary: "Change plan",
     description:
-      "A request that carries `payment` counts against the `payment` limit (per account), like `PUT /account/payment-method`. Milestone 2: for a membership at the payment provider the change is made there (with `previewToken`, exactly as previewed by `POST /billing/subscription/preview`); an account without a membership answers `subscription_required` (start a checkout).",
+      "For a membership at the payment provider the change is made there (with `previewToken`, exactly as previewed by `POST /billing/subscription/preview`); an account without a membership answers `subscription_required` (start a checkout). Card data is refused (`validation_failed`): a card is replaced through `POST /billing/payment-method/setup`. Limited per account (`payment`).",
     body: ChangePlanBody,
     response: Membership,
     errors: [
@@ -96,30 +63,10 @@ export const billingRoutes = {
       "demo_account_protected",
       "subscription_required",
       "checkout_state_conflict",
+      "account_deletion_scheduled",
       "service_unavailable",
     ],
     rateLimit: "payment",
-    rateLimitScope: "handler",
-  }),
-  updatePaymentMethod: defineRoute({
-    method: "PUT",
-    path: "/account/payment-method",
-    tag: "account",
-    area: "billing",
-    auth: "account-holder",
-    summary: "Replace the payment method",
-    description:
-      "The card is verified with a zero-amount authorisation and declined exactly like at sign-up (`payment_declined` with `declineReason`); a declined card changes nothing. Only the brand, last four digits and expiry are kept. Limited per account (`payment`).",
-    body: UpdatePaymentMethodBody,
-    response: AccountDetails,
-    errors: [
-      "payment_declined",
-      "demo_account_protected",
-      "subscription_required",
-      "checkout_state_conflict",
-    ],
-    rateLimit: "payment",
-    examples: { request: { payment: exampleCard }, response: exampleAccountDetails },
   }),
   cancelMembership: defineRoute({
     method: "DELETE",
@@ -148,6 +95,7 @@ export const billingRoutes = {
       "payment_declined",
       "subscription_required",
       "checkout_state_conflict",
+      "account_deletion_scheduled",
       "service_unavailable",
     ],
   }),
@@ -181,9 +129,21 @@ export const billingRoutes = {
       "unrestricted_profile_required",
       "demo_account_protected",
       "payments_not_configured",
+      "account_deletion_scheduled",
       "service_unavailable",
     ],
     examples: { request: { planId: "standard" } },
+  }),
+  getOpenCheckout: defineRoute({
+    method: "GET",
+    path: "/billing/checkout",
+    tag: "billing",
+    area: "billing",
+    auth: "account",
+    summary: "The account's checkout in progress, if any",
+    description:
+      "To continue a checkout on any device (plan, promo code, state), from the profile gate or a profile. `checkout` is null when none is open (none started, completed, failed, expired). Its `clientSecret` is always null: continue with `GET /billing/checkout/:id`.",
+    response: OpenCheckout,
   }),
   getCheckout: defineRoute({
     method: "GET",
@@ -212,6 +172,7 @@ export const billingRoutes = {
       "checkout_state_conflict",
       "payment_declined",
       "payments_not_configured",
+      "account_deletion_scheduled",
       "service_unavailable",
     ],
     rateLimit: "payment",

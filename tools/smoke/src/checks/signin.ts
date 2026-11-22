@@ -16,6 +16,7 @@ import {
   federatedSignIn,
   type IssuerChoice,
   issuerLocation,
+  issuerRealm,
   type MemberIssuer,
   type OidcIntent,
   outcomeOf,
@@ -514,6 +515,91 @@ export const signinChecks: CheckDefinition[] = [
         "the identity linked again signs in",
       );
       equal((await signedIn(back, "relinked")).account.id, accountId, "account signed in to");
+    },
+  },
+  {
+    id: "identity.oidc.refused-start",
+    area: "identity",
+    title:
+      "A refused sign-in start sends a browser back to its returnTo with ?oidc=failed&oidcError=<code> (a script still gets the problem document); an unsafe returnTo goes home",
+    needs: [needs.googleIssuer],
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const start = (query: string) => `${API}/auth/oidc/google/start?${query}`;
+      const expectBack = (result: HttpResult, path: string, code: string, what: string) => {
+        status(result, 303, `${what} (a navigation)`);
+        const location = new URL(result.headers.get("Location") ?? "", visitor.origin);
+        check(
+          visitor.sameDeployment(location.href),
+          `${what}: the redirect leaves the deployment`,
+          {
+            observed: location.href,
+            exchange: result.exchange,
+          },
+        );
+        equal(location.pathname, path, `${what}: where the browser is sent`, result.exchange);
+        equal(location.searchParams.get("oidc"), "failed", `${what}: oidc`, result.exchange);
+        equal(location.searchParams.get("oidcError"), code, `${what}: oidcError`, result.exchange);
+        check(
+          result.bytes.byteLength === 0 ||
+            !/problem/.test(result.headers.get("Content-Type") ?? ""),
+          `${what}: a problem document was rendered to the browser`,
+          { exchange: result.exchange },
+        );
+      };
+
+      // Signed out, a link needs a session.
+      const visitor = ctx.agent("refused-start");
+      await env.issuerSlot();
+      expectBack(
+        await visitor.navigate(start("intent=link&returnTo=/account")),
+        "/account",
+        "unauthenticated",
+        "intent=link signed out",
+      );
+      await env.issuerSlot();
+      problem(
+        await visitor.fetch(start("intent=link&returnTo=/account")),
+        "unauthenticated",
+        "intent=link signed out (a script)",
+      );
+
+      // An account holder without a fresh proof.
+      const account = await env.bareHolder("refused-start");
+      await env.issuerSlot();
+      expectBack(
+        await account.agent.navigate(start("intent=link&returnTo=/account/security")),
+        "/account/security",
+        "reauthentication_required",
+        "intent=link without a fresh proof",
+      );
+      await env.issuerSlot();
+      problem(
+        await account.agent.fetch(start("intent=link&returnTo=/account/security")),
+        "reauthentication_required",
+        "intent=link without a fresh proof (a script)",
+      );
+
+      // An unsafe returnTo is never followed: the browser goes home.
+      await env.issuerSlot();
+      expectBack(
+        await visitor.navigate(start("intent=link&returnTo=//evil.example/x")),
+        "/",
+        "validation_failed",
+        "an off-site returnTo",
+      );
+
+      // A start that is not refused still goes to the issuer.
+      await env.issuerSlot();
+      const accepted = await visitor.navigate(start("returnTo=/browse"));
+      status(accepted, 302, "a sign-in start (a navigation)");
+      check(
+        new URL(accepted.headers.get("Location") ?? "", visitor.origin).pathname.startsWith(
+          `${issuerRealm("google")}/`,
+        ),
+        "an accepted start does not go to the issuer",
+        { observed: accepted.headers.get("Location") ?? "", exchange: accepted.exchange },
+      );
     },
   },
   {

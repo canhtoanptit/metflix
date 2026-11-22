@@ -10,6 +10,7 @@ import type { ProviderInvoice } from "../../ports/payment-provider.ts";
 import type {
   CheckoutPromotion,
   CheckoutRecord,
+  DeclineReason,
   InvoiceRecord,
   PaymentMethodSetupRecord,
   RefundRecord,
@@ -57,6 +58,15 @@ export function presentCheckout(
         ? null
         : { amountMinor: checkout.amountDueMinor, currency: checkout.currency },
     promotion: presentPromotion(checkout.promotion),
+    // A code is never spent on a payment of nothing: a trial withholds it (it is not redeemed).
+    promotionOutcome:
+      checkout.promotion === null
+        ? null
+        : checkout.trialDays !== null && checkout.trialDays > 0
+          ? "not_applied_trial"
+          : checkout.providerSubscriptionId !== null
+            ? "applied"
+            : "pending",
     failureReason: checkout.failureReason,
     createdAt: toIsoString(checkout.createdAt),
     expiresAt: toIsoString(checkout.expiresAt),
@@ -66,11 +76,14 @@ export function presentCheckout(
 export function presentSetup(
   setup: PaymentMethodSetupRecord,
   clientSecret: string | null,
+  /** The reason of a `failed` setup (ignored otherwise). */
+  failureReason: DeclineReason | null = null,
 ): PaymentMethodSetup {
   return {
     id: setup.id,
     status: setup.status,
     clientSecret: setup.status === "requires_confirmation" ? clientSecret : null,
+    failureReason: setup.status === "failed" ? (failureReason ?? "card_declined") : null,
     createdAt: toIsoString(setup.createdAt),
   };
 }

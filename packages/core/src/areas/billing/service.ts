@@ -10,6 +10,7 @@ import {
   type Membership,
   type MembershipState,
   type Money,
+  type OpenCheckout,
   type PaymentMethodSetup,
   PLAN_IDS,
   type PlanChangePreview,
@@ -123,6 +124,8 @@ export interface BillingService extends AreaModule {
     auth: AuthContext,
     input: { planId: PlanId; promotionCode?: string | undefined },
   ): Promise<Checkout>;
+  /** The account's checkout in progress, without its client secret (`GET /billing/checkout`). */
+  getOpenCheckout(accountId: string): Promise<OpenCheckout>;
   getCheckout(accountId: string, checkoutId: string): Promise<Checkout>;
   confirmCheckout(accountId: string, checkoutId: string): Promise<Checkout>;
 
@@ -275,13 +278,35 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
   async function snapshot(accountId: string): Promise<MembershipSnapshot> {
     const loaded = await readAccount(deps, accountId);
     if (!loaded) throw new AppError("unauthenticated");
-    return readMembership(
-      deps,
-      accountId,
-      loaded.subscription,
-      context.now(),
-      loaded.account.createdAt,
-    );
+    return readMembership(deps, accountId, loaded.subscription, context.now());
+  }
+
+  /**
+   * Milestone 1's view of a membership the route just read or changed. The account has one
+   * (every caller checked a provider membership first); one never started reads as none.
+   */
+  function heldMembership(current: MembershipSnapshot): Membership {
+    if (!current.legacy) {
+      throw new AppError("subscription_required", {
+        subscriptionStatus: "ended",
+        membershipStatus: current.state.status,
+      });
+    }
+    return current.legacy;
+  }
+
+  /**
+   * Nothing the member does may make the membership renew again while the account's deletion
+   * is scheduled (the events area's seam): resume, a new checkout or its confirmation, a plan
+   * change. Keeping the account lifts it at once. Staff actions are not refused (deliberate,
+   * audited).
+   */
+  async function refuseWhileDeletionScheduled(accountId: string): Promise<void> {
+    if (await seams.accountDeletionScheduled(accountId)) {
+      throw new AppError("account_deletion_scheduled", {
+        detail: "Your account is scheduled to be deleted. Keep your account first, then try again.",
+      });
+    }
   }
 
   /** The account's provider membership, for changes that need one (`subscription_required`). */
@@ -355,6 +380,14 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         (await payments.retrieveSubscription(checkout.providerSubscriptionId))
           ?.paymentClientSecret ?? null;
     }
+    return checkoutSummary(checkout, clientSecret);
+  }
+
+  /** The checkout as stored, with the client secret the caller read (or none). */
+  async function checkoutSummary(
+    checkout: CheckoutRecord,
+    clientSecret: string | null,
+  ): Promise<Checkout> {
     const membership =
       checkout.trialDays !== null ? await repos.billing.getMembership(checkout.accountId) : null;
     return presentCheckout(checkout, {
@@ -523,19 +556,17 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
             now,
           })
         : previous;
-      return snapshotMembership(
-        projected,
-        loaded.subscription,
-        context.graceSec,
-        now,
-        loaded.account.createdAt,
-      );
+      return snapshotMembership(projected, loaded.subscription, context.graceSec, now);
     }
   }
 
-  async function membershipAfter(accountId: string, subscription: ProviderSubscription | null) {
-    return (subscription ? await snapshotAfter(accountId, subscription) : await snapshot(accountId))
-      .legacy;
+  async function membershipAfter(
+    accountId: string,
+    subscription: ProviderSubscription | null,
+  ): Promise<Membership> {
+    return heldMembership(
+      subscription ? await snapshotAfter(accountId, subscription) : await snapshot(accountId),
+    );
   }
 
   /** The account's subscription: its membership's, or the one its open checkout started. */
@@ -581,17 +612,11 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
 
     async exportAccountData(accountId): Promise<JsonValue> {
       // What the member sees on their account page (§6.3 "Download your data"): the membership
-      // (milestone 1's mock row included: plan, period, card brand and last four digits), the
-      // entitlement, then the invoices and refunds Webflix keeps.
+      // (plan, period, card brand and last four digits; null without one), the entitlement,
+      // then the invoices and refunds Webflix keeps.
       const loaded = await readAccount(deps, accountId);
       const current = loaded
-        ? await readMembership(
-            deps,
-            accountId,
-            loaded.subscription,
-            context.now(),
-            loaded.account.createdAt,
-          )
+        ? await readMembership(deps, accountId, loaded.subscription, context.now())
         : null;
       const invoices = await repos.billing.listInvoices(accountId, { limit: 100, before: null });
       const refunds = (
@@ -600,8 +625,8 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       const data = {
         membership: current?.state ?? null,
         entitlement: current?.entitlement ?? null,
-        subscription: current?.legacy.subscription ?? null,
-        plan: current
+        subscription: current?.legacy?.subscription ?? null,
+        plan: current?.legacy
           ? {
               id: current.legacy.plan.id,
               name: current.legacy.plan.name,
@@ -644,13 +669,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       for (const accountId of accountIds) {
         const loaded = await readAccount(deps, accountId);
         if (!loaded) continue;
-        const current = await readMembership(
-          deps,
-          accountId,
-          loaded.subscription,
-          context.now(),
-          loaded.account.createdAt,
-        );
+        const current = await readMembership(deps, accountId, loaded.subscription, context.now());
         summaries.set(accountId, {
           membershipStatus: current.state.status,
           planId: current.state.planId,
@@ -706,6 +725,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       }
       if (isDemoAccount(accountId)) throw new AppError("demo_account_protected");
       requireProvider();
+      await refuseWhileDeletionScheduled(accountId);
       const current = await snapshot(accountId);
       if (current.entitlement.entitled) {
         throw new AppError("checkout_state_conflict", {
@@ -793,6 +813,12 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       return checkoutView(checkout);
     },
 
+    async getOpenCheckout(accountId) {
+      // From the database alone: what to continue with, never the capability to confirm it.
+      const open = await repos.billing.findOpenCheckout(accountId, context.now());
+      return { checkout: open ? await checkoutSummary(open, null) : null };
+    },
+
     async getCheckout(accountId, checkoutId) {
       let checkout = await repos.billing.getCheckout(accountId, checkoutId);
       if (!checkout) throw new AppError("not_found", { detail: "No such checkout" });
@@ -822,6 +848,8 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       requireProvider();
       const found = await repos.billing.getCheckout(accountId, checkoutId);
       if (!found) throw new AppError("not_found", { detail: "No such checkout" });
+      // A checkout started before the deletion was asked for creates no subscription meanwhile.
+      if (found.status === "requires_setup") await refuseWhileDeletionScheduled(accountId);
       let checkout: CheckoutRecord = found;
       if (checkout.status !== "requires_setup") {
         if (checkout.status === "failed" || checkout.status === "expired") {
@@ -928,7 +956,8 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
                 priceLookupKey: priceLookupKey(subscribe.planId, subscribe.currency),
                 paymentMethodId: method.id,
                 trialDays: subscribe.trialDays,
-                promotionId: subscribe.promotionId,
+                // Never spent on a payment of nothing: a trial withholds the code, unredeemed.
+                promotionId: subscribe.trialDays ? null : subscribe.promotionId,
               },
               call,
             ),
@@ -1054,6 +1083,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
 
     async changePlan(accountId, input) {
       if (isDemoAccount(accountId)) throw new AppError("demo_account_protected");
+      await refuseWhileDeletionScheduled(accountId);
       const { record, subscriptionId } = await changeTarget(accountId, input.planId);
       // Applied exactly as previewed: same proration date, and the preview's own operation id,
       // so a retried request never charges the proration twice. Without a token, a change is
@@ -1115,7 +1145,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       const record = await requireProviderMembership(accountId);
       const subscriptionId = record.providerSubscriptionId;
       if (!subscriptionId || !ENTITLED_STATUSES.has(record.status) || record.cancelAtPeriodEnd) {
-        return (await snapshot(accountId)).legacy;
+        return heldMembership(await snapshot(accountId));
       }
       const subscription = await providerCall(
         context,
@@ -1128,6 +1158,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     },
 
     async resume(accountId) {
+      await refuseWhileDeletionScheduled(accountId);
       const record = await requireProviderMembership(accountId);
       const subscriptionId = record.providerSubscriptionId;
       if (subscriptionId && record.cancelAtPeriodEnd && ENTITLED_STATUSES.has(record.status)) {
@@ -1142,7 +1173,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         return membershipAfter(accountId, subscription);
       }
       const current = await snapshot(accountId);
-      if (current.entitlement.entitled) return current.legacy;
+      if (current.entitlement.entitled) return heldMembership(current);
       // An ended membership restarts through a new checkout (no second trial).
       throw new AppError("checkout_state_conflict", {
         detail: "This membership has ended. Start a new checkout to restart it.",
@@ -1200,7 +1231,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       }
       const current = (await repos.billing.getSetup(accountId, setupId)) ?? record;
       if (current.status === "succeeded" || current.status === "failed") {
-        return presentSetup(current, null);
+        return presentSetup(current, null, declineReason(confirmed?.failureCode ?? null));
       }
       if (confirmed?.status === "succeeded" || confirmed?.status === "processing") {
         // Confirmed at the provider; the change is being finished.
@@ -1622,6 +1653,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
 const REQUEST_METHODS = [
   "plans",
   "startCheckout",
+  "getOpenCheckout",
   "getCheckout",
   "confirmCheckout",
   "previewPlanChange",

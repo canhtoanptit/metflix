@@ -6,10 +6,14 @@ import { expectNoA11yViolations } from "@webflix/ui/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
 import { createAppRuntime } from "../src/app/bootstrap.ts";
+import { leaveFor } from "../src/features/member/billing/navigation.ts";
 import { clearDraft } from "../src/features/member/signup/draft.ts";
+import { mockProviderConfirm } from "../src/mocks/billing.ts";
 import { createMockApiClient } from "../src/mocks/client.ts";
 import { initialState, type MockScenario } from "../src/mocks/state.ts";
 import { locationOf } from "./harness.tsx";
+
+vi.mock("../src/features/member/billing/navigation.ts", () => ({ leaveFor: vi.fn() }));
 
 /**
  * Member flows in the real app (routes, guards, query client) over the in-browser mock API.
@@ -102,7 +106,22 @@ describe("sign-up", () => {
     await user.clear(emailField);
     await user.type(emailField, email);
     await user.type(screen.getByLabelText("Password", { exact: true }), "correct horse battery");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: "Create account" }));
+  }
+
+  /** The provider's hosted form, as the mock's stand-in does it: confirm, then come back. */
+  async function atProvider(
+    router: ReturnType<typeof renderMember>["router"],
+    card: string,
+    outcome: "succeeded" | null,
+  ) {
+    await waitFor(() => expect(leaveFor).toHaveBeenCalled());
+    const href = new URL(vi.mocked(leaveFor).mock.calls.at(-1)?.[0] ?? "", "http://app.local");
+    vi.mocked(leaveFor).mockClear();
+    expect(href.pathname).toBe("/mock-pay");
+    mockProviderConfirm(href.searchParams.get("secret") ?? "", { card }, () => undefined);
+    const back = href.searchParams.get("return") ?? "/";
+    await router.navigate({ href: outcome ? `${back}&payment=${outcome}` : back });
   }
 
   it("offers sign-in when the email already has an account", async () => {
@@ -117,51 +136,56 @@ describe("sign-up", () => {
     );
   });
 
-  it("email → plan → payment (declined, then approved) → profiles → home", async () => {
+  it("account → plan → payment in the provider's form (declined, then approved) → profiles → home", async () => {
     const user = userEvent.setup();
     let signups = 0;
     const { router, container } = renderMember("/signup", "anonymous", (base) => ({
       signup: async (input, options) => {
         signups += 1;
+        expect(input.body).toEqual({
+          email: "new.member@example.com",
+          password: expect.any(String),
+        });
         return base.signup(input, options);
       },
     }));
     await throughStepOne(user, "new.member@example.com");
 
-    // Plan: the recommended plan is preselected and the choice lives in the URL.
+    // Plan, signed in: the recommended plan is preselected and the choice lives in the URL.
     await waitFor(() => expect(router.state.location.pathname).toBe("/signup/plan"));
+    expect(signups).toBe(1);
     expect(await screen.findByRole("heading", { name: /Choose the plan/ })).toHaveFocus();
     await user.click(await screen.findByRole("radio", { name: /Basic/ }));
     await waitFor(() => expect(locationOf(router)).toBe("/signup/plan?plan=basic"));
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
-    // Payment: card formatting, a declined card, then an approved one.
+    // Payment: what is due, then the provider's form (no card field on Webflix's page).
     await waitFor(() => expect(router.state.location.pathname).toBe("/signup/payment"));
-    await screen.findByText(/Basic ·/);
-    const number = screen.getByLabelText("Card number");
-    await user.type(number, "4000000000000002");
-    expect(number).toHaveValue("4000 0000 0000 0002");
-    await user.type(screen.getByLabelText("Expiry (MM / YY)"), "1230");
-    expect(screen.getByLabelText("Expiry (MM / YY)")).toHaveValue("12 / 30");
-    await user.type(screen.getByLabelText("Security code"), "123");
-    await user.type(screen.getByLabelText("Name on card"), "Sam Rivera");
-    await user.click(screen.getByRole("button", { name: "Start membership" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Your card was declined");
-    await waitFor(() => expect(screen.getByLabelText("Card number")).toHaveFocus());
-    expect(screen.getByLabelText("Card number")).toHaveAccessibleDescription(/declined/);
-    await expectNoA11yViolations(container);
+    await screen.findByText("Basic");
+    expect(screen.queryByLabelText(/Card number/)).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "Continue to payment" }));
+    await atProvider(router, "4000000000000002", null);
 
-    await user.clear(screen.getByLabelText("Card number"));
-    await user.type(screen.getByLabelText("Card number"), "4242424242424242");
-    // Two quick submits send one request.
-    const start = screen.getByRole("button", { name: "Start membership" });
-    await user.dblClick(start);
-    await waitFor(() => expect(router.state.location.pathname).toBe("/signup/profile"), {
-      timeout: 5000,
-    });
-    expect(signups).toBe(2);
+    // Back without a result: Webflix asks the server, which reports the decline.
+    expect(await screen.findByRole("heading", { name: "Your card was declined" })).toBeVisible();
+    await expectNoA11yViolations(container);
+    await user.click(screen.getByRole("link", { name: "Use another card" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/signup/payment"));
+    await user.click(await screen.findByRole("button", { name: "Continue to payment" }));
+    await atProvider(router, "4242424242424242", "succeeded");
+
+    // Confirmed: a new member's first card gets the trial.
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "Your free trial has started" },
+        { timeout: 5000 },
+      ),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Create your profiles" }));
 
     // Profiles: the first name is required; then into the app.
+    await waitFor(() => expect(router.state.location.pathname).toBe("/signup/profile"));
     await user.click(await screen.findByRole("button", { name: "Start watching" }));
     expect(screen.getByLabelText("Your name")).toHaveAccessibleDescription("Enter a name.");
     await user.type(screen.getByLabelText("Your name"), "Sam");
@@ -171,9 +195,36 @@ describe("sign-up", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/browse"), { timeout: 5000 });
   }, 30_000);
 
-  it("steps guard themselves: plan and payment need the earlier answers", async () => {
+  it("steps guard themselves: a guest starts at the beginning", async () => {
     const { router } = renderMember("/signup/payment?plan=basic", "anonymous");
     await waitFor(() => expect(locationOf(router)).toBe("/signup"));
+  });
+
+  it("a signed-in account without a membership resumes at the plan, not the profiles", async () => {
+    const state = initialState("account");
+    state.profiles = [];
+    state.billing = {
+      membership: {
+        status: "none",
+        planId: null,
+        cancelAtPeriodEnd: false,
+        trialEndsAt: null,
+        currentPeriodEnd: null,
+        graceEndsAt: null,
+        suspendedReason: null,
+        provider: null,
+      },
+      trialUsed: false,
+      trialCards: [],
+      checkouts: [],
+      setups: [],
+      invoices: [],
+    };
+    const base = createMockApiClient({ state, settings: { latencyMs: 0, failing: [] } });
+    const history = createMemoryHistory({ initialEntries: ["/signup/profile"] });
+    const runtime = createAppRuntime(base, { history });
+    render(<App queryClient={runtime.queryClient} router={runtime.router} />);
+    await waitFor(() => expect(locationOf(runtime.router)).toBe("/signup/plan"));
   });
 });
 
@@ -205,49 +256,48 @@ describe("profile gate", () => {
     expect(within(dialog).getByLabelText("Digit 1 of 4")).toBeDisabled();
   });
 
-  it("forgot PIN: the account password removes the lock and goes straight in", async () => {
+  it("forgot PIN: confirming it's the account holder removes the lock and goes straight in", async () => {
     const user = userEvent.setup();
     const { router } = renderMember("/profiles", "account");
     await user.click(await screen.findByRole("button", { name: /^Theo/ }));
     const dialog = await screen.findByRole("dialog", { name: "Profile lock is on" });
     await user.click(within(dialog).getByRole("button", { name: "Forgot PIN?" }));
     const reset = await screen.findByRole("dialog", { name: "Remove profile lock" });
-    await user.type(within(reset).getByLabelText("Account password"), "webflix-demo");
     await user.click(within(reset).getByRole("button", { name: "Remove lock" }));
+    const prove = await screen.findByRole("dialog", { name: "Confirm it's you" });
+    await user.type(await within(prove).findByLabelText("Webflix password"), "webflix-demo");
+    await user.click(within(prove).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/browse"));
   });
 });
 
 describe("manage profiles", () => {
-  it("raising a maturity rating asks for the password; a wrong one is said inline", async () => {
+  it("raising a maturity rating asks to confirm it's you; a wrong password is said inline", async () => {
     const user = userEvent.setup();
     const updateProfile = vi.fn<ApiClient["updateProfile"]>();
     const { router } = renderMember("/profiles/profile-kids/edit", "account", (base) => ({
       updateProfile: async (input, options) => {
         updateProfile(input, options);
-        if (input.body.currentPassword === "wrong-password") {
-          throw new ApiError(createProblem("current_password_invalid"));
-        }
         return base.updateProfile(input, options);
       },
     }));
     await user.click(await screen.findByRole("switch", { name: "Kids profile" }));
     await user.click(screen.getByRole("radio", { name: /13\+ · Teens/ }));
-    expect(screen.getByText(/asked for your account password/)).toBeVisible();
+    expect(screen.getByText(/asked to confirm it's you when you save/)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Save" }));
     const confirm = await screen.findByRole("dialog", { name: "Confirm it's you" });
-    await user.type(within(confirm).getByLabelText("Account password"), "wrong-password");
-    await user.click(within(confirm).getByRole("button", { name: "Save changes" }));
-    const field = within(confirm).getByLabelText("Account password");
+    expect(confirm).toHaveTextContent("To raise Kids' maturity rating to 13+");
+    await user.type(await within(confirm).findByLabelText("Webflix password"), "wrong-password");
+    await user.click(within(confirm).getByRole("button", { name: "Confirm" }));
+    const field = within(confirm).getByLabelText("Webflix password");
     await waitFor(() => expect(field).toHaveAccessibleDescription(/isn't right/));
     expect(field).toHaveValue("");
+    expect(updateProfile).not.toHaveBeenCalled();
     await user.type(field, "webflix-demo");
-    await user.click(within(confirm).getByRole("button", { name: "Save changes" }));
+    await user.click(within(confirm).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/profiles/manage"));
     expect(updateProfile).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        body: { isKids: false, maturityCeiling: "13+", currentPassword: "webflix-demo" },
-      }),
+      expect.objectContaining({ body: { isKids: false, maturityCeiling: "13+" } }),
       undefined,
     );
   });
@@ -267,9 +317,10 @@ describe("manage profiles", () => {
 describe("account", () => {
   it("cancel, then keep the membership", async () => {
     const user = userEvent.setup();
+    // The milestone 1 address still leads to the cancel page.
     const { router } = renderMember("/account/cancel", "profile");
     await user.click(await screen.findByRole("button", { name: "Finish cancellation" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/account"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/account/membership"));
     expect(await screen.findByText(/Your membership ends on/)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Keep my membership" }));
     await waitFor(() => expect(screen.queryByText(/Your membership ends on/)).toBeNull());

@@ -1,14 +1,13 @@
 import type { Page } from "@playwright/test";
 import { escapeRegExp, findPlayableTitle, PASSWORD, uniqueEmail } from "./api.ts";
 import { expect, test } from "./fixtures.ts";
-import { fillCard } from "./member-support.ts";
 
 /**
  * The golden path, in one browser session, through the real UI end to end: what a release
  * manager runs on a deployment to trust it on its own.
  *
- * land → sign up → pick a plan → pay → create profiles → browse → open a title → play real
- * video → leave → resume from Continue Watching → sign out.
+ * land → create the account → pick a plan → pay in the provider's form → create profiles →
+ * browse → open a title → play real video → leave → resume from Continue Watching → sign out.
  */
 
 test.use({
@@ -43,16 +42,24 @@ test("a new member signs up, watches a film, resumes it, and signs out", async (
     const account = page.getByRole("form", { name: "Create your account" });
     await expect(account.getByLabel("Email address")).toHaveValue(email);
     await account.getByLabel("Password", { exact: true }).fill(PASSWORD);
-    await account.getByRole("button", { name: "Continue" }).click();
+    await account.getByRole("button", { name: "Create account" }).click();
   });
 
-  await test.step("pick a plan and pay", async () => {
+  await test.step("pick a plan and pay in the provider's form", async () => {
     await expect(page).toHaveURL(/\/signup\/plan/);
     await page.getByRole("radio", { name: /Premium/ }).click();
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page).toHaveURL(/\/signup\/payment\?plan=premium/);
-    await fillCard(page, "4242424242424242");
-    await page.getByRole("button", { name: "Start membership" }).click();
+    await page.getByRole("button", { name: "Continue to payment" }).click();
+    // The fake provider's own form (milestone 2: the card never reaches Webflix). A labelled
+    // test card has never had a trial, so the membership starts with one.
+    await expect(page).toHaveURL(/\/_pay\/form\?/);
+    await page.getByLabel(/type a test card number/i).fill(`visa:golden-${Date.now()}`);
+    await page.getByRole("button", { name: "Save card", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Your free trial has started" })).toBeVisible({
+      timeout: 20_000,
+    });
+    await page.getByRole("button", { name: "Create your profiles" }).click();
   });
 
   await test.step("create profiles", async () => {

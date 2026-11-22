@@ -6,6 +6,7 @@ import type {
   RowLayout,
   TitleCard,
 } from "@webflix/contracts";
+import type { TelemetryContext } from "../../../app/telemetry/index.ts";
 import { rankLabel, top10RankLabel } from "../common/format.ts";
 import { anchorArt, isArtReady, loadArt, previewArtUrl, previewWidth } from "./prepare.ts";
 import { type PreviewRequest, previewStore } from "./store.ts";
@@ -45,6 +46,13 @@ export interface IntentSource {
   rowTitle?: string;
   /** The browse view a row belongs to (whose Top 10 a card's rank refers to); none for grids. */
   view?: BrowseView;
+  /**
+   * Where the card is, for what the member does in its preview (play, list, rating, opening
+   * the details): the card's surface, row, positions and the page's ranking policy.
+   */
+  context?: TelemetryContext;
+  /** The card was opened from its preview (details or Play): search reports its click here. */
+  onOpen?: () => void;
 }
 
 /**
@@ -93,6 +101,8 @@ function buildRequest(
     episode: "progress" in item ? item.episode : null,
     removable: "progress" in item,
     art,
+    context: source.context ?? null,
+    onOpen: source.onOpen,
   };
 }
 

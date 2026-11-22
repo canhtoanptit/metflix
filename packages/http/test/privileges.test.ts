@@ -6,15 +6,7 @@
  */
 import { ApiError, type RouteInput, type Routes } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
-import {
-  APPROVED_CARD,
-  createTestApp,
-  DEMO,
-  type Device,
-  onboard,
-  signIn,
-  type TestApp,
-} from "./support.ts";
+import { createTestApp, DEMO, type Device, onboard, signIn, type TestApp } from "./support.ts";
 
 const PASSWORD = "correct horse battery";
 
@@ -60,10 +52,7 @@ function accountCalls(device: Device): Array<[string, () => Promise<unknown>]> {
     ["PUT /account/subscription", () => api.changePlan({ body: { planId: "premium" } })],
     ["DELETE /account/subscription", () => api.cancelMembership()],
     ["POST /account/subscription/resume", () => api.resumeMembership()],
-    [
-      "PUT /account/payment-method",
-      () => api.updatePaymentMethod({ body: { payment: APPROVED_CARD } }),
-    ],
+    ["POST /billing/payment-method/setup", () => api.setupPaymentMethod()],
     ["GET /account/sessions", () => api.listDevices()],
     ["DELETE /account/sessions/:id", () => api.revokeDevice({ params: { id: "ses-other" } })],
     ["POST /auth/logout-all", () => api.logoutAll()],
@@ -320,7 +309,7 @@ describe("the shared demo account", () => {
       ],
       ["plan", () => demo.api.changePlan({ body: { planId: "basic" } })],
       ["cancel", () => demo.api.cancelMembership()],
-      ["card", () => demo.api.updatePaymentMethod({ body: { payment: APPROVED_CARD } })],
+      ["card", () => demo.api.setupPaymentMethod()],
       ["sign out everywhere", () => demo.api.logoutAll()],
       ["revoke", () => demo.api.revokeDevice({ params: { id: otherSession ?? "x" } })],
       ["add profile", () => demo.api.createProfile({ body: { name: "X", avatarId: "av-fox" } })],

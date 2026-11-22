@@ -18,7 +18,7 @@ import { locationOf } from "./harness.tsx";
 
 /**
  * The privilege rules in the real app over the in-browser mock API: proof asked for in place
- * (account password, a locked profile's PIN), kids and restricted profiles kept out of account
+ * ("Confirm it's you", a locked profile's PIN), kids and restricted profiles kept out of account
  * management, the demo account's fixed parts, and a profile locked on another device.
  * Seed: Mara (18+), Theo (18+, PIN 1234), Kids (kids, 7+); password `webflix-demo`.
  * The mock `state` is live: editing it plays another device changing the account.
@@ -70,7 +70,7 @@ afterEach(() => {
 });
 
 describe("adding a profile", () => {
-  it("asks for the account password in place while parental controls are in use", async () => {
+  it("asks the account holder to confirm it's them while parental controls are in use", async () => {
     const user = userEvent.setup();
     const createProfile = vi.fn<ApiClient["createProfile"]>();
     const { router, container } = renderMember("/profiles/new", seeded(null), (base) => ({
@@ -86,19 +86,17 @@ describe("adding a profile", () => {
 
     const confirm = await screen.findByRole("dialog", { name: "Confirm it's you" });
     expect(createProfile).not.toHaveBeenCalled();
-    await user.type(within(confirm).getByLabelText("Account password"), "wrong-password");
-    await user.click(within(confirm).getByRole("button", { name: "Add profile" }));
-    const field = within(confirm).getByLabelText("Account password");
+    await user.type(await within(confirm).findByLabelText("Webflix password"), "wrong-password");
+    await user.click(within(confirm).getByRole("button", { name: "Confirm" }));
+    const field = within(confirm).getByLabelText("Webflix password");
     await waitFor(() => expect(field).toHaveAccessibleDescription(/isn't right/));
     await user.type(field, "webflix-demo");
-    await user.click(within(confirm).getByRole("button", { name: "Add profile" }));
+    await user.click(within(confirm).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/profiles/manage"));
-    expect(createProfile).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        body: expect.objectContaining({ name: "Ana", currentPassword: "webflix-demo" }),
-      }),
-      undefined,
-    );
+    // The session holds the proof: the password itself never travels with the change.
+    expect(createProfile).toHaveBeenCalledTimes(1);
+    expect(createProfile.mock.lastCall?.[0].body).toMatchObject({ name: "Ana" });
+    expect(createProfile.mock.lastCall?.[0].body).not.toHaveProperty("currentPassword");
   });
 
   it("asks when the server says controls came on since the page loaded", async () => {
@@ -115,9 +113,9 @@ describe("adding a profile", () => {
     await user.click(screen.getByRole("button", { name: "Add profile" }));
     const confirm = await screen.findByRole("dialog", { name: "Confirm it's you" });
     // The refusal is the question, not an error.
+    await user.type(await within(confirm).findByLabelText("Webflix password"), "webflix-demo");
     expect(within(confirm).queryByRole("alert")).toBeNull();
-    await user.type(within(confirm).getByLabelText("Account password"), "webflix-demo");
-    await user.click(within(confirm).getByRole("button", { name: "Add profile" }));
+    await user.click(within(confirm).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/profiles/manage"));
   });
 
@@ -179,7 +177,7 @@ describe("a locked profile is its owner's", () => {
     );
   });
 
-  it("deleting it from the gate takes the account password instead of the PIN", async () => {
+  it("deleting it from the gate takes the account holder's proof instead of the PIN", async () => {
     const user = userEvent.setup();
     const state = seeded(null);
     const { router } = renderMember("/profiles/profile-theo/edit", state);
@@ -188,11 +186,11 @@ describe("a locked profile is its owner's", () => {
     await user.click(within(confirm).getByRole("button", { name: "Delete profile" }));
 
     const unlock = await screen.findByRole("dialog", { name: "Delete Theo?" });
-    await user.click(
-      within(unlock).getByRole("button", { name: "Use the account password instead" }),
-    );
-    await user.type(within(unlock).getByLabelText("Account password"), "webflix-demo");
-    await user.click(within(unlock).getByRole("button", { name: "Delete profile" }));
+    await user.click(within(unlock).getByRole("button", { name: "Confirm it's you instead" }));
+    const prove = await screen.findByRole("dialog", { name: "Confirm it's you" });
+    expect(prove).toHaveTextContent("To delete Theo, confirm you're the account holder.");
+    await user.type(await within(prove).findByLabelText("Webflix password"), "webflix-demo");
+    await user.click(within(prove).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/profiles/manage"));
     expect(state.profiles.some((profile) => profile.id === "profile-theo")).toBe(false);
   });
@@ -252,8 +250,10 @@ describe("kids profiles manage nothing", () => {
     const dialog = await screen.findByRole("dialog", { name: "Profile lock is on" });
     await user.click(within(dialog).getByRole("button", { name: "Forgot PIN?" }));
     const reset = await screen.findByRole("dialog", { name: "Remove profile lock" });
-    await user.type(within(reset).getByLabelText("Account password"), "webflix-demo");
     await user.click(within(reset).getByRole("button", { name: "Remove lock" }));
+    const prove = await screen.findByRole("dialog", { name: "Confirm it's you" });
+    await user.type(await within(prove).findByLabelText("Webflix password"), "webflix-demo");
+    await user.click(within(prove).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/browse"));
     expect(state.activeProfileId).toBe("profile-theo");
     expect(profileIn(state, "profile-theo").pin).toBeNull();
@@ -275,7 +275,9 @@ describe("account pages", () => {
 
   it("from a kids profile, offer a switch instead of forms that fail", async () => {
     const getAccount = vi.fn();
-    const { container } = renderMember("/account/plan", seeded("profile-kids"), { getAccount });
+    const { container } = renderMember("/account/membership/plan", seeded("profile-kids"), {
+      getAccount,
+    });
     const heading = await screen.findByRole("heading", {
       name: "Account settings are available from a profile without parental controls",
     });
@@ -283,7 +285,7 @@ describe("account pages", () => {
     expect(screen.getByText(/Kids is a kids profile\./)).toBeVisible();
     expect(screen.getByRole("link", { name: "Switch profile" })).toHaveAttribute(
       "href",
-      "/profiles?redirect=%2Faccount%2Fplan",
+      "/profiles?redirect=%2Faccount%2Fmembership%2Fplan",
     );
     expect(screen.queryByRole("navigation", { name: "Account" })).toBeNull();
     expect(getAccount).not.toHaveBeenCalled();

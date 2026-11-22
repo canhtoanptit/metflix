@@ -42,6 +42,8 @@ const PROBLEM_EXTENSION_SHAPES = {
   promotion_code_invalid: { promotionReason: z.enum(PROMOTION_FAILURE_REASONS) },
   payment_action_required: { clientSecret: z.string().min(1) },
   staff_role_required: { requiredRole: z.enum(STAFF_ROLES) },
+  /** The earlier attempt's audit entry, when the conflict is with one (`GET /audit/mine`). */
+  staff_action_conflict: { auditId: z.string().optional() },
 } satisfies Partial<Record<ErrorCode, z.ZodRawShape>>;
 
 type ExtensionShapes = typeof PROBLEM_EXTENSION_SHAPES;

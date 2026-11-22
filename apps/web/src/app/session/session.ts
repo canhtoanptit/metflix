@@ -1,6 +1,12 @@
 import { type QueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
-import type { AuthenticatedSession, Profile, SessionState } from "@webflix/contracts";
+import type {
+  AuthenticatedSession,
+  Entitlement,
+  MembershipState,
+  Profile,
+  SessionState,
+} from "@webflix/contracts";
 import { useCallback } from "react";
 import { qk } from "../query/keys.ts";
 import { queries } from "../query/queries.ts";
@@ -26,11 +32,99 @@ export function useActiveProfile(): Profile {
   return session.activeProfile;
 }
 
+// --- Membership (milestone 2, docs/BLUEPRINT-M2.md §5.2) ----------------------------------------
+
+/** The membership projection and the entitlement derived from it, as the server last said. */
+export interface MembershipView {
+  membership: MembershipState;
+  entitlement: Entitlement;
+}
+
+/**
+ * The session's membership. The server's projection when it sends one; an older server (no
+ * `membership`) is read from milestone 1's subscription, which only knows active, canceling and
+ * ended. Never guessed from anything the browser did: only the server moves a membership.
+ */
+export function membershipOf(
+  session: Pick<AuthenticatedSession, "membership" | "entitlement" | "subscription" | "plan">,
+): MembershipView {
+  if (session.membership && session.entitlement) {
+    return { membership: session.membership, entitlement: session.entitlement };
+  }
+  const { subscription, plan } = session;
+  if (!subscription || !plan) {
+    return {
+      membership: {
+        status: "none",
+        planId: null,
+        cancelAtPeriodEnd: false,
+        trialEndsAt: null,
+        currentPeriodEnd: null,
+        graceEndsAt: null,
+        suspendedReason: null,
+        provider: null,
+      },
+      entitlement: {
+        entitled: false,
+        reason: "no_membership",
+        maxStreams: 0,
+        maxVideoHeight: null,
+        until: null,
+      },
+    };
+  }
+  const entitled = subscription.status !== "ended";
+  return {
+    membership: {
+      status: entitled ? "active" : "canceled",
+      planId: subscription.planId,
+      cancelAtPeriodEnd: subscription.status === "canceling",
+      trialEndsAt: null,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      graceEndsAt: null,
+      suspendedReason: null,
+      provider: null,
+    },
+    entitlement: {
+      entitled,
+      reason: entitled ? "entitled" : "ended",
+      maxStreams: entitled ? plan.maxStreams : 0,
+      maxVideoHeight: entitled ? plan.maxVideoHeight : null,
+      until: subscription.status === "canceling" ? subscription.currentPeriodEnd : null,
+    },
+  };
+}
+
+/** The signed-in account's membership. Use under the account or profile guards only. */
+export function useMembership(): MembershipView {
+  return membershipOf(useAuthenticatedSession());
+}
+
 /**
  * Cache transitions when the session changes. Each drops the caches that belonged to the
  * previous identity, so nothing personalised leaks across accounts or profiles.
  */
 export const sessionCache = {
+  /**
+   * The server answered with a newer membership (`GET /account`, a checkout that completed, a
+   * refused playback): write it into the cached session so every gate and notice agrees, then
+   * refetch the session for anything else that moved with it.
+   */
+  applyMembership(
+    queryClient: QueryClient,
+    next: Partial<
+      Pick<AuthenticatedSession, "membership" | "entitlement" | "subscription" | "plan">
+    >,
+  ): void {
+    const current = queryClient.getQueryData<SessionState>(qk.session());
+    if (current?.authenticated) {
+      const defined = Object.fromEntries(
+        Object.entries(next).filter(([, value]) => value !== undefined),
+      );
+      queryClient.setQueryData(qk.session(), { ...current, ...defined });
+    }
+    void queryClient.invalidateQueries({ queryKey: qk.session() });
+  },
   /** After sign-in, sign-up, profile selection or clearing: store the server's session. */
   apply(queryClient: QueryClient, next: SessionState): void {
     const previous = queryClient.getQueryData<SessionState>(qk.session());

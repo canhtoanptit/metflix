@@ -59,11 +59,8 @@ describe("GET /session and experiment assignments", () => {
       body: { email: "early@example.com", password: "correct horse battery" },
     });
     const state = await device.api.getSession({ query: {} });
-    // The stand-in shows an ended Basic membership; targeting must not believe it.
-    expect(state).toMatchObject({
-      authenticated: true,
-      subscription: { planId: "basic", status: "ended" },
-    });
+    // No membership is exactly that: no subscription, no plan.
+    expect(state).toMatchObject({ authenticated: true, subscription: null, plan: null });
     expect(calls.at(-1)).toMatchObject({ profile: null, plan: null, joinedAt: t.clock.now() });
   });
 });

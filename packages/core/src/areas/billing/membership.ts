@@ -1,12 +1,5 @@
-import type {
-  AccountDetails,
-  Entitlement,
-  Membership,
-  MembershipState,
-  PlanId,
-} from "@webflix/contracts";
+import type { AccountDetails, Entitlement, Membership, MembershipState } from "@webflix/contracts";
 import { getPlan } from "../../domain/plans.ts";
-import { toIsoString } from "../../ports/clock.ts";
 import type { AccountRecord, SubscriptionRecord } from "../../repositories/records.ts";
 import type { ServiceDependencies } from "../../services/context.ts";
 import {
@@ -34,8 +27,11 @@ export interface MembershipSnapshot {
   effective: EffectiveMembership;
   entitlement: Entitlement;
   state: MembershipState;
-  /** Milestone 1's view, for the clients that still read `subscription` and `plan`. */
-  legacy: Membership;
+  /**
+   * Milestone 1's view (`subscription` and `plan`); null when the account has no membership
+   * (never a stand-in).
+   */
+  legacy: Membership | null;
   /** Display only. */
   paymentMethod: AccountDetails["paymentMethod"];
 }
@@ -45,68 +41,40 @@ export function isProviderMembership(record: MembershipRecord | null): record is
   return record?.providerSubscriptionId != null;
 }
 
-/**
- * The plan milestone 1's view names for an account without a membership: its required
- * `subscription` and `plan` show an ended Basic membership since the account was created
- * (`membership.status` says `none`, which is the truth new clients read).
- */
-export const NO_MEMBERSHIP_PLAN: PlanId = "basic";
-
-/** Milestone 1's view of "no membership": ended, Basic, since the account was created. */
-export function noMembershipView(accountCreatedAt: number): Membership {
-  const at = toIsoString(accountCreatedAt);
-  return {
-    subscription: {
-      planId: NO_MEMBERSHIP_PLAN,
-      status: "ended",
-      startedAt: at,
-      currentPeriodEnd: at,
-      canceledAt: at,
-    },
-    plan: getPlan(NO_MEMBERSHIP_PLAN),
-  };
-}
-
 export function snapshotMembership(
   record: MembershipRecord | null,
   legacy: SubscriptionRecord | null,
   graceSec: number,
   now: number,
-  accountCreatedAt: number = now,
 ): MembershipSnapshot {
   if (isProviderMembership(record)) {
     const effective = effectiveMembership(record, graceSec, now);
-    if (effective.status === "none") {
-      // A first payment never confirmed: the account never subscribed (§5.2).
-      return {
-        record,
-        effective,
-        entitlement: entitlementOf(effective),
-        state: presentMembershipState(effective),
-        legacy: noMembershipView(accountCreatedAt),
-        paymentMethod: null,
-      };
-    }
+    // A first payment never confirmed (`none`): the account never subscribed (§5.2).
+    const none = effective.status === "none";
     return {
       record,
       effective,
       entitlement: entitlementOf(effective),
       state: presentMembershipState(effective),
-      legacy: legacySubscriptionView(effective, record, legacy?.planId ?? NO_MEMBERSHIP_PLAN, now),
-      paymentMethod: record.paymentMethod ? { ...record.paymentMethod } : null,
+      legacy:
+        none || effective.planId === null
+          ? null
+          : legacySubscriptionView(effective, record, effective.planId, now),
+      paymentMethod: !none && record.paymentMethod ? { ...record.paymentMethod } : null,
     };
   }
+  // Milestone 1's simulated membership: the seeded demo account's.
   const effective = legacyMembership(legacy, now);
+  const held = legacy !== null && effective.status !== "none";
   return {
     record: null,
     effective,
     entitlement: entitlementOf(effective),
     state: presentMembershipState(effective),
-    legacy:
-      legacy && effective.status !== "none"
-        ? { subscription: presentSubscription(legacy, now), plan: getPlan(legacy.planId) }
-        : noMembershipView(accountCreatedAt),
-    paymentMethod: legacy && effective.status !== "none" ? presentPaymentMethod(legacy) : null,
+    legacy: held
+      ? { subscription: presentSubscription(legacy, now), plan: getPlan(legacy.planId) }
+      : null,
+    paymentMethod: held ? presentPaymentMethod(legacy) : null,
   };
 }
 
@@ -115,27 +83,32 @@ export async function readMembership(
   accountId: string,
   legacy: SubscriptionRecord | null,
   now: number,
-  accountCreatedAt?: number,
 ): Promise<MembershipSnapshot> {
   const record = await deps.repos.billing.getMembership(accountId);
-  return snapshotMembership(record, legacy, deps.config.billing.graceSec, now, accountCreatedAt);
+  return snapshotMembership(record, legacy, deps.config.billing.graceSec, now);
 }
 
 /**
  * Billing's part of `GET /session` (the identity area builds the rest): milestone 1's
- * `subscription` and `plan`, plus the projection and the entitlement. One read of
- * `memberships`. Pass the milestone 1 row when the caller already has it (null when the
- * account has none).
+ * `subscription` and `plan` (null without a membership), plus the projection and the
+ * entitlement. One read of `memberships`. Pass the milestone 1 row when the caller already has
+ * it (null when the account has none).
  */
 export async function sessionMembership(
   deps: Pick<ServiceDependencies, "repos" | "config">,
   account: { id: string; createdAt: number },
   legacy: SubscriptionRecord | null,
   now: number,
-): Promise<Membership & { membership: MembershipState; entitlement: Entitlement }> {
-  const snapshot = await readMembership(deps, account.id, legacy, now, account.createdAt);
+): Promise<{
+  subscription: Membership["subscription"] | null;
+  plan: Membership["plan"] | null;
+  membership: MembershipState;
+  entitlement: Entitlement;
+}> {
+  const snapshot = await readMembership(deps, account.id, legacy, now);
   return {
-    ...snapshot.legacy,
+    subscription: snapshot.legacy?.subscription ?? null,
+    plan: snapshot.legacy?.plan ?? null,
     membership: snapshot.state,
     entitlement: snapshot.entitlement,
   };
@@ -147,17 +120,11 @@ export async function accountDetails(
   loaded: { account: AccountRecord; subscription: SubscriptionRecord | null },
   now: number,
 ): Promise<AccountDetails> {
-  const snapshot = await readMembership(
-    deps,
-    loaded.account.id,
-    loaded.subscription,
-    now,
-    loaded.account.createdAt,
-  );
+  const snapshot = await readMembership(deps, loaded.account.id, loaded.subscription, now);
   return {
     account: presentAccount(loaded.account),
-    subscription: snapshot.legacy.subscription,
-    plan: snapshot.legacy.plan,
+    subscription: snapshot.legacy?.subscription ?? null,
+    plan: snapshot.legacy?.plan ?? null,
     paymentMethod: snapshot.paymentMethod,
     membership: snapshot.state,
     entitlement: snapshot.entitlement,

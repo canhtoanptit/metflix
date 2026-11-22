@@ -127,10 +127,10 @@ describe("billing over HTTP on the Node runtime (dev: fake provider on SQLite)",
       provider: "fake",
     });
     expect(account.entitlement).toMatchObject({ entitled: true, maxStreams: 2 });
-    expect(account.subscription.status).toBe("active");
+    expect(account.subscription?.status).toBe("active");
     const session = await c.api.getSession();
     if (!session.authenticated) throw new Error("signed out");
-    expect(session.subscription.status).toBe("active");
+    expect(session.subscription?.status).toBe("active");
     const playback = await c.api.createPlaybackSession({ body: { titleId: "t-orbit" } });
     expect(playback.maxVideoHeight).toBe(1080);
   });
@@ -229,16 +229,19 @@ describe("billing over HTTP on the Node runtime (dev: fake provider on SQLite)",
     expect((await c.api.getAccount()).paymentMethod).toMatchObject({ last4: "3155" });
   });
 
-  it("validates promo codes per account and keeps milestone 1's sign-up with a card working", async () => {
+  it("validates promo codes per account and refuses milestone 1's sign-up with a card", async () => {
     const c = await member("promo@example.test");
     const refused = await c.api
       .validatePromotion({ body: { code: "NOPE", planId: "basic" } })
       .catch((error: unknown) => error);
     expect(ApiError.is(refused, "promotion_code_invalid")).toBe(true);
 
+    // Card data never reaches the API (principle 4): refused by validation, nothing created.
     const legacy = client();
-    await legacy.api.signup({
-      body: {
+    const withCard = await legacy.send("/api/v1/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Webflix-Client": "web" },
+      body: JSON.stringify({
         email: "legacy@example.test",
         password: "correct horse battery",
         planId: "basic",
@@ -250,15 +253,13 @@ describe("billing over HTTP on the Node runtime (dev: fake provider on SQLite)",
           cvc: "123",
           nameOnCard: "Sam",
         },
-      },
+      }),
     });
-    await withProfile(legacy);
-    const account = await legacy.api.getAccount();
-    expect(account.subscription.status).toBe("active");
-    expect(account.membership).toMatchObject({ status: "active", provider: null, planId: "basic" });
-    // Milestone 1's plan change on a mock membership is unchanged.
-    const changed = await legacy.api.changePlan({ body: { planId: "standard" } });
-    expect(changed.plan.id).toBe("standard");
+    expect(withCard.status).toBe(400);
+    expect(((await withCard.json()) as { code: string }).code).toBe("validation_failed");
+    expect(
+      (await legacy.api.getEmailStatus({ query: { email: "legacy@example.test" } })).next,
+    ).toBe("signup");
   });
 });
 

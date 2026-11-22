@@ -82,7 +82,23 @@ describe("data export", () => {
     const [mail] = t.ports.email.mailbox();
     expect(mail?.template).toBe("data-export-ready");
     expect(mail?.to).toBe(`${member.accountId}@example.com`);
-    expect(mail?.text).toContain(`/api/v1/privacy/exports/${request.id}?token=`);
+    // The email opens the web app's page (it can ask the member to sign in first), the token in
+    // the fragment; never the API route.
+    expect(mail?.text).not.toContain("/api/v1/");
+    const emailed = mail?.text.match(/https?:\/\/\S+\/account\/privacy\/exports\/\S+/)?.[0] ?? "";
+    const landing = new URL(emailed);
+    expect(landing.origin).toBe(t.deps.config.publicOrigin);
+    expect(landing.pathname).toBe(`/account/privacy/exports/${request.id}`);
+    expect(landing.search).toBe("");
+    const fragment = new URLSearchParams(landing.hash.slice(1));
+    expect([...fragment.keys()]).toEqual(["token"]);
+    // The page downloads with the fragment's token, signed in as the account holder.
+    const fromEmail = await t.services.events.downloadExport(
+      member.as("adult"),
+      request.id,
+      fragment.get("token") ?? "",
+    );
+    expect(fromEmail.requestId).toBe(request.id);
 
     const token = new URL(`http://x${listed?.downloadUrl}`).searchParams.get("token") ?? "";
     const document = await t.services.events.downloadExport(member.as("adult"), request.id, token);

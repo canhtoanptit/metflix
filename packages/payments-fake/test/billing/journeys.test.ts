@@ -48,7 +48,7 @@ describe("billing journeys against the fake provider", () => {
       maxStreams: 2,
       maxVideoHeight: 1080,
     });
-    expect(after.subscription.status).toBe("active");
+    expect(after.subscription?.status).toBe("active");
     expect(after.paymentMethod).toMatchObject({ brand: "visa", last4: "4242" });
     expect((await h.services.billing.getCheckout(auth.session.accountId, started.id)).status).toBe(
       "complete",

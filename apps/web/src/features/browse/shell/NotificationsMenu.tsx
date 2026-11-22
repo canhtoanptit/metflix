@@ -20,6 +20,7 @@ import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { relativeTime } from "../common/format.ts";
+import { noteTitleOpen } from "../common/telemetry.ts";
 import { BellButton } from "./NotificationsBell.tsx";
 import { PHONE_QUERY } from "./TopNav.tsx";
 
@@ -88,6 +89,8 @@ export function NotificationsMenu({
   const choose = (item: Notification, element: HTMLElement) => {
     setOpen(false);
     if (item.title) {
+      // Opened from the notifications menu: no page surface, no place on a page.
+      noteTitleOpen(item.title.id, { surface: null, rowId: null, rowRank: null, rank: null });
       openTitle(item.title.id, { origin: element.querySelector(".wf-image") ?? element });
     }
   };

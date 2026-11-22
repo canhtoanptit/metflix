@@ -1,18 +1,14 @@
 import { PLAN_IDS, type PlanId } from "@webflix/contracts";
 
 /**
- * The sign-up draft between steps. The account is only created at the payment step (the API
- * takes email, password, plan and card in one request), so earlier answers must survive
- * navigation, Back and a refresh:
- *
- * - email and plan live in sessionStorage (this tab only, gone when it closes);
- * - the password lives in memory only and is never persisted. After a refresh the payment step
- *   asks for it again instead of sending the member back to the start.
- *
- * Card details never enter the draft.
+ * What sign-up remembers in this tab (sessionStorage, gone when it closes): the email typed on
+ * the landing page (prefilled at step 1) and the plan last chosen, so Back, a refresh and the
+ * plan picked on the landing page all come back selected. The account itself exists from step 1
+ * (docs/BLUEPRINT-M2.md §5.1), so the password is never kept, and card details never pass
+ * through Webflix at all.
  */
 
-const STORAGE_KEY = "webflix.signup.v1";
+const STORAGE_KEY = "webflix.signup.v2";
 
 export interface SignupDraft {
   email: string | null;
@@ -20,8 +16,6 @@ export interface SignupDraft {
 }
 
 const EMPTY: SignupDraft = { email: null, planId: null };
-
-let password: string | null = null;
 
 function storage(): Storage | null {
   try {
@@ -58,17 +52,8 @@ export function updateDraft(patch: Partial<SignupDraft>): SignupDraft {
   return next;
 }
 
-export function rememberPassword(value: string): void {
-  password = value;
-}
-
-export function draftPassword(): string | null {
-  return password;
-}
-
-/** After the account exists (or the member abandons the flow): forget everything. */
+/** Once sign-up is finished (or abandoned): forget it. */
 export function clearDraft(): void {
-  password = null;
   try {
     storage()?.removeItem(STORAGE_KEY);
   } catch {

@@ -12,6 +12,8 @@ import {
   ROUTE_INDEX,
 } from "@webflix/contracts";
 import { handlers, MockProblem } from "./handlers.ts";
+// Privacy and behaviour events (consent, export, deletion) live in their own module.
+import { privacyHandlers } from "./privacy.ts";
 import { loadSettings, loadState, type MockSettings, type MockState } from "./state.ts";
 
 interface CompiledRoute {
@@ -111,7 +113,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     });
     const body = typeof init.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
 
-    const handler = handlers[route.name] as
+    const handler = (handlers[route.name] ?? privacyHandlers[route.name]) as
       | ((input: unknown, state: MockState) => unknown)
       | undefined;
     if (!handler) return problemResponse("service_unavailable");

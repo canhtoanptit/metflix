@@ -729,6 +729,11 @@ make cf-recs-import          # publish it into D1 (model, neighbours) and KV (li
 make cf-dev
 ```
 
+For a demo with no fresh pipeline run, `make cf-recs-import CF_RECS_DEMO=1` (dev server stopped)
+publishes a demo run for the demo account's profiles into the local R2 and imports it the same
+way: lists filed under the keys the Worker derives with its `.dev.vars` pseudonym key, labelled
+as demo data (run id `*-de00de00`; docs/RECOMMENDATIONS.md, "A demo run"). Local only.
+
 The store directory is the dev mode's filesystem `BlobStore` layout, which the pipeline reads
 and writes. In production the pipeline reads and writes R2 itself (its S3 store, R2's S3 API),
 and `make cf-recs-import ENV=production` (with `CLOUDFLARE_ACCOUNT_ID` and a

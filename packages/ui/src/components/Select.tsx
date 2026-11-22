@@ -11,6 +11,9 @@ const TRIGGERS = {
   /** Compact solid dropdown (season selector, sort order). */
   solid:
     "h-10 rounded-control border border-line-strong bg-surface-3 px-3.5 text-md font-semibold hover:bg-surface-4",
+  /** Dense form control (the staff console), matches `Input size="sm"`. */
+  compact:
+    "h-9 w-full rounded-control border border-line-strong bg-canvas/70 px-3 text-sm hover:border-fg-subtle",
 } as const;
 
 export interface SelectProps {

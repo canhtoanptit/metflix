@@ -60,6 +60,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  Textarea,
   TextField,
   ThumbsDownIcon,
   ThumbsUpDoubleIcon,
@@ -170,6 +171,36 @@ function FormsDemo() {
               </SelectItem>
             ))}
           </Select>
+        </Field>
+      </Demo>
+      <Demo
+        title="Dense fields (the staff console)"
+        note={
+          'Input size="sm", Select variant="compact" and Textarea: the same controls at 36px, for tools used all day.'
+        }
+        className="grid w-full grid-cols-1 items-start gap-6 sm:grid-cols-2 lg:grid-cols-3"
+      >
+        <Field label="Email or account ID">
+          <Input size="sm" placeholder="Email address or account ID" />
+        </Field>
+        <Field label="Outcome">
+          <Select variant="compact" defaultValue="unknown">
+            <SelectItem value="any">Any outcome</SelectItem>
+            <SelectItem value="unknown">Unknown</SelectItem>
+            <SelectItem value="succeeded">Succeeded</SelectItem>
+          </Select>
+        </Field>
+        <Field label="Amount to refund (USD)" error="At most $12.99 is left to refund.">
+          <Input size="sm" defaultValue="99.00" />
+        </Field>
+        <Field label="Reason" hint="Kept in the audit log under your name.">
+          <Textarea size="sm" rows={2} defaultValue="Member asked on the support line" />
+        </Field>
+        <Field label="Reason" error="Say why, in a few words.">
+          <Textarea size="sm" rows={2} />
+        </Field>
+        <Field label="Notes" hint="Textarea at its regular size.">
+          <Textarea rows={3} />
         </Field>
       </Demo>
       <Demo title="Segmented control" note="An immediate single choice (not tabs).">
@@ -479,18 +510,50 @@ export function Components() {
 
       <Section id="badges" title="Badges and labels">
         <Demo title="Badge tones">
-          {(["accent", "neutral", "outline", "positive", "danger", "glass"] as const).map(
-            (tone) => (
-              <Badge key={tone} tone={tone}>
-                {tone}
-              </Badge>
-            ),
-          )}
+          {(
+            [
+              "accent",
+              "neutral",
+              "outline",
+              "positive",
+              "danger",
+              "glass",
+              "warning",
+              "info",
+            ] as const
+          ).map((tone) => (
+            <Badge key={tone} tone={tone}>
+              {tone}
+            </Badge>
+          ))}
           {(["accent", "neutral"] as const).map((tone) => (
             <Badge key={`sm-${tone}`} tone={tone} size="sm">
               New
             </Badge>
           ))}
+        </Demo>
+        <Demo
+          title="Status badges (the staff console)"
+          note="Small, outlined for states that need attention (warning) or stand out (info); colour is never the only signal."
+        >
+          <Badge tone="positive" size="sm">
+            Active
+          </Badge>
+          <Badge tone="warning" size="sm">
+            Past due
+          </Badge>
+          <Badge tone="info" size="sm">
+            Trial
+          </Badge>
+          <Badge tone="danger" size="sm">
+            Suspended
+          </Badge>
+          <Badge tone="outline" size="sm">
+            No membership
+          </Badge>
+          <Badge tone="warning" size="sm">
+            Unknown
+          </Badge>
         </Demo>
         <Demo title="Title badges (contract TitleCard.badge)">
           {(["new", "new-episodes", "leaving-soon", "top-10"] as const).map((badge) => (

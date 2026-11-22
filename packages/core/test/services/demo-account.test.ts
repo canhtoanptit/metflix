@@ -53,7 +53,7 @@ describe("the demo account across seed runs", () => {
       client,
       openLogin,
     );
-    expect(demo.state.subscription.status).toBe("active");
+    expect(demo.state.subscription?.status).toBe("active");
     expect(demo.state.profiles.find((profile) => profile.id === "pr-demo")).toMatchObject({
       name: "Demo",
       isLocked: false,

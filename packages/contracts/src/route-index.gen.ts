@@ -43,11 +43,11 @@ export const ROUTE_INDEX = {
   getAccount: { method: "GET", path: "/account" },
   listPlans: { method: "GET", path: "/plans" },
   changePlan: { method: "PUT", path: "/account/subscription" },
-  updatePaymentMethod: { method: "PUT", path: "/account/payment-method" },
   cancelMembership: { method: "DELETE", path: "/account/subscription" },
   resumeMembership: { method: "POST", path: "/account/subscription/resume" },
   getBillingConfig: { method: "GET", path: "/billing/config" },
   startCheckout: { method: "POST", path: "/billing/checkout" },
+  getOpenCheckout: { method: "GET", path: "/billing/checkout" },
   getCheckout: { method: "GET", path: "/billing/checkout/:id" },
   confirmCheckout: { method: "POST", path: "/billing/checkout/:id/confirm" },
   previewPlanChange: { method: "POST", path: "/billing/subscription/preview" },
@@ -140,6 +140,9 @@ export const ADMIN_ROUTE_INDEX = {
   createCollection: { method: "POST", path: "/editorial/collections" },
   updateCollection: { method: "PUT", path: "/editorial/collections/:id" },
   deleteCollection: { method: "DELETE", path: "/editorial/collections/:id" },
+  searchTitles: { method: "GET", path: "/titles" },
+  listTitleAvailability: { method: "GET", path: "/titles/availability" },
+  getTitleAvailability: { method: "GET", path: "/titles/:titleId/availability" },
   setTitleAvailability: { method: "PUT", path: "/titles/:titleId/availability" },
   listExperiments: { method: "GET", path: "/experiments" },
   createExperiment: { method: "POST", path: "/experiments" },
@@ -158,6 +161,7 @@ export const ADMIN_ROUTE_INDEX = {
   listPendingExports: { method: "GET", path: "/system/privacy/exports" },
   recordExportResults: { method: "POST", path: "/system/privacy/exports/results" },
   listAuditLog: { method: "GET", path: "/audit" },
+  listOwnAuditLog: { method: "GET", path: "/audit/mine" },
 } as const satisfies {
   readonly [K in keyof AdminClientRoutes]: {
     method: AdminClientRoutes[K]["method"];

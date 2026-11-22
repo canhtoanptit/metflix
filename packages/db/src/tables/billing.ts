@@ -29,6 +29,8 @@ export interface MembershipsTable {
   grace_invoice_id: string | null;
   /** 0008: provider time minus ours (a test clock); 0 in real time. */
   clock_offset_ms: number | null;
+  /** 0019: the next invoice as previewed, `{ at, amountMinor, currency }` JSON; null when none. */
+  next_invoice_json: string | null;
   version: number;
   provider_synced_at: number;
   created_at: number;

@@ -1,6 +1,5 @@
-import { API_BASE_PATH, MOCK_CARDS, type PAYMENT_DECLINE_REASONS } from "@webflix/contracts";
+import { API_BASE_PATH } from "@webflix/contracts";
 import { isSessionCookieName, type SetCookie } from "../cookies.ts";
-import { approvedCard } from "../env.ts";
 import { check, equal, fail, header, problem, rejects, status, succeeds } from "../expect.ts";
 import type { Agent, HttpResult } from "../http.ts";
 import { needs } from "../needs.ts";
@@ -60,7 +59,7 @@ export const identityChecks: CheckDefinition[] = [
     title: "Email status routes new addresses to sign-up and known ones to sign-in",
     async run(ctx: CheckContext) {
       const agent = ctx.agent("email");
-      const account = await ctx.env.sharedAccount("identity");
+      const account = await ctx.env.sharedAccount("identity", { member: false });
       const fresh = await succeeds(
         () => agent.api.getEmailStatus({ query: { email: ctx.env.email("unregistered") } }),
         "unregistered email",
@@ -81,27 +80,22 @@ export const identityChecks: CheckDefinition[] = [
   {
     id: "identity.signup",
     area: "identity",
-    title: "Sign-up with an approved card starts the membership and sets the session cookie",
+    title:
+      "Sign-up creates an account without a membership (no subscription, no plan, no card) and sets the session cookie",
     async run(ctx: CheckContext) {
       const agent = ctx.agent("signup");
       const email = ctx.env.email("signup");
       const typed = email.replace("smoke-", "Smoke-");
       const state = await succeeds(
-        () =>
-          agent.api.signup({
-            body: {
-              email: typed,
-              password: ctx.env.password,
-              planId: "standard",
-              payment: approvedCard(),
-            },
-          }),
+        () => agent.api.signup({ body: { email: typed, password: ctx.env.password } }),
         "POST /auth/signup",
       );
       equal(state.account.email, email, "account email (lower-cased)");
-      equal(state.plan.id, "standard", "plan");
-      equal(state.subscription.planId, "standard", "subscription.planId");
-      equal(state.subscription.status, "active", "subscription.status");
+      // No membership is exactly that (§5.1): nothing stands in for it.
+      equal(state.subscription, null, "subscription after sign-up");
+      equal(state.plan, null, "plan after sign-up");
+      equal(state.membership?.status ?? "absent", "none", "membership.status after sign-up");
+      equal(state.entitlement?.entitled ?? "absent", false, "entitlement after sign-up");
       equal(state.profiles.length, 0, "profiles after sign-up (the first is created afterwards)");
       equal(state.activeProfile, null, "activeProfile after sign-up");
       const cookie = assertSessionCookie(agent, "sign-up");
@@ -136,14 +130,12 @@ export const identityChecks: CheckDefinition[] = [
         session: state,
       });
       const account = await succeeds(() => agent.api.getAccount(), "GET /account");
-      equal(account.paymentMethod?.last4, MOCK_CARDS.approved.slice(-4), "stored card last4");
-      equal(account.paymentMethod?.brand, "visa", "stored card brand");
+      equal(account.subscription, null, "GET /account subscription without a membership");
+      equal(account.plan, null, "GET /account plan without a membership");
+      equal(account.paymentMethod, null, "GET /account payment method without a membership");
       const again = ctx.agent("signup-duplicate");
       await rejects(
-        () =>
-          again.api.signup({
-            body: { email, password: ctx.env.password, planId: "basic", payment: approvedCard() },
-          }),
+        () => again.api.signup({ body: { email, password: ctx.env.password } }),
         "email_already_registered",
         "second sign-up with the same email",
       );
@@ -151,43 +143,71 @@ export const identityChecks: CheckDefinition[] = [
     },
   },
   {
-    id: "identity.signup.declined-cards",
+    id: "identity.signup.card-data-refused",
     area: "identity",
-    title: "Declined, insufficient-funds and expired cards create nothing",
+    title:
+      "Card data never reaches Webflix: sign-up and a plan change carrying a card are refused by validation and create nothing; milestone 1's card replacement route is gone",
     async run(ctx: CheckContext) {
-      const cases: {
-        reason: (typeof PAYMENT_DECLINE_REASONS)[number];
-        card: ReturnType<typeof approvedCard>;
-      }[] = [
-        { reason: "card_declined", card: { ...approvedCard(), cardNumber: MOCK_CARDS.declined } },
-        {
-          reason: "insufficient_funds",
-          card: { ...approvedCard(), cardNumber: MOCK_CARDS.insufficientFunds },
-        },
-        {
-          reason: "expired_card",
-          card: { ...approvedCard(), expMonth: 1, expYear: new Date().getUTCFullYear() - 1 },
-        },
-      ];
-      for (const { reason, card } of cases) {
-        const agent = ctx.agent(`declined-${reason}`);
-        const email = ctx.env.email(`declined-${reason.replaceAll("_", "-")}`);
-        const error = await rejects(
-          () =>
-            agent.api.signup({
-              body: { email, password: ctx.env.password, planId: "basic", payment: card },
-            }),
-          "payment_declined",
-          `sign-up with ${reason}`,
-        );
-        equal(error.problem.declineReason, reason, `declineReason for ${reason}`);
-        check(!hasLiveSessionCookie(agent), `sign-up declined with ${reason} set a session cookie`);
-        const status = await succeeds(
-          () => agent.api.getEmailStatus({ query: { email } }),
-          "email status",
-        );
-        equal(status.next, "signup", `account after a ${reason} sign-up (nothing may be created)`);
-      }
+      // Milestone 1's body: what a client that still sends a card would send.
+      const card = {
+        method: "card",
+        cardNumber: "4242 4242 4242 4242",
+        expMonth: 12,
+        expYear: new Date().getUTCFullYear() + 3,
+        cvc: "123",
+        nameOnCard: "Smoke Test",
+      };
+      const digits = /4242\s?4242/;
+      const agent = ctx.agent("card-refused");
+      const email = ctx.env.email("card-refused");
+      const signup = await agent.fetch(`${API}/auth/signup`, {
+        method: "POST",
+        headers: CSRF,
+        body: { email, password: ctx.env.password, planId: "basic", payment: card },
+      });
+      const refused = problem(signup, "validation_failed", "sign-up with a card");
+      check(
+        refused.issues.some((issue) => /payment|planId|^$/.test(issue.path)),
+        "the refusal does not name the card fields",
+        { observed: JSON.stringify(refused.issues) },
+      );
+      check(!digits.test(signup.exchange.responseBody ?? ""), "the refusal echoes the card", {
+        observed: signup.exchange.responseBody ?? "",
+      });
+      check(!hasLiveSessionCookie(agent), "a sign-up with a card set a session cookie");
+      const lookup = await succeeds(
+        () => agent.api.getEmailStatus({ query: { email } }),
+        "email status after the refused sign-up",
+      );
+      equal(lookup.next, "signup", "the account after a sign-up with a card (nothing created)");
+
+      // An account holder (no membership needed: the body is refused before anything else).
+      const account = await ctx.env.bareHolder("card-refused-holder");
+      const change = await account.agent.fetch(`${API}/account/subscription`, {
+        method: "PUT",
+        headers: CSRF,
+        body: { planId: "premium", payment: card },
+      });
+      problem(change, "validation_failed", "a plan change with a card");
+      check(!digits.test(change.exchange.responseBody ?? ""), "the refusal echoes the card", {
+        observed: change.exchange.responseBody ?? "",
+      });
+      const replace = await account.agent.fetch(`${API}/account/payment-method`, {
+        method: "PUT",
+        headers: CSRF,
+        body: { payment: card },
+      });
+      check(
+        replace.status === 404 || replace.status === 405,
+        "PUT /account/payment-method still answers: a card is replaced through the provider's setup (POST /billing/payment-method/setup)",
+        { expected: "404 or 405", observed: `${replace.status}`, exchange: replace.exchange },
+      );
+      check(!digits.test(replace.exchange.responseBody ?? ""), "the answer echoes the card", {
+        observed: replace.exchange.responseBody ?? "",
+      });
+      const details = await succeeds(() => account.agent.api.getAccount(), "GET /account");
+      equal(details.paymentMethod, null, "payment method after the refused requests");
+      equal(details.subscription, null, "subscription after the refused requests");
     },
   },
   {
@@ -195,7 +215,7 @@ export const identityChecks: CheckDefinition[] = [
     area: "identity",
     title: "Sign-in sets a persistent cookie, or a browser-session cookie without remember-me",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.sharedAccount("identity");
+      const account = await ctx.env.sharedAccount("identity", { member: false });
       const agent = ctx.agent("signin");
       const state = await succeeds(
         () =>
@@ -236,7 +256,7 @@ export const identityChecks: CheckDefinition[] = [
     area: "identity",
     title: "Wrong password and unknown email both answer invalid_credentials",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.sharedAccount("identity");
+      const account = await ctx.env.sharedAccount("identity", { member: false });
       const agent = ctx.agent("wrong-password");
       await rejects(
         () =>
@@ -274,7 +294,7 @@ export const identityChecks: CheckDefinition[] = [
         "GET /browse without a session",
       );
 
-      const account = await ctx.env.signup("bootstrap");
+      const account = await ctx.env.bareSignup("bootstrap");
       const agent = account.agent;
       const state = await succeeds(() => agent.api.getSession(), "GET /session");
       check(
@@ -337,7 +357,7 @@ export const identityChecks: CheckDefinition[] = [
     area: "identity",
     title: "Sign-out revokes the session server-side, not just the cookie",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.sharedAccount("identity");
+      const account = await ctx.env.sharedAccount("identity", { member: false });
       const agent = await ctx.env.holder(account, await ctx.env.login(account, "signout"));
       const replay = agent.jar.snapshot();
       await succeeds(() => agent.api.getAccount(), "GET /account before sign-out");
@@ -362,7 +382,7 @@ export const identityChecks: CheckDefinition[] = [
     title: "Sign out of all devices invalidates every other session immediately",
     tags: ["consistency"],
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("everywhere");
+      const account = await ctx.env.bareSignup("everywhere");
       await ctx.env.holder(account);
       const second = await ctx.env.holder(account, await ctx.env.login(account, "everywhere-2"));
       const third = await ctx.env.holder(account, await ctx.env.login(account, "everywhere-3"));
@@ -404,7 +424,7 @@ export const identityChecks: CheckDefinition[] = [
     area: "identity",
     title: "Devices list marks the current one; revoking a device signs it out at once",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.sharedAccount("identity");
+      const account = await ctx.env.sharedAccount("identity", { member: false });
       const keeper = await ctx.env.holder(account, await ctx.env.login(account, "devices-keeper"));
       const victim = await ctx.env.holder(account, await ctx.env.login(account, "devices-victim"));
       const victimSession = await succeeds(
@@ -505,7 +525,7 @@ export const signinFloodCheck: CheckDefinition = {
   timeoutMs: 240_000,
   needs: [needs.ipExhaustion],
   async run(ctx: CheckContext) {
-    const account = await ctx.env.sharedAccount("identity");
+    const account = await ctx.env.sharedAccount("identity", { member: false });
     // A browser the account knows: this check measures the per-client limit, not the
     // per-email one (ratelimit.auth-email), which would otherwise outlast its Retry-After.
     const agent = ctx.env.knownDevice(account, ctx.agent("signin-flood", { retryOn429: false }));

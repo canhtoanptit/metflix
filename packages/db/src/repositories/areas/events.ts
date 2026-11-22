@@ -45,6 +45,8 @@ function toPrivacyRequest(row: PrivacyRequestsTable): PrivacyRequestRecord {
     expiresAt: nullableTime(row.expires_at),
     lastError: row.last_error,
     updatedAt: Number(row.updated_at),
+    membershipStep: row.membership_step as PrivacyRequestRecord["membershipStep"],
+    membershipEndsAt: nullableTime(row.membership_ends_at),
   };
 }
 
@@ -129,6 +131,8 @@ export function createEventsRepository(database: Database): EventsRepository {
             "expires_at",
             "last_error",
             "updated_at",
+            "membership_step",
+            "membership_ends_at",
           ])
           .expression(
             db
@@ -144,6 +148,8 @@ export function createEventsRepository(database: Database): EventsRepository {
                 typed(dialect, record.expiresAt, "time").as("expires_at"),
                 typed(dialect, record.lastError, "text").as("last_error"),
                 typed(dialect, record.updatedAt, "time").as("updated_at"),
+                typed(dialect, record.membershipStep, "text").as("membership_step"),
+                typed(dialect, record.membershipEndsAt, "time").as("membership_ends_at"),
               ])
               .where(({ not, exists, selectFrom }) =>
                 not(
@@ -194,6 +200,8 @@ export function createEventsRepository(database: Database): EventsRepository {
       if (patch.exportBlobKey !== undefined) set.export_blob_key = patch.exportBlobKey;
       if (patch.expiresAt !== undefined) set.expires_at = patch.expiresAt;
       if (patch.lastError !== undefined) set.last_error = patch.lastError;
+      if (patch.membershipStep !== undefined) set.membership_step = patch.membershipStep;
+      if (patch.membershipEndsAt !== undefined) set.membership_ends_at = patch.membershipEndsAt;
       const result = await db
         .updateTable("privacy_requests")
         .set(set)
@@ -253,6 +261,20 @@ export function createEventsRepository(database: Database): EventsRepository {
         .where("status", "in", ["pending", "processing"])
         .where("export_blob_key", "is", null)
         .where("updated_at", "<", before)
+        .orderBy("updated_at", "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPrivacyRequest);
+    },
+
+    async deletionsStoppingMembership(limit) {
+      const rows = await db
+        .selectFrom("privacy_requests")
+        .selectAll()
+        .where("membership_step", "=", "stopping")
+        .where("kind", "=", "deletion")
+        .where("status", "=", "scheduled")
         .orderBy("updated_at", "asc")
         .orderBy("id", "asc")
         .limit(limit)

@@ -32,6 +32,7 @@ export function createAreaServices(deps: ServiceDependencies): {
   const seams: AreaSeams = {
     emitServerEvent: (event) => events.emitServerEvent(event),
     forgetProfileBehaviour: (input) => events.forgetProfileBehaviour(input),
+    accountDeletionScheduled: (accountId) => events.accountDeletionScheduled(accountId),
     assignments: (unit, context) => experiments.assignments(unit, context),
     logExposure: (exposure) => experiments.logExposure(exposure),
     sendEmail: (request) => areas.identity.sendEmail(request),

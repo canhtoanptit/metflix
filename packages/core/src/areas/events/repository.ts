@@ -62,6 +62,12 @@ export interface EventsRepository {
    * since `before`, least recently updated first, at most `limit`.
    */
   staleExports(before: number, limit: number): Promise<PrivacyRequestRecord[]>;
+  /**
+   * `scheduled` deletions whose membership renewals are still being stopped
+   * (`membershipStep: "stopping"`): billing has not confirmed yet. Least recently updated first
+   * (every attempt touches `updatedAt`, so each gets its turn), at most `limit`.
+   */
+  deletionsStoppingMembership(limit: number): Promise<PrivacyRequestRecord[]>;
 
   /**
    * Subject keys whose lake events the pipeline's erase job drops. Idempotent: a pending
@@ -135,12 +141,30 @@ export interface PrivacyRequestRecord {
   expiresAt: number | null;
   lastError: string | null;
   updatedAt: number;
+  /**
+   * Deletion: what it did to the membership. `stopping` until billing confirms the renewals
+   * stopped (retried by the sweep), then `ending` (it ends at `membershipEndsAt`) or `none` (no
+   * membership a provider renews). Null on exports and on deletions recorded before.
+   */
+  membershipStep: MembershipStep | null;
+  /** Deletion, `ending`: when the membership ends (its period's close, as billing reported). */
+  membershipEndsAt: number | null;
 }
+
+export const MEMBERSHIP_STEPS = ["stopping", "ending", "none"] as const;
+export type MembershipStep = (typeof MEMBERSHIP_STEPS)[number];
 
 export type PrivacyRequestPatch = Partial<
   Pick<
     PrivacyRequestRecord,
-    "status" | "scheduledFor" | "completedAt" | "exportBlobKey" | "expiresAt" | "lastError"
+    | "status"
+    | "scheduledFor"
+    | "completedAt"
+    | "exportBlobKey"
+    | "expiresAt"
+    | "lastError"
+    | "membershipStep"
+    | "membershipEndsAt"
   >
 > & { updatedAt: number };
 

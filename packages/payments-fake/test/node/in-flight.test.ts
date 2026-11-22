@@ -111,6 +111,7 @@ describe("a member's request meets the same provider call in flight elsewhere", 
         id: setupId,
         status: "processing",
         clientSecret: null,
+        failureReason: null,
         createdAt: expect.any(String),
       });
       hold.release();

@@ -302,7 +302,7 @@ export const staffChecks: CheckDefinition[] = [
         "the same refund retried (same key)",
       );
       equal(retried.id, first.value.id, "a retry answers the first refund");
-      await rejects(
+      const conflict = await rejects(
         () =>
           billing.refundInvoice({
             params: { accountId },
@@ -311,6 +311,13 @@ export const staffChecks: CheckDefinition[] = [
         "staff_action_conflict",
         "the key with another amount",
       );
+      // The conflict names the earlier attempt's audit entry (found by its request id).
+      const earlier = await succeeds(
+        () => admin.listAuditLog({ query: { requestId: first.requestId } }),
+        "GET /audit?requestId= (the first refund)",
+      );
+      equal(earlier.items.length, 1, "audit entries of the first refund's request");
+      equal(conflict.problem.auditId, earlier.items[0]?.id, "staff_action_conflict.auditId");
       await rejects(
         () => admin.refundInvoice({ params: { accountId }, body }),
         "staff_action_conflict",
@@ -479,6 +486,93 @@ export const staffChecks: CheckDefinition[] = [
         actorId,
       );
       ctx.note(`audited: ${entries.map((entry) => entry.action).join(", ")}`);
+    },
+  },
+  {
+    id: "staff.console-reads",
+    area: "staff",
+    title:
+      "What the console reads: title search and availability for the content role only; GET /audit/mine shows the caller's own entries without their before; GET /audit filters by request id",
+    needs: [needs.staffIssuer],
+    async run(ctx: CheckContext) {
+      const content = await staff(ctx, "content");
+      const support = await staff(ctx, "support");
+      const admin = await staff(ctx, "admin");
+      const { cards } = await ctx.env.catalog();
+      const [first, second] = cards;
+      check(first && second, "the catalogue has fewer than two titles");
+      const found = await succeeds(
+        () => content.searchTitles({ query: { q: first.name } }),
+        "GET /titles?q= (content)",
+      );
+      equal(found.items[0]?.id, first.id, "the first search result for a title's own name");
+      const byIds = await succeeds(
+        () => content.searchTitles({ query: { ids: `${second.id},t-smoke-unknown,${first.id}` } }),
+        "GET /titles?ids= (content)",
+      );
+      equal(
+        byIds.items.map((item) => item.id).join(","),
+        `${second.id},${first.id}`,
+        "titles by id (in order, the unknown left out)",
+      );
+      const availability = await succeeds(
+        () => content.getTitleAvailability({ params: { titleId: first.id } }),
+        "GET /titles/:id/availability",
+      );
+      equal(availability.titleId, first.id, "availability's title");
+      if (availability.updatedAt === null) {
+        equal(availability.available, true, "a title without an override is available");
+      }
+      await rejects(
+        () => content.getTitleAvailability({ params: { titleId: "t-smoke-unknown" } }),
+        "not_found",
+        "the availability of a title the catalogue lacks",
+      );
+      await succeeds(() => content.listTitleAvailability(), "GET /titles/availability");
+      for (const [what, call] of [
+        ["GET /titles", () => support.searchTitles({ query: { q: first.name } })],
+        [
+          "GET /titles/:id/availability",
+          () => support.getTitleAvailability({ params: { titleId: first.id } }),
+        ],
+        ["GET /titles/availability", () => support.listTitleAvailability()],
+      ] as const) {
+        const refused = await rejects(call, "staff_role_required", `${what} as support`);
+        equal(refused.problem.requiredRole, "content", `${what}: requiredRole`);
+      }
+
+      // The caller's own audit trail, and the request-id filter.
+      const member = await ctx.env.bareSignup("console-reads");
+      const viewed = await audited(
+        () => support.getMember({ params: { accountId: member.session.account.id } }),
+        "GET /members/:id (support)",
+      );
+      const supportId = await subjectOf(support);
+      const mine = await succeeds(
+        () => support.listOwnAuditLog({ query: { limit: 50 } }),
+        "GET /audit/mine",
+      );
+      check(
+        mine.items.some((entry) => entry.requestId === viewed.requestId),
+        "GET /audit/mine lacks the caller's latest action",
+        {
+          expected: `an entry with requestId ${viewed.requestId}`,
+        },
+      );
+      for (const entry of mine.items) {
+        equal(entry.actor.id, supportId, "GET /audit/mine: an entry of another actor");
+        equal(entry.before, null, "GET /audit/mine: an entry's before");
+      }
+      const byRequest = await succeeds(
+        () => admin.listAuditLog({ query: { requestId: viewed.requestId } }),
+        "GET /audit?requestId=",
+      );
+      check(
+        byRequest.items.length >= 1 &&
+          byRequest.items.every((entry) => entry.requestId === viewed.requestId),
+        "GET /audit?requestId= returns other requests' entries (or none)",
+        { observed: byRequest.items.map((entry) => entry.requestId).join(", ") },
+      );
     },
   },
   {

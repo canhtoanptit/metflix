@@ -1,5 +1,6 @@
 import { billingIdempotencyKey } from "@webflix/core";
 import { describe, expect, it } from "vitest";
+import { FAKE_CARDS, FAKE_TEST_CARDS } from "../src/cards.ts";
 import { createFakePaymentForm } from "../src/form.ts";
 import { FakePaymentProvider } from "../src/provider.ts";
 import { MemoryFakeStore } from "../src/store.ts";
@@ -155,5 +156,167 @@ describe("fake provider: the payment form (/_pay)", () => {
     const paid = await post("/_pay/form", { secret, card: "" });
     expect(paid.status).toBe(200);
     expect((await fake.retrieveSubscription(subscription.id))?.status).toBe("active");
+  });
+});
+
+describe("fake provider: the payment form always leads back", () => {
+  const RETURN = "/signup/payment?step=2";
+  const declines = FAKE_TEST_CARDS.filter((name) => FAKE_CARDS[name].declineAtConfirm !== null);
+
+  it("sends a declined card back marked failed, and the same page then takes another card", async () => {
+    expect(declines.length).toBeGreaterThanOrEqual(5);
+    const { fake, post, request, customerId } = await setup();
+    for (const card of declines) {
+      const created = await fake.createSetup({ customerId }, key());
+      const secret = created.clientSecret ?? "";
+      const declined = await post("/_pay/form", { secret, card, return: RETURN });
+      expect(declined.status, card).toBe(303);
+      expect(declined.headers.get("Location"), card).toBe(`${RETURN}&payment=failed`);
+      expect(await fake.retrieveSetup(created.id), card).toMatchObject({
+        status: "failed",
+        failureCode: FAKE_CARDS[card].declineAtConfirm,
+      });
+      // Reopened (Back, or the merchant's "try another card"): the form, not a dead end.
+      const reopened = await request(
+        `/_pay/form?secret=${secret}&return=${encodeURIComponent(RETURN)}`,
+      );
+      expect(reopened.status, card).toBe(200);
+      expect(await reopened.text(), card).toContain("Add a card");
+      const approved = await post("/_pay/form", { secret, card: "visa", return: RETURN });
+      expect(approved.headers.get("Location"), card).toBe(`${RETURN}&payment=succeeded`);
+      expect((await fake.retrieveSetup(created.id))?.status, card).toBe("succeeded");
+    }
+  });
+
+  it("sends a passed challenge back succeeded, a failed one back failed, and then takes another card", async () => {
+    const { fake, post, request, customerId } = await setup();
+    for (const outcome of ["complete", "fail"] as const) {
+      const created = await fake.createSetup({ customerId }, key());
+      const secret = created.clientSecret ?? "";
+      const first = await post("/_pay/form", {
+        secret,
+        card: "authentication-required",
+        return: "/account",
+      });
+      expect(first.status).toBe(303);
+      const challenge = await request(first.headers.get("Location") ?? "");
+      expect(await challenge.text()).toContain('href="/account?payment=failed"');
+      const done = await post("/_pay/challenge", { secret, outcome, return: "/account" });
+      expect(done.status).toBe(303);
+      expect(done.headers.get("Location")).toBe(
+        outcome === "complete" ? "/account?payment=succeeded" : "/account?payment=failed",
+      );
+      if (outcome === "fail") {
+        const again = await post("/_pay/form", { secret, card: "visa", return: "/account" });
+        expect(again.headers.get("Location")).toBe("/account?payment=succeeded");
+      }
+      expect((await fake.retrieveSetup(created.id))?.status).toBe("succeeded");
+    }
+  });
+
+  it("sends a second submission of something already confirmed back as succeeded", async () => {
+    const { fake, post, customerId, setup: created } = await setup();
+    const secret = created.clientSecret ?? "";
+    expect((await post("/_pay/form", { secret, card: "visa", return: RETURN })).status).toBe(303);
+    for (const fields of [
+      { secret, card: "mastercard", return: RETURN },
+      { secret, card: "declined", return: RETURN },
+    ]) {
+      const twice = await post("/_pay/form", fields);
+      expect(twice.status).toBe(303);
+      expect(twice.headers.get("Location")).toBe(`${RETURN}&payment=succeeded`);
+    }
+    const challengeAgain = await post("/_pay/challenge", {
+      secret,
+      outcome: "complete",
+      return: RETURN,
+    });
+    expect(challengeAgain.headers.get("Location")).toBe(`${RETURN}&payment=succeeded`);
+    expect((await fake.retrieveSetup(created.id))?.paymentMethod?.last4).toBe("4242");
+
+    // A first payment paid, submitted again.
+    const card = (await fake.retrieveSetup(created.id))?.paymentMethod?.id ?? null;
+    const subscription = await fake.createSubscription(
+      {
+        customerId,
+        priceLookupKey: TEST_PRICES.basic.lookupKey,
+        paymentMethodId: card,
+        trialDays: null,
+        promotionId: null,
+      },
+      key(),
+    );
+    const payment = subscription.paymentClientSecret ?? "";
+    expect(
+      (await post("/_pay/form", { secret: payment, card: "", return: RETURN })).headers.get(
+        "Location",
+      ),
+    ).toBe(`${RETURN}&payment=succeeded`);
+    expect(
+      (await post("/_pay/form", { secret: payment, card: "visa", return: RETURN })).headers.get(
+        "Location",
+      ),
+    ).toBe(`${RETURN}&payment=succeeded`);
+  });
+
+  it("sends a declined first payment back failed; another card on the same page pays it", async () => {
+    const { fake, post, customerId, setup: created } = await setup();
+    await fake.confirmSetup(created.clientSecret ?? "", "visa");
+    const card = (await fake.retrieveSetup(created.id))?.paymentMethod?.id ?? null;
+    const subscription = await fake.createSubscription(
+      {
+        customerId,
+        priceLookupKey: TEST_PRICES.basic.lookupKey,
+        paymentMethodId: card,
+        trialDays: null,
+        promotionId: null,
+      },
+      key(),
+    );
+    const secret = subscription.paymentClientSecret ?? "";
+    const declined = await post("/_pay/form", {
+      secret,
+      card: "insufficient-funds",
+      return: RETURN,
+    });
+    expect(declined.headers.get("Location")).toBe(`${RETURN}&payment=failed`);
+    const paid = await post("/_pay/form", { secret, card: "mastercard", return: RETURN });
+    expect(paid.headers.get("Location")).toBe(`${RETURN}&payment=succeeded`);
+    expect((await fake.retrieveSubscription(subscription.id))?.status).toBe("active");
+  });
+
+  it("sends an expired first payment back failed, and leads back from every problem page", async () => {
+    const { fake, post, request, customerId, setup: created } = await setup();
+    await fake.confirmSetup(created.clientSecret ?? "", "visa");
+    const card = (await fake.retrieveSetup(created.id))?.paymentMethod?.id ?? null;
+    const subscription = await fake.createSubscription(
+      {
+        customerId,
+        priceLookupKey: TEST_PRICES.basic.lookupKey,
+        paymentMethodId: card,
+        trialDays: null,
+        promotionId: null,
+      },
+      key(),
+    );
+    const secret = subscription.paymentClientSecret ?? "";
+    await fake.advanceClock(customerId, 24 * 3600);
+    const expired = await request(`/_pay/form?secret=${secret}&return=/account`);
+    expect(expired.status).toBe(303);
+    expect(expired.headers.get("Location")).toBe("/account?payment=failed");
+
+    const unknown = await request("/_pay/form?secret=seti_nothing_secret_x&return=/account");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.text()).toContain('href="/account?payment=failed"');
+    const another = await fake.createSetup({ customerId }, key());
+    const notACard = await post("/_pay/form", {
+      secret: another.clientSecret ?? "",
+      number: "4111 1111 1111 1111",
+      return: "/account",
+    });
+    expect(notACard.status).toBe(422);
+    expect(await notACard.text()).toContain('href="/account?payment=failed"');
+    const form = await request(`/_pay/form?secret=${another.clientSecret}&return=/account`);
+    expect(await form.text()).toContain('href="/account?payment=failed"');
   });
 });

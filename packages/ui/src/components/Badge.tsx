@@ -9,6 +9,10 @@ const TONES = {
   positive: "bg-positive-subtle text-positive",
   danger: "bg-danger-subtle text-danger",
   glass: "bg-glass text-fg backdrop-blur-md",
+  /** Needs attention, not broken (staff console: pending, past due, starting soon). */
+  warning: "border border-warning/50 text-warning",
+  /** Neutral information that should still stand out (staff console: scheduled, draft). */
+  info: "border border-info/50 text-info",
 } as const;
 export type BadgeTone = keyof typeof TONES;
 

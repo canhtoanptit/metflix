@@ -1,22 +1,11 @@
-import {
-  MOCK_CARDS,
-  type MockCardPayment,
-  type PAYMENT_DECLINE_REASONS,
-  type Plan,
-  type SubscriptionStatus,
-} from "@webflix/contracts";
+import type { Plan, SubscriptionStatus } from "@webflix/contracts";
 import { readMembership } from "../areas/billing/membership.ts";
 import { getPlan } from "../domain/plans.ts";
 import { AppError } from "../errors.ts";
-import type {
-  AccountRecord,
-  CardBrand,
-  StoredCard,
-  SubscriptionRecord,
-} from "../repositories/records.ts";
+import type { AccountRecord, SubscriptionRecord } from "../repositories/records.ts";
 import type { ServiceDependencies } from "./context.ts";
 
-/** Mock billing periods are 30 days. */
+/** Milestone 1's mock periods are 30 days (the seeded demo account's membership). */
 export const BILLING_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
@@ -45,8 +34,8 @@ export function effectiveSubscription(
  * Whether the account may start playing now, and on which plan (its streams and quality cap):
  * the one entitlement decision playback asks for (§5.2). Owned by billing: it reads the
  * membership projection when the account has a provider membership (trial, grace and
- * suspension included), else milestone 1's mock membership exactly as before; an account
- * created without payment has no membership. One read of `memberships` per playback start.
+ * suspension included), else milestone 1's mock membership (the seeded demo account's); an
+ * account without either has no membership. One read of `memberships` per playback start.
  */
 export async function playbackEntitlement(
   deps: Pick<ServiceDependencies, "repos" | "config">,
@@ -56,85 +45,9 @@ export async function playbackEntitlement(
   const snapshot = await readMembership(deps, account.account.id, account.subscription, now);
   if (!snapshot.entitlement.entitled || snapshot.effective.planId === null) {
     throw new AppError("subscription_required", {
-      subscriptionStatus: snapshot.legacy.subscription.status,
+      subscriptionStatus: snapshot.legacy?.subscription.status ?? "ended",
       membershipStatus: snapshot.state.status,
     });
   }
   return getPlan(snapshot.effective.planId);
-}
-
-// --- Mock billing ---------------------------------------------------------------------------
-
-export type DeclineReason = (typeof PAYMENT_DECLINE_REASONS)[number];
-
-/** A card as the API receives it (after contract validation: digits only). */
-export type CardInput = Omit<MockCardPayment, "cardNumber"> & { cardNumber: string };
-
-export type ChargeResult =
-  | { approved: true; card: StoredCard }
-  | { approved: false; reason: DeclineReason };
-
-/**
- * Port for the payment provider. Only a mock exists (blueprint §1.3: no real payments), but it
- * sits behind an interface so the HTTP and service code never special-cases test cards.
- */
-export interface BillingProvider {
-  /** Charge (or, with amount 0, verify) a new card or the stored one. */
-  charge(input: {
-    card: CardInput | StoredCard;
-    amountMinor: number;
-    currency: string;
-    now: number;
-  }): Promise<ChargeResult>;
-}
-
-export function cardBrand(cardNumber: string): CardBrand {
-  if (/^4/.test(cardNumber)) return "visa";
-  if (/^(5[1-5]|2(2[2-9][1-9]|2[3-9]\d|[3-6]\d\d|7[01]\d|720))/.test(cardNumber))
-    return "mastercard";
-  if (/^3[47]/.test(cardNumber)) return "amex";
-  if (/^(6011|65|64[4-9])/.test(cardNumber)) return "discover";
-  return "other";
-}
-
-function isExpired(expMonth: number, expYear: number, now: number): boolean {
-  const date = new Date(now);
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth() + 1;
-  return expYear < year || (expYear === year && expMonth < month);
-}
-
-/**
- * The mock provider. Test cards (documented in docs/BACKEND.md and `MOCK_CARDS`):
- * - `4000 0000 0000 0002` → declined (`card_declined`)
- * - `4000 0000 0000 9995` → declined (`insufficient_funds`)
- * - any card whose expiry month is in the past → declined (`expired_card`)
- * - anything else that passes the contract's format check → approved.
- */
-export function createMockBillingProvider(): BillingProvider {
-  return {
-    async charge({ card, now }) {
-      if ("cardNumber" in card) {
-        if (card.cardNumber === MOCK_CARDS.declined)
-          return { approved: false, reason: "card_declined" };
-        if (card.cardNumber === MOCK_CARDS.insufficientFunds) {
-          return { approved: false, reason: "insufficient_funds" };
-        }
-        if (isExpired(card.expMonth, card.expYear, now))
-          return { approved: false, reason: "expired_card" };
-        return {
-          approved: true,
-          card: {
-            brand: cardBrand(card.cardNumber),
-            last4: card.cardNumber.slice(-4),
-            expMonth: card.expMonth,
-            expYear: card.expYear,
-          },
-        };
-      }
-      if (isExpired(card.expMonth, card.expYear, now))
-        return { approved: false, reason: "expired_card" };
-      return { approved: true, card: { ...card } };
-    },
-  };
 }

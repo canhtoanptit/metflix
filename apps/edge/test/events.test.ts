@@ -168,8 +168,13 @@ describe("collection on D1 and R2 in workerd", () => {
     );
     expect((await blobs.list({ prefix: "privacy/" })).items).toHaveLength(1);
 
+    // The terms come with the list (configuration only); a deletion says what it did to the
+    // membership (milestone 1's mock membership charges nothing: none to stop).
+    const { terms } = await services.events.listPrivacyRequests(auth);
+    expect(terms).toMatchObject({ deletionCoolingOffSec: 14 * 86_400, exportMode: "inline" });
     // Erasure: the account goes (D1 cascades), the document goes, the subject is listed.
-    await services.events.requestDeletion(auth);
+    const deletion = await services.events.requestDeletion(auth);
+    expect(deletion.membership).toEqual({ status: "none", endsAt: null, resumable: false });
     t.clock.advance(15 * 86_400_000);
     await services.scheduler.tick();
     await t.queue.drain();

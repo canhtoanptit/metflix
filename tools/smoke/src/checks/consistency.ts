@@ -212,7 +212,7 @@ export const consistencyChecks: CheckDefinition[] = [
     title: "Concurrent profile creation never exceeds five",
     tags: ["consistency"],
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("cap-race");
+      const account = await ctx.env.bareSignup("cap-race");
       const avatarId = await ctx.env.avatarId(account.agent);
       const attempts = Math.max(MAX_PROFILES_PER_ACCOUNT + 3, ctx.options.parallelism);
       const results = await fanOut(attempts, (index) =>
@@ -305,7 +305,7 @@ export const consistencyChecks: CheckDefinition[] = [
       // few rounds.
       const rounds = Math.min(ctx.options.repeat, 3);
       for (let round = 1; round <= rounds; round += 1) {
-        const account = await ctx.env.signup("ratelimit-monotonic");
+        const account = await ctx.env.bareSignup("ratelimit-monotonic");
         const profile = await lockedProfile(ctx.env, account, "Monotonic");
         const agent = ctx.agent("ratelimit-monotonic", { retryOn429: false });
         for (const [name, value] of account.agent.jar.snapshot()) agent.jar.set(name, value);

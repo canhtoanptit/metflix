@@ -50,7 +50,9 @@ export function Tooltip({
               "z-(--z-tooltip) max-w-64 rounded-sm bg-fg px-2.5 py-1.5 text-fg-inverse shadow-md",
               "text-xs font-semibold leading-snug",
               "data-[state=delayed-open]:animate-fade-in data-[state=instant-open]:animate-fade-in",
-              "data-[state=closed]:animate-fade-out",
+              // No exit animation: a closing tooltip stays mounted as the top dismissable layer
+              // for as long as it fades, and takes the Escape meant for the dialog under it
+              // (Tab past a control, press Escape at once: the detail overlay stayed open).
               className,
             )}
           >

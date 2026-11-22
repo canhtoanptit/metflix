@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useRouter } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import type { DeviceSession, DeviceSessionList } from "@webflix/contracts";
 import {
   Badge,
@@ -21,7 +21,9 @@ import { describeError } from "../../../app/query/errors.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { optimisticUpdate } from "../../../app/query/optimistic.ts";
 import { queries } from "../../../app/query/queries.ts";
-import { sessionCache } from "../../../app/session/session.ts";
+import { sessionCache, useAuthenticatedSession } from "../../../app/session/session.ts";
+import { discardPendingEvents } from "../../../app/telemetry/index.ts";
+import { announceAuthChange } from "../auth/oidc.ts";
 import { formatRelativeTime, formatShortDate } from "../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../shared/privileges.ts";
 import { AccountHeading, AccountSection } from "./AccountLayout.tsx";
@@ -45,6 +47,7 @@ export function AccountDevicesPage() {
   const router = useRouter();
   const navigate = useNavigate();
   const demo = useIsDemoAccount();
+  const hasPassword = useAuthenticatedSession().account.hasPassword !== false;
   const devices = useQuery(queries.devices());
   const [revoking, setRevoking] = useState<DeviceSession | null>(null);
   const [everywhere, setEverywhere] = useState(false);
@@ -74,10 +77,15 @@ export function AccountDevicesPage() {
   });
 
   const signOutAll = useMutation({
-    mutationFn: () => api().logoutAll(),
+    mutationFn: () => {
+      // Signing this device out too: nothing queued as this member may be sent afterwards.
+      discardPendingEvents();
+      return api().logoutAll();
+    },
     meta: { silent: true },
     onSuccess: async () => {
       sessionCache.signOut(queryClient);
+      announceAuthChange("signed-out");
       await router.invalidate();
       toast.success("Signed out of all devices");
       await navigate({ to: "/login", search: {}, replace: true });
@@ -94,9 +102,20 @@ export function AccountDevicesPage() {
       <AccountHeading
         title="Devices"
         description={
-          demo
-            ? "Browsers and devices signed in to the demo account. Other devices can't be signed out from the demo account."
-            : "Browsers and devices signed in to your account. Sign out any you don't recognize, then change your password."
+          demo ? (
+            "Browsers and devices signed in to the demo account. Other devices can't be signed out from the demo account."
+          ) : (
+            <>
+              Browsers and devices signed in to your account. Sign out any you don't recognize, then{" "}
+              <Link
+                to="/account/security"
+                className="focus-ring rounded-xs text-fg underline underline-offset-2"
+              >
+                {hasPassword ? "change your password" : "check how you sign in"}
+              </Link>
+              .
+            </>
+          )
         }
       />
       <AccountSection title="Signed-in devices">
@@ -189,7 +208,7 @@ export function AccountDevicesPage() {
           if (!open) setRevoking(null);
         }}
         title={`Sign out ${revoking?.label ?? "this device"}?`}
-        description="It will need your email and password to get back in. Anything playing on it stops within about half a minute."
+        description={`It will need to sign in again${hasPassword ? " with your email and password, or a provider you've linked" : ""}. Anything playing on it stops within about half a minute.`}
         confirmLabel="Sign out device"
         onConfirm={() => {
           if (revoking) revoke.mutate(revoking);
@@ -202,8 +221,8 @@ export function AccountDevicesPage() {
         description={
           <>
             Every device signed in to this account, including this one, will be signed out. Anything
-            playing on another device stops within about half a minute. You'll need your password to
-            sign back in.
+            playing on another device stops within about half a minute. You'll need to sign in again
+            on each of them.
             {signOutAll.isError ? (
               <span className="mt-3 block text-danger" role="alert">
                 {describeMemberError(signOutAll.error).description}

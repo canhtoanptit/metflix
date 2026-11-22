@@ -56,17 +56,76 @@ function throttleContext(context: BrowserContext): void {
 }
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+/** Telemetry's batches (`POST /events`): they record behaviour, they change nothing of the account. */
+const TELEMETRY_PATH = "/api/v1/events";
 
-/** Record every mutating API call a shared demo session's browser makes. */
-function guardReadOnly(context: BrowserContext): string[] {
-  const violations: string[] = [];
+interface ReadOnlyGuard {
+  /** Mutating API calls: the spec changed the shared account. */
+  violations: string[];
+  /** Event batches sent, or a device id kept, while the account's consent grants no purpose. */
+  unconsented: string[];
+  granted: boolean;
+}
+
+/** Where the telemetry SDK keeps its device id: it exists only while collection is allowed. */
+const DEVICE_ID_KEY = "webflix.deviceId";
+
+/**
+ * Before the context closes: a page still holding a telemetry device id for an account that
+ * consented to nothing means collection started without consent (the batch it would send as the
+ * page closes cannot be observed, the id it stored can).
+ */
+async function checkDeviceIds(context: BrowserContext, guard: ReadOnlyGuard | null): Promise<void> {
+  if (!guard || guard.granted) return;
+  for (const page of context.pages()) {
+    try {
+      const stored = await page.evaluate((key) => localStorage.getItem(key), DEVICE_ID_KEY);
+      if (stored) guard.unconsented.push(`${page.url()}: localStorage ${DEVICE_ID_KEY}`);
+    } catch {
+      // closed, or on a page without storage (about:blank)
+    }
+  }
+}
+
+/**
+ * Whether the account a context is signed in to has consented to any purpose, as the server says
+ * (`GET /privacy/consent`); true where the deployment does not serve it.
+ */
+async function consentGranted(context: BrowserContext): Promise<boolean> {
+  try {
+    const response = await context.request.get("/api/v1/privacy/consent");
+    if (!response.ok()) return true;
+    const consent = (await response.json()) as {
+      mode: string;
+      purposes: Record<string, { granted: boolean }>;
+    };
+    return (
+      consent.mode !== "off" && Object.values(consent.purposes).some((purpose) => purpose.granted)
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Record every mutating API call a shared demo session's browser makes. Telemetry's event batches
+ * are not mutations of the account and pass, but only where the account's consent grants a
+ * purpose: under the default opt-in mode the demo account has said nothing, so its browser must
+ * send nothing at all, and every spec on it doubles as a check that consent is honoured.
+ */
+async function guardReadOnly(context: BrowserContext): Promise<ReadOnlyGuard> {
+  const granted = await consentGranted(context);
+  const guard: ReadOnlyGuard = { violations: [], unconsented: [], granted };
   context.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (MUTATING.has(request.method()) && path.startsWith("/api/")) {
-      violations.push(`${request.method()} ${path}`);
+    if (!MUTATING.has(request.method()) || !path.startsWith("/api/")) return;
+    if (request.method() === "POST" && path === TELEMETRY_PATH) {
+      if (!granted) guard.unconsented.push(`POST ${path}`);
+      return;
     }
+    guard.violations.push(`${request.method()} ${path}`);
   });
-  return violations;
+  return guard;
 }
 
 /**
@@ -107,10 +166,14 @@ function expectNoRenderPhaseUpdates(reports: string[]): void {
   expect(reports, "React state updates during another component's render").toEqual([]);
 }
 
-function expectNoViolations(violations: string[]): void {
+function expectNoViolations(guard: ReadOnlyGuard): void {
   expect(
-    violations,
+    guard.violations,
     "this spec changed data on the shared demo session; use a fresh account (createAccount) for specs that change data",
+  ).toEqual([]);
+  expect(
+    guard.unconsented,
+    "the browser sent behaviour events for the demo account, whose consent grants no purpose (docs/BLUEPRINT-M2.md §6.3)",
   ).toEqual([]);
 }
 
@@ -136,10 +199,11 @@ export const test = base.extend<Options & Fixtures>({
 
   context: async ({ context, demo }, use) => {
     throttleContext(context);
-    const violations = demo ? guardReadOnly(context) : null;
+    const violations = demo ? await guardReadOnly(context) : null;
     const csp = watchCsp(context);
     const renderUpdates = watchRenderPhaseUpdates(context);
     await use(context);
+    await checkDeviceIds(context, violations);
     if (violations) expectNoViolations(violations);
     expectNoCspViolations(csp);
     expectNoRenderPhaseUpdates(renderUpdates);
@@ -153,7 +217,7 @@ export const test = base.extend<Options & Fixtures>({
   newDevice: async ({ browser, baseURL }, use) => {
     const opened: Array<{
       context: BrowserContext;
-      violations: string[] | null;
+      violations: ReadOnlyGuard | null;
       csp: string[];
       renderUpdates: string[];
     }> = [];
@@ -166,13 +230,14 @@ export const test = base.extend<Options & Fixtures>({
       throttleContext(context);
       opened.push({
         context,
-        violations: demo ? guardReadOnly(context) : null,
+        violations: demo ? await guardReadOnly(context) : null,
         csp: watchCsp(context),
         renderUpdates: watchRenderPhaseUpdates(context),
       });
       return context;
     });
     for (const { context, violations, csp, renderUpdates } of opened) {
+      await checkDeviceIds(context, violations);
       await context.close();
       if (violations) expectNoViolations(violations);
       expectNoCspViolations(csp);

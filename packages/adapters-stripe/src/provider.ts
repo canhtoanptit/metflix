@@ -3,6 +3,7 @@ import {
   type CatalogueSyncResult,
   type Clock,
   type Logger,
+  type NextInvoicePreview,
   type PaymentProvider,
   PaymentProviderError,
   type PromotionLookup,
@@ -15,7 +16,7 @@ import {
   type ProviderSubscription,
   systemClock,
 } from "@webflix/core";
-import { StripeClient, type StripeObject } from "./client.ts";
+import { StripeApiError, StripeClient, type StripeObject } from "./client.ts";
 import { idOf, list, ms, toEvent, toInvoice, toSetup, toSubscription } from "./mapping.ts";
 import { verifyStripeSignature } from "./webhook.ts";
 
@@ -169,6 +170,48 @@ export class StripePaymentProvider implements PaymentProvider {
       { expand: SUBSCRIPTION_EXPAND },
     );
     return subscription ? this.subscription(subscription) : null;
+  }
+
+  /**
+   * `POST /v1/invoices/create_preview` for the subscription as it stands: Stripe's own amount
+   * (live discounts and the customer's credit balance applied), due at the trial's end or the
+   * item's period end. None for a subscription that will not invoice again.
+   */
+  async previewNextInvoice(subscriptionId: string): Promise<NextInvoicePreview | null> {
+    const current = await this.client.find(
+      `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`,
+    );
+    if (!current) return null;
+    const status = typeof current.status === "string" ? current.status : "";
+    if (
+      current.cancel_at_period_end === true ||
+      typeof current.cancel_at === "number" ||
+      !["trialing", "active", "past_due"].includes(status)
+    ) {
+      return null;
+    }
+    let preview: StripeObject;
+    try {
+      preview = await this.client.post(
+        "/v1/invoices/create_preview",
+        { customer: idOf(current.customer), subscription: subscriptionId },
+        // A preview changes nothing; a fresh key, so no cached answer is ever replayed.
+        `webflix-next-invoice-${subscriptionId}-${crypto.randomUUID()}`,
+      );
+    } catch (error) {
+      if (error instanceof StripeApiError && error.stripeCode === "invoice_upcoming_none") {
+        return null;
+      }
+      throw error;
+    }
+    const item = list(current.items)[0];
+    const at = status === "trialing" ? ms(current.trial_end) : ms(item?.current_period_end);
+    if (at === null || typeof preview.amount_due !== "number") return null;
+    return {
+      at,
+      amountMinor: preview.amount_due,
+      currency: String(preview.currency ?? "usd").toUpperCase(),
+    };
   }
 
   async previewPlanChange(input: {

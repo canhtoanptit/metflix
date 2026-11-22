@@ -170,7 +170,8 @@ export async function lockedProfile(
 export function measureProfilePinLimit(env: Environment): Promise<ProfilePinMeasurement> {
   return env.once("limits:profile-pin", async () => {
     // A fresh account whose bucket nothing else has touched: no PIN submitted yet.
-    const account = await env.signup("ratelimit");
+    // An account only: PINs and passwords need no membership.
+    const account = await env.bareSignup("ratelimit");
     const agent = env.agent("ratelimit-burst", { retryOn429: false });
     for (const [name, value] of account.agent.jar.snapshot()) agent.jar.set(name, value);
     const profile = await lockedProfile(env, account, "Burst");

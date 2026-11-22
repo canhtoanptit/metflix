@@ -120,6 +120,12 @@ const LISTS_MEMORY = 5_000;
 const LISTS_TTL_MS = 10 * 60_000;
 /** How long a member's plan and join date are remembered for experiment targeting. */
 const MEMBER_FACTS_TTL_MS = 60_000;
+/**
+ * The oldest a copy of the served model (and of the editorial data) is ever used, counted from
+ * its database read, on every instance and through every cache level: an import or a staff
+ * change made by another process is served everywhere within this.
+ */
+export const MODEL_MAX_AGE_MS = 30_000;
 /** How long serving skips a store whose model read failed. */
 const STORE_RETRY_MS = 30_000;
 
@@ -176,7 +182,10 @@ export class RecommendationServing {
     this.models = new TwoLevel(deps.cache, {
       prefix: "webflix:v1:",
       schema: ModelEnvelope,
-      sharedTtlSec: 120,
+      // A run another process imported (the importer CLI, a Job beside several replicas) is
+      // seen everywhere within `MODEL_MAX_AGE_MS`: no copy of the model is used longer.
+      maxAgeMs: MODEL_MAX_AGE_MS,
+      sharedTtlSec: 60,
       key: () => "recs-model",
       load: async () => {
         const snapshot = await this.withTimeout(deps.recommendations.servingSnapshot());
@@ -193,6 +202,8 @@ export class RecommendationServing {
       schema: EditorialEnvelope,
       sharedTtlSec: 300,
       key: () => "editorial",
+      // A staff decision made on another replica is seen everywhere within the same bound.
+      maxAgeMs: MODEL_MAX_AGE_MS,
       load: () => deps.repos.personalisation.loadEditorial(),
       build: (data) => data,
       clock: deps.clock,

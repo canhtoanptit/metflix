@@ -1,4 +1,4 @@
-import { API_BASE_PATH, type OidcProvider } from "@webflix/contracts";
+import { API_BASE_PATH, type ErrorCode, isErrorCode, type OidcProvider } from "@webflix/contracts";
 import {
   AppError,
   type ClientInfo,
@@ -106,12 +106,9 @@ export function createIdentityHandlers(container: AppContainer): AreaHandlers<"i
     getEmailStatus: ({ query }) => services.auth.emailStatus(query.email),
 
     signup: async ({ body }, c) => {
-      const { email, password, planId, payment } = body;
-      // The schema refuses one without the other.
+      // The schema is strict: a card (milestone 1's `payment`) never gets this far.
       const issued = await services.auth.signup(
-        planId !== undefined && payment !== undefined
-          ? { email, password, planId, payment }
-          : { email, password },
+        { email: body.email, password: body.password },
         clientInfo(c),
       );
       issue(c, issued);
@@ -247,36 +244,87 @@ export function createIdentityHandlers(container: AppContainer): AreaHandlers<"i
   };
 }
 
-const CALLBACK_PATH = new RegExp(`^${API_BASE_PATH}/auth/oidc/([^/]+)/callback$`);
+const OIDC_PATH = new RegExp(`^${API_BASE_PATH}/auth/oidc/([^/]+)/(start|callback)$`);
 
 /**
- * The OpenID callbacks are browser navigations (an issuer's redirect, Apple's cross-site form
- * post): a person must never land on a problem document there. Whatever refused the request
- * before its handler ran (validation, an oversized or mistyped form body, the `oidc` rate limit,
- * an unavailable dependency) becomes the same redirect as every other failure: back to the
- * transaction's `returnTo` with `?oidc=failed`, the transaction cookie dropped. The refusal itself
- * still happens (the rate limit is charged and enforced); only its rendering changes.
+ * Whether the request is a top-level browser navigation (a followed link, a typed address, a
+ * form post) rather than a script or a programmatic client. Fetch Metadata says so in every
+ * current browser (`Sec-Fetch-Mode: navigate`); a browser without it asks for HTML. A
+ * programmatic caller (`fetch()`, the conformance suite) sends neither and keeps the problem
+ * document.
  */
-export function oidcCallbackNavigation(container: AppContainer): MiddlewareHandler<AppEnv> {
+export function isBrowserNavigation(headers: Headers): boolean {
+  const mode = headers.get("Sec-Fetch-Mode");
+  if (mode !== null) return mode.toLowerCase() === "navigate";
+  return (headers.get("Accept") ?? "").toLowerCase().includes("text/html");
+}
+
+/** The error code of a refused response: the thrown error, or the problem document's own. */
+async function refusalCode(c: AppContext): Promise<ErrorCode> {
+  if (c.error instanceof AppError) return c.error.code;
+  try {
+    const body = (await c.res.clone().json()) as { code?: unknown };
+    if (isErrorCode(body.code)) return body.code;
+  } catch {
+    // Not a problem document: nothing more specific to say.
+  }
+  return "internal_error";
+}
+
+/**
+ * The OpenID routes are browser navigations: a person must never land on a problem document.
+ *
+ * - The callbacks (an issuer's redirect, Apple's cross-site form post) are navigations by
+ *   construction: whatever refused the request before its handler ran (validation, an oversized
+ *   or mistyped form body, the `oidc` rate limit, an unavailable dependency) becomes the same
+ *   redirect as every other failure, back to the transaction's `returnTo` with `?oidc=failed`
+ *   (and `oidcError=rate_limited` for the rate limit), the transaction cookie dropped.
+ * - The start is followed from a link, but the conformance suite and scripts call it directly:
+ *   a refused start that is a browser navigation goes back to the `returnTo` it asked for (`/`
+ *   when that is not a valid path) with `?oidc=failed&oidcError=<code>`; any other caller keeps
+ *   the problem document.
+ *
+ * The refusal itself still happens (the rate limit is charged and enforced); only its rendering
+ * changes.
+ */
+export function oidcNavigation(container: AppContainer): MiddlewareHandler<AppEnv> {
   const { services, config, logger } = container;
   return async (c, next) => {
     await next();
-    const match = CALLBACK_PATH.exec(c.req.path);
+    const match = OIDC_PATH.exec(c.req.path);
     if (!match || c.res.status < 400) return;
     const provider = match[1] ?? "";
-    const name = services.identity.transactionCookieName(provider, config.cookies.secure);
-    const location = await services.identity.abandonedCallbackLocation(
-      provider,
-      getCookie(c, name),
-    );
-    logger.warn("identity.oidc_refused", {
+    const step = match[2];
+    if (step === "start" && !isBrowserNavigation(c.req.raw.headers)) return;
+    const code = await refusalCode(c as AppContext);
+    const transactionCookie =
+      step === "callback"
+        ? services.identity.transactionCookieName(provider, config.cookies.secure)
+        : null;
+    const location =
+      transactionCookie === null
+        ? services.identity.refusedStartLocation(c.req.query("returnTo"), code)
+        : await services.identity.abandonedCallbackLocation(
+            provider,
+            getCookie(c, transactionCookie),
+            // Only the rate limit is worth a word: the other refusals are a failed sign-in.
+            code === "rate_limited" ? code : undefined,
+          );
+    logger.warn(step === "start" ? "identity.oidc_start_refused" : "identity.oidc_refused", {
       provider,
       status: c.res.status,
-      code: c.error instanceof AppError ? c.error.code : null,
+      code,
     });
-    // Replace, not merge: nothing of the problem response (its type, length) may carry over.
+    // Replace, not merge: nothing of the problem response (its type, length, Retry-After) may
+    // carry over.
     c.res = undefined;
     c.res = new Response(null, { status: 303, headers: { Location: location } });
-    deleteCookie(c, name, { path: "/", secure: config.cookies.secure, httpOnly: true });
+    if (transactionCookie !== null) {
+      deleteCookie(c, transactionCookie, {
+        path: "/",
+        secure: config.cookies.secure,
+        httpOnly: true,
+      });
+    }
   };
 }

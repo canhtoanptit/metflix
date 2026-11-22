@@ -12,6 +12,8 @@ export type {
 } from "./brand/Brand.tsx";
 // Brand
 export { AppIcon, BrandMark, OriginalLabel, Wordmark } from "./brand/Brand.tsx";
+export type { ProviderMarkId, ProviderMarkProps } from "./brand/ProviderMarks.tsx";
+export { ProviderMark } from "./brand/ProviderMarks.tsx";
 // Disclosure
 export { Accordion, AccordionItem } from "./components/Accordion.tsx";
 export type { AvatarProps, AvatarSize } from "./components/Avatar.tsx";
@@ -58,8 +60,15 @@ export {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/DropdownMenu.tsx";
-export type { FieldProps, InputProps } from "./components/Field.tsx";
-export { Field, FieldMessage, Input, Label, useFieldControl } from "./components/Field.tsx";
+export type { FieldProps, InputProps, TextareaProps } from "./components/Field.tsx";
+export {
+  Field,
+  FieldMessage,
+  Input,
+  Label,
+  Textarea,
+  useFieldControl,
+} from "./components/Field.tsx";
 export type { IconButtonProps, IconButtonVariant } from "./components/IconButton.tsx";
 export { IconButton } from "./components/IconButton.tsx";
 // Layout
@@ -122,6 +131,7 @@ export {
   useInView,
   useLatest,
   useMediaQuery,
+  useMergedRefs,
   useReducedMotion,
 } from "./lib/hooks.ts";
 export { thumbhashToDataUrl } from "./lib/thumbhash.ts";

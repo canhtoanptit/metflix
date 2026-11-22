@@ -29,6 +29,7 @@ import {
   type ApiClient,
   ApiError,
   type MaturityLevel,
+  type MembershipStatus,
   type PlaybackSession,
   type SubscriptionStatus,
 } from "@webflix/contracts";
@@ -46,7 +47,12 @@ export type WatchBlock =
   | { kind: "ended-elsewhere" }
   | { kind: "signed-out" }
   | { kind: "profile-required" }
-  | { kind: "membership"; subscriptionStatus: SubscriptionStatus }
+  | {
+      kind: "membership";
+      subscriptionStatus: SubscriptionStatus;
+      /** Milestone 2: the membership's state, which decides the way back (§5.2). */
+      membershipStatus?: MembershipStatus;
+    }
   | { kind: "maturity"; maturity: MaturityLevel; ceiling: MaturityLevel }
   | { kind: "not-found" }
   | { kind: "unavailable" }
@@ -108,7 +114,13 @@ export function blockFromStartError(error: unknown): WatchBlock {
     };
   }
   if (ApiError.is(error, "subscription_required")) {
-    return { kind: "membership", subscriptionStatus: error.problem.subscriptionStatus };
+    return {
+      kind: "membership",
+      subscriptionStatus: error.problem.subscriptionStatus,
+      ...(error.problem.membershipStatus
+        ? { membershipStatus: error.problem.membershipStatus }
+        : {}),
+    };
   }
   if (ApiError.is(error, "maturity_restricted")) {
     return {

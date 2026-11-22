@@ -1,12 +1,13 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { ApiError, type LoginBody } from "@webflix/contracts";
 import { Button, Checkbox, PasswordField, TextField, useCanHover } from "@webflix/ui";
 import { type FormEvent, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
-import { isSafeRedirect } from "../../../app/router/search.ts";
+import { queries } from "../../../app/query/queries.ts";
 import { useApplySession } from "../../../app/session/session.ts";
+import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberFooter, MemberHeader } from "../shared/Chrome.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
@@ -15,19 +16,39 @@ import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
 import { normalizeEmail, validateCurrentPassword, validateEmail } from "../shared/validation.ts";
+import {
+  FederatedButtons,
+  FederatedOutcomeNotice,
+  useOutcomeFromUrl,
+} from "./FederatedButtons.tsx";
+import {
+  afterSignInPath,
+  federatedStartUrl,
+  signInReturnPath,
+  useAuthChangeElsewhere,
+} from "./oidc.ts";
 
 const route = getRouteApi("/guest/login");
 
+/** How often a tab coming back into view asks whether it was signed in elsewhere. */
+const RECHECK_MS = 2_000;
+
 /**
- * Sign in. Validates on submit (then live), keeps the member's input on every failure, shows a
- * visible retry timer when rate limited, and continues to `?redirect=` (validated: same-origin
- * paths only) or the profile gate.
+ * Sign in, with a password or with a provider ("Continue with Google / Apple"). Validates on
+ * submit (then live), keeps the member's input on every failure, shows a visible retry timer when
+ * rate limited, and continues to `?redirect=` (same-origin paths only), Who's watching?, or the
+ * sign-up funnel when the account has not finished signing up. A provider attempt that came back
+ * signed out (cancelled, failed, an existing account that must sign in first) is explained at the
+ * top. A sign-in finished in another tab moves this one on as well.
  */
 export function LoginPage() {
   const search = route.useSearch();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const applySession = useApplySession();
   const canHover = useCanHover();
+  const returned = useOutcomeFromUrl();
+  const providers = useQuery(queries.signInProviders());
   const [email, setEmail] = useState(search.email ?? "");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
@@ -39,7 +60,12 @@ export function LoginPage() {
   const flight = useSingleFlight();
 
   const login = useMutation({
-    mutationFn: (body: LoginBody) => api().login({ body }),
+    mutationFn: (body: LoginBody) => {
+      // Events queued while signed out must not reach the server as the member about to sign
+      // in (the shared-device case): drop them before the session changes.
+      discardPendingEvents();
+      return api().login({ body });
+    },
     meta: { silent: true },
     onError: (error) => {
       rate.track(error);
@@ -50,10 +76,26 @@ export function LoginPage() {
     },
     onSuccess: async (session) => {
       await applySession(session);
-      const next =
-        search.redirect && isSafeRedirect(search.redirect) ? search.redirect : "/profiles";
-      await navigate({ href: next, replace: true });
+      await navigate({ href: afterSignInPath(session, search.redirect), replace: true });
     },
+  });
+
+  // Signed in from another tab (a provider's callback can land in any tab): continue here too.
+  const lastCheck = useRef(0);
+  useAuthChangeElsewhere((change) => {
+    // Another tab signed this browser in: what this tab queued while signed out would be sent
+    // with the new session's cookie, as the member. Drop it first.
+    if (change === "signed-in") discardPendingEvents();
+    if (change === "shown" && Date.now() - lastCheck.current < RECHECK_MS) return;
+    lastCheck.current = Date.now();
+    void queryClient
+      .fetchQuery({ ...queries.session(), staleTime: 0 })
+      .then(async (session) => {
+        if (!session.authenticated) return;
+        await applySession(session);
+        await navigate({ href: afterSignInPath(session, search.redirect), replace: true });
+      })
+      .catch(() => {});
   });
 
   useFocusOnError(login.error, (error) =>
@@ -72,18 +114,28 @@ export function LoginPage() {
     flight.run(() => login.mutateAsync({ email: normalizeEmail(email), password, rememberMe }));
   };
 
+  const typedEmail = normalizeEmail(email) || undefined;
   const error = login.error;
   const alert = error ? (
     ApiError.is(error, "invalid_credentials") ? (
       <FormAlert ref={alertRef} title="Incorrect email or password">
         Check them and try again.{" "}
         <Link
-          to="/signup"
-          search={{ email: normalizeEmail(email) || undefined }}
+          to="/forgot-password"
+          search={{ email: typedEmail }}
           className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
         >
-          New here? Create an account
+          Reset your password
+        </Link>{" "}
+        or{" "}
+        <Link
+          to="/signup"
+          search={{ email: typedEmail }}
+          className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
+        >
+          create an account
         </Link>
+        .
       </FormAlert>
     ) : ApiError.is(error, "rate_limited") ? (
       <FormAlert ref={alertRef} title="Too many sign-in attempts">
@@ -106,70 +158,106 @@ export function LoginPage() {
         id="main"
         className="relative z-(--z-raised) flex flex-1 justify-center px-gutter pb-16 pt-4 sm:pt-10"
       >
-        <form
-          onSubmit={submit}
-          noValidate
-          aria-labelledby="sign-in-heading"
-          className="flex w-full max-w-form flex-col gap-4 md:self-start md:rounded-2xl md:border md:border-line-subtle md:bg-canvas/85 md:p-12 md:shadow-xl md:backdrop-blur-md"
-        >
+        <div className="flex w-full max-w-form flex-col gap-4 md:self-start md:rounded-2xl md:border md:border-line-subtle md:bg-canvas/85 md:p-12 md:shadow-xl md:backdrop-blur-md">
           <h1 id="sign-in-heading" className="type-headline mb-2 text-fg">
             Sign in
           </h1>
-          {alert}
-          <TextField
-            ref={emailRef}
-            label="Email address"
-            type="email"
-            name="email"
-            autoComplete="username"
-            inputMode="email"
-            autoCapitalize="none"
-            spellCheck={false}
-            autoFocus={canHover && !search.email}
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            error={emailError}
-          />
-          <PasswordField
-            ref={passwordRef}
-            label="Password"
-            name="password"
-            autoComplete="current-password"
-            autoFocus={canHover && Boolean(search.email)}
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            error={passwordError}
-          />
-          <Button
-            type="submit"
-            variant="accent"
-            size="lg"
-            fullWidth
-            loading={login.isPending}
-            disabled={rate.limited}
-            className="mt-2"
+          {returned && !error ? (
+            <FederatedOutcomeNotice
+              outcome={returned.outcome}
+              error={returned.error}
+              provider={returned.provider}
+              context="signin"
+              offered={providers.data?.items}
+              retryHref={(provider) =>
+                federatedStartUrl(
+                  provider,
+                  "signin",
+                  signInReturnPath({
+                    provider,
+                    context: "signin",
+                    from: "/login",
+                    redirect: search.redirect,
+                  }),
+                )
+              }
+            />
+          ) : null}
+          <form
+            onSubmit={submit}
+            noValidate
+            aria-labelledby="sign-in-heading"
+            className="flex flex-col gap-4"
           >
-            {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Sign in"}
-          </Button>
-          <Checkbox
-            label="Remember me"
-            description="Stay signed in on this device for 30 days."
-            checked={rememberMe}
-            onCheckedChange={setRememberMe}
+            {alert}
+            <TextField
+              ref={emailRef}
+              label="Email address"
+              type="email"
+              name="email"
+              autoComplete="username"
+              inputMode="email"
+              autoCapitalize="none"
+              spellCheck={false}
+              autoFocus={canHover && !search.email && !returned}
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              error={emailError}
+            />
+            <PasswordField
+              ref={passwordRef}
+              label="Password"
+              name="password"
+              autoComplete="current-password"
+              autoFocus={canHover && Boolean(search.email) && !returned}
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              error={passwordError}
+            />
+            <Link
+              to="/forgot-password"
+              search={{ email: typedEmail }}
+              className="focus-ring -mt-1 self-end rounded-xs type-label text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+            >
+              Forgot password?
+            </Link>
+            <Button
+              type="submit"
+              variant="accent"
+              size="lg"
+              fullWidth
+              loading={login.isPending}
+              disabled={rate.limited}
+            >
+              {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Sign in"}
+            </Button>
+            <Checkbox
+              label="Remember me"
+              description="Stay signed in on this device for 30 days."
+              checked={rememberMe}
+              onCheckedChange={setRememberMe}
+            />
+          </form>
+          <FederatedButtons
+            context="signin"
+            redirect={search.redirect}
+            showOutcome={false}
+            divider="before"
+            className="mt-2"
           />
           <p className="mt-6 type-body text-fg-muted">
             New to Webflix?{" "}
             <Link
               to="/signup"
-              search={{ email: normalizeEmail(email) || undefined }}
+              search={{ email: typedEmail }}
               className="focus-ring rounded-xs font-semibold text-fg hover:underline"
             >
               Create an account
             </Link>
           </p>
-        </form>
+        </div>
       </main>
       <MemberFooter />
     </div>

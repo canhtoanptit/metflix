@@ -257,6 +257,62 @@ run is written from outside Workers through the REST bulk endpoint (**10,000 pai
 per request**, `createKvRestBulkWriter`, `make cf-recs-import`); D1 allows 100 bound parameters per statement and 1,000 queries per
 invocation (a batch counts once), which the 16- and 25-row INSERTs and the batching respect.
 
+**When a new run is served (every process).** The importer runs in one process (the CLI, the
+Kubernetes import Job, the ops tooling, the Worker's job) and cannot reach the others' memory, and
+a replica may write its pre-import copy into the shared cache just after the importer deleted it.
+So no copy of the served model (nor of the editorial data) is ever used more than
+**`MODEL_MAX_AGE_MS` = 30 s after its database read**, through the process memo or the shared
+cache: a copy carries its read time (`TwoLevel`'s `maxAgeMs`), a process memoises it only until it
+turns 30 s, and an older shared copy is ignored. The warm path reads nothing more (the stamp
+travels with the copy); the price is the model's database read (the active run and its neighbour
+rows) about once per 30 s per deployment instead of once per 120 s, paid by the request that finds
+the shared copy aged out (the others take its new copy; replicas whose requests coincide within
+that read may each make it). Bounds, from the importer's activation:
+
+| Mode | Model and neighbours | A profile's lists |
+| --- | --- | --- |
+| dev (each process its own memory cache) | ≤ 30 s | at once with the model (keyed by run) |
+| Kubernetes (Valkey shared by the replicas and the Job) | ≤ 30 s | at once with the model |
+| Cloudflare (isolate memo, Workers KV) | ≤ 30 s (KV's per-location caching of the copy cannot extend it: the stamp is checked on read) | the new run's KV keys reach a location in ~60 s; a read made there before they arrived is cached up to 60 s (`READ_CACHE_TTL_SEC`), so ≤ ~2 min, during which the profile gets `neighbours:{run}` or `rules`, never an error |
+
+Before this bound a copy lived for the shared cache's TTL (120 s) plus the memo (30 s), longer
+under the race above. Measured with two processes on one SQLite database (the CLI importing, the
+API serving): the new run was on the API's pages 30 to 31 s after the import command returned
+(1 s timer resolution). A staff rollback or editorial change is bound the same way.
+
+**A demo run.** The pipeline's cached smoke run has a cutoff in the past, so imported as is it is
+stale and every profile gets the rule engine. For a demo (Top Picks, the learned billboard and
+ordering on screen) one command per mode publishes and imports a run made for the demo account:
+
+| Mode | Command |
+| --- | --- |
+| dev | `node apps/api/src/recs.ts demo` (same environment as the API) |
+| Cloudflare, local Worker | `make cf-recs-import CF_RECS_DEMO=1` (dev server stopped, like every ops command) |
+| Kubernetes (kind) | `make k8s-recs-demo` (a one-off Job made from the import step of the train-and-score CronJob) |
+
+It is plainly demo data: the run id ends in **`-de00de00`** (`isDemoRun`), the manifest says
+`code.demo: true` with a note, and `GET /system/recommendations` shows that run. It is not a
+trained model: the per-profile lists are the rule engine's own scores for each demo profile's
+seeded library (personal, Top Picks spread over genres, billboard, Because You Watched), the
+neighbours the catalogue's content similarity (support 0); profile keys are derived with the
+serving runtime's own pseudonym key (`.dev.vars` for the local Worker, the app Secret on
+Kubernetes). Restricted demo profiles (kids, a lowered ceiling) get no lists, as in the pipeline,
+and are served by the rules anyway. Fresh for three days. It goes through the real path: the
+version and then the pointer are written into the mode's artefact store in the pipeline's format
+(Parquet, every file's SHA-256 in the manifest, the manifest's in the pointer;
+`writeRecsVersion`), and the importer verifies and activates it like any run. Being the published
+run, the scheduled import finds it already served until the pipeline publishes its own run, which
+replaces it. It is refused while a fresh pipeline run is served (`--replace`, `REPLACE=1`
+overrides), and on Cloudflare production (the tools never hold its pseudonym key).
+`node apps/api/src/recs.ts demo --to <dir>` only writes one, published, into a filesystem store.
+
+What `services/recs` would need for its own runs to be demo-ready instead: a smoke run whose
+cutoff is "now" (the simulated lake ending at the last full hour, as `make k8s-pipeline-smoke`
+does with `simulate --start` and `train-and-score --as-of`) rather than the fixed 2026-09-22
+cutoff of the cached run, and lists for the demo account's profiles, which needs their subject
+keys (`ids.pseudonym` with the deployment's key) among the scored profiles: simulated profiles
+never match a real profile's key.
+
 **Serving.** For each browse page (`RecommendationServing.plan`):
 
 | Situation | What the page is | `policy` |
@@ -314,7 +370,9 @@ unavailable (or outside its window) leaves every browse surface and search (resu
 suggestions); a direct link to it (title detail, its episodes, More Like This) answers
 `not_found`, as if the catalogue did not have it, so nothing contradicts browse. Playback start is
 the streaming area's (`services.personalisation.isTitleUnavailable`). They are read in one batch
-and cached like the catalogue (30 s in memory, 5 min shared); a staff change invalidates them.
+and cached like the catalogue (30 s in memory, 5 min shared); a staff change invalidates them,
+and no copy is used more than 30 s after its database read, so a change made on another replica
+is served everywhere within 30 s.
 
 **Account deletion.** Profile keys are the lake's own subject keys (`createSubjectKeys`, the
 events area's; the pipeline's `ids.pseudonym`). The events area's erasure job calls

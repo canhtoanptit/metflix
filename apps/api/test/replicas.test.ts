@@ -10,7 +10,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ApiError, createRouteClient, MOCK_CARDS, routes } from "@webflix/contracts";
+import { ApiError, createRouteClient, routes } from "@webflix/contracts";
 import {
   FIXTURE_CATALOG,
   FIXTURE_DEMO_ACCOUNT,
@@ -125,21 +125,22 @@ describe.skipIf(!configured)("two API replicas sharing Valkey, S3 and the databa
     const phone = device("203.0.113.11");
     const email = `basic-${crypto.randomUUID()}@example.com`;
     const password = "correct-horse-battery";
-    await laptop.on(appA).signup({
-      body: {
-        email,
-        password,
-        planId: "basic",
-        payment: {
-          method: "card",
-          cardNumber: MOCK_CARDS.approved,
-          expMonth: 12,
-          expYear: 2035,
-          cvc: "123",
-          nameOnCard: "Replica Test",
-        },
-      },
+    await laptop.on(appA).signup({ body: { email, password } });
+    // A member the one way there is (§5.1): a checkout, the card confirmed at the fake
+    // provider (a card of its own, so it gets the trial and nothing is left to pay).
+    const started = await laptop.on(appA).startCheckout({ body: { planId: "basic" } });
+    const confirmedCard = await appA.request("/_pay/api/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientSecret: started.clientSecret,
+        card: `visa:replica-${crypto.randomUUID().slice(0, 8)}`,
+      }),
     });
+    expect(confirmedCard.status).toBe(200);
+    expect((await laptop.on(appA).confirmCheckout({ params: { id: started.id } })).status).toBe(
+      "complete",
+    );
     const avatarId = (await laptop.on(appA).listAvatars()).groups[0]?.avatars[0]?.id ?? "";
     const { id: profileId } = await laptop
       .on(appA)

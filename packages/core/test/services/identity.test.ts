@@ -1,8 +1,6 @@
-import { MOCK_CARDS } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
-import { createTestServices } from "../../src/testing/index.ts";
+import { createTestServices, subscribeForTest } from "../../src/testing/index.ts";
 import {
-  APPROVED_CARD,
   authOf,
   DEMO_ACCOUNT,
   demoViewer,
@@ -16,75 +14,46 @@ import {
 const client = { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Mobile Safari/604.1" };
 
 describe("auth", () => {
-  it("signs up with an approved card and opens a session without a profile", async () => {
+  it("signs up without a membership; only a provider checkout makes the account a member", async () => {
     const t = await createTestServices();
     expect(await t.services.auth.emailStatus("new@example.com")).toEqual({ next: "signup" });
     const issued = await t.services.auth.signup(
-      {
-        email: "new@example.com",
-        password: "long-enough",
-        planId: "standard",
-        payment: APPROVED_CARD,
-      },
+      { email: "new@example.com", password: "long-enough" },
       client,
     );
     expect(issued.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // No membership is exactly that: no stand-in subscription or plan.
     expect(issued.state).toMatchObject({
       authenticated: true,
       account: { email: "new@example.com" },
-      subscription: { planId: "standard", status: "active" },
-      plan: { id: "standard", maxStreams: 2 },
+      subscription: null,
+      plan: null,
       profiles: [],
       activeProfile: null,
+      membership: { status: "none", planId: null },
+      entitlement: { entitled: false, reason: "no_membership" },
     });
     const auth = await authOf(t, issued.token);
     expect(auth.session.deviceLabel).toBe("Safari on iPhone");
     expect(auth.session.deviceType).toBe("mobile");
     expect(await t.services.auth.emailStatus("new@example.com")).toEqual({ next: "login" });
+    const before = await t.services.account.getAccount(auth.session.accountId);
+    expect(before).toMatchObject({ subscription: null, plan: null, paymentMethod: null });
+
+    await subscribeForTest(t, auth, { plan: "standard" });
     const details = await t.services.account.getAccount(auth.session.accountId);
-    expect(details.paymentMethod).toEqual({
-      brand: "visa",
-      last4: "4242",
-      expMonth: 12,
-      expYear: 2031,
+    expect(details).toMatchObject({
+      subscription: { planId: "standard", status: "active" },
+      plan: { id: "standard", maxStreams: 2 },
+      paymentMethod: { brand: "visa", last4: "4242" },
+      membership: { status: "trialing" },
     });
   });
-
-  it.each([
-    [MOCK_CARDS.declined, 2031, "card_declined"],
-    [MOCK_CARDS.insufficientFunds, 2031, "insufficient_funds"],
-    [MOCK_CARDS.approved, 2020, "expired_card"],
-  ])(
-    "declines card %s (exp %s) with %s and creates nothing",
-    async (cardNumber, expYear, reason) => {
-      const t = await createTestServices();
-      await expect(
-        t.services.auth.signup(
-          {
-            email: "declined@example.com",
-            password: "long-enough",
-            planId: "basic",
-            payment: { ...APPROVED_CARD, cardNumber, expYear },
-          },
-          client,
-        ),
-      ).rejects.toMatchObject({ code: "payment_declined", extensions: { declineReason: reason } });
-      expect(await t.services.auth.emailStatus("declined@example.com")).toEqual({ next: "signup" });
-    },
-  );
 
   it("refuses a second account for the same email", async () => {
     const t = await createTestServices();
     await expect(
-      t.services.auth.signup(
-        {
-          email: "demo@webflix.dev",
-          password: "long-enough",
-          planId: "basic",
-          payment: APPROVED_CARD,
-        },
-        client,
-      ),
+      t.services.auth.signup({ email: "demo@webflix.dev", password: "long-enough" }, client),
     ).rejects.toMatchObject({ code: "email_already_registered" });
   });
 
@@ -216,37 +185,51 @@ describe("auth", () => {
 });
 
 describe("account and membership", () => {
-  async function member(planId: "basic" | "standard" | "premium" = "standard") {
+  /** An account with milestone 1's simulated membership (as the demo account has). */
+  async function simulatedMember() {
     const t = await createTestServices();
-    const issued = await t.services.auth.signup(
-      { email: "member@example.com", password: "long-enough", planId, payment: APPROVED_CARD },
-      client,
-    );
-    const auth = await authOf(t, issued.token);
-    return { t, auth, accountId: auth.session.accountId };
+    const now = t.clock.now();
+    const accountId = "acc-m1";
+    await t.deps.repos.accounts.createWithSession({
+      account: {
+        id: accountId,
+        email: "m1@example.com",
+        passwordHash: "x",
+        createdAt: now,
+        updatedAt: now,
+      },
+      subscription: {
+        accountId,
+        planId: "basic",
+        startedAt: now,
+        currentPeriodEnd: now + 30 * 24 * 3600_000,
+        canceledAt: null,
+        card: { brand: "visa", last4: "4242", expMonth: 12, expYear: 2031 },
+        updatedAt: now,
+      },
+      session: {
+        id: "ses-m1",
+        tokenHash: "hash-m1",
+        accountId,
+        activeProfileId: null,
+        deviceLabel: "Test",
+        deviceType: "desktop",
+        persistent: true,
+        createdAt: now,
+        lastSeenAt: now,
+        expiresAt: now + 3600_000,
+      },
+    });
+    return { t, accountId };
   }
 
-  it("changes plan: upgrade charges, a declined card changes nothing", async () => {
-    const { t, accountId } = await member("basic");
+  it("charges nothing for milestone 1's simulated membership: no plan change, no restart", async () => {
+    const { t, accountId } = await simulatedMember();
     await expect(
-      t.services.account.changePlan(accountId, {
-        planId: "premium",
-        payment: { ...APPROVED_CARD, cardNumber: MOCK_CARDS.declined },
-      }),
-    ).rejects.toMatchObject({
-      code: "payment_declined",
-      extensions: { declineReason: "card_declined" },
-    });
-    expect((await t.services.account.getAccount(accountId)).plan.id).toBe("basic");
+      t.services.account.changePlan(accountId, { planId: "premium" }),
+    ).rejects.toMatchObject({ code: "checkout_state_conflict" });
+    expect((await t.services.account.getAccount(accountId)).plan?.id).toBe("basic");
 
-    const upgraded = await t.services.account.changePlan(accountId, { planId: "premium" });
-    expect(upgraded).toMatchObject({ plan: { id: "premium" }, subscription: { status: "active" } });
-    const sameAgain = await t.services.account.changePlan(accountId, { planId: "premium" });
-    expect(sameAgain.subscription).toEqual(upgraded.subscription);
-  });
-
-  it("cancels to the end of the period, then ends; resuming an ended membership charges", async () => {
-    const { t, accountId } = await member();
     const canceled = await t.services.account.cancel(accountId);
     expect(canceled.subscription.status).toBe("canceling");
     expect(canceled.subscription.canceledAt).not.toBeNull();
@@ -255,18 +238,26 @@ describe("account and membership", () => {
 
     await t.services.account.cancel(accountId);
     t.clock.advance(31 * 24 * 3600_000);
-    expect((await t.services.account.getAccount(accountId)).subscription.status).toBe("ended");
-    const restarted = await t.services.account.resume(accountId);
-    expect(restarted.subscription.status).toBe("active");
-    expect(Date.parse(restarted.subscription.currentPeriodEnd)).toBeGreaterThan(t.clock.now());
+    expect((await t.services.account.getAccount(accountId)).subscription?.status).toBe("ended");
+    await expect(t.services.account.resume(accountId)).rejects.toMatchObject({
+      code: "checkout_state_conflict",
+    });
   });
 
-  it("renews active memberships automatically", async () => {
-    const { t, accountId } = await member();
+  it("renews milestone 1's simulated membership by itself", async () => {
+    const { t, accountId } = await simulatedMember();
     t.clock.advance(95 * 24 * 3600_000);
     const { subscription } = await t.services.account.getAccount(accountId);
-    expect(subscription.status).toBe("active");
-    expect(Date.parse(subscription.currentPeriodEnd)).toBeGreaterThan(t.clock.now());
+    expect(subscription?.status).toBe("active");
+    expect(Date.parse(subscription?.currentPeriodEnd ?? "")).toBeGreaterThan(t.clock.now());
+  });
+
+  it("leaves a provider membership to billing", async () => {
+    const t = await createTestServices();
+    const viewer = await memberViewer(t);
+    await expect(
+      t.services.account.changePlan(viewer.session.accountId, { planId: "premium" }),
+    ).rejects.toMatchObject({ code: "checkout_state_conflict" });
   });
 
   it("changes email and password with the current password; a new password signs out other devices", async () => {
@@ -288,15 +279,7 @@ describe("account and membership", () => {
       ),
     ).rejects.toMatchObject({ code: "current_password_invalid" });
     expect(charged).toBe(1);
-    await t.services.auth.signup(
-      {
-        email: "taken@example.com",
-        password: "long-enough",
-        planId: "basic",
-        payment: APPROVED_CARD,
-      },
-      client,
-    );
+    await t.services.auth.signup({ email: "taken@example.com", password: "long-enough" }, client);
     await expect(
       t.services.account.updateAccount(
         auth,
@@ -345,14 +328,13 @@ describe("account and membership", () => {
         ),
       () => t.services.account.changePlan(DEMO_ACCOUNT, { planId: "basic" }),
       () => t.services.account.cancel(DEMO_ACCOUNT),
-      () => t.services.account.updatePaymentMethod(DEMO_ACCOUNT, APPROVED_CARD),
     ];
     for (const call of refused) {
       await expect(call()).rejects.toMatchObject({ code: "demo_account_protected" });
     }
     const details = await t.services.account.getAccount(DEMO_ACCOUNT);
     expect(details.account).toMatchObject({ email: "demo@webflix.dev", isDemo: true });
-    expect(details.subscription.status).toBe("active");
+    expect(details.subscription?.status).toBe("active");
   });
 
   it("lists and revokes devices", async () => {

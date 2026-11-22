@@ -4,6 +4,8 @@ import { toast } from "@webflix/ui";
 import { api } from "../../../app/api.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { optimisticUpdate, patchTitleViewer } from "../../../app/query/optimistic.ts";
+import { useTelemetryScope } from "../../../app/telemetry/index.ts";
+import { track } from "../common/telemetry.ts";
 import { findCachedCard, markBrowseStale, patchMyListMembership } from "./cache.ts";
 
 export interface MyListToggleVariables {
@@ -24,6 +26,9 @@ export interface MyListToggleVariables {
  */
 export function useMyListToggle() {
   const queryClient = useQueryClient();
+  // Where the change was made (a card's preview reports its row and place; the details, the
+  // title page): reported once the server has it.
+  const where = useTelemetryScope();
   const mutation = useMutation({
     mutationFn: ({ titleId, add }: MyListToggleVariables) =>
       add
@@ -50,6 +55,7 @@ export function useMyListToggle() {
       });
     },
     onSuccess: (_data, variables, context) => {
+      track(variables.add ? "list.add" : "list.remove", { titleId: variables.titleId }, where);
       if (!variables.add && variables.undoable) {
         toast.show({
           id: `my-list-${variables.titleId}`,

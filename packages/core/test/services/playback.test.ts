@@ -7,15 +7,9 @@ import {
   FIXTURE_DEMO_ACCOUNT,
   FIXTURE_EXTERNAL_URL,
   FIXTURE_MASTER_PLAYLIST,
+  subscribeForTest,
 } from "../../src/testing/index.ts";
-import {
-  APPROVED_CARD,
-  authOf,
-  demoViewer,
-  memberViewer,
-  openLogin,
-  uncharged,
-} from "./helpers.ts";
+import { authOf, demoViewer, memberViewer, openLogin, uncharged } from "./helpers.ts";
 
 describe("playback sessions", () => {
   it("starts a packaged movie with a signed manifest, tracks, trick-play and markers", async () => {
@@ -110,15 +104,11 @@ describe("playback sessions", () => {
   it("enforces the plan's stream limit per device and lists active streams", async () => {
     const t = await createTestServices();
     const issued = await t.services.auth.signup(
-      {
-        email: "basic@example.com",
-        password: "long-enough",
-        planId: "basic",
-        payment: APPROVED_CARD,
-      },
+      { email: "basic@example.com", password: "long-enough" },
       { userAgent: "Mozilla/5.0 (Windows NT 10.0) Firefox/130.0" },
     );
     const auth = await authOf(t, issued.token);
+    await subscribeForTest(t, auth, { plan: "basic" });
     const profile = await t.services.profiles.create(
       auth,
       { name: "Me", avatarId: "av-fox" },
@@ -294,7 +284,7 @@ describe("playback sessions", () => {
   it("refuses playback once the membership has ended", async () => {
     const t = await createTestServices();
     const viewer = await memberViewer(t);
-    await t.services.account.cancel(viewer.session.accountId);
+    await t.services.billing.cancel(viewer.session.accountId);
     t.clock.advance(31 * 24 * 3600_000);
     await expect(t.services.playback.start(viewer, { titleId: "t-orbit" })).rejects.toMatchObject({
       code: "subscription_required",

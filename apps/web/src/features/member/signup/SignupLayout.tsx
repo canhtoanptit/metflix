@@ -1,29 +1,33 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { cx } from "@webflix/ui";
 import { type ReactNode, useEffect, useRef } from "react";
+import { useSession } from "../../../app/session/session.ts";
 import { MemberFooter, MemberHeader } from "../shared/Chrome.tsx";
 
+/** The steps as the member sees them; confirming a payment is part of the payment step. */
 export const SIGNUP_STEPS = [
-  { path: "/signup", label: "Account" },
-  { path: "/signup/plan", label: "Plan" },
-  { path: "/signup/payment", label: "Payment" },
-  { path: "/signup/profile", label: "Profiles" },
+  { paths: ["/signup"], label: "Account" },
+  { paths: ["/signup/plan"], label: "Plan" },
+  { paths: ["/signup/payment", "/signup/confirm"], label: "Payment" },
+  { paths: ["/signup/profile"], label: "Profiles" },
 ] as const;
 
 function stepIndexOf(pathname: string): number {
   const normalized = pathname.replace(/\/+$/, "") || "/";
-  const index = SIGNUP_STEPS.findIndex((step) => step.path === normalized);
+  const index = SIGNUP_STEPS.findIndex((step) =>
+    (step.paths as readonly string[]).includes(normalized),
+  );
   return index === -1 ? 0 : index;
 }
 
 /**
  * Chrome of the sign-up flow: wordmark, a way out (sign in, or sign out once the account
- * exists), a segmented progress bar and a narrow content column.
+ * exists, which is from step 2 on), a segmented progress bar and a narrow content column.
  */
 export function SignupLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const step = stepIndexOf(pathname);
-  const accountExists = step === SIGNUP_STEPS.length - 1;
+  const accountExists = useSession().authenticated;
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-canvas">
@@ -55,7 +59,7 @@ export function SignupLayout() {
       >
         {SIGNUP_STEPS.map((item, index) => (
           <span
-            key={item.path}
+            key={item.label}
             className={cx(
               "h-1 flex-1 rounded-full transition-colors duration-slow ease-standard",
               index <= step ? "bg-accent" : "bg-surface-3",
@@ -107,16 +111,19 @@ export function StepHeading({
 export function StepBody({
   children,
   wide = false,
+  medium = false,
 }: {
   children: ReactNode;
   /** Plan cards need more room than a form. */
   wide?: boolean;
+  /** A status panel (confirming a payment) reads better a little wider than a form. */
+  medium?: boolean;
 }) {
   return (
     <div
       className={cx(
         "mx-auto flex w-full flex-col gap-8 px-gutter pt-8 sm:pt-12",
-        wide ? "max-w-page" : "max-w-form",
+        wide ? "max-w-page" : medium ? "max-w-dialog-md" : "max-w-form",
       )}
     >
       {children}

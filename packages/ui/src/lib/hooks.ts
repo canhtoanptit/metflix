@@ -133,14 +133,45 @@ export function useLatest<T>(value: T): RefObject<T> {
   return ref;
 }
 
-/** Merge several refs into one callback ref. */
-export function mergeRefs<T>(
-  ...refs: Array<RefCallback<T> | RefObject<T | null> | null | undefined>
-): RefCallback<T> {
+type MergeableRef<T> = RefCallback<T> | RefObject<T | null> | null | undefined;
+
+/**
+ * Merge several refs into one callback ref. A callback ref that returns a cleanup (React 19)
+ * keeps it: the merged ref returns one cleanup that runs each ref's own (or calls the ref with
+ * null, or empties an object ref), so an observer or listener a ref starts is always stopped.
+ *
+ * Each call makes a new callback, so inside a component React detaches and re-attaches the
+ * merged refs on every render: fine for plain refs (`SearchInput`), wrong for a ref that starts
+ * something (an impression observer would start over each time). Use `useMergedRefs` there.
+ */
+export function mergeRefs<T>(...refs: Array<MergeableRef<T>>): RefCallback<T> {
   return (node) => {
+    const cleanups: Array<() => void> = [];
     for (const ref of refs) {
-      if (typeof ref === "function") ref(node);
-      else if (ref) ref.current = node;
+      if (typeof ref === "function") {
+        const cleanup = ref(node);
+        cleanups.push(typeof cleanup === "function" ? cleanup : () => void ref(null));
+      } else if (ref) {
+        ref.current = node;
+        cleanups.push(() => {
+          ref.current = null;
+        });
+      }
     }
+    return () => {
+      for (const cleanup of cleanups) cleanup();
+    };
   };
+}
+
+/**
+ * `mergeRefs`, stable while the refs themselves are: the merged ref is attached once and
+ * detached once (its cleanups run) only when the element or one of the refs changes. The way to
+ * combine a component's own ref with refs that start something (`useImpressionRef`, observers).
+ *
+ *   const ref = useMergedRefs(forwardedRef, impressionRef);
+ */
+export function useMergedRefs<T>(...refs: Array<MergeableRef<T>>): RefCallback<T> {
+  // The refs are the dependencies: a new merged ref only when one of them changes.
+  return useCallback(mergeRefs(...refs), refs);
 }

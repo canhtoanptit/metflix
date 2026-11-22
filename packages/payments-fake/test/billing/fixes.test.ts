@@ -43,9 +43,10 @@ describe("billing fix round", () => {
       graceEndsAt: null,
       suspendedReason: null,
       provider: null,
+      nextInvoice: null,
     });
     expect(account.entitlement).toMatchObject({ entitled: false, reason: "no_membership" });
-    expect(account.subscription).toMatchObject({ status: "ended", planId: "basic" });
+    expect(account).toMatchObject({ subscription: null, plan: null });
     expect(account.paymentMethod).toBeNull();
     // Replayed from the provider's own state (a reconciliation), the answer is the same.
     await h.services.billing.syncAccount(accountId);

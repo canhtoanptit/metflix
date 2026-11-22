@@ -159,6 +159,10 @@ export function describeAdminRepositoryContract(
       expect(await by({ targetType: "member", targetId: "acct-1" })).toEqual(["e-4", "e-2", "e-1"]);
       expect(await by({ outcome: "unknown" })).toEqual(["e-4"]);
       expect(await by({ outcome: "pending" })).toEqual(["e-3", "e-2"]);
+      expect(await by({ requestId: "req-1" })).toEqual(["e-4", "e-3", "e-2", "e-1"]);
+      await repo().appendAudit(audit({ id: "e-5", createdAt: T0 + 4, requestId: "req-2" }));
+      expect(await by({ requestId: "req-2" })).toEqual(["e-5"]);
+      expect(await by({ requestId: "req-2", actorId: "staff-2" })).toEqual([]);
     });
 
     it("is one log with the rows other areas write in their own batches (outcome succeeded)", async () => {

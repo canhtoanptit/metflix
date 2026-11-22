@@ -13,7 +13,13 @@ import {
 } from "@webflix/contracts";
 import { makeClientEventInput } from "@webflix/contracts/fixtures";
 import { AppError, encodeLakeObject, hexEncode, PENDING_AUDIT_TIMEOUT_MS } from "@webflix/core";
-import type { MemoryAdminRepository, MemoryStaffVerifier, MemoryStore } from "@webflix/core/memory";
+import {
+  type MemoryAdminRepository,
+  MemoryBlobStore,
+  type MemoryStaffVerifier,
+  type MemoryStore,
+} from "@webflix/core/memory";
+import { writeRecsVersion } from "@webflix/core/testing";
 import { describe, expect, it } from "vitest";
 import { createTestApp, DEMO, type Device, onboard, type TestApp } from "./support.ts";
 
@@ -959,23 +965,65 @@ describe("system", () => {
     ]);
   });
 
-  it("reports the served model, queues an import, refuses a rollback without a previous run", async () => {
+  it("says what an import request found: no store, nothing published, queued, already served, invalid", async () => {
     const t = await createTestApp();
     const staff = staffClient(t, ["admin"]);
     expect(await staff.getRecommendationStatus()).toEqual({ activeModel: null, lastImport: null });
-    await staff.importRecommendations({ body: { reason: "New run published" } });
+    const ask = () => staff.importRecommendations({ body: { reason: "New run published" } });
+    // No artefact store configured: said so, nothing queued.
+    expect(await ask()).toMatchObject({ outcome: "no_artefact_store", run: null });
+    expect(t.queue.size).toBe(0);
+    const blobs = new MemoryBlobStore({ clock: t.clock });
+    t.deps.recommendationArtefacts = blobs;
+    // A store, but nothing published: the ordinary outcome the pipeline's importer reports too.
+    expect(await ask()).toMatchObject({
+      outcome: "nothing_published",
+      run: null,
+      activeModel: null,
+    });
+    expect(t.queue.size).toBe(0);
+    const run = "20260614-000000-aaaaaaaa";
+    await writeRecsVersion(blobs, {
+      run,
+      asOf: t.clock.now() - 86_400_000,
+      expiresAt: t.clock.now() + 2 * 86_400_000,
+      neighbours: [],
+      profiles: [],
+    });
+    expect(await ask()).toMatchObject({ outcome: "queued", run, detail: null });
     expect(t.queue.size).toBe(1);
+    await t.queue.drain();
+    expect((await staff.getRecommendationStatus()).activeModel?.run).toBe(run);
+    expect(await ask()).toMatchObject({
+      outcome: "already_served",
+      run,
+      activeModel: expect.objectContaining({ run }),
+    });
+    expect(t.queue.size).toBe(0);
+    await blobs.put("recs/current.json", new TextEncoder().encode("{}"));
+    const invalid = await ask();
+    expect(invalid).toMatchObject({ outcome: "invalid", run: null });
+    expect(invalid.detail).toMatch(/recs\/current\.json/);
+    expect(t.queue.size).toBe(0);
     const rollback = await rawStaff(t, ["admin"], "POST", "/system/recommendations/rollback", {
       reason: "Bad run",
     });
     expect(rollback.status).toBe(404);
-    expect(auditRows(t).map((row) => [row.action, row.outcome, row.before])).toEqual([
-      ["system.recommendations_import_requested", "succeeded", { request: null }],
+    expect(auditRows(t).map((row) => [row.action, row.outcome, row.after])).toEqual([
       [
-        "system.recommendations_rolled_back",
-        "failed",
-        { request: null, state: { activeRun: null } },
+        "system.recommendations_import_requested",
+        "succeeded",
+        { outcome: "no_artefact_store", run: null },
       ],
+      [
+        "system.recommendations_import_requested",
+        "succeeded",
+        { outcome: "nothing_published", run: null },
+      ],
+      ["system.recommendations_import_requested", "succeeded", { outcome: "queued", run }],
+      ["system.recommendations_import_requested", "succeeded", { outcome: "already_served", run }],
+      ["system.recommendations_import_requested", "succeeded", { outcome: "invalid", run: null }],
+      ["system.recommendations_rolled_back", "failed", { error: "not_found" }],
     ]);
   });
 
@@ -998,5 +1046,205 @@ describe("system", () => {
     expect(bad.status).toBe(400);
     // The personalisation area wrote these entries in its own batches; the staff API none.
     expect(auditRows(t)).toEqual([]);
+  });
+});
+
+describe("what the staff console asked for", () => {
+  it("finds titles by name, resolves chosen ids in order, and lists the catalogue by name", async () => {
+    const t = await createTestApp();
+    const staff = staffClient(t, ["content"]);
+    // Search as members search, but every maturity level (an 18+ title is found too).
+    const found = await staff.searchTitles({ query: { q: "cellar" } });
+    expect(found.items.map((title) => title.id)).toEqual(["t-cellar"]);
+    expect(found.items[0]).toMatchObject({ name: "The Cellar Door", maturity: "18+" });
+    const chosen = await staff.searchTitles({ query: { ids: "t-owl,t-missing,t-orbit" } });
+    expect(chosen.items.map((title) => title.id)).toEqual(["t-owl", "t-orbit"]);
+    expect(chosen.nextCursor).toBeNull();
+    const first = await staff.searchTitles({ query: { limit: 5 } });
+    expect(first.items).toHaveLength(5);
+    const names = first.items.map((title) => title.name);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    const second = await staff.searchTitles({
+      query: { limit: 5, cursor: first.nextCursor ?? "" },
+    });
+    expect(second.items.map((title) => title.id)).not.toContain(first.items[0]?.id);
+    // A title an editor made unavailable can still be found (to make it available again).
+    await staff.setTitleAvailability({
+      params: { titleId: "t-cellar" },
+      body: { available: false, reason: "Licence ended" },
+    });
+    expect((await staff.searchTitles({ query: { q: "cellar" } })).items).toHaveLength(1);
+    // What an editor needs to recognise a title, and nothing else.
+    const raw = await rawStaff(t, ["content"], "GET", "/titles?q=orbit");
+    const [title] = ((await raw.json()) as { items: Record<string, unknown>[] }).items;
+    expect(Object.keys(title ?? {}).sort()).toEqual(
+      ["card", "id", "maturity", "name", "releaseYear", "type"].sort(),
+    );
+    expect((await rawStaff(t, ["content"], "GET", "/titles?cursor=nonsense")).status).toBe(400);
+  });
+
+  it("reads a title's availability and lists the overrides with whether each applies now", async () => {
+    const t = await createTestApp();
+    const staff = staffClient(t, ["content"]);
+    expect(await staff.getTitleAvailability({ params: { titleId: "t-orbit" } })).toEqual({
+      titleId: "t-orbit",
+      available: true,
+      availableFrom: null,
+      availableUntil: null,
+      updatedAt: null,
+    });
+    expect((await rawStaff(t, ["content"], "GET", "/titles/t-missing/availability")).status).toBe(
+      404,
+    );
+    expect(await staff.listTitleAvailability()).toEqual({ items: [] });
+    const later = new Date(t.clock.now() + 86_400_000).toISOString();
+    await staff.setTitleAvailability({
+      params: { titleId: "t-orbit" },
+      body: { available: true, availableFrom: later, reason: "Premiere tomorrow" },
+    });
+    await staff.setTitleAvailability({
+      params: { titleId: "t-cellar" },
+      body: { available: false, reason: "Licence ended" },
+    });
+    expect(await staff.getTitleAvailability({ params: { titleId: "t-orbit" } })).toMatchObject({
+      available: true,
+      availableFrom: later,
+      availableUntil: null,
+    });
+    const { items } = await staff.listTitleAvailability();
+    expect(items.map((item) => [item.titleId, item.name, item.unavailableNow])).toEqual(
+      [
+        ["t-orbit", "The Quiet Orbit", true],
+        ["t-cellar", "The Cellar Door", true],
+      ].sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
+    );
+    t.clock.advance(2 * 86_400_000);
+    const tomorrow = await staff.listTitleAvailability();
+    expect(tomorrow.items.find((item) => item.titleId === "t-orbit")?.unavailableNow).toBe(false);
+  });
+
+  it("finds an action's entry by its request id, and names the earlier entry in a conflict", async () => {
+    const t = await createTestApp();
+    const { accountId, invoice } = await payingMember(t, "request-id@example.test");
+    const body = { invoiceId: invoice.id, reason: "Charged twice", idempotencyKey: KEY };
+    const send = (requestId: string) =>
+      t.ports.staff
+        .mint({ subject: "staff-ada", clientRoles: { "webflix-admin": ["billing"] } })
+        .then((token) =>
+          t.request(`${ADMIN_API_BASE_PATH}/members/${accountId}/refunds`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "X-Webflix-Client": "web",
+              "Content-Type": "application/json",
+              "X-Request-Id": requestId,
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+    expect((await send("console-req-0001")).status).toBe(201);
+    const admin = staffClient(t, ["admin"]);
+    const { items } = await admin.listAuditLog({ query: { requestId: "console-req-0001" } });
+    expect(items.map((entry) => [entry.action, entry.requestId])).toEqual([
+      ["billing.refund", "console-req-0001"],
+    ]);
+    // The same key for another amount: the conflict names the first entry as a field.
+    const other = await send("console-req-0002").then(async () =>
+      t.ports.staff
+        .mint({ subject: "staff-ada", clientRoles: { "webflix-admin": ["billing"] } })
+        .then((token) =>
+          t.request(`${ADMIN_API_BASE_PATH}/members/${accountId}/refunds`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "X-Webflix-Client": "web",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ ...body, amount: { amountMinor: 1, currency: "USD" } }),
+          }),
+        ),
+    );
+    expect(other.status).toBe(409);
+    expect(await other.json()).toMatchObject({
+      code: "staff_action_conflict",
+      auditId: items[0]?.id,
+    });
+  });
+
+  it("lets a staff member read their own entries only, without what before and after hold", async () => {
+    const t = await createTestApp();
+    const { accountId, invoice } = await payingMember(t, "own-entries@example.test");
+    const ada = staffClient(t, ["billing", "support"], "staff-ada");
+    await ada.refundInvoice({
+      params: { accountId },
+      body: { invoiceId: invoice.id, reason: "Goodwill", idempotencyKey: KEY },
+    });
+    const refused = await rawStaff(t, ["support"], "POST", "/members/demo-account/sign-out", {
+      reason: "Trying the demo",
+    });
+    expect(refused.status).toBe(403);
+    const bob = staffClient(t, ["support"], "staff-bob");
+    await bob.getMember({ params: { accountId } });
+    // Ada, without the admin role: the whole log is refused, her own entries are not.
+    expect((await rawStaff(t, ["support"], "GET", "/audit")).status).toBe(403);
+    const mine = await staffClient(t, ["support"], "staff-ada").listOwnAuditLog({ query: {} });
+    expect(mine.items.every((entry) => entry.actor.id === "staff-ada")).toBe(true);
+    expect(mine.items.map((entry) => entry.action)).toEqual(
+      expect.arrayContaining(["billing.refund", "member.signed_out_everywhere"]),
+    );
+    expect(mine.items.some((entry) => entry.actor.id === "staff-bob")).toBe(false);
+    // Nothing of what before and after held, but the error code an action ended with.
+    const refund = mine.items.find((entry) => entry.action === "billing.refund");
+    expect(refund).toMatchObject({ before: null, after: null, outcome: "succeeded" });
+    const failed = mine.items.find((entry) => entry.action === "member.signed_out_everywhere");
+    expect(failed).toMatchObject({
+      before: null,
+      after: { error: "demo_account_protected" },
+      outcome: "failed",
+    });
+    expect(JSON.stringify(mine)).not.toContain(invoice.id);
+    // Asking for someone else's entries still answers only one's own.
+    const asked = await rawStaff(t, ["support"], "GET", "/audit/mine?actorId=staff-bob");
+    const page = (await asked.json()) as { items: { actor: { id: string } }[] };
+    expect(page.items.every((entry) => entry.actor.id === "staff-ada")).toBe(true);
+    // A staff member with no Webflix role may call it, and has nothing.
+    const nobody = await staffClient(t, [], "staff-nobody").listOwnAuditLog({ query: {} });
+    expect(nobody.items).toEqual([]);
+  });
+
+  it("tells staff an unanswered billing action's outcome is unknown, never to just try again", async () => {
+    const t = await createTestApp();
+    const { accountId, invoice } = await payingMember(t, "unknown@example.test");
+    t.ports.payments.refund = async () => {
+      throw new AppError("service_unavailable", {
+        detail: "The payment provider is not answering. Try again in a moment.",
+      });
+    };
+    const response = await rawStaff(t, ["billing"], "POST", `/members/${accountId}/refunds`, {
+      invoiceId: invoice.id,
+      reason: "Charged twice",
+      idempotencyKey: KEY,
+    });
+    expect(response.status).toBe(503);
+    const problem = (await response.json()) as { detail: string };
+    const entry = auditRows(t).find((row) => row.action === "billing.refund");
+    expect(entry?.outcome).toBe("unknown");
+    expect(problem.detail).toContain(`audit entry ${entry?.id}`);
+    expect(problem.detail).toMatch(/not known whether it took effect/);
+    expect(problem.detail).toMatch(/same idempotency key never acts twice/);
+    expect(problem.detail).not.toMatch(/Try again in a moment/);
+    // Nothing ran when the entry could not be written: there, trying again is right.
+    const admin = t.deps.repos.admin as MemoryAdminRepository;
+    admin.beginAudit = async () => {
+      throw new AppError("service_unavailable", {
+        detail: "The database cannot be reached right now. Try again in a moment.",
+      });
+    };
+    const early = await rawStaff(t, ["billing"], "POST", `/members/${accountId}/refunds`, {
+      invoiceId: invoice.id,
+      reason: "Charged twice",
+      idempotencyKey: `${KEY.slice(0, -1)}7`,
+    });
+    expect(((await early.json()) as { detail: string }).detail).toMatch(/Try again in a moment/);
   });
 });

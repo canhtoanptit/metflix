@@ -2,19 +2,26 @@
  * Real user journeys through the typed client against `createApp` on in-memory ports and the
  * fixture catalog. Every response is validated against the contract (`validateResponses`).
  */
-import { ApiError, type Row, type TitleCard } from "@webflix/contracts";
+import {
+  API_BASE_PATH,
+  ApiError,
+  CLIENT_HEADER,
+  CLIENT_HEADER_VALUE,
+  type Row,
+  type TitleCard,
+} from "@webflix/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  APPROVED_CARD,
   CHROME_WINDOWS,
   createTestApp,
-  DECLINED_CARD,
   DEMO,
+  LEGACY_CARD,
   onboard,
   SAFARI_IPHONE,
   SEGMENT_BYTES,
   SEGMENT_PATH,
   signIn,
+  subscribe,
   type TestApp,
 } from "./support.ts";
 
@@ -51,37 +58,37 @@ describe("sign up → profile → browse → play → heartbeat → continue wat
   it("runs the whole first-session journey", async () => {
     const device = t.device();
 
-    // A declined card stops sign-up and creates nothing.
-    const declined = await expectProblem(
-      device.api.signup({
-        body: {
-          email: "new@example.com",
-          password: "correct horse battery",
-          planId: "standard",
-          payment: DECLINED_CARD,
-        },
+    // Milestone 1's sign-up with a card is refused by validation, creates nothing, and the
+    // card's digits reach no log line (principle 4).
+    const refused = await device.request(`${API_BASE_PATH}/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", [CLIENT_HEADER]: CLIENT_HEADER_VALUE },
+      body: JSON.stringify({
+        email: "new@example.com",
+        password: "correct horse battery",
+        planId: "standard",
+        payment: LEGACY_CARD,
       }),
-      "payment_declined",
-      402,
-    );
-    expect(declined.problem).toMatchObject({ declineReason: "card_declined" });
+    });
+    expect(refused.status).toBe(400);
+    const problem = (await refused.json()) as { code: string; issues: { path: string }[] };
+    expect(problem.code).toBe("validation_failed");
+    expect(JSON.stringify(problem)).not.toContain("4242");
+    expect(JSON.stringify(t.logger.records)).not.toContain("4242 4242");
     expect((await device.api.getEmailStatus({ query: { email: "new@example.com" } })).next).toBe(
       "signup",
     );
 
     const session = await device.api.signup({
-      body: {
-        email: " New@Example.com ",
-        password: "correct horse battery",
-        planId: "standard",
-        payment: APPROVED_CARD,
-      },
+      body: { email: " New@Example.com ", password: "correct horse battery" },
     });
+    // No membership is exactly that: no stand-in subscription or plan.
     expect(session).toMatchObject({
       authenticated: true,
       account: { email: "new@example.com" },
-      subscription: { planId: "standard", status: "active" },
-      plan: { id: "standard", maxStreams: 2 },
+      subscription: null,
+      plan: null,
+      membership: { status: "none" },
       profiles: [],
       activeProfile: null,
     });
@@ -92,6 +99,13 @@ describe("sign up → profile → browse → play → heartbeat → continue wat
     expect(cookie).toMatch(/Path=\//);
     expect(cookie).toMatch(/Max-Age=2592000/);
     expect(cookie).not.toMatch(/Secure/i);
+
+    // A member only through a checkout at the payment provider (§5.1).
+    await subscribe(t, device, "standard");
+    expect(await device.api.getSession()).toMatchObject({
+      subscription: { planId: "standard", status: "active" },
+      plan: { id: "standard", maxStreams: 2 },
+    });
 
     // Browse needs a profile.
     await expectProblem(device.api.getBrowse(), "profile_required", 403);
@@ -350,20 +364,27 @@ describe("profiles", () => {
 });
 
 describe("membership", () => {
-  it("changes plans, keeping the old one when the card is declined", async () => {
+  it("changes plans at the provider, refusing card data, then cancels and resumes", async () => {
     const { device } = await onboard(t, { email: "plans@example.com", planId: "basic" });
     const upgraded = await device.api.changePlan({ body: { planId: "standard" } });
     expect(upgraded.plan.id).toBe("standard");
-    const declined = await expectProblem(
-      device.api.changePlan({
-        body: { planId: "premium", payment: { ...DECLINED_CARD, cardNumber: "4000000000009995" } },
-      }),
-      "payment_declined",
-      402,
-    );
-    expect(declined.problem).toMatchObject({ declineReason: "insufficient_funds" });
+    const withCard = await device.request(`${API_BASE_PATH}/account/subscription`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", [CLIENT_HEADER]: CLIENT_HEADER_VALUE },
+      body: JSON.stringify({ planId: "premium", payment: LEGACY_CARD }),
+    });
+    expect(withCard.status).toBe(400);
+    expect(((await withCard.json()) as { code: string }).code).toBe("validation_failed");
+    // Milestone 1's card replacement is gone: a card changes through the provider's setup.
+    const replaced = await device.request(`${API_BASE_PATH}/account/payment-method`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", [CLIENT_HEADER]: CLIENT_HEADER_VALUE },
+      body: JSON.stringify({ payment: LEGACY_CARD }),
+    });
+    expect([404, 405]).toContain(replaced.status);
+    expect(JSON.stringify(t.logger.records)).not.toContain("4242 4242");
     const account = await device.api.getAccount();
-    expect(account.plan.id).toBe("standard");
+    expect(account.plan?.id).toBe("standard");
     expect(account.paymentMethod).toMatchObject({ brand: "visa", last4: "4242" });
 
     const canceled = await device.api.cancelMembership();

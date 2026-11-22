@@ -21,6 +21,10 @@ export interface PrivacyRequestsTable {
   expires_at: number | null;
   last_error: string | null;
   updated_at: number;
+  /** Deletion: `stopping` | `ending` | `none` (what it did to the membership); null otherwise. */
+  membership_step: string | null;
+  /** Deletion, `ending`: when the membership ends (the period's close, as billing reported). */
+  membership_ends_at: number | null;
 }
 
 export interface PrivacyErasuresTable {

@@ -13,6 +13,7 @@ import {
   PAYMENT_DECLINE_REASONS,
   PAYMENT_METHOD_SETUP_STATUSES,
   PAYMENT_PROVIDERS,
+  PROMOTION_OUTCOMES,
   SUSPENDED_REASONS,
 } from "./constants.ts";
 import { Money, PlanId, SignedMoney } from "./plans.ts";
@@ -41,6 +42,14 @@ export const MembershipState = z
     suspendedReason: z.enum(SUSPENDED_REASONS).nullable(),
     /** Null while `none`. */
     provider: PaymentProviderId.nullable(),
+    /**
+     * The next invoice as the payment provider previews it: when it is due (the trial's or the
+     * period's end) and what it will charge (the plan's price less live discounts and credit,
+     * e.g. after a downgrade). Null when there is none: cancelling, ended, unpaid, suspended, no
+     * membership, milestone 1's mock membership. Always sent by this API (optional in the type
+     * for clients' fixtures).
+     */
+    nextInvoice: z.object({ at: IsoDateTime, amount: Money }).nullable().optional(),
   })
   .meta({ id: "MembershipState" });
 export type MembershipState = z.output<typeof MembershipState>;
@@ -146,6 +155,14 @@ export const Checkout = z
     /** What is charged now (0 with a trial), once known. */
     amountDue: Money.nullable(),
     promotion: AppliedPromotion.nullable(),
+    /**
+     * What became of `promotion`: null without a code; `pending` until the card is confirmed
+     * (the trial is decided then); `applied` to the first payment; `not_applied_trial` when the
+     * checkout grants a trial: a code is never spent on a payment of nothing, so it was neither
+     * applied nor redeemed and can still be used. Always sent by this API (optional in the type
+     * for clients' fixtures).
+     */
+    promotionOutcome: z.enum(PROMOTION_OUTCOMES).nullable().optional(),
     /** Why a `failed` checkout failed. */
     failureReason: z.enum(PAYMENT_DECLINE_REASONS).nullable(),
     createdAt: IsoDateTime,
@@ -153,6 +170,17 @@ export const Checkout = z
   })
   .meta({ id: "Checkout" });
 export type Checkout = z.output<typeof Checkout>;
+
+/**
+ * `GET /billing/checkout`: the account's checkout in progress (`requires_setup`,
+ * `requires_payment` or `processing`, not expired), or null. What the member needs to continue
+ * on any device: plan, promotion, state, trial, amount. Its `clientSecret` is always null here;
+ * `GET /billing/checkout/:id` answers it to the session that continues.
+ */
+export const OpenCheckout = z
+  .object({ checkout: Checkout.nullable() })
+  .meta({ id: "OpenCheckout" });
+export type OpenCheckout = z.output<typeof OpenCheckout>;
 
 // --- Plan changes (§12: upgrade and downgrade with the previewed proration) -------------------
 
@@ -191,6 +219,11 @@ export const PaymentMethodSetup = z
     id: Id,
     status: z.enum(PAYMENT_METHOD_SETUP_STATUSES),
     clientSecret: z.string().nullable(),
+    /**
+     * Why a `failed` card change failed, in the words a checkout's decline uses; null
+     * otherwise. Always sent by this API (optional in the type for clients' fixtures).
+     */
+    failureReason: z.enum(PAYMENT_DECLINE_REASONS).nullable().optional(),
     createdAt: IsoDateTime,
   })
   .meta({ id: "PaymentMethodSetup" });

@@ -1,5 +1,5 @@
 import { AlertDialog as RadixAlertDialog, Dialog as RadixDialog } from "radix-ui";
-import type { ComponentProps, ReactNode } from "react";
+import { type ComponentProps, type ReactNode, useRef } from "react";
 import { CloseIcon } from "../icons/icons.tsx";
 import { cx } from "../lib/cx.ts";
 import { Button } from "./Button.tsx";
@@ -161,6 +161,9 @@ export function ConfirmDialog({
   loading = false,
   onConfirm,
 }: ConfirmDialogProps) {
+  // Opened with `open` (no trigger), Radix has nothing to return focus to on close and leaves it
+  // on the page body: return it to whatever had focus when the dialog opened instead.
+  const opener = useRef<HTMLElement | null>(null);
   return (
     <RadixAlertDialog.Root open={open} onOpenChange={onOpenChange}>
       {trigger ? <RadixAlertDialog.Trigger asChild>{trigger}</RadixAlertDialog.Trigger> : null}
@@ -168,6 +171,15 @@ export function ConfirmDialog({
         <RadixAlertDialog.Overlay className={OVERLAY} />
         <div className="pointer-events-none fixed inset-0 z-(--z-overlay) grid place-items-center p-4">
           <RadixAlertDialog.Content
+            onOpenAutoFocus={() => {
+              opener.current =
+                document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            }}
+            onCloseAutoFocus={(event) => {
+              if (trigger || !opener.current?.isConnected) return;
+              event.preventDefault();
+              opener.current.focus();
+            }}
             className={cx(
               "pointer-events-auto w-full max-w-dialog-sm rounded-dialog bg-surface-2 p-6 text-fg shadow-xl sm:p-8",
               "data-[state=open]:animate-scale-in data-[state=closed]:animate-scale-out",

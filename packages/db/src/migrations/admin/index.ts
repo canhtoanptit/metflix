@@ -1,6 +1,7 @@
 import type { SchemaMigration } from "../types.ts";
 import * as m0007 from "./0007_admin.ts";
 import * as m0014 from "./0014_admin_audit_outcome.ts";
+import * as m0018 from "./0018_admin_audit_request.ts";
 
 /**
  * The admin area's migrations, oldest first. Add a migration here (a new file, the next free
@@ -12,5 +13,10 @@ export const ADMIN_MIGRATIONS: readonly SchemaMigration[] = [
     name: "0014_admin_audit_outcome",
     source: "admin/0014_admin_audit_outcome.ts",
     up: m0014.up,
+  },
+  {
+    name: "0018_admin_audit_request",
+    source: "admin/0018_admin_audit_request.ts",
+    up: m0018.up,
   },
 ];

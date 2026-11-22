@@ -50,6 +50,12 @@
     width: 2.5rem;
     height: 2.5rem;
   }
+  .wf-provider-mark {
+    display: block;
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+  }
 
   .wf-spinner {
     width: 1.5rem;
@@ -254,6 +260,23 @@
   }
   .wf-slider__page[data-active] {
     background-color: var(--color-fg-muted);
+  }
+
+  /* A narrow row (two cards a page) gives its title the line. The page indicators (up to ten
+     marks for a row of twenty) and "Explore all" would otherwise keep their room while hidden,
+     cutting "Trending Now" short on an empty line; the link keeps its chevron and its name. */
+  @container (width < 500px) {
+    .wf-slider__pages {
+      display: none;
+    }
+    .wf-row-link__text {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
   }
 
   /* ---- Title tiles ----------------------------------------------------------------------- */

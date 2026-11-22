@@ -1,6 +1,6 @@
-import { MOCK_CARDS, type PlanId } from "@webflix/contracts";
+import type { PlanId } from "@webflix/contracts";
 import type { AuthContext, ChargeCredentialCheck, Viewer } from "../../src/index.ts";
-import type { TestServices } from "../../src/testing/index.ts";
+import { subscribeForTest, type TestServices } from "../../src/testing/index.ts";
 
 export const DEMO_ACCOUNT = "demo-account";
 export const MEMBER_PASSWORD = "long-enough";
@@ -9,15 +9,6 @@ export const MEMBER_PASSWORD = "long-enough";
 export const uncharged: ChargeCredentialCheck = async () => {};
 /** A sign-in from a browser the account does not know, with nothing charged. */
 export const openLogin = { chargeEmail: uncharged };
-
-export const APPROVED_CARD = {
-  method: "card" as const,
-  cardNumber: MOCK_CARDS.approved,
-  expMonth: 12,
-  expYear: 2031,
-  cvc: "123",
-  nameOnCard: "Test Viewer",
-};
 
 /** Sign in to the demo account and bind a profile, as the HTTP layer would. */
 export async function demoViewer(
@@ -38,7 +29,10 @@ export async function demoViewer(
   return { session: bound.session, profile: bound.profile, token: issued.token };
 }
 
-/** Sign up a fresh member and bind a new profile without parental controls ("Me"). */
+/**
+ * Sign up a fresh account, make it a member through a provider checkout (the only way, §5.1)
+ * and bind a new profile without parental controls ("Me").
+ */
 export async function memberViewer(
   t: TestServices,
   options: { email?: string; planId?: PlanId; userAgent?: string } = {},
@@ -49,16 +43,9 @@ export async function memberViewer(
       options.userAgent ??
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Chrome/130.0 Safari/537.36",
   };
-  const issued = await t.services.auth.signup(
-    {
-      email,
-      password: MEMBER_PASSWORD,
-      planId: options.planId ?? "standard",
-      payment: APPROVED_CARD,
-    },
-    client,
-  );
+  const issued = await t.services.auth.signup({ email, password: MEMBER_PASSWORD }, client);
   const auth = await authOf(t, issued.token);
+  await subscribeForTest(t, auth, { plan: options.planId ?? "standard" });
   const profile = await t.services.profiles.create(
     auth,
     { name: "Me", avatarId: "av-fox" },

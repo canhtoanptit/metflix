@@ -56,6 +56,7 @@ export function MyListPage() {
           items={items}
           label="My List"
           scope="grid:my-list"
+          surface="my-list"
           hasMore={list.hasNextPage}
           loadingMore={list.isFetchingNextPage}
           loadMoreFailed={list.isFetchNextPageError}

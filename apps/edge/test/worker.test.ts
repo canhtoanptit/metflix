@@ -87,19 +87,28 @@ function device(ip = `198.51.100.${Math.floor(Math.random() * 250) + 1}`) {
   return { api, cookie, ip };
 }
 
-const BASIC_SIGNUP = (email: string) => ({
-  email,
-  password: "correct horse battery",
-  planId: "basic" as const,
-  payment: {
-    method: "card" as const,
-    cardNumber: "4242 4242 4242 4242",
-    expMonth: 12,
-    expYear: 2035,
-    cvc: "123",
-    nameOnCard: "Edge Test",
-  },
-});
+const SIGNUP = (email: string) => ({ email, password: "correct horse battery" });
+
+/**
+ * A member the one way there is (§5.1): a checkout, the card confirmed at the fake provider in
+ * the Worker (a card of its own: it gets the trial, nothing is left to pay).
+ */
+async function becomeMember(
+  api: ReturnType<typeof device>["api"],
+  planId: "basic" | "standard" | "premium",
+): Promise<void> {
+  const started = await api.startCheckout({ body: { planId } });
+  const confirmed = await SELF.fetch(new URL("/_pay/api/confirm", BASE), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      clientSecret: started.clientSecret,
+      card: `visa:edge-${crypto.randomUUID().slice(0, 8)}`,
+    }),
+  });
+  expect(confirmed.status).toBe(200);
+  expect((await api.confirmCheckout({ params: { id: started.id } })).status).toBe("complete");
+}
 
 describe("the Worker on Cloudflare bindings", () => {
   it("serves a viewer's journey: browse, search, playback from R2 with ranges, heartbeats", async () => {
@@ -139,7 +148,8 @@ describe("the Worker on Cloudflare bindings", () => {
   it("enforces the plan's stream limit across devices and signs out everywhere at once", async () => {
     const email = `edge-${crypto.randomUUID()}@example.com`;
     const phone = device();
-    await phone.api.signup({ body: BASIC_SIGNUP(email) });
+    await phone.api.signup({ body: SIGNUP(email) });
+    await becomeMember(phone.api, "basic");
     const profile = await phone.api.createProfile({ body: { name: "Me", avatarId: "av-fox" } });
     await phone.api.selectProfile({ body: { profileId: profile.id } });
     const tv = device();
@@ -352,7 +362,7 @@ describe("queue and cron handlers", () => {
           "X-Webflix-Client": "web",
           "CF-Connecting-IP": `192.0.2.${Math.floor(Math.random() * 250) + 1}`,
         },
-        body: JSON.stringify(BASIC_SIGNUP(`cookie-${crypto.randomUUID()}@example.com`)),
+        body: JSON.stringify(SIGNUP(`cookie-${crypto.randomUUID()}@example.com`)),
       }),
       https,
       createExecutionContext(),

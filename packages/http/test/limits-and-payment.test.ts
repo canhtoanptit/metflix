@@ -1,19 +1,10 @@
 /**
- * The account-keyed rate limits: PIN guessing (`profile-pin`) and card testing (`payment`),
- * and the payment-method endpoint they protect.
+ * The account-keyed rate limits: PIN guessing (`profile-pin`) and money-moving requests
+ * (`payment`: checkout confirmations and plan changes).
  */
 import { ApiError } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
-import {
-  APPROVED_CARD,
-  createTestApp,
-  DECLINED_CARD,
-  DEMO,
-  type Device,
-  onboard,
-  signIn,
-  type TestApp,
-} from "./support.ts";
+import { createTestApp, DEMO, type Device, onboard, signIn, type TestApp } from "./support.ts";
 
 async function codeOf(promise: Promise<unknown>): Promise<string | null> {
   return promise.then(
@@ -78,81 +69,23 @@ describe("profile-pin: only PIN attempts on locked profiles count, per account",
   });
 });
 
-describe("PUT /account/payment-method", () => {
-  async function account(t: TestApp): Promise<Device> {
-    return (await onboard(t, { email: "payer@example.com" })).device;
+describe("the payment budget (per account)", () => {
+  async function account(t: TestApp, email = "payer@example.com"): Promise<Device> {
+    return (await onboard(t, { email })).device;
   }
 
-  it("replaces the card, keeping only brand, last four and expiry", async () => {
-    const t = await createTestApp();
-    const device = await account(t);
-    const before = await device.api.getAccount();
-    const updated = await device.api.updatePaymentMethod({
-      body: {
-        payment: {
-          ...APPROVED_CARD,
-          cardNumber: "5555 5555 5555 4444",
-          expMonth: 3,
-          expYear: 2033,
-        },
-      },
-    });
-    expect(updated.paymentMethod).toEqual({
-      brand: "mastercard",
-      last4: "4444",
-      expMonth: 3,
-      expYear: 2033,
-    });
-    expect((await device.api.getAccount()).paymentMethod).toEqual(updated.paymentMethod);
-    const stored = await t.deps.repos.accounts.get(updated.account.id);
-    expect(JSON.stringify(stored)).not.toContain("5555555555554444");
-    expect(JSON.stringify(stored)).not.toContain(APPROVED_CARD.cvc);
-    // The plan and the billing period are untouched.
-    expect(updated.subscription).toEqual(before.subscription);
-    expect(updated.plan).toEqual(before.plan);
-  });
-
-  it("declines like sign-up and changes nothing", async () => {
-    const t = await createTestApp();
-    const device = await account(t);
-    const before = (await device.api.getAccount()).paymentMethod;
-    const cases = [
-      [DECLINED_CARD, "card_declined"],
-      [{ ...APPROVED_CARD, cardNumber: "4000000000009995" }, "insufficient_funds"],
-      [{ ...APPROVED_CARD, expMonth: 1, expYear: 2020 }, "expired_card"],
-    ] as const;
-    for (const [payment, reason] of cases) {
-      const error = await device.api
-        .updatePaymentMethod({ body: { payment } })
-        .catch((caught: unknown) => caught);
-      expect(ApiError.is(error, "payment_declined") && error.problem.declineReason).toBe(reason);
-    }
-    expect(
-      await codeOf(
-        device.api.updatePaymentMethod({ body: { payment: { ...APPROVED_CARD, cvc: "1" } } }),
-      ),
-    ).toBe("validation_failed");
-    expect((await device.api.getAccount()).paymentMethod).toEqual(before);
-  });
-
-  it("limits card verifications per account, plan changes with a card included", async () => {
+  it("counts checkout confirmations and plan changes; another account is unaffected", async () => {
     const t = await strictApp();
+    // Onboarding confirmed a checkout: one of the three.
     const device = await account(t);
-    await device.api.updatePaymentMethod({ body: { payment: APPROVED_CARD } });
-    expect(await codeOf(device.api.updatePaymentMethod({ body: { payment: DECLINED_CARD } }))).toBe(
-      "payment_declined",
-    );
-    await device.api.changePlan({ body: { planId: "premium", payment: APPROVED_CARD } });
-    expect(await codeOf(device.api.updatePaymentMethod({ body: { payment: APPROVED_CARD } }))).toBe(
+    await device.api.changePlan({ body: { planId: "premium" } });
+    await device.api.changePlan({ body: { planId: "basic" } });
+    expect(await codeOf(device.api.changePlan({ body: { planId: "standard" } }))).toBe(
       "rate_limited",
     );
-    expect(
-      await codeOf(device.api.changePlan({ body: { planId: "basic", payment: APPROVED_CARD } })),
-    ).toBe("rate_limited");
-    // A plan change without a card verifies nothing and is not limited.
-    expect((await device.api.changePlan({ body: { planId: "basic" } })).plan.id).toBe("basic");
-    // Per account: another account is unaffected.
-    const neighbour = (await onboard(t, { email: "neighbour@example.com" })).device;
-    await neighbour.api.updatePaymentMethod({ body: { payment: APPROVED_CARD } });
+    const neighbour = await account(t, "neighbour@example.com");
+    expect((await neighbour.api.changePlan({ body: { planId: "premium" } })).plan.id).toBe(
+      "premium",
+    );
   });
 });

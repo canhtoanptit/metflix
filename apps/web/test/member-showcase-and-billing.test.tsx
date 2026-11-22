@@ -5,9 +5,13 @@ import { type ApiClient, ApiError, createProblem } from "@webflix/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
 import { createAppRuntime } from "../src/app/bootstrap.ts";
+import { leaveFor } from "../src/features/member/billing/navigation.ts";
 import { clearDraft } from "../src/features/member/signup/draft.ts";
+import { mockProviderConfirm, setMockMembership } from "../src/mocks/billing.ts";
 import { createMockApiClient } from "../src/mocks/client.ts";
 import { initialState, type MockScenario } from "../src/mocks/state.ts";
+
+vi.mock("../src/features/member/billing/navigation.ts", () => ({ leaveFor: vi.fn() }));
 
 /** The real app over the in-browser mock API; `overrides` replace single API methods. */
 function renderApp(
@@ -69,28 +73,84 @@ describe("signed-out artwork comes from the public showcase", () => {
   });
 });
 
-describe("account: update payment method", () => {
-  it("replaces the card through its own endpoint, not a plan change", async () => {
+describe("account: membership and billing", () => {
+  it("replaces the card in the provider's form: Webflix never receives the card", async () => {
     const user = userEvent.setup();
-    let update = vi.fn<ApiClient["updatePaymentMethod"]>();
     const changePlan = vi.fn<ApiClient["changePlan"]>();
-    renderApp("/account", "profile", (base) => {
-      update = vi.fn(base.updatePaymentMethod);
-      return { updatePaymentMethod: update, changePlan };
+    let setup = vi.fn<ApiClient["setupPaymentMethod"]>();
+    const { router } = renderApp("/account/membership/payment", "profile", (base) => {
+      setup = vi.fn(base.setupPaymentMethod);
+      return { changePlan, setupPaymentMethod: setup };
     });
-    await user.click(await screen.findByRole("button", { name: "Update payment method" }));
-    const dialog = await screen.findByRole("dialog", { name: "Update payment method" });
-    await user.type(within(dialog).getByLabelText(/Card number/i), "5555 5555 5555 4444");
-    await user.type(within(dialog).getByLabelText(/Expiry/i), "0333");
-    await user.type(within(dialog).getByLabelText(/Security code|CVC/i), "123");
-    await user.type(within(dialog).getByLabelText(/Name on card/i), "Sam Rivera");
-    await user.click(within(dialog).getByRole("button", { name: "Save card" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update.mock.calls[0]?.[0].body.payment.cardNumber.replaceAll(" ", "")).toBe(
-      "5555555555554444",
+    await user.click(await screen.findByRole("button", { name: "Replace card" }));
+    await user.click(await screen.findByRole("button", { name: "Continue to add your card" }));
+    await waitFor(() => expect(leaveFor).toHaveBeenCalled());
+    const href = new URL(vi.mocked(leaveFor).mock.calls.at(-1)?.[0] ?? "", "http://app.local");
+    expect(href.pathname).toBe("/mock-pay");
+    // The card is chosen on the provider's page, never on Webflix's.
+    mockProviderConfirm(
+      href.searchParams.get("secret") ?? "",
+      { card: "5555555555554444" },
+      () => undefined,
     );
+    await router.navigate({ href: `${href.searchParams.get("return")}&payment=succeeded` });
+    expect(
+      await screen.findByText("Your card has been updated", {}, { timeout: 5000 }),
+    ).toBeVisible();
+    expect(await screen.findByText(/Mastercard •••• 4444/)).toBeVisible();
+    expect(setup).toHaveBeenCalledTimes(1);
     expect(changePlan).not.toHaveBeenCalled();
-    expect(await screen.findByText(/•••• 4444/)).toBeVisible();
+  });
+
+  it("previews a plan change on the server and applies exactly that preview", async () => {
+    const user = userEvent.setup();
+    let preview = vi.fn<ApiClient["previewPlanChange"]>();
+    let changePlan = vi.fn<ApiClient["changePlan"]>();
+    const { router } = renderApp("/account/membership/plan", "profile", (base) => {
+      preview = vi.fn(base.previewPlanChange);
+      changePlan = vi.fn(base.changePlan);
+      return { previewPlanChange: preview, changePlan };
+    });
+    await user.click(await screen.findByRole("radio", { name: /Premium/ }));
+    const summary = await screen.findByRole("status", { name: "Switching to Premium" });
+    expect(within(summary).getByText("Charged today")).toBeVisible();
+    const previewed = await preview.mock.results[0]?.value;
+    const pay = screen.getByRole("button", { name: /^Pay .* and switch$/ });
+    await user.click(pay);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/account/membership"));
+    expect(changePlan).toHaveBeenCalledWith({
+      body: { planId: "premium", previewToken: previewed.previewToken },
+    });
+  });
+
+  it("a failed renewal in grace: still watching, with one clear ask", async () => {
+    const state = initialState("profile");
+    setMockMembership(state, "past_due");
+    const client = createMockApiClient({ state, settings: { latencyMs: 0, failing: [] } });
+    const history = createMemoryHistory({ initialEntries: ["/account/membership"] });
+    const runtime = createAppRuntime(client, { history });
+    render(<App queryClient={runtime.queryClient} router={runtime.router} />);
+    expect(await screen.findByText("We couldn't take your last payment")).toBeVisible();
+    expect(screen.getByText(/You can keep watching until/)).toBeVisible();
+    expect(screen.getAllByRole("link", { name: "Update payment method" })[0]).toHaveAttribute(
+      "href",
+      "/account/membership/payment",
+    );
+  });
+
+  it("an account on hold is refused playback with the way back, not an error", async () => {
+    const state = initialState("profile");
+    setMockMembership(state, "suspended");
+    const client = createMockApiClient({ state, settings: { latencyMs: 0, failing: [] } });
+    const history = createMemoryHistory({ initialEntries: ["/watch/t-sintel"] });
+    const runtime = createAppRuntime(client, { history });
+    render(<App queryClient={runtime.queryClient} router={runtime.router} />);
+    expect(
+      await screen.findByRole("heading", { name: "Your membership is on hold" }, { timeout: 5000 }),
+    ).toBeVisible();
+    expect(screen.getByRole("link", { name: "Update payment method" })).toHaveAttribute(
+      "href",
+      "/account/membership/payment",
+    );
   });
 });

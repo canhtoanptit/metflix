@@ -124,7 +124,7 @@ describe("buildOpenApiDocument", () => {
     const select = document.paths["/api/v1/session/profile"]?.put as Record<string, unknown>;
     expect(select["x-webflix-rate-limit"]).toBe("profile-pin");
     expect(select["x-webflix-rate-limit-scope"]).toBe("handler");
-    const payment = document.paths["/api/v1/account/payment-method"]?.put as Record<
+    const payment = document.paths["/api/v1/billing/checkout/{id}/confirm"]?.post as Record<
       string,
       unknown
     >;
@@ -133,14 +133,18 @@ describe("buildOpenApiDocument", () => {
   });
 
   it("publishes route examples on the request and success bodies", () => {
-    const payment = document.paths["/api/v1/account/payment-method"]?.put as {
+    const checkout = document.paths["/api/v1/billing/checkout"]?.post as {
       requestBody: { content: Record<string, { example?: unknown }> };
+    };
+    expect(checkout.requestBody.content["application/json"]?.example).toEqual(
+      routes.startCheckout.examples.request,
+    );
+    const config = document.paths["/api/v1/billing/config"]?.get as {
       responses: Record<string, { content: Record<string, { example?: unknown }> }>;
     };
-    expect(payment.requestBody.content["application/json"]?.example).toEqual({
-      payment: routes.updatePaymentMethod.examples.request.payment,
-    });
-    expect(payment.responses["200"]?.content["application/json"]?.example).toBeDefined();
+    expect(config.responses["200"]?.content["application/json"]?.example).toEqual(
+      routes.getBillingConfig.examples.response,
+    );
   });
 
   it("splits a named schema into <Id>Input when request and response views differ", () => {

@@ -5,6 +5,8 @@
  * response validation on, so contract drift fails the check that observed it.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import {
   ADMIN_API_BASE_PATH,
   type AdminApiClient,
@@ -223,6 +225,93 @@ export class Agent {
     );
   }
 
+  /**
+   * A top-level browser navigation (a followed link): GET with the Fetch Metadata a browser sends
+   * (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`) and an HTML `Accept`, redirects not
+   * followed. Sent through `node:http`, because `fetch` replaces `Sec-Fetch-Mode` with its own
+   * (`cors`): a navigation cannot be expressed with it.
+   */
+  async navigate(path: string): Promise<HttpResult> {
+    const url = this.resolve(path);
+    sequence += 1;
+    const seq = sequence;
+    const requestId = `smk-${this.options.runId}-${seq}`;
+    const headers: Record<string, string> = {
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Site": "same-origin",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "User-Agent": this.options.userAgent ?? BROWSER_USER_AGENT,
+      [REQUEST_ID_HEADER]: requestId,
+    };
+    const cookie = this.jar.header();
+    if (cookie) headers.Cookie = cookie;
+    const started = performance.now();
+    const exchange: Exchange = {
+      seq,
+      agent: this.label,
+      requestId,
+      method: "GET",
+      url: displayPath(url.pathname) + url.search,
+      requestHeaders: headerRecord(new Headers(headers), ["cookie"]),
+      status: 0,
+      responseHeaders: {},
+      durationMs: 0,
+      startedAt: Date.now(),
+    };
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const answer = await new Promise<{ status: number; headers: Headers; bytes: Uint8Array }>(
+      (resolve, reject) => {
+        const outgoing = send(url, { method: "GET", headers }, (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+          incoming.on("end", () => {
+            const responseHeaders = new Headers();
+            for (const [name, value] of Object.entries(incoming.headers)) {
+              if (value === undefined) continue;
+              for (const item of Array.isArray(value) ? value : [value]) {
+                responseHeaders.append(name, item);
+              }
+            }
+            resolve({
+              status: incoming.statusCode ?? 0,
+              headers: responseHeaders,
+              bytes: new Uint8Array(Buffer.concat(chunks)),
+            });
+          });
+          incoming.on("error", reject);
+        });
+        outgoing.setTimeout(this.options.requestTimeoutMs, () =>
+          outgoing.destroy(
+            new Error(`request timed out after ${this.options.requestTimeoutMs} ms`),
+          ),
+        );
+        outgoing.on("error", reject);
+        outgoing.end();
+      },
+    ).catch((error: unknown) => {
+      exchange.error = error instanceof Error ? error.message : String(error);
+      exchange.durationMs = Math.round(performance.now() - started);
+      record(exchange);
+      throw new NetworkError(exchange);
+    });
+    this.jar.store(answer.headers.getSetCookie());
+    exchange.status = answer.status;
+    exchange.responseHeaders = headerRecord(answer.headers, ["set-cookie"]);
+    exchange.responseBody = excerpt(answer.bytes, answer.headers.get("Content-Type"));
+    exchange.durationMs = Math.round(performance.now() - started);
+    record(exchange);
+    const decoded = () => new TextDecoder().decode(answer.bytes);
+    return {
+      status: answer.status,
+      headers: answer.headers,
+      bytes: answer.bytes,
+      text: decoded,
+      json: <T>() => JSON.parse(decoded()) as T,
+      exchange,
+    };
+  }
+
   /** Raw request against the target (path or same-origin absolute URL). */
   async fetch(pathOrUrl: string, options: RequestOptions = {}): Promise<HttpResult> {
     const headers: Record<string, string> = { ...options.headers };
@@ -256,6 +345,18 @@ export class Agent {
       throw new Error(`Refusing to alias another host: ${target.origin}`);
     }
     if (target.origin !== this.origin) this.aliases.add(target.origin);
+  }
+
+  /**
+   * Whether an absolute URL the deployment built points back at it: its own origin, or another
+   * port of the same host (its public origin, which is then aliased). Another host is not.
+   */
+  sameDeployment(href: string): boolean {
+    const url = new URL(href, this.origin);
+    if (this.ownPath(url.href) !== null) return true;
+    if (url.hostname !== new URL(this.origin).hostname) return false;
+    this.alias(url.origin);
+    return true;
   }
 
   /** `pathOrUrl` as a path on this target when it is this target's (or an alias's), else null. */

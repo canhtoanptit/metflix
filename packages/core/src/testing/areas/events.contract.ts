@@ -38,6 +38,8 @@ const request = (overrides: Partial<PrivacyRequestRecord>): PrivacyRequestRecord
   expiresAt: null,
   lastError: null,
   updatedAt: T0,
+  membershipStep: null,
+  membershipEndsAt: null,
   ...overrides,
 });
 
@@ -266,6 +268,60 @@ export function describeEventsRepositoryContract(
       ]);
       expect((await repo().staleExports(T0 + 5, 10)).map((record) => record.id)).toEqual(["s-1"]);
       expect((await repo().staleExports(T0 + 100, 1)).map((record) => record.id)).toEqual(["s-1"]);
+    });
+
+    it("keeps what a deletion did to the membership, and finds the ones still stopping it", async () => {
+      await account("acc-1");
+      await account("acc-2");
+      await account("acc-3");
+      const deletion = (overrides: Partial<PrivacyRequestRecord>) =>
+        request({
+          kind: "deletion",
+          status: "scheduled",
+          scheduledFor: T0 + DAY_MS,
+          membershipStep: "stopping",
+          ...overrides,
+        });
+      await repo().createPrivacyRequest(
+        deletion({ id: "d-1", accountId: "acc-1", updatedAt: T0 + 5 }),
+      );
+      await repo().createPrivacyRequest(
+        deletion({ id: "d-2", accountId: "acc-2", updatedAt: T0 + 1 }),
+      );
+      await repo().createPrivacyRequest(
+        deletion({ id: "d-3", accountId: "acc-3", membershipStep: "none" }),
+      );
+      await repo().createPrivacyRequest(request({ id: "e-1", accountId: "acc-3" }));
+      expect(await repo().getPrivacyRequest("d-2")).toEqual(
+        deletion({ id: "d-2", accountId: "acc-2", updatedAt: T0 + 1 }),
+      );
+      // Least recently tried first; the limit applies.
+      expect((await repo().deletionsStoppingMembership(10)).map((record) => record.id)).toEqual([
+        "d-2",
+        "d-1",
+      ]);
+      expect((await repo().deletionsStoppingMembership(1)).map((record) => record.id)).toEqual([
+        "d-2",
+      ]);
+      // Billing confirmed one: it ends at the period's close; the step and the date are kept.
+      expect(
+        await repo().transitionPrivacyRequest("d-2", ["scheduled"], {
+          membershipStep: "ending",
+          membershipEndsAt: T0 + 3 * DAY_MS,
+          updatedAt: T0 + 6,
+        }),
+      ).toBe(true);
+      expect(await repo().getPrivacyRequest("d-2")).toMatchObject({
+        status: "scheduled",
+        membershipStep: "ending",
+        membershipEndsAt: T0 + 3 * DAY_MS,
+      });
+      // A cancelled deletion is no longer stopping anything.
+      await repo().transitionPrivacyRequest("d-1", ["scheduled"], {
+        status: "canceled",
+        updatedAt: T0 + 7,
+      });
+      expect(await repo().deletionsStoppingMembership(10)).toEqual([]);
     });
 
     it("records erasures once, lists what the operator must run, settles what is confirmed", async () => {

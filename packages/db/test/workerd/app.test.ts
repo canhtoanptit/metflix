@@ -147,21 +147,11 @@ describe("API on D1 inside workerd", () => {
 
     const fresh = client();
     const state = await fresh.signup({
-      body: {
-        email: "d1-member@example.com",
-        password: "long-enough",
-        planId: "standard",
-        payment: {
-          method: "card",
-          cardNumber: "4242 4242 4242 4242",
-          expMonth: 1,
-          expYear: 2035,
-          cvc: "123",
-          nameOnCard: "D One",
-        },
-      },
+      body: { email: "d1-member@example.com", password: "long-enough" },
     });
     expect(state.account.email).toBe("d1-member@example.com");
+    // An account without a membership, on D1 as anywhere: no stand-in subscription or plan.
+    expect(state).toMatchObject({ subscription: null, plan: null });
     const profile = await fresh.createProfile({ body: { name: "Me", avatarId: "av-fox" } });
     await fresh.selectProfile({ body: { profileId: profile.id } });
     expect((await fresh.getBrowse()).rows.length).toBeGreaterThan(3);

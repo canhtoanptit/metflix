@@ -94,6 +94,7 @@ export function createMemoryAdminRepository(
             (filter.targetType === undefined || row.target.type === filter.targetType) &&
             (filter.targetId === undefined || row.target.id === filter.targetId) &&
             (filter.outcome === undefined || row.outcome === filter.outcome) &&
+            (filter.requestId === undefined || row.requestId === filter.requestId) &&
             (before === null || olderThan(row, before)),
         )
         .sort(newestFirst)

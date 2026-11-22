@@ -27,6 +27,12 @@ const cases: Case[] = [
     conformance: "http://localhost:4000",
   },
   {
+    name: "preview",
+    args: ["TARGET=preview"],
+    e2e: "http://localhost:4173",
+    conformance: "http://localhost:4000",
+  },
+  {
     name: "k8s",
     args: ["TARGET=k8s"],
     e2e: "http://localhost:8080",

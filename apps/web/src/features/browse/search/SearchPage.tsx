@@ -2,12 +2,12 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-qu
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { ApiError, type SearchSuggestion } from "@webflix/contracts";
 import { Button, cx, SearchIcon, Skeleton } from "@webflix/ui";
-import { Fragment, useEffect, useMemo } from "react";
+import { Fragment, useEffect, useMemo, useRef } from "react";
 import { useDocumentTitle } from "../../../app/head/DocumentTitle.tsx";
-import { titleOverlayLinkProps } from "../../../app/overlay/titleOverlay.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { TitleGrid, TitleGridSkeleton } from "../common/TitleGrid.tsx";
-import { searchQueryOf } from "./query.ts";
+import { cardLinkProps, track } from "../common/telemetry.ts";
+import { codePointLength, searchQueryOf } from "./query.ts";
 
 const route = getRouteApi("/profile/browse-shell/search");
 
@@ -67,6 +67,22 @@ function Results({ query }: { query: string }) {
   const suggestions = pages?.[0]?.suggestions ?? [];
   // The query as the server searched it (it may be shorter than what was sent).
   const shownQuery = (search.isPlaceholderData ? null : pages?.[0]?.query) || query;
+  // Its length in characters as the server counts them; the text itself is never reported.
+  const queryLength = codePointLength(shownQuery);
+
+  // One `search.query` per query whose results came back (typing settles before the URL, and
+  // so this, follows): its length and how many results its first page had.
+  const firstPage = search.isPlaceholderData ? undefined : pages?.[0];
+  const reported = useRef<string | null>(null);
+  useEffect(() => {
+    if (!firstPage || reported.current === firstPage.query) return;
+    reported.current = firstPage.query;
+    track(
+      "search.query",
+      { queryLength: codePointLength(firstPage.query), resultCount: firstPage.results.length },
+      { surface: "search" },
+    );
+  }, [firstPage]);
 
   // Failed (after retries), with nothing for this query: the previous query's results would be
   // misleading under a new heading.
@@ -98,6 +114,14 @@ function Results({ query }: { query: string }) {
             items={results}
             label={`Results for ${shownQuery}`}
             scope="grid:search"
+            surface="search"
+            onOpen={(card, rank) =>
+              track(
+                "search.click",
+                { titleId: card.id, resultRank: rank, queryLength },
+                { surface: "search", rank },
+              )
+            }
             stale={search.isPlaceholderData}
             hasMore={search.hasNextPage}
             loadingMore={search.isFetchingNextPage}
@@ -169,7 +193,7 @@ function SuggestionLink({ suggestion }: { suggestion: SearchSuggestion }) {
   switch (suggestion.kind) {
     case "title":
       return (
-        <Link {...titleOverlayLinkProps(suggestion.id)} className={SUGGESTION_CLASS}>
+        <Link {...cardLinkProps(suggestion.id, { surface: "search" })} className={SUGGESTION_CLASS}>
           {suggestion.name}
         </Link>
       );

@@ -54,6 +54,41 @@ export const UpdateConsentBody = z
 export type UpdateConsentBody = z.input<typeof UpdateConsentBody>;
 
 /**
+ * What an account deletion did to the membership (§6.3). Asking for a deletion stops the
+ * renewals at once (through billing): the membership ends at the close of its current period,
+ * or with the account if the erasure comes first, and nothing more is charged.
+ *
+ * - `stopping`: billing has not confirmed yet (the provider was unavailable); retried on every
+ *   scheduler tick until it does. The erasure ends the membership in any case.
+ * - `ending`: set to end at `endsAt`; nothing more is charged.
+ * - `renewing`: it renews as usual again. Once the account is kept: the member resumed it, or
+ *   kept the account before the renewals were stopped. While the deletion is scheduled the
+ *   member cannot cause it (billing refuses resume, a checkout and a plan change with
+ *   `account_deletion_scheduled`); only staff (a complimentary period, a trial extension) or
+ *   the provider can.
+ * - `ended`: it has ended.
+ * - `none`: the account had no membership a payment provider renews (none, already ended, or
+ *   milestone 1's mock membership, which charges nothing).
+ */
+export const DeletionMembership = z
+  .object({
+    status: z.enum(["stopping", "ending", "renewing", "ended", "none"]),
+    /**
+     * `ending` only: when the membership ends. While the deletion is `scheduled`, the earlier of
+     * the period's close and `scheduledFor` (the erasure ends it); once the deletion is
+     * `canceled`, the period's close.
+     */
+    endsAt: IsoDateTime.nullable(),
+    /**
+     * The member kept the account (the deletion is `canceled`) and the membership is still set
+     * to end: offer one action to resume it (`POST /account/subscription/resume`).
+     */
+    resumable: z.boolean(),
+  })
+  .meta({ id: "DeletionMembership" });
+export type DeletionMembership = z.output<typeof DeletionMembership>;
+
+/**
  * An export ("Download your data": asynchronous, a signed link by email) or a deletion
  * (cooling-off period, then erasure; billing records retained as the law requires).
  */
@@ -69,12 +104,46 @@ export const PrivacyRequest = z
     /** Export: the signed download link, once ready and until `expiresAt`. */
     downloadUrl: ResourceUrl.nullable(),
     expiresAt: IsoDateTime.nullable(),
+    /**
+     * Deletion: what it did to the membership. Null for an export, and for a deletion recorded
+     * before deletions stopped renewals.
+     */
+    membership: DeletionMembership.nullable(),
   })
   .meta({ id: "PrivacyRequest" });
 export type PrivacyRequest = z.output<typeof PrivacyRequest>;
 
+/**
+ * What a member is entitled to know before asking for an export or a deletion: this
+ * deployment's settings (configuration only: serving them reads no database).
+ */
+export const PrivacyTerms = z
+  .object({
+    /** A deletion waits this long (cancellable meanwhile) before the account is erased. */
+    deletionCoolingOffSec: z.number().int().positive(),
+    /** How long an export's link (and the export itself) stays available once it is ready. */
+    exportLinkTtlSec: z.number().int().positive(),
+    /**
+     * Who reads an export's behaviour events: `inline`, the export job itself (ready within
+     * seconds); `batch`, the pipeline's scheduled job (many minutes).
+     */
+    exportMode: z.enum(["inline", "batch"]),
+    /** How long an export normally takes here, from the request to the email. */
+    exportTypicalSec: z.number().int().positive(),
+    /** How far back behaviour events are kept, and so how far back an export reaches. */
+    eventsRetentionDays: z.number().int().positive(),
+    /** How long aggregated statistics derived from them are kept. */
+    aggregatesRetentionDays: z.number().int().positive(),
+  })
+  .meta({ id: "PrivacyTerms" });
+export type PrivacyTerms = z.output<typeof PrivacyTerms>;
+
 export const PrivacyRequestList = z
-  .object({ items: z.array(PrivacyRequest) })
+  .object({
+    items: z.array(PrivacyRequest),
+    /** The terms that apply to a new request (served with the list, from configuration). */
+    terms: PrivacyTerms,
+  })
   .meta({ id: "PrivacyRequestList" });
 export type PrivacyRequestList = z.output<typeof PrivacyRequestList>;
 

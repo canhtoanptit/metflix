@@ -1,35 +1,23 @@
-import { ApiError, createProblem, MOCK_CARDS } from "@webflix/contracts";
 import { makeAvatar, makeProfile } from "@webflix/contracts/fixtures";
 import { beforeEach, describe, expect, it } from "vitest";
 import { upgradeChargeToday } from "../src/features/member/account/membership.ts";
+import {
+  describeDecline,
+  describePromotionFailure,
+  formatSignedMoney,
+  promotionAmount,
+  promotionReach,
+} from "../src/features/member/billing/copy.ts";
 import { profileChanges } from "../src/features/member/profiles/EditProfilePage.tsx";
 import { clampForKids, raisesCeiling } from "../src/features/member/profiles/maturity.ts";
-import { cardErrorsFrom, describeDecline } from "../src/features/member/shared/billing.ts";
 import { formatCountdown, possessive } from "../src/features/member/shared/format.ts";
 import {
-  detectCardBrand,
-  formatCardNumber,
-  formatExpiryInput,
-  passesLuhn,
-  toCardPayment,
-  validateCardForm,
-  validateCardNumber,
-  validateCvc,
   validateEmail,
-  validateExpiry,
   validateNewPassword,
   validateProfileName,
 } from "../src/features/member/shared/validation.ts";
-import {
-  clearDraft,
-  draftPassword,
-  readDraft,
-  rememberPassword,
-  updateDraft,
-} from "../src/features/member/signup/draft.ts";
+import { clearDraft, readDraft, updateDraft } from "../src/features/member/signup/draft.ts";
 import { pickAvatars } from "../src/features/member/signup/ProfileStep.tsx";
-
-const NOW = new Date(2026, 10, 21); // November 2026
 
 describe("email and password rules", () => {
   it("accepts real addresses and explains typos", () => {
@@ -53,88 +41,46 @@ describe("email and password rules", () => {
   });
 });
 
-describe("card fields", () => {
-  it("formats numbers as the member types, by brand", () => {
-    expect(formatCardNumber("4242424242424242")).toBe("4242 4242 4242 4242");
-    expect(formatCardNumber("4242-4242 42")).toBe("4242 4242 42");
-    expect(formatCardNumber("378282246310005")).toBe("3782 822463 10005");
-    expect(formatCardNumber("37828224631000599")).toBe("3782 822463 10005");
-  });
-
-  it("detects the brand the server will store", () => {
-    expect(detectCardBrand("4242")).toBe("visa");
-    expect(detectCardBrand("5555")).toBe("mastercard");
-    expect(detectCardBrand("3782")).toBe("amex");
-    expect(detectCardBrand("6011")).toBe("discover");
-    expect(detectCardBrand("9999")).toBe("other");
-  });
-
-  it("checks the Luhn digit, and every mock test card passes it", () => {
-    for (const card of Object.values(MOCK_CARDS)) expect(passesLuhn(card)).toBe(true);
-    expect(validateCardNumber("4242 4242 4242 4241")).toMatch(/doesn't look right/);
-    expect(validateCardNumber("4242 4242")).toMatch(/incomplete/);
-    expect(validateCardNumber("")).toBe("Enter your card number.");
-  });
-
-  it("formats the expiry with a separator that Backspace can cross", () => {
-    expect(formatExpiryInput("1", "")).toBe("1");
-    expect(formatExpiryInput("4", "")).toBe("04 / ");
-    expect(formatExpiryInput("12", "1")).toBe("12 / ");
-    expect(formatExpiryInput("12 / 3", "12 / ")).toBe("12 / 3");
-    expect(formatExpiryInput("12 / 30", "12 / 3")).toBe("12 / 30");
-    // Backspace right after the separator removes the month's last digit.
-    expect(formatExpiryInput("12 /", "12 / ")).toBe("1");
-  });
-
-  it("rejects expired, malformed and implausible expiry dates", () => {
-    expect(validateExpiry("12 / 30", NOW)).toBeNull();
-    expect(validateExpiry("11 / 26", NOW)).toBeNull();
-    expect(validateExpiry("10 / 26", NOW)).toMatch(/expired/);
-    expect(validateExpiry("13 / 30", NOW)).toBe("Use the format MM / YY.");
-    expect(validateExpiry("12 / 99", NOW)).toBe("Check the expiry year.");
-  });
-
-  it("security code length depends on the brand", () => {
-    expect(validateCvc("123", "visa")).toBeNull();
-    expect(validateCvc("1234", "amex")).toBeNull();
-    expect(validateCvc("123", "amex")).toMatch(/4 digits/);
-    expect(validateCvc("", "visa")).toBe("Enter the security code.");
-  });
-
-  it("validates the whole form and builds the request payment", () => {
-    const form = {
-      cardNumber: "4242 4242 4242 4242",
-      expiry: "08 / 29",
-      cvc: "123",
-      nameOnCard: "  Sam Rivera ",
-    };
-    expect(validateCardForm(form, NOW)).toEqual({});
-    expect(toCardPayment(form)).toEqual({
-      method: "card",
-      cardNumber: "4242424242424242",
-      expMonth: 8,
-      expYear: 2029,
-      cvc: "123",
-      nameOnCard: "Sam Rivera",
-    });
-    expect(
-      Object.keys(validateCardForm({ cardNumber: "", expiry: "", cvc: "", nameOnCard: "" }, NOW)),
-    ).toEqual(["cardNumber", "expiry", "cvc", "nameOnCard"]);
-  });
-
-  it("maps each decline reason onto the field to fix", () => {
-    const declined = new ApiError(
-      createProblem("payment_declined", { declineReason: "insufficient_funds" }),
-    );
-    expect(cardErrorsFrom(declined)).toEqual({ cardNumber: "Insufficient funds on this card." });
-    expect(describeDecline("expired_card").field).toBe("expiry");
+describe("payment copy", () => {
+  it("says what each decline means and what to do, without a card field to blame", () => {
     expect(describeDecline("card_declined").title).toBe("Your card was declined");
-    const invalid = new ApiError(
-      createProblem("validation_failed", {
-        issues: [{ location: "body", path: "payment.cvc", message: "bad", code: "invalid_string" }],
-      }),
+    expect(describeDecline("insufficient_funds").title).toMatch(/insufficient funds/);
+    expect(describeDecline("expired_card").title).toBe("Your card has expired");
+    // An unknown reason (or none) still reads as a decline with a way forward.
+    expect(describeDecline(null).body).toMatch(/another card/);
+  });
+
+  it("explains why a promo code can't be used", () => {
+    expect(describePromotionFailure("expired")).toBe("This code has expired.");
+    expect(describePromotionFailure("exhausted")).toBe("This code has been used up.");
+    expect(describePromotionFailure("not_applicable")).toMatch(/doesn't apply to this plan/);
+    expect(describePromotionFailure("already_redeemed")).toMatch(/already used/);
+    expect(describePromotionFailure(undefined)).toMatch(/don't recognise/);
+  });
+
+  it("states a code's effect from the server's terms", () => {
+    const base = { code: "WEBFLIX50", description: null, amountOff: null, durationInMonths: null };
+    expect(promotionAmount({ ...base, percentOff: 50, duration: "once" })).toBe("50% off");
+    expect(promotionReach({ ...base, percentOff: 50, duration: "once" })).toBe(
+      "your first payment",
     );
-    expect(cardErrorsFrom(invalid)).toEqual({ cvc: "Check the security code." });
+    expect(promotionReach({ ...base, percentOff: 10, duration: "forever" })).toBe("every payment");
+    expect(
+      promotionReach({ ...base, percentOff: 10, duration: "repeating", durationInMonths: 3 }),
+    ).toBe("payments for your first 3 months");
+    expect(
+      promotionAmount({
+        ...base,
+        percentOff: null,
+        amountOff: { amountMinor: 500, currency: "USD" },
+        duration: "once",
+      }),
+    ).toMatch(/5\.00 off/);
+  });
+
+  it("shows credits with a minus sign", () => {
+    expect(formatSignedMoney({ amountMinor: -1295, currency: "USD" })).toMatch(/^−\$12\.95$/);
+    expect(formatSignedMoney({ amountMinor: 598, currency: "USD" })).toBe("$5.98");
   });
 });
 
@@ -144,30 +90,29 @@ describe("sign-up draft", () => {
     sessionStorage.clear();
   });
 
-  it("keeps email and plan across reloads (session storage) but never the password", () => {
+  it("keeps email and plan across reloads (session storage), nothing else", () => {
     updateDraft({ email: "sam@example.com" });
     updateDraft({ planId: "standard" });
-    rememberPassword("correct horse battery");
     expect(readDraft()).toEqual({ email: "sam@example.com", planId: "standard" });
-    expect(draftPassword()).toBe("correct horse battery");
     const stored = JSON.stringify({ ...sessionStorage });
     expect(stored).toContain("sam@example.com");
-    expect(stored).not.toContain("correct horse battery");
+    expect(Object.keys(JSON.parse(Object.values(sessionStorage)[0] ?? "{}"))).toEqual([
+      "email",
+      "planId",
+    ]);
   });
 
   it("ignores tampered storage", () => {
-    sessionStorage.setItem("webflix.signup.v1", JSON.stringify({ email: 3, planId: "gold" }));
+    sessionStorage.setItem("webflix.signup.v2", JSON.stringify({ email: 3, planId: "gold" }));
     expect(readDraft()).toEqual({ email: null, planId: null });
-    sessionStorage.setItem("webflix.signup.v1", "{not json");
+    sessionStorage.setItem("webflix.signup.v2", "{not json");
     expect(readDraft()).toEqual({ email: null, planId: null });
   });
 
   it("clearing forgets everything", () => {
     updateDraft({ email: "sam@example.com", planId: "basic" });
-    rememberPassword("secret-password");
     clearDraft();
     expect(readDraft()).toEqual({ email: null, planId: null });
-    expect(draftPassword()).toBeNull();
   });
 });
 

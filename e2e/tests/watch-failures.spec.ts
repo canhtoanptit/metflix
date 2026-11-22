@@ -271,7 +271,7 @@ test("an ended membership offers to restart it", async ({ page }) => {
   await page.goto(`/watch/${movie.id}`);
   await expect(page.getByTestId("watch-status-membership")).toBeVisible();
   await page.getByRole("link", { name: "Restart membership" }).click();
-  await expect(page).toHaveURL(/\/account\/plan/);
+  await expect(page).toHaveURL(/\/account\/membership\/plan/);
 });
 
 test("an expired media token is renewed in place, at the same position", async ({ page }) => {

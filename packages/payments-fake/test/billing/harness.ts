@@ -2,7 +2,6 @@ import {
   type AuthContext,
   createHmacTokenSigner,
   createMediaTokens,
-  createMockBillingProvider,
   createPbkdf2PasswordHasher,
   createServices,
   createUuidV7Generator,
@@ -100,7 +99,6 @@ export async function createBillingHarness(
       createHmacTokenSigner({ keys: config.media.tokenKeys, clock }),
       clock,
     ),
-    billing: createMockBillingProvider(),
     clock,
     ids,
     logger,
@@ -133,25 +131,18 @@ export async function createBillingHarness(
         lastSeenAt: now,
         expiresAt: now + 30 * DAY_MS,
       };
-      await repos.accounts.createWithSession({
+      // What a sign-up leaves (the identity area's): an account, no membership.
+      await repos.identity.createAccount({
         account: {
           id,
           email: email ?? `${id}@example.test`,
           passwordHash: "x",
+          emailVerifiedAt: null,
           createdAt: now,
           updatedAt: now,
         },
-        // What a sign-up without payment leaves (the identity area's): no card, no membership.
-        subscription: {
-          accountId: id,
-          planId: "standard",
-          startedAt: now,
-          currentPeriodEnd: now,
-          canceledAt: now,
-          card: null,
-          updatedAt: now,
-        },
         session,
+        identity: null,
       });
       return { session, profile: null };
     },

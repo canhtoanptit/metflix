@@ -12,7 +12,9 @@ import {
   type ProfileSettings,
   type RatingValue,
 } from "@webflix/contracts";
+import type { MockBillingState } from "./billing.ts";
 import { avatarById, avatarCatalog, iso } from "./catalog.ts";
+import type { MockIdentityState } from "./identity.ts";
 
 export type MockScenario = "anonymous" | "account" | "profile";
 
@@ -60,6 +62,10 @@ export interface MockState {
   devices: Array<{ id: string; label: string; deviceType: "desktop" | "mobile" | "tablet" | "tv" }>;
   /** Set by `PUT /account/payment-method`; the seeded Visa until then. */
   paymentMethod?: PaymentMethod;
+  /** Milestone 2 sign-in (mocks/identity.ts); absent means its defaults. */
+  identity?: MockIdentityState;
+  /** Milestone 2 billing (mocks/billing.ts); absent means the seeded paid membership. */
+  billing?: MockBillingState;
 }
 
 export interface MockSettings {

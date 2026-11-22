@@ -1,5 +1,5 @@
-import { MOCK_CARDS, type Profile } from "@webflix/contracts";
-import { approvedCard, type Environment, type TestAccount } from "../env.ts";
+import type { Profile } from "@webflix/contracts";
+import type { Environment, TestAccount } from "../env.ts";
 import { check, equal, problem, rejects, succeeds } from "../expect.ts";
 import type { Agent, HttpResult } from "../http.ts";
 import { lockedProfile, SMOKE_PIN, selectProfileRaw } from "../limits.ts";
@@ -201,7 +201,7 @@ export const privilegeChecks: CheckDefinition[] = [
         "GET /account from a 13+ profile",
       );
       await rejects(
-        () => gate.api.updatePaymentMethod({ body: { payment: approvedCard() } }),
+        () => gate.api.setupPaymentMethod(),
         "unrestricted_profile_required",
         "a card change from a 13+ profile",
       );
@@ -309,10 +309,7 @@ export const privilegeChecks: CheckDefinition[] = [
         "changing the demo account's email",
       );
       await rejects(
-        () =>
-          agent.api.updatePaymentMethod({
-            body: { payment: { ...approvedCard(), cardNumber: MOCK_CARDS.declined } },
-          }),
+        () => agent.api.setupPaymentMethod(),
         "demo_account_protected",
         "replacing the demo account's card",
       );

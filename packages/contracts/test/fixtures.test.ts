@@ -11,12 +11,13 @@ import {
 import {
   AuthenticatedSession,
   BrowsePage,
+  ChangePlanBody,
   createProblem,
   EmailAddress,
-  MockCardPayment,
   PlaybackSession,
   Problem,
   Row,
+  SignupBody,
   TitleDetail,
 } from "../src/index.ts";
 
@@ -76,15 +77,22 @@ describe("input normalisation", () => {
     expect(EmailAddress.safeParse("not-an-email").success).toBe(false);
   });
 
-  it("strips separators from mock card numbers", () => {
-    const payment = MockCardPayment.parse({
+  it("refuses card data in the sign-up and plan-change bodies (principle 4)", () => {
+    const card = {
       method: "card",
-      cardNumber: "4242 4242-4242 4242",
+      cardNumber: "4242 4242 4242 4242",
       expMonth: 12,
       expYear: 2030,
       cvc: "123",
       nameOnCard: "Mara",
-    });
-    expect(payment.cardNumber).toBe("4242424242424242");
+    };
+    const signup = { email: "mara@example.com", password: "correct horse battery" };
+    expect(SignupBody.safeParse(signup).success).toBe(true);
+    const withCard = SignupBody.safeParse({ ...signup, planId: "basic", payment: card });
+    expect(withCard.success).toBe(false);
+    // The refusal names the keys, never their values.
+    expect(JSON.stringify(withCard.error?.issues)).not.toContain("4242");
+    expect(ChangePlanBody.safeParse({ planId: "premium" }).success).toBe(true);
+    expect(ChangePlanBody.safeParse({ planId: "premium", payment: card }).success).toBe(false);
   });
 });

@@ -4,18 +4,16 @@
  * needs them, inside that check's scope, so their requests show up in its report.
  */
 import { randomBytes } from "node:crypto";
-import {
-  type AuthenticatedSession,
-  type BrowseView,
-  type Genre,
-  MOCK_CARDS,
-  type MockCardPayment,
-  type PlanId,
-  type PlaybackSession,
-  type Profile,
-  type TitleCard,
+import type {
+  AuthenticatedSession,
+  BrowseView,
+  Genre,
+  PlanId,
+  PlaybackSession,
+  Profile,
+  TitleCard,
 } from "@webflix/contracts";
-import { CheckFailure, check, describeError, fail, SkipSignal, succeeds } from "./expect.ts";
+import { CheckFailure, check, describeError, equal, fail, SkipSignal, succeeds } from "./expect.ts";
 import {
   type MasterPlaylist,
   type MediaPlaylist,
@@ -33,6 +31,7 @@ import {
   staffTokens,
   tokenExpiry,
 } from "./oidc.ts";
+import { confirmCard, labelledCard } from "./payments.ts";
 import type { RateLimitSpec, SmokeOptions } from "./types.ts";
 
 export interface TestAccount {
@@ -100,18 +99,6 @@ export interface Fact {
 
 export interface PaymentsFact extends Fact {
   provider: "fake" | "stripe" | "none" | "unknown";
-}
-
-/** A card that is approved by the mock billing provider. */
-export function approvedCard(): MockCardPayment {
-  return {
-    method: "card",
-    cardNumber: MOCK_CARDS.approved,
-    expMonth: 12,
-    expYear: new Date().getUTCFullYear() + 3,
-    cvc: "123",
-    nameOnCard: "Smoke Test",
-  };
 }
 
 export class Environment {
@@ -182,22 +169,54 @@ export class Environment {
     return `smoke-${this.options.runId}-${tag}-${this.emailCounter}@smoke.webflix.test`;
   }
 
+  /**
+   * A member account: a sign-up (no card, §5.1), then a checkout at the payment provider, the
+   * only way a member account comes about besides the seeded demo account and staff (principle
+   * 4: card data never reaches Webflix). The suite checks out through the fake provider's test
+   * cards (a card of its own, so the membership starts with the trial and nothing is charged);
+   * a deployment without the fake (production configuration: provider `none` or Stripe) cannot
+   * give the suite a member, and the check skips saying so. `bareSignup` is an account only.
+   */
   async signup(tag: string, options: { plan?: PlanId; label?: string } = {}): Promise<TestAccount> {
-    const agent = this.agent(options.label ?? tag);
-    const email = this.email(tag);
-    const session = await succeeds(
-      () =>
-        agent.api.signup({
-          body: {
-            email,
-            password: this.password,
-            planId: options.plan ?? "premium",
-            payment: approvedCard(),
-          },
-        }),
-      `sign up (${tag})`,
+    const payments = await this.payments();
+    if (!payments.available) throw new SkipSignal(memberUnavailable(payments.reason));
+    const account = await this.bareSignup(tag, options.label === undefined ? {} : options);
+    await this.checkout(account.agent, options.plan ?? "premium", tag);
+    const session = await succeeds(() => account.agent.api.getSession(), `GET /session (${tag})`);
+    check(session.authenticated, `the session after the checkout (${tag}) is signed out`);
+    return { ...account, session };
+  }
+
+  /** The two-step checkout through the fake provider, until the checkout is complete. */
+  private async checkout(agent: Agent, planId: PlanId, tag: string): Promise<void> {
+    const what = `checkout (${tag}, ${planId})`;
+    const started = await succeeds(
+      () => agent.api.startCheckout({ body: { planId } }),
+      `${what}: POST /billing/checkout`,
     );
-    return { tag, email, password: this.password, agent, session };
+    check(started.clientSecret, `${what}: a new checkout carries no client secret`);
+    await confirmCard(
+      agent,
+      started.clientSecret,
+      labelledCard("visa", this.options.runId, tag),
+      what,
+    );
+    let checkout = await succeeds(
+      () => agent.api.confirmCheckout({ params: { id: started.id } }),
+      `${what}: POST /billing/checkout/:id/confirm`,
+    );
+    if (checkout.status === "requires_payment" && checkout.clientSecret) {
+      await confirmCard(agent, checkout.clientSecret, undefined, `${what}: first payment`);
+    }
+    for (let poll = 0; checkout.status !== "complete" && poll < 80; poll += 1) {
+      if (checkout.status === "failed" || checkout.status === "expired") break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      checkout = await succeeds(
+        () => agent.api.getCheckout({ params: { id: started.id } }),
+        `${what}: GET /billing/checkout/:id`,
+      );
+    }
+    equal(checkout.status, "complete", `${what}: status`);
   }
 
   /**
@@ -283,15 +302,23 @@ export class Environment {
     );
   }
 
-  /** Sign up, create one profile and select it: what the onboarding flow leaves you with. */
+  /**
+   * Sign up, become a member at checkout, create one profile and select it: what the onboarding
+   * flow leaves you with. `member: false` stops before the checkout (an account that browses and
+   * keeps a list but cannot play).
+   */
   async viewer(
     tag: string,
     options: {
       plan?: PlanId;
+      member?: boolean;
       profile?: { name?: string; isKids?: boolean; maturityCeiling?: Profile["maturityCeiling"] };
     } = {},
   ): Promise<Viewer> {
-    const account = await this.signup(tag, options.plan ? { plan: options.plan } : {});
+    const account =
+      options.member === false
+        ? await this.bareSignup(tag)
+        : await this.signup(tag, options.plan ? { plan: options.plan } : {});
     const profile = await this.createProfile(account.agent, {
       name: options.profile?.name ?? "Smoke",
       ...(options.profile?.isKids === undefined ? {} : { isKids: options.profile.isKids }),
@@ -303,14 +330,27 @@ export class Environment {
     return { account, agent: account.agent, profile };
   }
 
-  /** Shared read-only viewer (18+ profile) for browse checks. */
+  /**
+   * Shared read-only viewer (18+ profile) for browse checks: an account without a membership
+   * (browsing needs none), so browse checks also run where no member can be made.
+   */
   browseViewer(): Promise<Viewer> {
-    return this.once("viewer:browse", () => this.viewer("browse"));
+    return this.once("viewer:browse", () => this.viewer("browse", { member: false }));
   }
 
-  /** An account shared by several checks under `key` (each uses its own device). */
-  sharedAccount(key: string, options: { plan?: PlanId } = {}): Promise<TestAccount> {
-    return this.once(`account:${key}`, () => this.signup(key, options));
+  /**
+   * An account shared by several checks under `key` (each uses its own device): a member, or
+   * with `member: false` an account only (what sign-in, devices and rate-limit checks need).
+   */
+  sharedAccount(
+    key: string,
+    options: { plan?: PlanId; member?: boolean } = {},
+  ): Promise<TestAccount> {
+    return this.once(`account:${key}`, () =>
+      options.member === false
+        ? this.bareSignup(key)
+        : this.signup(key, options.plan === undefined ? {} : { plan: options.plan }),
+    );
   }
 
   private pool: { account: TestAccount; profiles: number } | undefined;
@@ -889,4 +929,9 @@ export class Environment {
       }
     });
   }
+}
+
+/** Why a check that needs a member account cannot run on this target. */
+export function memberUnavailable(reason: string): string {
+  return `this check needs a member account, and a member comes about only through a checkout at the payment provider (or is the seeded demo account, or a staff grant): the suite checks out with the fake provider's test cards, and ${reason}`;
 }

@@ -32,6 +32,7 @@ K8S_REQUIRE_NODES = bash -c '. deploy/kind/lib.sh && require_nodes $$0 "$$1"'
 	k8s-test k8s-lint k8s-psql k8s-valkey-cli k8s-images k8s-kubeconfig k8s-verify k8s-chaos \
 	k8s-rotate-media-key k8s-outage k8s-partition k8s-spread k8s-test-web k8s-test-pg-tls \
 	k8s-ownership k8s-test-drift k8s-pipeline-smoke k8s-test-keycloak k8s-test-smtp
+.PHONY: k8s-recs-demo
 
 k8s-up: ## Kubernetes mode on kind: everything from nothing to http://localhost:8080 (re-runnable; NODES=1|3, VARIANT=conformance, RATE_LIMITS=relaxed)
 	@deploy/kind/up.sh
@@ -102,6 +103,9 @@ k8s-test:## Chart unit tests (helm-unittest), lint and schema validation, in con
 
 k8s-pipeline-smoke: ## The recommendation pipeline at smoke size as a Job against the bucket (sim/ prefix), then the importers
 	@deploy/kind/pipeline-smoke.sh
+
+k8s-recs-demo: ## Publish and import a demo recommendation run for the demo account's profiles, as a Job (REPLACE=1: over a fresh pipeline run)
+	@deploy/kind/recs-demo.sh
 
 k8s-test-keycloak: ## Staff sign-in through the in-chart Keycloak with real tokens, roles enforced (production configuration)
 	@deploy/kind/verify/staff-keycloak.sh

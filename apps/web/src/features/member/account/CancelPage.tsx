@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Button,
@@ -13,28 +13,39 @@ import {
 import type { ReactNode } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
-import { queries } from "../../../app/query/queries.ts";
+import {
+  DeletionScheduledNotice,
+  isDeletionScheduled,
+  useScheduledDeletion,
+} from "../billing/deletion.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatLongDate } from "../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../shared/privileges.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
 import { AccountHeading } from "./AccountLayout.tsx";
-import { applyMembership, useResumeMembership } from "./membership.ts";
+import {
+  applyMembership,
+  membershipOfDetails,
+  useAccountDetails,
+  useResumeMembership,
+} from "./membership.ts";
 
 /**
- * Cancellation, done honestly: one page that says exactly what happens and when, a clear
- * "Finish cancellation", an equally clear way to keep the membership, and no guilt trip.
+ * Cancellation, done honestly: one page that says exactly what happens and when (a trial ends
+ * without a charge; a paid membership runs to the end of the period paid for), a clear "Finish
+ * cancellation", an equally clear way to keep the membership, and no guilt trip.
  */
 export function AccountCancelPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const demo = useIsDemoAccount();
-  const details = useQuery(queries.account());
+  const details = useAccountDetails();
+  const deletion = useScheduledDeletion(!demo);
   const flight = useSingleFlight();
   const resume = useResumeMembership({
     onSuccess: () => {
       toast.success("Your membership will continue");
-      void navigate({ to: "/account" });
+      void navigate({ to: "/account/membership" });
     },
   });
   const cancel = useMutation({
@@ -45,7 +56,7 @@ export function AccountCancelPage() {
       toast.success("Your membership is canceled", {
         description: `You can keep watching until ${formatLongDate(membership.subscription.currentPeriodEnd)}.`,
       });
-      void navigate({ to: "/account" });
+      void navigate({ to: "/account/membership" });
     },
   });
 
@@ -58,7 +69,7 @@ export function AccountCancelPage() {
           title="The demo account's membership can't be canceled"
           action={
             <Button variant="outline" size="sm" asChild>
-              <Link to="/account">Back to account</Link>
+              <Link to="/account/membership">Back to membership</Link>
             </Button>
           }
         >
@@ -92,24 +103,48 @@ export function AccountCancelPage() {
     );
   }
 
-  const { subscription, plan } = details.data;
-  const ends = formatLongDate(subscription.currentPeriodEnd);
+  const { membership, entitlement } = membershipOfDetails(details.data);
+  const { plan } = details.data;
+  const trial = membership.status === "trialing";
+  const endIso = trial
+    ? membership.trialEndsAt
+    : (entitlement.until ?? membership.currentPeriodEnd);
+  const ends = endIso ? formatLongDate(endIso) : null;
+  const running = membership.status === "trialing" || membership.status === "active";
 
-  if (subscription.status !== "active") {
+  if (deletion || isDeletionScheduled(resume.error)) {
+    return (
+      <>
+        <AccountHeading title="Cancel membership" />
+        <DeletionScheduledNotice scheduledFor={deletion?.scheduledFor} />
+        <p className="type-body text-fg-muted">
+          {ends
+            ? `Your membership ends on ${ends} and won't renew: there's nothing to cancel.`
+            : "Your membership won't renew: there's nothing to cancel."}
+        </p>
+      </>
+    );
+  }
+  if (!running || membership.cancelAtPeriodEnd) {
+    const ended = !running;
     return (
       <>
         <AccountHeading title="Cancel membership" />
         <FormAlert
-          tone={subscription.status === "ended" ? "accent" : "info"}
+          tone={ended ? "accent" : "info"}
           title={
-            subscription.status === "ended"
-              ? "Your membership has already ended"
-              : `Your membership is already set to end on ${ends}`
+            ended
+              ? membership.status === "canceled"
+                ? "Your membership has already ended"
+                : "There's no running membership to cancel"
+              : ends
+                ? `Your membership is already set to end on ${ends}`
+                : "Your membership is already set to end"
           }
           action={
-            subscription.status === "ended" ? (
+            ended ? (
               <Button variant="accent" size="sm" asChild>
-                <Link to="/account/plan">Restart membership</Link>
+                <Link to="/account/membership">Back to membership</Link>
               </Button>
             ) : (
               <Button
@@ -123,9 +158,14 @@ export function AccountCancelPage() {
             )
           }
         >
-          {subscription.status === "ended"
-            ? "Restart anytime to keep watching."
+          {ended
+            ? "Your membership page shows what you can do next."
             : "You won't be charged again. Changed your mind? Keep it in one click."}
+          {resume.isError ? (
+            <span className="mt-2 block text-danger">
+              {describeMemberError(resume.error).description}
+            </span>
+          ) : null}
         </FormAlert>
       </>
     );
@@ -134,22 +174,34 @@ export function AccountCancelPage() {
   return (
     <>
       <AccountHeading
-        title="Cancel your membership?"
-        description={`You're on ${plan.name}. Here's what happens if you cancel today.`}
+        title={trial ? "Cancel your free trial?" : "Cancel your membership?"}
+        description={`You're on ${plan?.name ?? "your plan"}. Here's what happens if you cancel today.`}
       />
       <ul className="flex flex-col gap-4 rounded-xl border border-line-subtle bg-surface-1 p-5 sm:p-6">
-        <Point icon={CalendarIcon} title={`You can keep watching until ${ends}`}>
-          Your membership stays active for the rest of the period you've paid for.
+        <Point
+          icon={CalendarIcon}
+          title={ends ? `You can keep watching until ${ends}` : "You can keep watching for now"}
+        >
+          {trial
+            ? "Your free trial carries on until then."
+            : "Your membership stays active for the rest of the period you've paid for."}
         </Point>
-        <Point icon={CheckCircleIcon} title="You won't be charged again">
-          No cancellation fee, and nothing more after today.
+        <Point
+          icon={CheckCircleIcon}
+          title={trial ? "You won't be charged at all" : "You won't be charged again"}
+        >
+          {trial
+            ? "Your trial ends without a payment."
+            : "No cancellation fee, and nothing more after today."}
         </Point>
         <Point icon={HeartIcon} title="Your profiles stay put">
           Profiles, My List, ratings and viewing activity are kept, so everything is where you left
           it if you come back.
         </Point>
-        <Point icon={RefreshIcon} title="Restart anytime">
-          Changed your mind before {ends}? Keep your membership from the Account page.
+        <Point icon={RefreshIcon} title="Change your mind anytime">
+          {ends
+            ? `Before ${ends}, keep your membership from the Membership page in one click.`
+            : "Keep your membership from the Membership page in one click."}
         </Point>
       </ul>
       {cancel.isError ? (
@@ -159,7 +211,7 @@ export function AccountCancelPage() {
       ) : null}
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
         <Button variant="outline" size="lg" asChild>
-          <Link to="/account">Keep my membership</Link>
+          <Link to="/account/membership">Keep my membership</Link>
         </Button>
         <Button
           variant="danger"

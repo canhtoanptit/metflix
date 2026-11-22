@@ -39,6 +39,7 @@ export function makeMembershipRecord(overrides: Partial<MembershipRecord> = {}):
     latestInvoiceId: "in_1",
     paymentMethod: { brand: "visa", last4: "4242", expMonth: 12, expYear: 2030 },
     trialRedeemedAt: null,
+    nextInvoice: null,
     clockOffsetMs: 0,
     version: 1,
     providerSyncedAt: T0,

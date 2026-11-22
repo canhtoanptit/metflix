@@ -29,6 +29,20 @@ export const queries = {
       queryFn: ({ signal }) => api().listPlans(undefined, { signal }),
       staleTime: 60 * MINUTE,
     }),
+  /** The sign-in issuers this deployment offers, in button order (public, cacheable). */
+  signInProviders: () =>
+    queryOptions({
+      queryKey: qk.signInProviders(),
+      queryFn: ({ signal }) => api().listSignInProviders(undefined, { signal }),
+      staleTime: 60 * MINUTE,
+    }),
+  /** The payment provider the browser faces (`fake`, `stripe` or `none`): configuration. */
+  billingConfig: () =>
+    queryOptions({
+      queryKey: qk.billingConfig(),
+      queryFn: ({ signal }) => api().getBillingConfig(undefined, { signal }),
+      staleTime: 60 * MINUTE,
+    }),
 
   // --- Account scope ---------------------------------------------------------------------------
   account: () =>
@@ -36,10 +50,40 @@ export const queries = {
       queryKey: qk.account.details(),
       queryFn: ({ signal }) => api().getAccount(undefined, { signal }),
     }),
+  /** The account's checkout in progress (any device), or `{ checkout: null }`. Always fresh. */
+  openCheckout: () =>
+    queryOptions({
+      queryKey: qk.account.openCheckout(),
+      queryFn: ({ signal }) => api().getOpenCheckout(undefined, { signal }),
+      staleTime: 0,
+    }),
+  /** Invoices and receipts, newest first; follow `nextCursor` for older ones. */
+  invoices: () =>
+    infiniteQueryOptions({
+      queryKey: qk.account.invoices(),
+      queryFn: ({ pageParam, signal }) =>
+        api().listInvoices({ query: { cursor: pageParam } }, { signal }),
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (page) => page.nextCursor ?? undefined,
+    }),
   devices: () =>
     queryOptions({
       queryKey: qk.account.devices(),
       queryFn: ({ signal }) => api().listDevices(undefined, { signal }),
+    }),
+  /** Linked sign-in issuers and whether the account has a password. */
+  identities: () =>
+    queryOptions({
+      queryKey: qk.account.identities(),
+      queryFn: ({ signal }) => api().listIdentities(undefined, { signal }),
+    }),
+  /** The session's account-holder proof and the ways this account can give one. */
+  elevation: () =>
+    queryOptions({
+      queryKey: qk.account.elevation(),
+      queryFn: ({ signal }) => api().getElevation(undefined, { signal }),
+      // Read fresh whenever a sensitive action asks: the proof expires on its own.
+      staleTime: 0,
     }),
   profiles: () =>
     queryOptions({

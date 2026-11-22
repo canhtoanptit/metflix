@@ -1,5 +1,5 @@
 import type { AppContainer } from "../container.ts";
-import { enforceRateLimit, requireAccount, requireAccountHolder } from "../session.ts";
+import { requireAccount, requireAccountHolder } from "../session.ts";
 import type { AppContext, AreaHandlers } from "./types.ts";
 
 /**
@@ -28,13 +28,8 @@ export function createBillingHandlers(container: AppContainer): AreaHandlers<"bi
           previewToken: body.previewToken,
         });
       }
-      // A card sent with a plan change is verified like any other: same budget.
-      if (body.payment) await enforceRateLimit(container, c, "payment");
-      return services.account.changePlan(accountId, body);
+      return services.account.changePlan(accountId, { planId: body.planId });
     },
-
-    updatePaymentMethod: async ({ body }, c) =>
-      services.account.updatePaymentMethod((await holder(c)).session.accountId, body.payment),
 
     cancelMembership: async (_request, c) => {
       const accountId = (await holder(c)).session.accountId;
@@ -54,6 +49,9 @@ export function createBillingHandlers(container: AppContainer): AreaHandlers<"bi
     getBillingConfig: () => services.billing.config(),
 
     startCheckout: async ({ body }, c) => services.billing.startCheckout(await account(c), body),
+
+    getOpenCheckout: async (_input, c) =>
+      services.billing.getOpenCheckout((await account(c)).session.accountId),
 
     getCheckout: async ({ params }, c) =>
       services.billing.getCheckout((await account(c)).session.accountId, params.id),

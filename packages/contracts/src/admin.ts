@@ -22,8 +22,10 @@ import { SubjectKey } from "./events.ts";
 import { experimentDefinitionFields } from "./experiments.ts";
 import { LinkedIdentity } from "./identity.ts";
 import { MaturityLevel } from "./maturity.ts";
+import { ImageSet } from "./media.ts";
 import { Money, PlanId } from "./plans.ts";
 import { ConsentPurpose, ConsentState, PrivacyRequest } from "./privacy.ts";
+import { TitleType } from "./titles.ts";
 
 export const StaffRoleSchema = z.enum(STAFF_ROLES).meta({ id: "StaffRole" });
 
@@ -396,6 +398,38 @@ export type CollectionBody = z.input<typeof CollectionBody>;
 
 export const TitleIdParam = z.object({ titleId: Id });
 
+/**
+ * Finding a title for the content screens (billboards, collections, availability): `q` searches
+ * by name (and cast, genres, synopsis, as members' search does, every maturity level, titles
+ * made unavailable included); `ids` (comma-separated, at most 50) resolves titles already chosen,
+ * in the order given (unknown ids are left out); neither lists the catalogue by name.
+ */
+export const StaffTitleQuery = z.object({
+  q: z.string().trim().min(1).max(100).optional(),
+  ids: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+){0,49}$/)
+    .optional(),
+  ...AdminPageQuery,
+});
+export type StaffTitleQuery = z.input<typeof StaffTitleQuery>;
+
+/** What an editor needs to recognise a title; nothing about members or viewing. */
+export const StaffTitle = z
+  .object({
+    id: Id,
+    name: z.string(),
+    type: TitleType,
+    releaseYear: z.number().int(),
+    maturity: MaturityLevel,
+    card: ImageSet,
+  })
+  .meta({ id: "StaffTitle" });
+export type StaffTitle = z.output<typeof StaffTitle>;
+
+export const StaffTitlePage = page(StaffTitle).meta({ id: "StaffTitlePage" });
+export type StaffTitlePage = z.output<typeof StaffTitlePage>;
+
 /** A staff override of a title's availability; survives re-seeding the catalogue. */
 export const TitleAvailability = z
   .object({
@@ -407,6 +441,20 @@ export const TitleAvailability = z
   })
   .meta({ id: "TitleAvailability" });
 export type TitleAvailability = z.output<typeof TitleAvailability>;
+
+/** A title with a staff override: the override, the title's name and whether it applies now. */
+export const TitleAvailabilityOverride = TitleAvailability.extend({
+  /** Null when the title is no longer in the catalogue. */
+  name: z.string().nullable(),
+  /** The override makes the title unavailable at this moment (its window included). */
+  unavailableNow: z.boolean(),
+}).meta({ id: "TitleAvailabilityOverride" });
+export type TitleAvailabilityOverride = z.output<typeof TitleAvailabilityOverride>;
+
+export const TitleAvailabilityList = z
+  .object({ items: z.array(TitleAvailabilityOverride) })
+  .meta({ id: "TitleAvailabilityList" });
+export type TitleAvailabilityList = z.output<typeof TitleAvailabilityList>;
 
 export const SetTitleAvailabilityBody = z
   .object({
@@ -502,6 +550,27 @@ export const RecommendationStatus = z
   .meta({ id: "RecommendationStatus" });
 export type RecommendationStatus = z.output<typeof RecommendationStatus>;
 
+/**
+ * What `POST /system/recommendations/import` did, with the status after it: `queued` (the
+ * import job will run `run`), `nothing_published` (no run is published: nothing to import),
+ * `already_served` (the published run is the one served), `invalid` (the published pointer or
+ * manifest is unusable: `detail` says why), `no_artefact_store` (this deployment has no store to
+ * import from). Only `queued` queues anything.
+ */
+export const RecommendationImportAnswer = RecommendationStatus.extend({
+  outcome: z.enum([
+    "queued",
+    "nothing_published",
+    "already_served",
+    "invalid",
+    "no_artefact_store",
+  ]),
+  /** The published run, when there is one. */
+  run: z.string().nullable(),
+  detail: z.string().nullable(),
+}).meta({ id: "RecommendationImportAnswer" });
+export type RecommendationImportAnswer = z.output<typeof RecommendationImportAnswer>;
+
 // --- Audit log --------------------------------------------------------------------------------
 
 export const AuditOutcomeSchema = z.enum(AUDIT_OUTCOMES).meta({ id: "AuditOutcome" });
@@ -515,6 +584,11 @@ export const AuditQuery = z.object({
   targetId: z.string().min(1).max(255).optional(),
   /** E.g. `unknown` or `pending`: the actions someone must follow up. */
   outcome: AuditOutcomeSchema.optional(),
+  /** The `X-Request-Id` the action was sent with: finds the entry of an unanswered request. */
+  requestId: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]{1,64}$/)
+    .optional(),
   ...AdminPageQuery,
 });
 export type AuditQuery = z.input<typeof AuditQuery>;
@@ -557,4 +631,8 @@ export const AuditLogEntry = AuditEntry.extend({
 export type AuditLogEntry = z.output<typeof AuditLogEntry>;
 
 export const AuditPage = page(AuditLogEntry).meta({ id: "AuditPage" });
+
+/** `GET /audit/mine`: the caller's own entries; `actorId` is the caller, always. */
+export const OwnAuditQuery = AuditQuery.omit({ actorId: true });
+export type OwnAuditQuery = z.input<typeof OwnAuditQuery>;
 export type AuditPage = z.output<typeof AuditPage>;

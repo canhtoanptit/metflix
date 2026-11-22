@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0c0f" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Webflix Staff</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <style>
+      /* Painted before any script loads: the canvas colour, never white. Mirrors --color-canvas. */
+      html, body { margin: 0; background: #0b0c0f; color: #b6b8bf; }
+      .boot { min-height: 100dvh; display: grid; place-items: center; font: 500 14px/1.4 system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div id="root"><div class="boot" aria-busy="true">Loading the staff console…</div></div>
+    <noscript>The staff console needs JavaScript.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

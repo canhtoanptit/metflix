@@ -15,6 +15,8 @@ import { useMemo } from "react";
 import { useDocumentTitle } from "../../../app/head/DocumentTitle.tsx";
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
+import { useAssignmentKey } from "../../../app/session/experiments.ts";
+import { genrePageQuery } from "../common/queries.ts";
 import { TitleGrid, TitleGridSkeleton } from "../common/TitleGrid.tsx";
 
 const route = getRouteApi("/profile/browse-shell/browse/genre/$slug");
@@ -44,8 +46,9 @@ export function GenrePage() {
   const navigate = useNavigate();
   const genres = useQuery(queries.genres());
   const filters = { ...(type ? { type } : {}), ...(sort ? { sort } : {}) };
+  const assignments = useAssignmentKey();
   const page = useInfiniteQuery({
-    ...queries.genre(slug, filters),
+    ...genrePageQuery(slug, filters, assignments),
     placeholderData: keepPreviousData,
   });
   const pages = page.data?.pages;
@@ -166,6 +169,7 @@ export function GenrePage() {
             items={items}
             label={genre ? `${genre.name} ${typeLabel}` : "Titles"}
             scope={`grid:genre:${slug}`}
+            surface="genre"
             stale={page.isPlaceholderData}
             hasMore={page.hasNextPage}
             loadingMore={page.isFetchingNextPage}

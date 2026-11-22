@@ -31,25 +31,6 @@ export const Password = z
     { message: "Password is too long" },
   );
 
-/**
- * Mock card used at sign-up and plan changes (no real payments, blueprint §1.3).
- * The server keeps only brand, last 4 digits and expiry.
- */
-export const MockCardPayment = z
-  .object({
-    method: z.literal("card"),
-    cardNumber: z
-      .string()
-      .transform((value) => value.replaceAll(/[\s-]/g, ""))
-      .pipe(z.string().regex(/^\d{12,19}$/, "Enter a valid card number")),
-    expMonth: z.number().int().min(1).max(12),
-    expYear: z.number().int().min(2000).max(2100),
-    cvc: z.string().regex(/^\d{3,4}$/, "Enter a valid security code"),
-    nameOnCard: z.string().trim().min(1).max(100),
-  })
-  .meta({ id: "MockCardPayment" });
-export type MockCardPayment = z.input<typeof MockCardPayment>;
-
 export const Account = z
   .object({
     id: Id,
@@ -98,7 +79,10 @@ export const PaymentMethod = z
   .meta({ id: "PaymentMethod" });
 export type PaymentMethod = z.output<typeof PaymentMethod>;
 
-/** Subscription together with its resolved plan; returned by every subscription mutation. */
+/**
+ * Subscription together with its resolved plan; returned by every change of an existing
+ * membership (plan change, cancel, resume), so never null there.
+ */
 export const Membership = z
   .object({
     subscription: Subscription,
@@ -110,8 +94,13 @@ export type Membership = z.output<typeof Membership>;
 export const AccountDetails = z
   .object({
     account: Account,
-    subscription: Subscription,
-    plan: Plan,
+    /**
+     * Milestone 1's view of the membership; null when the account has none (`membership.status`
+     * is `none`): never a stand-in.
+     */
+    subscription: Subscription.nullable(),
+    /** The membership's plan; null when the account has none. */
+    plan: Plan.nullable(),
     paymentMethod: PaymentMethod.nullable(),
     /**
      * Milestone 2 (§5.2, §5.6): the membership projection, driven by provider events. The web
@@ -141,16 +130,17 @@ export const AuthenticatedSession = z
   .object({
     authenticated: z.literal(true),
     account: Account,
-    subscription: Subscription,
-    plan: Plan,
+    /** Null when the account has no membership (`membership.status` is `none`). */
+    subscription: Subscription.nullable(),
+    /** Null when the account has no membership. */
+    plan: Plan.nullable(),
     profiles: z.array(Profile),
     /** Bound server-side to the session cookie; null until a profile is selected. */
     activeProfile: Profile.nullable(),
     /**
      * Milestone 2 (§5.2, billing): the membership projection, as `GET /account` has it. An
-     * account created without payment is `none` here, while `subscription` and `plan` (still
-     * required, for milestone 1's clients) show an ended Basic membership since the account was
-     * created. Absent from older servers.
+     * account without a membership is `none` here, and `subscription` and `plan` are null.
+     * Absent from older servers.
      */
     membership: MembershipState.optional(),
     /** Milestone 2 (§5.2, billing): whether the account may play, and why not. */
@@ -200,22 +190,17 @@ export const EmailStatus = z
 export type EmailStatus = z.output<typeof EmailStatus>;
 
 /**
- * Milestone 2 (§5.1): without `planId` and `payment`, sign-up creates the account and a session
- * with no membership (`none`); the plan is chosen and paid at checkout. Milestone 1's body (both,
- * the mock card charged at once) keeps working until billing removes the card fields. `planId`
- * alone is refused: there is nothing to apply it to.
+ * Milestone 2 (§5.1): sign-up creates the account and a session with no membership (`none`);
+ * the plan is chosen and paid at checkout, card data going to the payment provider only
+ * (principle 4). Strict: a body with anything else (milestone 1's `planId` and `payment`, a
+ * card) is refused (`validation_failed`), never stored or logged.
  */
 export const SignupBody = z
   .object({
     email: EmailAddress,
     password: Password,
-    planId: PlanId.optional(),
-    payment: MockCardPayment.optional(),
   })
-  .refine((body) => (body.planId === undefined) === (body.payment === undefined), {
-    message: "Send planId and payment together, or neither",
-    path: ["planId"],
-  })
+  .strict()
   .meta({ id: "SignupBody" });
 export type SignupBody = z.input<typeof SignupBody>;
 
@@ -247,25 +232,19 @@ export const UpdateAccountBody = z
   .meta({ id: "UpdateAccountBody" });
 export type UpdateAccountBody = z.input<typeof UpdateAccountBody>;
 
+/** Strict: card data (milestone 1's `payment`) is refused (`validation_failed`). */
 export const ChangePlanBody = z
   .object({
     planId: PlanId,
-    /** Required when resuming an ended membership without a stored card. */
-    payment: MockCardPayment.optional(),
     /**
      * Milestone 2 (§12): the token of the `POST /billing/subscription/preview` the member
      * accepted, so the change is applied exactly as previewed (same proration date).
      */
     previewToken: z.string().min(1).max(2048).optional(),
   })
+  .strict()
   .meta({ id: "ChangePlanBody" });
 export type ChangePlanBody = z.input<typeof ChangePlanBody>;
-
-/** Replace the card on file. Validated like the sign-up card; nothing but brand, last four and expiry is kept. */
-export const UpdatePaymentMethodBody = z
-  .object({ payment: MockCardPayment })
-  .meta({ id: "UpdatePaymentMethodBody" });
-export type UpdatePaymentMethodBody = z.input<typeof UpdatePaymentMethodBody>;
 
 // --- Devices ----------------------------------------------------------------------------------
 

@@ -7,13 +7,15 @@ import {
   CreditCardIcon,
   cx,
   DevicesIcon,
+  EyeIcon,
   HistoryIcon,
   HomeIcon,
   type IconComponent,
+  prefersReducedMotion,
   ShieldIcon,
   UsersIcon,
 } from "@webflix/ui";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { qk } from "../../../app/query/keys.ts";
 import { useAuthenticatedSession } from "../../../app/session/session.ts";
 import { MATURITY_COPY } from "../profiles/maturity.ts";
@@ -24,9 +26,10 @@ import { standingOf } from "../shared/privileges.ts";
 interface NavItem {
   to:
     | "/account"
-    | "/account/plan"
+    | "/account/membership"
     | "/account/security"
     | "/account/devices"
+    | "/account/privacy"
     | "/profiles/manage"
     | "/account/activity";
   label: string;
@@ -36,9 +39,10 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { to: "/account", label: "Overview", icon: HomeIcon, exact: true },
-  { to: "/account/plan", label: "Membership", icon: CreditCardIcon },
+  { to: "/account/membership", label: "Membership", icon: CreditCardIcon },
   { to: "/account/security", label: "Security", icon: ShieldIcon },
   { to: "/account/devices", label: "Devices", icon: DevicesIcon },
+  { to: "/account/privacy", label: "Privacy", icon: EyeIcon },
   { to: "/profiles/manage", label: "Profiles", icon: UsersIcon },
   { to: "/account/activity", label: "Viewing activity", icon: HistoryIcon },
 ];
@@ -172,29 +176,7 @@ export function AccountFrame({
         }
       />
       <div className="mx-auto flex w-full max-w-page flex-1 flex-col gap-6 px-gutter pt-6 pb-20 lg:flex-row lg:gap-12 lg:pt-12">
-        {navigation ? (
-          <nav aria-label="Account" className="-mx-gutter lg:mx-0 lg:w-56 lg:shrink-0">
-            <ul className="scrollbar-none flex gap-1 overflow-x-auto px-gutter lg:sticky lg:top-6 lg:flex-col lg:overflow-visible lg:px-0">
-              {NAV.map((item) => (
-                <li key={item.to} className="shrink-0">
-                  <Link
-                    to={item.to}
-                    activeOptions={{ exact: item.exact ?? false, includeSearch: false }}
-                    className={cx(
-                      "focus-ring flex items-center gap-3 rounded-control px-3 py-2 type-label whitespace-nowrap text-fg-muted transition-colors duration-fast",
-                      "hover:bg-surface-2 hover:text-fg",
-                      "data-[status=active]:bg-surface-2 data-[status=active]:text-fg",
-                      "lg:py-2.5",
-                    )}
-                  >
-                    <item.icon size="md" className="hidden lg:block" />
-                    {item.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </nav>
-        ) : null}
+        {navigation ? <AccountNav /> : null}
         <main
           id="main"
           className={cx(
@@ -206,6 +188,98 @@ export function AccountFrame({
         </main>
       </div>
     </div>
+  );
+}
+
+/**
+ * The account's sections: a sidebar on wide screens, a strip on phones that scrolls sideways.
+ * On a phone the current section is brought into view (centred when it can be), and the strip
+ * fades at an edge with more sections beyond it, so it is evident that it scrolls.
+ */
+function AccountNav() {
+  const list = useRef<HTMLUListElement>(null);
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const [edges, setEdges] = useState({ start: false, end: false });
+  const placed = useRef(false);
+
+  const measure = useCallback(() => {
+    const element = list.current;
+    if (!element) return;
+    const max = element.scrollWidth - element.clientWidth;
+    const next = {
+      start: max > 1 && element.scrollLeft > 1,
+      end: max > 1 && element.scrollLeft < max - 1,
+    };
+    setEdges((current) =>
+      current.start === next.start && current.end === next.end ? current : next,
+    );
+  }, []);
+
+  // The current section into view, whenever it changes (instantly the first time).
+  useEffect(() => {
+    const element = list.current;
+    const active = element?.querySelector<HTMLElement>('[data-status="active"]');
+    if (!element || !active || element.scrollWidth <= element.clientWidth) {
+      measure();
+      return;
+    }
+    const left = active.offsetLeft - (element.clientWidth - active.offsetWidth) / 2;
+    element.scrollTo({
+      left: Math.max(0, left),
+      behavior: placed.current && !prefersReducedMotion() ? "smooth" : "auto",
+    });
+    placed.current = true;
+    measure();
+  }, [pathname, measure]);
+
+  useEffect(() => {
+    const element = list.current;
+    if (!element) return;
+    element.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      element.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure]);
+
+  // Alpha only: a mask, so the fade follows whatever is behind the strip.
+  const fade = "2.5rem";
+  const mask =
+    edges.start && edges.end
+      ? `linear-gradient(to right, transparent, black ${fade}, black calc(100% - ${fade}), transparent)`
+      : edges.start
+        ? `linear-gradient(to right, transparent, black ${fade})`
+        : edges.end
+          ? `linear-gradient(to left, transparent, black ${fade})`
+          : undefined;
+
+  return (
+    <nav aria-label="Account" className="-mx-gutter lg:mx-0 lg:w-56 lg:shrink-0">
+      <ul
+        ref={list}
+        style={mask ? { maskImage: mask, WebkitMaskImage: mask } : undefined}
+        className="scrollbar-none relative flex gap-1 overflow-x-auto px-gutter lg:sticky lg:top-6 lg:flex-col lg:overflow-visible lg:px-0"
+      >
+        {NAV.map((item) => (
+          <li key={item.to} className="shrink-0">
+            <Link
+              to={item.to}
+              activeOptions={{ exact: item.exact ?? false, includeSearch: false }}
+              className={cx(
+                "focus-ring flex items-center gap-3 rounded-control px-3 py-2 type-label whitespace-nowrap text-fg-muted transition-colors duration-fast",
+                "hover:bg-surface-2 hover:text-fg",
+                "data-[status=active]:bg-surface-2 data-[status=active]:text-fg",
+                "lg:py-2.5",
+              )}
+            >
+              <item.icon size="md" className="hidden lg:block" />
+              {item.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
   );
 }
 

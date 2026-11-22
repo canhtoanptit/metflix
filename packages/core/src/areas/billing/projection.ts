@@ -172,6 +172,8 @@ export function projectMembership(input: ProjectionInput): MembershipRecord {
         ? (subscription.currentPeriodStart ?? providerNow)
         : null),
     clockOffsetMs,
+    // Previewed by the sync when it writes (it asks the provider); carried until then.
+    nextInvoice: sameSubscription ? (previous?.nextInvoice ?? null) : null,
     version: (previous?.version ?? 0) + 1,
     providerSyncedAt: now,
     createdAt: previous?.createdAt ?? now,
@@ -188,6 +190,7 @@ export function sameProjection(a: MembershipRecord | null, b: MembershipRecord):
     updatedAt: _u,
     createdAt: _c,
     clockOffsetMs: _o,
+    nextInvoice: _n,
     ...rest
   }: MembershipRecord) => rest;
   return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
@@ -216,6 +219,8 @@ export interface EffectiveMembership {
   /** When the entitlement ends unless something changes; null if open-ended. */
   entitledUntil: number | null;
   provider: PaymentProviderId | null;
+  /** The next invoice (provider time), only while one will be issued; never a guess. */
+  nextInvoice: MembershipRecord["nextInvoice"];
 }
 
 export const NO_MEMBERSHIP: EffectiveMembership = {
@@ -228,6 +233,7 @@ export const NO_MEMBERSHIP: EffectiveMembership = {
   graceEndsAt: null,
   entitledUntil: null,
   provider: null,
+  nextInvoice: null,
 };
 
 /** The stored projection, read at `now` (our time) with `graceSec` of grace. */
@@ -267,6 +273,16 @@ export function effectiveMembership(
   if (status === "past_due") entitledUntil = graceEndsAt;
   else if (ENTITLED.has(status) && record.cancelAtPeriodEnd) entitledUntil = periodEnd;
 
+  // The previewed next invoice, while the membership will still be invoiced and the preview
+  // is not overtaken by time (its date passed: the renewal's own sync replaces it).
+  const nextInvoice =
+    (status === "trialing" || status === "active" || status === "past_due") &&
+    !record.cancelAtPeriodEnd &&
+    record.nextInvoice !== null &&
+    record.nextInvoice.at > providerNow
+      ? { ...record.nextInvoice }
+      : null;
+
   // `none` is no membership at all: no plan, provider or period (MembershipState's contract).
   if (status === "none") return NO_MEMBERSHIP;
   return {
@@ -279,6 +295,7 @@ export function effectiveMembership(
     graceEndsAt: status === "past_due" ? graceEndsAt : null,
     entitledUntil,
     provider: record.provider,
+    nextInvoice,
   };
 }
 
@@ -304,6 +321,8 @@ export function legacyMembership(
     graceEndsAt: null,
     entitledUntil: effective.status === "canceling" ? effective.currentPeriodEnd : null,
     provider: null,
+    // Milestone 1's mock issues no invoices.
+    nextInvoice: null,
   };
 }
 
@@ -341,6 +360,15 @@ export function presentMembershipState(membership: EffectiveMembership): Members
     graceEndsAt: iso(membership.graceEndsAt),
     suspendedReason: membership.suspendedReason,
     provider: membership.provider,
+    nextInvoice: membership.nextInvoice
+      ? {
+          at: toIsoString(membership.nextInvoice.at),
+          amount: {
+            amountMinor: membership.nextInvoice.amountMinor,
+            currency: membership.nextInvoice.currency,
+          },
+        }
+      : null,
   };
 }
 

@@ -270,6 +270,45 @@ describe("member rights over HTTP", () => {
     });
     expect((await blocked.json()).code).toBe("demo_account_protected");
   });
+
+  it("while a deletion is scheduled the membership cannot renew again: 409 until it is kept", async () => {
+    const t = await createTestApp();
+    const device = t.device();
+    await device.api.signup({
+      body: { email: "renewal@example.com", password: "correct horse battery" },
+    });
+    const profile = await device.api.createProfile({ body: { name: "Me", avatarId: "av-fox" } });
+    await device.api.selectProfile({ body: { profileId: profile.id } });
+    const started = await device.api.startCheckout({ body: { planId: "basic" } });
+    await t.ports.payments.confirmSetup(started.clientSecret ?? "", "visa");
+    await device.api.confirmCheckout({ params: { id: started.id } });
+    await t.queue.drain();
+    await elevate(t, device);
+    const deletion = await device.api.requestAccountDeletion();
+    expect(deletion.membership?.status).toBe("ending");
+    const post = (path: string, method: string, body?: unknown) =>
+      device.request(`${API_BASE_PATH}${path}`, {
+        method,
+        headers: { ...CLIENT, "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    for (const [path, method, body] of [
+      ["/account/subscription/resume", "POST", undefined],
+      ["/account/subscription", "PUT", { planId: "premium" }],
+      ["/billing/checkout", "POST", { planId: "standard" }],
+    ] as const) {
+      const response = await post(path, method, body);
+      expect(response.status, `${method} ${path}`).toBe(409);
+      const problem = await response.json();
+      expect(problem.code).toBe("account_deletion_scheduled");
+      expect(problem.detail).toMatch(/Keep your account first/);
+    }
+    // Kept: resume works at once.
+    await device.api.cancelAccountDeletion();
+    const resumed = await device.api.resumeMembership();
+    expect(resumed.subscription.status).not.toBe("canceling");
+    expect((await device.api.getAccount()).membership?.cancelAtPeriodEnd).toBe(false);
+  });
 });
 
 describe("playback events over HTTP", () => {

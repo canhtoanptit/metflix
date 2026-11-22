@@ -2,11 +2,12 @@ import type { TitleCard } from "@webflix/contracts";
 import { Button, cx, sliderImageSizes, TitleTileSkeleton, useInView } from "@webflix/ui";
 import { type PointerEvent, useEffect, useRef } from "react";
 import { TitleTileLink } from "../../../app/links.ts";
-import { titleOverlayLinkProps } from "../../../app/overlay/titleOverlay.ts";
+import type { TelemetryContext } from "../../../app/telemetry/index.ts";
 import { preparePreview } from "../preview/prepare.ts";
 import { previewId, requestPreview } from "../preview/request.ts";
 import { previewStore } from "../preview/store.ts";
 import { durationMs } from "./motion.ts";
+import { cardLinkProps } from "./telemetry.ts";
 
 /** Same columns as a row's cards per page (2/3/4/5/6 by breakpoint). */
 export const GRID_COLUMNS =
@@ -20,6 +21,10 @@ export interface TitleGridProps {
   label: string;
   /** Hover-preview scope; previews from this grid close when it changes. */
   scope: string;
+  /** Where the grid is, for what is opened from it (a card's `rank` is its place in the grid). */
+  surface: NonNullable<TelemetryContext["surface"]>;
+  /** A card was opened (before the overlay shows it): search reports its click here. */
+  onOpen?: (card: TitleCard, rank: number) => void;
   hasMore?: boolean;
   loadingMore?: boolean;
   loadMoreFailed?: boolean;
@@ -38,6 +43,8 @@ export function TitleGrid({
   items,
   label,
   scope,
+  surface,
+  onOpen,
   hasMore = false,
   loadingMore = false,
   loadMoreFailed = false,
@@ -90,7 +97,17 @@ export function TitleGrid({
       const position = index % perRow;
       const edge = position === 0 ? "start" : position === perRow - 1 ? "end" : null;
       // Declined (the page just scrolled): not hovered, so moving on the card asks again.
-      if (requestPreview({ scope, layout: "standard" }, card, index, cell, edge)) {
+      const context = gridContext(surface, index);
+      const opened = () => onOpen?.(card, index + 1);
+      if (
+        requestPreview(
+          { scope, layout: "standard", context, onOpen: opened },
+          card,
+          index,
+          cell,
+          edge,
+        )
+      ) {
         hovered.current = index;
       }
     }, previewStore.intentDelay() ?? durationMs("--delay-hover-intent", 450));
@@ -136,7 +153,9 @@ export function TitleGrid({
               layout="standard"
               sizes={SIZES}
               priority={index < 6}
-              {...titleOverlayLinkProps(card.id)}
+              {...withOpen(cardLinkProps(card.id, gridContext(surface, index)), () =>
+                onOpen?.(card, index + 1),
+              )}
             />
           </li>
         ))}
@@ -159,6 +178,24 @@ export function TitleGrid({
       <div ref={sentinel} aria-hidden className="h-px" />
     </div>
   );
+}
+
+/** A grid card's place: its surface and 1-based position (a grid is not a row of the page). */
+function gridContext(surface: TitleGridProps["surface"], index: number): TelemetryContext {
+  return { surface, rowId: null, rowRank: null, rank: index + 1 };
+}
+
+function withOpen<T extends { onClick: (event: { currentTarget: Element }) => void }>(
+  props: T,
+  opened: () => void,
+): T {
+  return {
+    ...props,
+    onClick: (event: { currentTarget: Element }) => {
+      opened();
+      props.onClick(event);
+    },
+  };
 }
 
 /** The grid's loading state: the same cells, shimmering. */

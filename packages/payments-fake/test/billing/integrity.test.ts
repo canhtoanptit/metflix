@@ -231,7 +231,7 @@ describe("idempotency: a retried operation never charges twice", () => {
         }
         throw error;
       });
-    expect(changed.plan.id).toBe("premium");
+    expect(changed?.plan.id).toBe("premium");
     const customer = await h.repos.billing.getCustomer(accountId, "fake");
     const invoices = await h.fake.listInvoices({
       customerId: customer?.customerId ?? "",
@@ -271,7 +271,7 @@ describe("idempotency: a retried operation never charges twice", () => {
       planId: "premium",
       previewToken: preview.previewToken,
     });
-    expect(changed.plan.id).toBe("premium");
+    expect(changed?.plan.id).toBe("premium");
     const operations = await Promise.all(
       [1, 2].map((attempt) =>
         h.repos.billing.findOperationByKey(

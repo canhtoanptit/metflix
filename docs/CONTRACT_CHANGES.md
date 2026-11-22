@@ -628,3 +628,166 @@ erasure. Two staff routes, role `admin`, shaped as the job expects (40 staff rou
   outlasts that falls back as above, or answers 503. `POST /diagnostics/billing/clock` always
   answers the moved clock once the provider's clock has moved (it never answers 503 for the sync
   after it; a second advance would move the clock again).
+
+## 2026-11-23 — identity: a refused sign-in start sends the browser back (additive)
+
+- **`GET /auth/oidc/:provider/start` refused during a browser navigation redirects** instead of
+  showing a problem document: a request with `Sec-Fetch-Mode: navigate` (or, from a browser
+  without Fetch Metadata, an `Accept` naming `text/html`) that the route refuses (any of its
+  listed errors, the `oidc` rate limit, an invalid query) answers `303` to its `returnTo` (`/`
+  when missing or not a valid same-origin path) with `?oidc=failed&oidcError=<code>`, `code`
+  being the `ErrorCode` the problem document would have carried. The rate limit is still charged
+  and enforced. Every other caller (no navigation header: scripts, the conformance suite, the
+  page's own `fetch`) gets the problem document exactly as before.
+- **New constant `OIDC_ERROR_PARAM` (`"oidcError"`)**. It appears only beside `oidc=failed`: on
+  a refused start, and on a callback refused by the `oidc` rate limit (`rate_limited`; the
+  callbacks' other failures stay plain `failed`). A page that reads `?oidc=` can show a notice
+  per code (`rate_limited`: try again in a moment; `reauthentication_required`: confirm it's you
+  again; `unauthenticated`: sign in first) and fall back to its `failed` notice for any other.
+
+## 2026-11-23 — staff API: what building the console showed (additive, one response widened)
+
+Seven places where the staff console had to work around the API. All additive for a client of
+the previous contract except that `importRecommendations` answers 200 with more fields (its
+status fields are unchanged). 44 staff routes.
+
+- **`GET /titles`** (`searchTitles`, role `content`): `StaffTitleQuery { q?, ids?, cursor?,
+  limit? }` → `StaffTitlePage { items: StaffTitle[], nextCursor }`, `StaffTitle { id, name, type,
+  releaseYear, maturity, card: ImageSet }`. `q` (1-100) searches as members' search matches
+  (name first), every maturity level, titles made unavailable included; `ids` (comma-separated,
+  at most 50) resolves those titles in the order given, unknown ids left out, no paging; neither
+  lists the catalogue by name. Nothing about members.
+- **`GET /titles/:titleId/availability`** (`getTitleAvailability`, `content`) →
+  `TitleAvailability`; without an override `available: true`, `availableFrom`/`availableUntil`
+  null, `updatedAt: null`; `not_found` for a title the catalogue lacks.
+- **`GET /titles/availability`** (`listTitleAvailability`, `content`) → `TitleAvailabilityList
+  { items: TitleAvailabilityOverride[] }`, each `TitleAvailability` plus `name` (null when the
+  title left the catalogue) and `unavailableNow`, by name.
+- **`AuditQuery.requestId`** (`[A-Za-z0-9._-]{1,64}`): the entries of the request sent with that
+  `X-Request-Id`.
+- **`GET /audit/mine`** (`listOwnAuditLog`, role `any`): `OwnAuditQuery` (`AuditQuery` without
+  `actorId`) → `AuditPage` of the caller's own entries, with `before` null and `after` null or
+  `{ error }` (the error code an action ended with). `GET /audit` stays `admin`.
+- **`staff_action_conflict` gains `auditId?`** (extension member): the earlier attempt's audit
+  entry when the conflict is with one (absent for a dead letter replayed twice). `detail` keeps
+  the prose.
+- **`service_unavailable` from a staff billing action** (refund, cancel, extend trial,
+  complimentary period) now says the outcome is unknown and names its audit entry, instead of
+  the billing area's "Try again in a moment" (no shape change; the 503 before anything ran keeps
+  its own detail).
+- **`POST /system/recommendations/import`** (`importRecommendations`) answers **200**
+  `RecommendationImportAnswer`: `RecommendationStatus` plus `outcome` (`queued`,
+  `nothing_published`, `already_served`, `invalid`, `no_artefact_store`), `run` (the published
+  run, when there is one) and `detail`; only `queued` queues the import. It answered 202 with the
+  status and queued a job even when nothing was published. The audit entry's `after` is
+  `{ outcome, run }`.
+- **Schemas**: `StaffTitleQuery`, `StaffTitle`, `StaffTitlePage`, `TitleAvailabilityOverride`,
+  `TitleAvailabilityList`, `RecommendationImportAnswer`, `OwnAuditQuery`.
+
+## 2026-11-23 — privacy: the export link opens the web app, the terms before asking, a deletion stops renewals
+
+What building the privacy screens showed. Two response fields are added as **required** (a
+client of the previous contract that builds these objects, such as a mock, must add them); no
+route is added or removed, and `GET /privacy/exports/:id?token=` is unchanged.
+
+- **The export email's link** is a page of the web app, no longer the API route:
+  `{WEBFLIX_PUBLIC_ORIGIN}/account/privacy/exports/{requestId}#token={token}` (`requestId` and
+  `token` URI-encoded; the token is the one `downloadUrl` carries, in the fragment so the page
+  load never sends it to a server, as identity's links do). The page asks the member to sign in
+  (as the account holder), then calls `GET /api/v1/privacy/exports/{requestId}?token={token}`.
+  `PrivacyRequest.downloadUrl` (for the signed-in privacy page) is unchanged.
+- **`PrivacyRequestList.terms: PrivacyTerms`** (required): `{ deletionCoolingOffSec,
+  exportLinkTtlSec, exportMode: "inline" | "batch", exportTypicalSec, eventsRetentionDays,
+  aggregatesRetentionDays }`, this deployment's settings (configuration only: serving them reads
+  no database). `exportTypicalSec` is the new `WEBFLIX_EXPORT_TYPICAL_SEC` (default 60 inline,
+  1800 batch).
+- **`PrivacyRequest.membership: DeletionMembership | null`** (required, nullable): on a deletion,
+  what it did to the membership; null on an export and on a deletion recorded before this.
+  `DeletionMembership { status, endsAt, resumable }`: `status` is `stopping` (billing has not
+  confirmed yet; retried every scheduler tick), `ending` (set to end at `endsAt`: while the
+  deletion is scheduled, the earlier of the period's close and `scheduledFor`; once cancelled,
+  the period's close), `renewing` (it renews again: the member resumed it, or kept the account
+  before the renewals were stopped), `ended`, or `none` (no membership a payment provider
+  renews); `resumable` is true when the deletion is `canceled` and the membership is still set
+  to end (offer `POST /account/subscription/resume`).
+- **`POST /account/deletion`** (behaviour): the request is recorded first, then the
+  membership's renewals are stopped through billing's service (`cancel`: it ends at the close
+  of its period). Whatever billing answers, the deletion stands; a failure is retried by the
+  `privacy.sweep` job. `DELETE /account/deletion` leaves the membership set to end.
+- **Schemas**: `PrivacyTerms`, `DeletionMembership`.
+
+## 2026-11-23 — billing: what the checkout and membership screens needed (additive)
+
+New fields are always sent by this API; they are optional in the TypeScript types only so that
+clients' fixtures keep compiling.
+
+- **`MembershipState.nextInvoice: { at: IsoDateTime, amount: Money } | null`** (`GET /account`,
+  `GET /session`, the staff member view): the next invoice as the provider previews it, its date
+  (the trial's or the period's end, provider time like `currentPeriodEnd`) and its amount (the
+  plan's price less live discounts and credit, e.g. a downgrade's). Null when there is none:
+  cancelling, ended, unpaid, suspended, no membership, milestone 1's mock membership. Kept with the
+  projection (column `memberships.next_invoice_json`, migration 0019), previewed whenever the
+  projection is written; never a guess (an elapsed date reads as null until the renewal's sync).
+  Port: `PaymentProvider.previewNextInvoice(subscriptionId)` (Stripe: `POST
+  /v1/invoices/create_preview`).
+- **`GET /billing/checkout`** (`getOpenCheckout`, auth `account`): `OpenCheckout = { checkout:
+  Checkout | null }`, the account's checkout in progress (`requires_setup`, `requires_payment` or
+  `processing`, not expired) with its plan, promotion, `promotionOutcome`, state, trial and amount.
+  Its `clientSecret` is always null; `GET /billing/checkout/:id` answers it to the session that
+  continues.
+- **`Checkout.promotionOutcome: "pending" | "applied" | "not_applied_trial" | null`** (behaviour
+  change): a promo code is never spent on a payment of nothing. When the checkout grants a trial
+  the code is neither applied nor redeemed (`not_applied_trial`, `promotion` still names it) and
+  the trial converts at the full price; without a trial it applies to the first payment as before
+  (`applied`). Null without a code; `pending` until the card is confirmed.
+- **`PaymentMethodSetup.failureReason: DeclineReason | null`**: why a `failed` card change failed,
+  in the words a checkout decline uses (`card_declined`, `insufficient_funds`, `expired_card`).
+- Fake provider (local modes, not the contract): its form `/_pay/form` always leads back. With a
+  `return` path a decline, a failed challenge or a payment that can no longer be made redirects
+  to `return?payment=failed` (success: `payment=succeeded`), every page offers "Return to Webflix"
+  (`payment=failed`), a declined card can be followed by another on the same page (as on
+  Stripe's), and a second submission of something already confirmed redirects as succeeded.
+- **Error `account_deletion_scheduled`** (409, "This account is being deleted"; detail "Your
+  account is scheduled to be deleted. Keep your account first, then try again."): while the
+  account's deletion is scheduled, `POST /account/subscription/resume`, `PUT
+  /account/subscription`, `POST /billing/checkout` and `POST /billing/checkout/:id/confirm`
+  (a checkout still `requires_setup`) refuse with it: the checkout routes for any account,
+  resume and the plan change for a membership at the payment provider (milestone 1's mock
+  membership charges nothing and is not guarded).
+  Declared on those four routes (billing's route file: only their `errors` lists changed).
+  `DELETE /account/deletion` lifts it at once. `DeletionMembership.status: renewing` stays for
+  what staff or the provider cause meanwhile.
+
+## 2026-11-23 — billing: the legacy card fields are gone (breaking for milestone 1's card body)
+
+- **No route accepts card data** (principle 4, docs/BLUEPRINT-M2.md §5.6, §11.1).
+  `packages/contracts/test/no-card-data.test.ts`'s `LEGACY_CARD_FIELDS` is empty, and
+  `MockCardPayment`, `UpdatePaymentMethodBody` and `MOCK_CARDS` are removed.
+  - `POST /auth/signup`: `SignupBody` is `{ email, password }`, **strict**. Milestone 1's
+    `planId` + `payment` (or anything else) is refused with `400 validation_failed` (the issue
+    names the keys, never their values) and creates nothing. `payment_declined` is no longer one of
+    its errors. The account has no membership: the plan is chosen and paid at checkout.
+  - `PUT /account/subscription` (`changePlan`): `ChangePlanBody` is `{ planId, previewToken? }`,
+    **strict**: `payment` is refused with `validation_failed`. Every plan change now counts against
+    the account's `payment` budget (route-level, no longer only when a card was sent).
+  - `PUT /account/payment-method` (`updatePaymentMethod`) is **removed** (404): it existed only to
+    take a simulated card, and nothing calls it; a card is replaced through
+    `POST /billing/payment-method/setup` and the provider's form.
+  - `DELETE /account/subscription` and `POST /account/subscription/resume` stay (no card fields).
+    On milestone 1's simulated membership (the seeded demo account's) nothing is charged any more:
+    a plan change is refused (`checkout_state_conflict`), cancel and undoing a cancel still work,
+    restarting an ended one is refused (start a checkout).
+- **`subscription` and `plan` are nullable** on `AuthenticatedSession` (`GET /session`, sign-up,
+  sign-in, profile selection) and `AccountDetails` (`GET /account`): null when the account has no
+  membership (`membership.status` `none`). The "ended Basic" stand-in is gone everywhere (the
+  data export, the staff view, experiment targeting's plan, which is now null). `Membership`
+  (the answer of a plan change, cancel or resume) stays non-null: those routes need a membership.
+- **The only ways to become a member**: a checkout at the payment provider, the seeded demo
+  account, or staff extending an existing membership. Milestone 1's mirror of a provider
+  membership into the `subscriptions` row is gone (every reader uses the projection).
+- **Clients**: the web reads `subscription` and `plan` as possibly null (smallest edits) and its
+  mock mode answers null without a membership. The e2e helper `createAccount` and the
+  conformance suite make members through a checkout at the fake provider; without the fake
+  provider (production configuration) the checks that need a member skip with that reason. New
+  conformance checks: `identity.signup.card-data-refused` (replacing
+  `identity.signup.declined-cards`) and `plans.payment-budget` (replacing `plans.payment-method`).

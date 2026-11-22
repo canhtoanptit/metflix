@@ -1,49 +1,41 @@
 import { catalogCards, escapeRegExp } from "./api.ts";
 import { expect, test } from "./fixtures.ts";
 import {
-  CARDS,
   CLIENT_HEADERS,
   createAccount,
   expectAccessible,
-  fillCard,
   PASSWORD,
   uniqueEmail,
 } from "./member-support.ts";
 
 /** Account management against the real API, each test on its own fresh account. */
 
-test("change plan: the effects are explained; a declined card changes nothing", async ({
+test("change plan: the provider's preview is shown as charged, no card is asked for", async ({
   page,
 }) => {
+  // A paying member (createAccount: a provider checkout, past the trial).
   await createAccount(page.context().request, { plan: "basic", tag: "plan" });
   await page.goto("/account");
   await expect(page.getByRole("heading", { name: "Account" })).toBeVisible();
   await expectAccessible(page);
+  await page.getByRole("link", { name: "Manage membership" }).click();
   await page.getByRole("link", { name: "Change plan" }).click();
-  await expect(page).toHaveURL(/\/account\/plan/);
+  await expect(page).toHaveURL(/\/account\/membership\/plan/);
   await page.getByRole("radio", { name: /Premium/ }).click();
   const summary = page.getByRole("status").filter({ hasText: "Switching to Premium" });
-  // The exact amount (the server's proration), and what it is for.
-  await expect(summary).toContainText(
-    /We'll charge \$\d+\.\d\d today: the difference in price for the \d+ days? left in this billing period\./,
-  );
+  // The provider's own preview: what is charged today, and what the change brings.
+  await expect(summary).toContainText(/Charged today\s*\$\d+\.\d\d/);
   await expect(summary).toContainText("4 screens at a time");
+  // Milestone 2: card details are never typed into Webflix's page.
+  await expect(page.getByRole("textbox", { name: /card number/i })).toHaveCount(0);
   await expectAccessible(page);
 
-  // A new card that is declined: the plan stays Basic.
-  await page.getByRole("checkbox", { name: "Use a different card" }).check();
-  await fillCard(page, CARDS.declined);
-  await page.getByRole("button", { name: "Switch to Premium" }).click();
-  await expect(page.getByRole("alert")).toContainText("Your plan hasn't changed");
-  let session = await (await page.context().request.get("/api/v1/session")).json();
-  expect(session.plan.id).toBe("basic");
-
-  // The card on file works.
-  await page.getByRole("checkbox", { name: "Use a different card" }).uncheck();
-  await page.getByRole("button", { name: "Switch to Premium" }).click();
-  await expect(page).toHaveURL(/\/account$/);
-  session = await (await page.context().request.get("/api/v1/session")).json();
-  expect(session.plan.id).toBe("premium");
+  // The card on file at the provider is charged.
+  await page.getByRole("button", { name: /^Pay \$\d+\.\d\d and switch$/ }).click();
+  await expect(page).toHaveURL(/\/account\/membership$/);
+  await expect
+    .poll(async () => (await (await page.context().request.get("/api/v1/session")).json()).plan?.id)
+    .toBe("premium");
 
   // A downgrade warns that extra streams stop.
   await page.goto("/account/plan");
@@ -55,13 +47,13 @@ test("change plan: the effects are explained; a declined card changes nothing", 
 
 test("cancel with a clear end date, then keep the membership", async ({ page }) => {
   await createAccount(page.context().request, { tag: "cancel" });
-  await page.goto("/account");
+  await page.goto("/account/membership");
   await page.getByRole("link", { name: "Cancel membership" }).click();
   await expect(page.getByRole("heading", { name: "Cancel your membership?" })).toBeVisible();
   await expect(page.getByText(/You can keep watching until/)).toBeVisible();
   await expectAccessible(page);
   await page.getByRole("button", { name: "Finish cancellation" }).click();
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL(/\/account\/membership$/);
   await expect(page.getByText(/Your membership ends on/).first()).toBeVisible();
   let session = await (await page.context().request.get("/api/v1/session")).json();
   expect(session.subscription.status).toBe("canceling");
@@ -74,17 +66,6 @@ test("cancel with a clear end date, then keep the membership", async ({ page }) 
   await expect(page.getByText(/Your membership ends on/)).toHaveCount(0);
   session = await (await page.context().request.get("/api/v1/session")).json();
   expect(session.subscription.status).toBe("active");
-});
-
-test("update the payment method", async ({ page }) => {
-  await createAccount(page.context().request, { tag: "card" });
-  await page.goto("/account");
-  await page.getByRole("button", { name: "Update payment method" }).click();
-  const dialog = page.getByRole("dialog", { name: "Update payment method" });
-  await fillCard(page, "5555555555554444");
-  await dialog.getByRole("button", { name: "Save card" }).click();
-  await expect(dialog).toBeHidden();
-  await expect(page.getByText("Mastercard •••• 4444")).toBeVisible();
 });
 
 test("change email and password with the current password", async ({ page, newDevice }) => {

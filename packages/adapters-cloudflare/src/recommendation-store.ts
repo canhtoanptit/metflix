@@ -28,8 +28,13 @@ export type KvBulkWriter = (pairs: readonly KvPair[]) => Promise<void>;
 const LIST_GRACE_SEC = 24 * 60 * 60;
 /** KV refuses an expiration less than 60 s ahead (developers.cloudflare.com/kv/api/write-key-value-pairs). */
 const MIN_EXPIRATION_AHEAD_SEC = 120;
-/** Edge cache of a read: lists of a run never change after the run is activated. */
-const READ_CACHE_TTL_SEC = 300;
+/**
+ * Edge cache of a read. A run's lists never change once it is active, but a read that came
+ * before a new key reached this location caches the miss for this long (KV caches negative
+ * lookups too): kept at 60 s so a freshly activated run's lists show within about two minutes
+ * everywhere (up to 60 s for a key to propagate, then at most this).
+ */
+const READ_CACHE_TTL_SEC = 60;
 /** Binding writes in flight at once (each `put` is one of the invocation's 1,000 KV operations). */
 const BINDING_WRITE_CONCURRENCY = 32;
 /**

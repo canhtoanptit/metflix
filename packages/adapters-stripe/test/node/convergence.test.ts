@@ -1,7 +1,6 @@
 import {
   createHmacTokenSigner,
   createMediaTokens,
-  createMockBillingProvider,
   createPbkdf2PasswordHasher,
   createServices,
   createUuidV7Generator,
@@ -59,7 +58,7 @@ class RecordedStripe {
     return visible[visible.length - 1]?.object ?? null;
   }
 
-  readonly fetch: typeof fetch = async (input) => {
+  readonly fetch: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), {
@@ -68,6 +67,15 @@ class RecordedStripe {
       });
     const missing = () =>
       json({ error: { type: "invalid_request_error", code: "resource_missing" } }, 404);
+    if (url.pathname === "/v1/invoices/create_preview") {
+      // Not recorded: Stripe's preview of the next invoice, as the subscription's price.
+      const id = new URLSearchParams(String(init?.body ?? "")).get("subscription") ?? "";
+      const subscription = this.latest(id);
+      const items = (subscription?.items as { data?: Record<string, unknown>[] } | undefined)?.data;
+      const price = items?.[0]?.price as { unit_amount?: number; currency?: string } | undefined;
+      if (!subscription || typeof price?.unit_amount !== "number") return missing();
+      return json({ object: "invoice", amount_due: price.unit_amount, currency: price.currency });
+    }
     const match = /^\/v1\/(subscriptions|invoices|setup_intents)\/([^/]+)$/.exec(url.pathname);
     if (match?.[2]) {
       const object = this.latest(decodeURIComponent(match[2]));
@@ -172,7 +180,6 @@ async function harness(recorded: StripeEvent[]) {
       createHmacTokenSigner({ keys: config.media.tokenKeys, clock }),
       clock,
     ),
-    billing: createMockBillingProvider(),
     clock,
     ids,
     logger,

@@ -101,6 +101,7 @@ export {
 } from "./search-index.contract.ts";
 export {
   createTestServices,
+  subscribeForTest,
   TEST_NOW,
   type TestServices,
   type TestServicesOptions,

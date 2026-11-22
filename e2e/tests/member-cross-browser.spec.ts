@@ -1,6 +1,6 @@
 import type { Locator } from "@playwright/test";
 import { expect, test } from "./fixtures.ts";
-import { CARDS, CLIENT_HEADERS, createAccount, PASSWORD, uniqueEmail } from "./member-support.ts";
+import { becomeMember, createAccount, signUp, uniqueEmail } from "./member-support.ts";
 
 /**
  * Member screens whose layout or behaviour depends on the engine (dialogs, fixed bars, toasts),
@@ -39,24 +39,9 @@ test("landing: a Now on Webflix poster opens a teaser that ends in Get started",
 });
 
 test("sign-up step 4: a kids row and a chosen picture, without the password", async ({ page }) => {
-  const email = uniqueEmail("xb-step4");
-  const signup = await page.context().request.post("/api/v1/auth/signup", {
-    headers: CLIENT_HEADERS,
-    data: {
-      email,
-      password: PASSWORD,
-      planId: "standard",
-      payment: {
-        method: "card",
-        cardNumber: CARDS.approved,
-        expMonth: 12,
-        expYear: new Date().getFullYear() + 3,
-        cvc: "123",
-        nameOnCard: "E2E Tester",
-      },
-    },
-  });
-  expect(signup.status()).toBe(201);
+  // Sign-up's first steps through the API: the account, then the membership at checkout.
+  await signUp(page.context().request, uniqueEmail("xb-step4"));
+  await becomeMember(page.context().request, { plan: "standard", active: false });
   await page.goto("/signup/profile");
   await page.getByLabel("Your name").fill("Sam");
   await page.getByLabel("Profile 2 name (optional)").fill("Pip");
@@ -97,8 +82,11 @@ test("profile edit: the Save bar spans the screen on a solid surface, toasts sit
   await press(page.getByRole("button", { name: "Add a PIN" }));
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Digit 1 of 4").pressSequentially("2580");
-  await dialog.getByLabel("Account password").fill(account.password);
   await press(dialog.getByRole("button", { name: "Save PIN" }));
+  // A PIN change needs the account holder: confirmed with the password, over the PIN dialog.
+  const confirm = page.getByRole("dialog", { name: "Confirm it's you" });
+  await confirm.getByLabel("Webflix password").fill(account.password);
+  await press(confirm.getByRole("button", { name: "Confirm" }));
   const toast = page.locator("li").filter({ hasText: "Sam is locked" });
   await expect(toast).toBeVisible();
   const toastBox = await toast.boundingBox();

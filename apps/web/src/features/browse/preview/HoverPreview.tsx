@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { formatTimeLeft, formatTimeLeftSpoken, progressFraction } from "@webflix/contracts";
+import type { PreviewPlayerHandle } from "@webflix/player";
 import {
   ChevronDownIcon,
   CloseIcon,
@@ -21,6 +22,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
 import { queries } from "../../../app/query/queries.ts";
+import { TelemetryScope } from "../../../app/telemetry/index.ts";
 import { episodeCode, formatLength, genreLine, qualityLabel } from "../common/format.ts";
 import { canAnimate, durationMs, easing } from "../common/motion.ts";
 import { PreviewVideo } from "../common/PreviewVideo.tsx";
@@ -32,6 +34,7 @@ import {
 } from "../common/previews.ts";
 import { useBrowseSession } from "../common/session.ts";
 import { TitleTreatment } from "../common/TitleTreatment.tsx";
+import { noteTitleOpen, track, watchedSeconds } from "../common/telemetry.ts";
 import { watchLink } from "../common/watch.ts";
 import { MyListButton } from "../library/MyListButton.tsx";
 import { RatingControl } from "../library/RatingControl.tsx";
@@ -78,12 +81,14 @@ export function HoverPreview() {
   if (entries.length === 0) return null;
   return createPortal(
     entries.map((entry) => (
-      <PreviewCard
-        key={entry.key}
-        request={entry.request}
-        closing={entry.closing}
-        onExited={() => setEntries((current) => current.filter((item) => item.key !== entry.key))}
-      />
+      // Everything done in a preview (list, rating, its clip) reports from the card's place.
+      <TelemetryScope key={entry.key} context={entry.request.context ?? {}}>
+        <PreviewCard
+          request={entry.request}
+          closing={entry.closing}
+          onExited={() => setEntries((current) => current.filter((item) => item.key !== entry.key))}
+        />
+      </TelemetryScope>
     )),
     document.body,
   );
@@ -110,6 +115,7 @@ function PreviewCard({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLDivElement>(null);
+  const video = useRef<PreviewPlayerHandle>(null);
   const scrollAtOpen = useRef({ x: window.scrollX, y: window.scrollY });
   const [geometry, setGeometry] = useState<PreviewGeometry>(() =>
     previewGeometry({ rect: request.rect, edge: request.edge, ...measureLayout() }),
@@ -280,6 +286,8 @@ function PreviewCard({
   }, [closing]);
 
   const expand = () => {
+    request.onOpen?.();
+    noteTitleOpen(card.id, request.context ?? {});
     setOverlayReturnFocus(request.anchor.querySelector("a"));
     // The detail overlay grows from this picture; hide the preview under it at once.
     if (boxRef.current) boxRef.current.style.visibility = "hidden";
@@ -367,12 +375,23 @@ function PreviewCard({
         ) : null}
         {armed && clip ? (
           <PreviewVideo
+            handle={video}
             src={clip.url}
             active={!closing}
             muted={muted}
             onMutedChange={setMuted}
-            onFirstFrame={() => setPlaying(true)}
-            onEnded={() => setPlaying(false)}
+            onFirstFrame={() => {
+              setPlaying(true);
+              track("preview.start", { titleId: card.id }, request.context ?? {});
+            }}
+            onEnded={() => {
+              setPlaying(false);
+              track(
+                "preview.complete",
+                { titleId: card.id, watchedSec: watchedSeconds(video.current) },
+                request.context ?? {},
+              );
+            }}
             onError={() => setPlaying(false)}
             visibilityThreshold={0.6}
           />
@@ -423,7 +442,14 @@ function PreviewCard({
               size={buttonSize}
               asChild
             >
-              <Link {...play} />
+              <Link
+                {...play}
+                // Playing from a card is opening it: the ranker credits that card's impression.
+                onClick={() => {
+                  request.onOpen?.();
+                  track("title.open", { titleId: card.id }, request.context ?? {});
+                }}
+              />
             </IconButton>
           </Tooltip>
           <MyListButton

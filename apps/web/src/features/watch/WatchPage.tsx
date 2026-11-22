@@ -171,7 +171,7 @@ export function WatchPage() {
       block={state.block}
       title={detail}
       profile={profile}
-      planName={session.plan.name}
+      planName={session.plan?.name ?? "current"}
       returnTo={returnTo}
       retrying={state.switching}
       onRetry={() => void lifecycle.retry()}

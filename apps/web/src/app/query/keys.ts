@@ -14,13 +14,26 @@ export const qk = {
   root: () => ["webflix"] as const,
   session: () => ["webflix", "session"] as const,
   plans: () => ["webflix", "plans"] as const,
+  /** The sign-in issuers the deployment offers (`GET /auth/providers`: public, per deployment). */
+  signInProviders: () => ["webflix", "sign-in-providers"] as const,
+  /** `GET /billing/config`: which payment provider this deployment uses (configuration). */
+  billingConfig: () => ["webflix", "billing-config"] as const,
 
   account: {
     all: () => ["webflix", "account"] as const,
     details: () => ["webflix", "account", "details"] as const,
+    /** Billing reads of this account: invoices, checkouts, card changes. */
+    billing: () => ["webflix", "account", "billing"] as const,
+    invoices: () => ["webflix", "account", "billing", "invoices"] as const,
+    /** `GET /billing/checkout`: the account's checkout in progress, on any device. */
+    openCheckout: () => ["webflix", "account", "billing", "open-checkout"] as const,
     devices: () => ["webflix", "account", "devices"] as const,
     profiles: () => ["webflix", "account", "profiles"] as const,
     avatars: () => ["webflix", "account", "avatars"] as const,
+    /** Linked sign-in issuers (`GET /account/identities`). */
+    identities: () => ["webflix", "account", "identities"] as const,
+    /** The session's account-holder proof (`GET /session/elevation`). */
+    elevation: () => ["webflix", "account", "elevation"] as const,
   },
 
   profile: {

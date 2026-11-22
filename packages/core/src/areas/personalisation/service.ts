@@ -25,6 +25,7 @@ import {
 } from "./importer.ts";
 import type { EditorialCollectionRecord, TitleAvailabilityRecord } from "./repository.ts";
 import { RecommendationServing } from "./serving.ts";
+import { createStaffTitles, presentAvailability, type StaffTitles } from "./staff-titles.ts";
 
 /** A curated collection as staff design it (the contract's `CollectionBody` without `reason`). */
 export interface CollectionDesign {
@@ -61,7 +62,7 @@ export const recommendationImportJob = defineJob(
  * rule), and the staff operations on the served model. Milestone 1's browse, search and engine
  * are this area's too.
  */
-export interface PersonalisationService extends AreaModule {
+export interface PersonalisationService extends AreaModule, StaffTitles {
   readonly serving: RecommendationServing;
   /**
    * Import now (the command-line entry and the job): the published run, or `run`. The served
@@ -121,16 +122,6 @@ function presentCollection(record: EditorialCollectionRecord): EditorialCollecti
     position: record.position,
     titleIds: [...record.titleIds],
     status: record.status,
-    updatedAt: toIsoString(record.updatedAt),
-  };
-}
-
-function presentAvailability(record: TitleAvailabilityRecord): TitleAvailability {
-  return {
-    titleId: record.titleId,
-    available: record.available,
-    availableFrom: record.availableFrom === null ? null : toIsoString(record.availableFrom),
-    availableUntil: record.availableUntil === null ? null : toIsoString(record.availableUntil),
     updatedAt: toIsoString(record.updatedAt),
   };
 }
@@ -267,6 +258,8 @@ export function createPersonalisationService(
 
   return {
     serving,
+    // The staff console's catalogue and availability reads (`GET /titles`, `…/availability`).
+    ...createStaffTitles(deps),
     jobs: [
       handleJob(recommendationImportJob, async ({ run }) => {
         try {

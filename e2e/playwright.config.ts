@@ -32,11 +32,21 @@ const CROSS_BROWSER = /(cross-browser|ops-docs)\.spec\.ts$/;
 const slowdown = Math.max(1, Number(process.env.E2E_CPU_THROTTLE ?? 1) || 1);
 
 const projects: Project[] = [{ name: "setup", testMatch: /\.setup\.ts$/ }];
+// The staff console's specs (admin-*.spec.ts) run in their own project: the console signs in at
+// the staff issuer and needs none of the member app's demo sessions. Where it is: ADMIN_URL
+// (default BASE_URL/admin/; see tests/admin-helpers.ts).
+const ADMIN_SPECS = /admin-[^/]*\.spec\.ts$/;
 if (browsers.has("chromium")) {
   projects.push({
     name: "chromium",
     use: { ...devices["Desktop Chrome"] },
     dependencies: ["setup"],
+    testIgnore: ADMIN_SPECS,
+  });
+  projects.push({
+    name: "admin",
+    use: { ...devices["Desktop Chrome"] },
+    testMatch: ADMIN_SPECS,
   });
 }
 // Host condition (README "What each browser engine covers"): WebKit does not run while the Mac's

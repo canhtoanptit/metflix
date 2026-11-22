@@ -74,6 +74,13 @@ export interface PaymentProvider {
     priceLookupKey: string;
     prorationDate: number;
   }): Promise<ProrationPreview>;
+  /**
+   * The subscription's next invoice as the provider would issue it now: when (the trial's or
+   * the period's end, provider time) and how much (the plan's price less live discounts and the
+   * customer's credit). Null when there is none: cancelling at the period end, ended, unpaid,
+   * paused or never started.
+   */
+  previewNextInvoice(subscriptionId: string): Promise<NextInvoicePreview | null>;
   /** Invoiced immediately (`always_invoice`); pass the preview's `prorationDate`. */
   changePlan(
     input: { subscriptionId: string; priceLookupKey: string; prorationDate: number },
@@ -224,6 +231,13 @@ export interface ProviderRefund {
   amountMinor: number;
   currency: string;
   status: "pending" | "succeeded" | "failed";
+}
+
+export interface NextInvoicePreview {
+  /** Provider time (epoch ms). */
+  at: number;
+  amountMinor: number;
+  currency: string;
 }
 
 export interface ProrationPreview {

@@ -191,6 +191,7 @@ k9s -n webflix
 | `k8s-down` | delete the cluster (node containers and their volumes) and its kubeconfig |
 | `k8s-clean` | `k8s-down` plus the `webflix-api`, `webflix-web`, `webflix-tools`, `webflix-recs`, `webflix-media-tools` images |
 | `k8s-pipeline-smoke` | the whole recommendation pipeline at smoke size as a Job against the bucket (`sim/` prefix), then the importers (§9.6) |
+| `k8s-recs-demo` | a demo recommendation run for the demo account's profiles (Top Picks on screen before the pipeline has a fresh run), published into the bucket and imported by a one-off Job made from the import step; `REPLACE=1` over a fresh pipeline run (docs/RECOMMENDATIONS.md, "A demo run") |
 | `k8s-status`, `k8s-logs C=api`, `k8s-restart C=api` | inspect, follow logs, zero-downtime restart |
 | `k8s-ownership`, `k8s-test-drift` | fields of the release owned outside Helm; the hot-patch → redeploy scenario (need Node) |
 | `k8s-psql`, `k8s-valkey-cli` | shells into the in-cluster data stores |
@@ -585,6 +586,7 @@ store needs `externalS3.endpoint` and `forcePathStyle: true`.
 | Pipeline at smoke size | `make k8s-pipeline-smoke` | every step a workload against the bucket, the run imported (§9.6) |
 | Lake lease on the bucket | §9.7's probe | Garage ignores `If-None-Match` and `If-Match`: 16 of 16 racers win |
 | Journeys, jobs, rollout | `make k8s-verify` | every request attributed to its pod via `X-Request-Id` |
+| Member accounts in the verify scripts | `deploy/kind/verify/lib.ts` `newAccount` | since the card fields left the API (2026-11-23) a member comes about only through a checkout at the payment provider: `newAccount` signs up `{email, password}`, checks out at the fake provider (`/_pay/api/confirm`, a labelled test card of its own) and selects a profile. On a production configuration (provider `none` or Stripe) no member can be made: the scripts that need one (`journey`, `jobs`, `rollout`, `chaos`, `outage`, `partition`, `rotation`) print `SKIP …` with that reason at their first `newAccount` and exit 0. The same holds for the conformance suite: on a run without the fake provider, 54 checks skip for want of a member account (besides the 23 that drive the fake provider), so the production-configuration figures above predate the change |
 | Failure injection | `make k8s-chaos`, `make k8s-outage` | §3 tables |
 | Key rotation under load | `node deploy/kind/verify/rotation.ts [naive]` | §5 |
 | Hot-patched release object | `make k8s-test-drift` | `kubectl set image` on the API, then `up.sh` in each `K8S_OWNERSHIP` mode: strict stops before Helm (revision unchanged) naming `kubectl-set` and the field; off fails in Helm with the same explanation; take logs the field it takes back and deploys; the next strict deploy finds nothing |

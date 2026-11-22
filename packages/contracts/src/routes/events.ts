@@ -100,7 +100,7 @@ export const eventsRoutes = {
     auth: "account-holder",
     summary: "Download a completed data export (the signed link from the email)",
     description:
-      "The link (`PrivacyRequest.downloadUrl`) carries a signed token bound to the request and the account, valid until `expiresAt`; the caller must also be signed in to that account as its holder. `not_found` for an unknown, foreign, unfinished or expired export, or a bad token.",
+      "The link (`PrivacyRequest.downloadUrl`) carries a signed token bound to the request and the account, valid until `expiresAt`; the caller must also be signed in to that account as its holder. `not_found` for an unknown, foreign, unfinished or expired export, or a bad token. The export email does not link here: it opens the web app at `{public origin}/account/privacy/exports/{id}#token={token}` (the token in the fragment, never sent to a server by the page load), which asks the member to sign in and then calls this route with that token.",
     params: DataExportParams,
     query: DataExportQuery,
     response: DataExport,
@@ -112,7 +112,9 @@ export const eventsRoutes = {
     tag: "privacy",
     area: "events",
     auth: "account-holder",
-    summary: "Exports and deletion requests of the account",
+    summary: "Exports and deletion requests of the account, and the terms of a new one",
+    description:
+      "Newest first. `terms` are this deployment's settings a member may want before asking (the cooling-off period, how long an export link lasts, how long an export normally takes, how long events are kept), from configuration. A deletion's `membership` says what it did to the membership (stopping, ending on `endsAt`, renewing, ended, none) and whether to offer resuming it.",
     response: PrivacyRequestList,
   }),
   requestAccountDeletion: defineRoute({
@@ -123,7 +125,7 @@ export const eventsRoutes = {
     auth: "account-holder",
     summary: "Delete the account after a cooling-off period",
     description:
-      "Needs a fresh account-holder proof. Billing records are retained as the law requires; the pseudonymous key mapping is deleted and the subject's events are erased at the next compaction.",
+      "Needs a fresh account-holder proof. The request is recorded first; then the membership's renewals are stopped through billing (it ends at the close of its period, or with the account if that comes first), retried on every scheduler tick if billing cannot answer (`membership.status: stopping`). Keeping the account leaves the membership set to end (`membership.resumable`). Billing records are retained as the law requires; the pseudonymous key mapping is deleted and the subject's events are erased at the next compaction.",
     response: PrivacyRequest,
     successStatus: 202,
     errors: ["privacy_request_pending", "reauthentication_required", "demo_account_protected"],

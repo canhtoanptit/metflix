@@ -109,7 +109,7 @@ export const profileChecks: CheckDefinition[] = [
     area: "profiles",
     title: "Create, edit and delete profiles; the last one cannot be deleted",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("profiles-crud");
+      const account = await ctx.env.bareSignup("profiles-crud");
       const agent = account.agent;
       const empty = await succeeds(() => agent.api.listProfiles(), "GET /profiles");
       equal(empty.items.length, 0, "profiles of a new account");
@@ -223,7 +223,7 @@ export const profileChecks: CheckDefinition[] = [
     area: "profiles",
     title: "An account holds at most five profiles",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("profiles-cap");
+      const account = await ctx.env.bareSignup("profiles-cap");
       for (let index = 1; index <= MAX_PROFILES_PER_ACCOUNT; index += 1) {
         await ctx.env.createProfile(account.agent, { name: `Cap ${index}` });
       }

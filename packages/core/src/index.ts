@@ -37,7 +37,9 @@ export {
   NO_JOBS,
   type ServerEventInput,
 } from "./areas/module.ts";
+export * from "./areas/personalisation/artefact-writer.ts";
 export * from "./areas/personalisation/config.ts";
+export * from "./areas/personalisation/demo-run.ts";
 export * from "./areas/personalisation/importer.ts";
 export * from "./areas/personalisation/repository.ts";
 export type { PersonalisationService } from "./areas/personalisation/service.ts";
@@ -133,12 +135,6 @@ export {
 } from "./services/seed.ts";
 export {
   BILLING_PERIOD_MS,
-  type BillingProvider,
-  type CardInput,
-  type ChargeResult,
-  cardBrand,
-  createMockBillingProvider,
-  type DeclineReason,
   effectiveSubscription,
   playbackEntitlement,
 } from "./services/subscriptions.ts";

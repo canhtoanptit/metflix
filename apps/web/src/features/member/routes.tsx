@@ -3,11 +3,22 @@
  * profiles and account. Every screen is declared here and lazily loaded from this folder;
  * `app/router/tree.ts` plugs each group into the matching guard layout. Edit routes here only.
  */
-import { createRoute, lazyRouteComponent, redirect } from "@tanstack/react-router";
-import { PLAN_IDS, type SessionState } from "@webflix/contracts";
+import {
+  createRoute,
+  lazyRouteComponent,
+  type ParsedLocation,
+  redirect,
+} from "@tanstack/react-router";
+import {
+  type AuthenticatedSession,
+  OIDC_INTENTS,
+  OIDC_OUTCOMES,
+  OIDC_PROVIDERS,
+  PLAN_IDS,
+  type SessionState,
+} from "@webflix/contracts";
 import { queries } from "../../app/query/queries.ts";
 import type { RouterContext } from "../../app/router/context.ts";
-import { requireAccount } from "../../app/router/guards.ts";
 import {
   accountLayout,
   guestLayout,
@@ -15,6 +26,7 @@ import {
   publicLayout,
 } from "../../app/router/layouts.tsx";
 import { optionalSearch, searchParam } from "../../app/router/search.ts";
+import { resumeHref, type SignupStage, signupStage } from "./billing/membership.ts";
 import { showcaseQuery } from "./shared/artwork.ts";
 import { readDraft } from "./signup/draft.ts";
 
@@ -44,26 +56,117 @@ export const loginRoute = createRoute({
     optionalSearch({
       email: searchParam.string(search.email),
       redirect: searchParam.redirect(search.redirect),
+      /** A federated attempt that came back signed out (auth/oidc.ts). */
+      oidc: searchParam.oneOf(OIDC_OUTCOMES, search.oidc),
+      provider: searchParam.oneOf(OIDC_PROVIDERS, search.provider),
     }),
   component: lazyRouteComponent(() => import("./auth/LoginPage.tsx"), "LoginPage"),
 });
 
+// --- Sign-in landing and email links (identity; auth/) ------------------------------------------
+//
+// Public: a federated attempt comes back signed in or not, and an emailed link may be opened in
+// any browser, signed in or out.
+
+/** Every "Continue with Google / Apple" attempt comes back here; it dispatches on the outcome. */
+const signInLandingRoute = createRoute({
+  getParentRoute: () => publicLayout,
+  path: "/login/continue",
+  staticData: { title: "Signing in" },
+  validateSearch: (search: Record<string, unknown>) =>
+    optionalSearch({
+      oidc: searchParam.oneOf(OIDC_OUTCOMES, search.oidc),
+      /** `OIDC_ERROR_PARAM`: why the server refused the attempt, passed on to the page. */
+      oidcError: searchParam.string(search.oidcError),
+      provider: searchParam.oneOf(OIDC_PROVIDERS, search.provider),
+      context: searchParam.oneOf(["signin", "signup"] as const, search.context),
+      from: searchParam.redirect(search.from),
+      redirect: searchParam.redirect(search.redirect),
+      next: searchParam.redirect(search.next),
+      // Mock mode only: the stand-in for the issuer's page.
+      "mock-issuer": searchParam.string(search["mock-issuer"]),
+      intent: searchParam.oneOf(OIDC_INTENTS, search.intent),
+      returnTo: searchParam.redirect(search.returnTo),
+    }),
+  component: lazyRouteComponent(() => import("./auth/SignInLandingPage.tsx"), "SignInLandingPage"),
+});
+
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => publicLayout,
+  path: "/forgot-password",
+  staticData: { title: "Reset your password" },
+  validateSearch: (search: Record<string, unknown>) =>
+    optionalSearch({ email: searchParam.string(search.email) }),
+  component: lazyRouteComponent(
+    () => import("./auth/ForgotPasswordPage.tsx"),
+    "ForgotPasswordPage",
+  ),
+});
+
+/** The emailed reset link: `/reset-password#token=…` (the token never reaches a server). */
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => publicLayout,
+  path: "/reset-password",
+  staticData: { title: "Choose a new password" },
+  component: lazyRouteComponent(() => import("./auth/ResetPasswordPage.tsx"), "ResetPasswordPage"),
+});
+
+/** The emailed verification link: `/verify-email#token=…`. */
+const verifyEmailRoute = createRoute({
+  getParentRoute: () => publicLayout,
+  path: "/verify-email",
+  staticData: { title: "Verify your email" },
+  component: lazyRouteComponent(() => import("./auth/VerifyEmailPage.tsx"), "VerifyEmailPage"),
+});
+
 // --- Sign-up flow ------------------------------------------------------------------------------
 //
-// Steps 1–3 are for guests and build a draft (signup/draft.ts); the account is created at the
-// payment step, and step 4 (profiles) runs signed in. Each step guards itself, so deep links,
-// refreshes and the Back button always land on a step that can actually be completed.
+// Milestone 2 order (docs/BLUEPRINT-M2.md §5.1): the account is created at step 1, then plan,
+// payment in the provider's form, the confirming state, profiles. `/signup` is the one entry for
+// everyone: a guest starts at step 1, and a signed-in account is sent to the step its state calls
+// for (`signupStage`, billing/membership.ts). Every later step runs the same check, so deep links,
+// refreshes, the Back button and members who stopped half-way always land on a step that can
+// actually be completed.
 
 async function loadSession(context: RouterContext): Promise<SessionState> {
   return context.queryClient.ensureQueryData(queries.session());
 }
 
-/** Signed-in visitors leave the guest steps: to the profile step if they have no profile yet. */
+/** Where this signed-in account's sign-up resumes (asks the server for an open checkout). */
+function resumeFor(context: RouterContext, session: SessionState): Promise<string> {
+  return resumeHref(session, async () => {
+    const answer = await context.queryClient.fetchQuery(queries.openCheckout());
+    return answer.checkout;
+  });
+}
+
+/** Step 1 is for guests: a signed-in account resumes where its sign-up stands. */
 async function requireSignupGuest({ context }: { context: RouterContext }): Promise<void> {
   const session = await loadSession(context);
-  if (!session.authenticated) return;
-  if (session.profiles.length === 0) throw redirect({ to: "/signup/profile", replace: true });
-  throw redirect({ href: session.activeProfile ? "/browse" : "/profiles", replace: true });
+  if (session.authenticated)
+    throw redirect({ href: await resumeFor(context, session), replace: true });
+}
+
+/**
+ * A step after the account exists. Guests go back to the start (`/signup` offers sign-in to
+ * someone who already has an account); an account whose stage is not one of `allowed` resumes
+ * where it stands.
+ */
+async function requireSignupStage(
+  { context, location }: { context: RouterContext; location: ParsedLocation },
+  allowed: readonly SignupStage[],
+  signedOut: "start" | "sign-in" = "start",
+): Promise<AuthenticatedSession> {
+  const session = await loadSession(context);
+  if (!session.authenticated) {
+    throw signedOut === "start"
+      ? redirect({ to: "/signup", search: {}, replace: true })
+      : redirect({ to: "/login", search: { redirect: location.href }, replace: true });
+  }
+  if (!allowed.includes(signupStage(session))) {
+    throw redirect({ href: await resumeFor(context, session), replace: true });
+  }
+  return session;
 }
 
 const signupRoute = createRoute({
@@ -82,6 +185,9 @@ const signupRegistrationRoute = createRoute({
       email: searchParam.string(search.email),
       /** A plan picked on the landing page, carried into step 2. */
       plan: searchParam.oneOf(PLAN_IDS, search.plan),
+      /** A federated attempt that came back to this page (FederatedButtons shows it). */
+      oidc: searchParam.oneOf(OIDC_OUTCOMES, search.oidc),
+      provider: searchParam.oneOf(OIDC_PROVIDERS, search.provider),
     }),
   component: lazyRouteComponent(() => import("./signup/RegistrationStep.tsx"), "RegistrationStep"),
 });
@@ -90,10 +196,9 @@ const signupPlanRoute = createRoute({
   getParentRoute: () => signupRoute,
   path: "/plan",
   staticData: { title: "Choose your plan" },
-  beforeLoad: async (args) => {
-    await requireSignupGuest(args);
-    if (!readDraft().email) throw redirect({ to: "/signup", search: {}, replace: true });
-  },
+  // A first payment that awaits confirmation may still pick another plan (the server ends the
+  // unpaid one when a checkout starts for another plan).
+  beforeLoad: (args) => requireSignupStage(args, ["plan", "payment"]),
   validateSearch: (search: Record<string, unknown>) =>
     optionalSearch({ plan: searchParam.oneOf(PLAN_IDS, search.plan) }),
   component: lazyRouteComponent(() => import("./signup/PlanStep.tsx"), "PlanStep"),
@@ -106,29 +211,75 @@ const signupPaymentRoute = createRoute({
   validateSearch: (search: Record<string, unknown>) =>
     optionalSearch({ plan: searchParam.oneOf(PLAN_IDS, search.plan) }),
   beforeLoad: async (args) => {
-    await requireSignupGuest(args);
-    const draft = readDraft();
-    if (!draft.email) throw redirect({ to: "/signup", search: {}, replace: true });
-    if (!args.search.plan && !draft.planId) {
+    await requireSignupStage(args, ["plan", "payment"]);
+    if (!args.search.plan && !readDraft().planId) {
       throw redirect({ to: "/signup/plan", search: {}, replace: true });
     }
   },
   component: lazyRouteComponent(() => import("./signup/PaymentStep.tsx"), "PaymentStep"),
 });
 
+/**
+ * Step 3, continued: the payment is being confirmed. The provider's form returns here
+ * (`payment=succeeded` from the fake provider's form, `redirect_status` from Stripe after a
+ * redirect). Any stage may land here: a reload after the membership started shows its welcome.
+ */
+const signupConfirmRoute = createRoute({
+  getParentRoute: () => signupRoute,
+  path: "/confirm",
+  staticData: { title: "Confirming your payment" },
+  validateSearch: (search: Record<string, unknown>) =>
+    optionalSearch({
+      checkout: searchParam.string(search.checkout),
+      payment: searchParam.oneOf(["succeeded", "failed"] as const, search.payment),
+      redirect_status: searchParam.oneOf(
+        ["succeeded", "processing", "failed"] as const,
+        search.redirect_status,
+      ),
+    }),
+  beforeLoad: async (args) => {
+    const session = await requireSignupStage(
+      args,
+      ["plan", "payment", "profiles", "complete"],
+      "sign-in",
+    );
+    if (!args.search.checkout) {
+      throw redirect({ href: await resumeFor(args.context, session), replace: true });
+    }
+  },
+  component: lazyRouteComponent(() => import("./signup/ConfirmStep.tsx"), "ConfirmStep"),
+});
+
 const signupProfileRoute = createRoute({
   getParentRoute: () => signupRoute,
   path: "/profile",
   staticData: { title: "Create your profiles" },
-  beforeLoad: async (args) => {
-    const { session } = await requireAccount(args);
-    // Setup is finished once a profile exists (Back from the app, or a stale tab).
-    if (session.profiles.length > 0) {
-      throw redirect({ href: session.activeProfile ? "/browse" : "/profiles", replace: true });
-    }
-  },
+  // Setup is finished once a profile exists (Back from the app, or a stale tab); an account
+  // without a membership pays first.
+  beforeLoad: (args) => requireSignupStage(args, ["profiles"], "sign-in"),
   component: lazyRouteComponent(() => import("./signup/ProfileStep.tsx"), "ProfileStep"),
 });
+
+/**
+ * Mock mode only: the stand-in for the payment provider's hosted form (`GET /billing/config`
+ * names it in mock mode; the real fake provider's form is served by the API under `/_pay`).
+ */
+const mockProviderRoute = __WEBFLIX_MOCK__
+  ? createRoute({
+      getParentRoute: () => publicLayout,
+      path: "/mock-pay",
+      staticData: { title: "Test payments" },
+      validateSearch: (search: Record<string, unknown>) =>
+        optionalSearch({
+          secret: searchParam.string(search.secret),
+          return: searchParam.redirect(search.return),
+        }),
+      component: lazyRouteComponent(
+        () => import("./billing/MockProviderPage.tsx"),
+        "MockProviderPage",
+      ),
+    })
+  : null;
 
 const logoutRoute = createRoute({
   getParentRoute: () => publicLayout,
@@ -210,18 +361,113 @@ const accountOverviewRoute = createRoute({
   component: lazyRouteComponent(() => import("./account/OverviewPage.tsx"), "AccountOverviewPage"),
 });
 
+// Membership (billing): the hub and its flows. `/account/plan` and `/account/cancel` (milestone 1
+// links) lead to their new homes.
+
+const accountMembershipRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/membership",
+  staticData: { title: "Membership" },
+  component: lazyRouteComponent(
+    () => import("./account/MembershipPage.tsx"),
+    "AccountMembershipPage",
+  ),
+});
+
 const accountPlanRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/plan",
+  path: "/membership/plan",
   staticData: { title: "Change plan" },
   component: lazyRouteComponent(() => import("./account/PlanPage.tsx"), "AccountPlanPage"),
 });
 
 const accountCancelRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/cancel",
+  path: "/membership/cancel",
   staticData: { title: "Cancel membership" },
   component: lazyRouteComponent(() => import("./account/CancelPage.tsx"), "AccountCancelPage"),
+});
+
+const accountPaymentMethodRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/membership/payment",
+  staticData: { title: "Payment method" },
+  validateSearch: (search: Record<string, unknown>) =>
+    optionalSearch({
+      /** The card change the provider's form returns to. */
+      setup: searchParam.string(search.setup),
+      payment: searchParam.oneOf(["succeeded", "failed"] as const, search.payment),
+      redirect_status: searchParam.oneOf(
+        ["succeeded", "processing", "failed"] as const,
+        search.redirect_status,
+      ),
+    }),
+  component: lazyRouteComponent(
+    () => import("./account/PaymentMethodPage.tsx"),
+    "AccountPaymentMethodPage",
+  ),
+});
+
+const accountInvoicesRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/membership/invoices",
+  staticData: { title: "Billing history" },
+  component: lazyRouteComponent(() => import("./account/InvoicesPage.tsx"), "AccountInvoicesPage"),
+});
+
+/** Restarting an ended membership: the payment step of a new checkout. */
+const accountCheckoutRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/membership/checkout",
+  staticData: { title: "Restart your membership" },
+  validateSearch: (search: Record<string, unknown>) =>
+    optionalSearch({ plan: searchParam.oneOf(PLAN_IDS, search.plan) }),
+  beforeLoad: ({ search }) => {
+    if (!search.plan) throw redirect({ to: "/account/membership/plan", replace: true });
+  },
+  component: lazyRouteComponent(
+    () => import("./account/RestartPage.tsx"),
+    "AccountRestartPaymentPage",
+  ),
+});
+
+/** The confirming state of a restart (the provider's form returns here). */
+const accountConfirmRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/membership/confirm",
+  staticData: { title: "Confirming your payment" },
+  validateSearch: (search: Record<string, unknown>) =>
+    optionalSearch({
+      checkout: searchParam.string(search.checkout),
+      payment: searchParam.oneOf(["succeeded", "failed"] as const, search.payment),
+      redirect_status: searchParam.oneOf(
+        ["succeeded", "processing", "failed"] as const,
+        search.redirect_status,
+      ),
+    }),
+  beforeLoad: ({ search }) => {
+    if (!search.checkout) throw redirect({ to: "/account/membership", replace: true });
+  },
+  component: lazyRouteComponent(
+    () => import("./account/RestartPage.tsx"),
+    "AccountRestartConfirmPage",
+  ),
+});
+
+const legacyPlanRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/plan",
+  beforeLoad: () => {
+    throw redirect({ to: "/account/membership/plan", replace: true });
+  },
+});
+
+const legacyCancelRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/cancel",
+  beforeLoad: () => {
+    throw redirect({ to: "/account/membership/cancel", replace: true });
+  },
 });
 
 const accountDevicesRoute = createRoute({
@@ -236,6 +482,30 @@ const accountSecurityRoute = createRoute({
   path: "/security",
   staticData: { title: "Security" },
   component: lazyRouteComponent(() => import("./account/SecurityPage.tsx"), "AccountSecurityPage"),
+});
+
+/**
+ * The export email's link (`/account/privacy/exports/{id}#token=…`). Outside the account guard:
+ * the page itself leads a signed-out member to sign in and back, keeping the token in the tab.
+ */
+const exportLinkRoute = createRoute({
+  getParentRoute: () => publicLayout,
+  path: "/account/privacy/exports/$requestId",
+  staticData: { title: "Your Webflix data" },
+  component: lazyRouteComponent(
+    () => import("./account/privacy/ExportLinkPage.tsx"),
+    "ExportLinkPage",
+  ),
+});
+
+const accountPrivacyRoute = createRoute({
+  getParentRoute: () => accountRoute,
+  path: "/privacy",
+  staticData: { title: "Privacy" },
+  component: lazyRouteComponent(
+    () => import("./account/privacy/PrivacyPage.tsx"),
+    "AccountPrivacyPage",
+  ),
 });
 
 // --- Signed in with a profile (viewing activity is per profile) ------------------------------
@@ -253,9 +523,16 @@ export const memberRoutes = {
       signupRegistrationRoute,
       signupPlanRoute,
       signupPaymentRoute,
+      signupConfirmRoute,
       signupProfileRoute,
     ]),
+    ...(mockProviderRoute ? [mockProviderRoute] : []),
     logoutRoute,
+    exportLinkRoute,
+    signInLandingRoute,
+    forgotPasswordRoute,
+    resetPasswordRoute,
+    verifyEmailRoute,
   ],
   guest: [landingRoute, loginRoute],
   account: [
@@ -265,10 +542,18 @@ export const memberRoutes = {
     editProfileRoute,
     accountRoute.addChildren([
       accountOverviewRoute,
+      accountMembershipRoute,
       accountPlanRoute,
       accountCancelRoute,
+      accountPaymentMethodRoute,
+      accountInvoicesRoute,
+      accountCheckoutRoute,
+      accountConfirmRoute,
+      legacyPlanRoute,
+      legacyCancelRoute,
       accountDevicesRoute,
       accountSecurityRoute,
+      accountPrivacyRoute,
     ]),
   ],
   profile: [accountActivityRoute],

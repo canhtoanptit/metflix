@@ -10,7 +10,7 @@ import { type Context, Hono } from "hono";
 import { etag } from "hono/etag";
 import { routePath } from "hono/route";
 import type { AppContainer, AppEnv } from "./container.ts";
-import { oidcCallbackNavigation } from "./handlers/identity.ts";
+import { oidcNavigation } from "./handlers/identity.ts";
 import { createAdminHandlers, createHandlers } from "./handlers/index.ts";
 import { registerMediaRoutes } from "./media.ts";
 import { registerOpsRoutes } from "./ops.ts";
@@ -100,8 +100,9 @@ export function createApp(container: AppContainer): Hono<AppEnv> {
 
   // Conditional requests for the public showcase (its handler sets the ETag): 304 when unchanged.
   app.use(`${API_BASE_PATH}${routes.getShowcase.path}`, etag());
-  // The OpenID callbacks are navigations: a refusal before the handler is a redirect, never JSON.
-  app.use(`${API_BASE_PATH}/auth/oidc/*`, oidcCallbackNavigation(container));
+  // The OpenID routes are navigations: a refused callback, or a refused start a browser followed,
+  // is a redirect back with `?oidc=failed`, never JSON.
+  app.use(`${API_BASE_PATH}/auth/oidc/*`, oidcNavigation(container));
   const guard = createGuard(container);
   const validateResponses = config.environment !== "production";
   const handlers = createHandlers(container);

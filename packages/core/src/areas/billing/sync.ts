@@ -1,6 +1,6 @@
 import { serializeError } from "../../ports/logger.ts";
 import type { ProviderEvent, ProviderSubscription } from "../../ports/payment-provider.ts";
-import { mirrorLegacySubscription, readAccount } from "./accounts.ts";
+import { readAccount } from "./accounts.ts";
 import { type BillingContext, ProjectionContendedError } from "./context.ts";
 import { emailReceipt, emailsForChange, emailTrialsEnding } from "./emails.ts";
 import { invoiceRecord } from "./presenters.ts";
@@ -210,19 +210,32 @@ export async function syncSubscription(
     // found; every sync that starts after the save (the confirmation's own, a poll, any later
     // event or reconciliation) looks it up after its own write (or its finding that none was
     // needed) and completes it.
+    const invoicesAgain =
+      ["trialing", "active", "past_due"].includes(next.status) && !next.cancelAtPeriodEnd;
     if (
       previous &&
       !changed &&
       Math.abs(previous.clockOffsetMs - next.clockOffsetMs) < CLOCK_OFFSET_TOLERANCE_MS &&
-      now - previous.providerSyncedAt < UNCHANGED_REFRESH_MS
+      now - previous.providerSyncedAt < UNCHANGED_REFRESH_MS &&
+      // A record written before the next invoice was kept (or whose preview failed) gets one.
+      !(invoicesAgain && previous.nextInvoice === null)
     ) {
       await settleCheckouts(context, subscription.id, previous);
       return { accountId, membership: previous, changed: false };
     }
-    if (await repos.billing.saveMembership(next, previous?.version ?? null)) {
-      if (changed) await afterWrite(context, previous, next, subscription);
-      await settleCheckouts(context, subscription.id, next);
-      return { accountId, membership: next, changed };
+    // About to write: the next invoice as the provider previews it now. Everything that changes
+    // it through Webflix (a plan change and its credit, a trial's end, a renewal, cancel and
+    // resume) also changes the projection, so it is never older than the last such change.
+    const record: MembershipRecord = {
+      ...next,
+      nextInvoice: invoicesAgain
+        ? await context.payments.previewNextInvoice(subscription.id)
+        : null,
+    };
+    if (await repos.billing.saveMembership(record, previous?.version ?? null)) {
+      if (changed) await afterWrite(context, previous, record, subscription);
+      await settleCheckouts(context, subscription.id, record);
+      return { accountId, membership: record, changed };
     }
     const pause = CAS_PAUSES_MS[attempt];
     if (pause === undefined) break;
@@ -252,15 +265,11 @@ async function afterWrite(
   next: MembershipRecord,
   subscription: ProviderSubscription,
 ): Promise<void> {
-  const { repos, logger } = context.deps;
+  const { logger } = context.deps;
   const before = previous
     ? effectiveMembership(previous, context.graceSec, previous.providerSyncedAt).status
     : "none";
   const after = effectiveMembership(next, context.graceSec, context.now()).status;
-  // Mirrored from the latest projection, not this writer's: a slower sync finishing after a
-  // newer one must not leave the mirror at its older state.
-  const latest = (await repos.billing.getMembership(next.accountId)) ?? next;
-  await mirrorLegacySubscription(context.deps, latest, context.graceSec, context.now());
   if (before !== after) {
     logger.info("billing.transition", { accountId: next.accountId, from: before, to: after });
     await context.seams.emitServerEvent({

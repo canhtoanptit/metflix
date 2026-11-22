@@ -67,13 +67,13 @@ export const identityRoutes = {
     tag: "auth",
     area: "identity",
     auth: "public",
-    summary: "Create an account and sign in (with a membership when a card is sent)",
+    summary: "Create an account and sign in (no membership yet)",
     description:
-      "Sets the session cookie and emails a verification link. Without `planId` and `payment` (milestone 2, §5.1) the account has no membership yet: checkout follows. With both (milestone 1), the mock card is charged and the membership starts. The first profile is created afterwards.",
+      "Sets the session cookie and emails a verification link. The account has no membership (milestone 2, §5.1): checkout follows (`POST /billing/checkout`), card data going to the payment provider's form only. The body is strict: anything besides `email` and `password` (milestone 1's `planId` and `payment`) is refused with `validation_failed`. The first profile is created afterwards.",
     body: SignupBody,
     response: AuthenticatedSession,
     successStatus: 201,
-    errors: ["email_already_registered", "payment_declined"],
+    errors: ["email_already_registered"],
     rateLimit: "signup",
   }),
   login: defineRoute({
@@ -307,7 +307,7 @@ export const identityRoutes = {
     auth: "public",
     summary: "Start a federated sign-in (browser navigation)",
     description:
-      "Redirects to the issuer with `state`, `nonce` and PKCE (S256); the transaction lives in a short-lived encrypted `__Host-` cookie (`SameSite=None; Secure` for a form-post issuer such as Apple). `intent=link` attaches the issuer to the signed-in account: it needs an account holder (a profile without parental controls) holding a fresh account-holder proof (`reauthentication_required`), never the demo account. `intent=reauth` asks for a fresh sign-in (`max_age=0`) as the account-holder proof. Both need a session. `not_found` for an issuer this deployment does not offer. An issuer that cannot be reached sends the browser back with `?oidc=failed`.",
+      "Redirects to the issuer with `state`, `nonce` and PKCE (S256); the transaction lives in a short-lived encrypted `__Host-` cookie (`SameSite=None; Secure` for a form-post issuer such as Apple). `intent=link` attaches the issuer to the signed-in account: it needs an account holder (a profile without parental controls) holding a fresh account-holder proof (`reauthentication_required`), never the demo account. `intent=reauth` asks for a fresh sign-in (`max_age=0`) as the account-holder proof. Both need a session. `not_found` for an issuer this deployment does not offer. An issuer that cannot be reached sends the browser back with `?oidc=failed`. A refusal (any error below, the `oidc` rate limit, an invalid query) answers a problem document to a programmatic caller, but a browser navigation (`Sec-Fetch-Mode: navigate`, or without Fetch Metadata an `Accept` naming `text/html`) is sent back instead: `303` to `returnTo` (`/` when it is missing or invalid) with `?oidc=failed&oidcError=<code>` (`OIDC_ERROR_PARAM`), the code the problem document would have carried.",
     params: OidcProviderParams,
     query: OidcStartQuery,
     response: null,

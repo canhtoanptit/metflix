@@ -23,7 +23,7 @@ export const rateLimitChecks: CheckDefinition[] = [
     title:
       "PIN guessing is limited per account (every locked profile, every device) and recovers after Retry-After",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("ratelimit-recovery");
+      const account = await ctx.env.bareSignup("ratelimit-recovery");
       const locked = await lockedProfile(ctx.env, account, "Recover");
       const sibling = await lockedProfile(ctx.env, account, "Sibling");
       const open = await ctx.env.createProfile(account.agent, { name: "Open" });
@@ -101,7 +101,7 @@ export const rateLimitChecks: CheckDefinition[] = [
     title:
       "Selecting unlocked profiles, or a locked one without a PIN, never spends the PIN budget",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("ratelimit-free");
+      const account = await ctx.env.bareSignup("ratelimit-free");
       const locked = await lockedProfile(ctx.env, account, "Locked");
       const open = await ctx.env.createProfile(account.agent, { name: "Open" });
       const agent = ctx.agent("ratelimit-free", { retryOn429: false });
@@ -148,7 +148,7 @@ export const rateLimitChecks: CheckDefinition[] = [
     timeoutMs: 180_000,
     needs: [needs.strictLimits, needs.ipExhaustion],
     async run(ctx: CheckContext) {
-      const account = await ctx.env.sharedAccount("identity");
+      const account = await ctx.env.sharedAccount("identity", { member: false });
       // A browser the account knows: the per-client limits are measured here, not the per-email
       // one (ratelimit.auth-email).
       const agent = ctx.env.knownDevice(account, ctx.agent("strict-limits", { retryOn429: false }));

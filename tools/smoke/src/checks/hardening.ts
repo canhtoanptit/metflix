@@ -1,6 +1,5 @@
 import type { TitleCard } from "@webflix/contracts";
 import type { TestAccount } from "../env.ts";
-import { approvedCard } from "../env.ts";
 import { check, equal, fail, problem, status, succeeds } from "../expect.ts";
 import { parseMaster, parseMediaPlaylist, resolveUri } from "../hls.ts";
 import type { Agent, HttpResult } from "../http.ts";
@@ -403,7 +402,7 @@ export const hardeningChecks: CheckDefinition[] = [
       const result = await agent.fetch(`${API}/auth/signup`, {
         method: "POST",
         headers: CSRF,
-        body: { email, password, planId: "basic", payment: approvedCard() },
+        body: { email, password },
       });
       const body = problem(result, "validation_failed", "sign-up with an over-long password");
       check(
@@ -461,7 +460,7 @@ export const hardeningChecks: CheckDefinition[] = [
     async run(ctx: CheckContext) {
       const spec = expectedSpec(ctx.env, "auth-email", "strict");
       if (!spec) ctx.skip("custom --rate-limits without an auth-email limit");
-      const owner: TestAccount = await ctx.env.signup("auth-email");
+      const owner: TestAccount = await ctx.env.bareSignup("auth-email");
       const login = (agent: Agent, password: string) =>
         agent.fetch(`${API}/auth/login`, {
           method: "POST",

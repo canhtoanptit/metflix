@@ -6,17 +6,18 @@ import {
   type Profile,
   type SelectProfileBody,
 } from "@webflix/contracts";
-import { Avatar, Button, Dialog, DialogContent, PinInput, toast } from "@webflix/ui";
+import { Avatar, Button, Dialog, DialogContent, DialogFooter, PinInput, toast } from "@webflix/ui";
 import { useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { isSafeRedirect } from "../../../app/router/search.ts";
 import { useApplySession, useAuthenticatedSession } from "../../../app/session/session.ts";
+import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { MemberHeader } from "../shared/Chrome.tsx";
+import { IdentityNotConfirmed, useConfirmIdentity } from "../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { possessive } from "../shared/format.ts";
-import { PasswordPrompt } from "../shared/PasswordPrompt.tsx";
 import { standingOf, useIsDemoAccount } from "../shared/privileges.ts";
 import { RetryTimer } from "../shared/RetryTimer.tsx";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
@@ -28,7 +29,8 @@ const route = getRouteApi("/account/profiles");
 /**
  * "Who's watching?": choose a profile (PIN when locked), then continue to `?redirect=` or home.
  * Locked profiles open a PIN dialog with a visible retry timer when attempts are rate limited,
- * and a "Forgot PIN?" path that removes the lock with the account password. A kids profile is
+ * and a "Forgot PIN?" path that removes the lock once the account holder confirms it's them (the
+ * password, or a fresh sign-in at a provider for an account without one). A kids profile is
  * offered no profile management: only another profile.
  */
 export function ProfileGatePage() {
@@ -45,6 +47,18 @@ export function ProfileGatePage() {
   const [attempt, setAttempt] = useState(0);
   const rate = useRetryAfter();
   const returnFocus = useRef<HTMLElement | null>(null);
+  const identity = useConfirmIdentity({
+    id: "forgot-pin",
+    purpose: `remove the lock from ${locked?.name ?? "this profile"}`,
+    // Back from confirming at a provider (the page reloaded): offer the removal again.
+    onResume: () => {
+      const profile = session.profiles.find((candidate) => candidate.id === takeForgotProfile());
+      if (!profile) return;
+      setPin("");
+      setForgot(true);
+      setLocked(profile);
+    },
+  });
 
   const enter = async (next: Awaited<ReturnType<ReturnType<typeof api>["selectProfile"]>>) => {
     setLocked(null);
@@ -56,7 +70,11 @@ export function ProfileGatePage() {
   };
 
   const select = useMutation({
-    mutationFn: (body: SelectProfileBody) => api().selectProfile({ body }),
+    mutationFn: (body: SelectProfileBody) => {
+      // Events queued for the profile being left must never be stamped as the next one.
+      discardPendingEvents();
+      return api().selectProfile({ body });
+    },
     meta: { silent: true },
     onError: (error, body) => {
       setPin("");
@@ -81,15 +99,20 @@ export function ProfileGatePage() {
     onSuccess: enter,
   });
 
-  // Forgot PIN: remove the lock with the account password, then go straight in. A kids profile
-  // may not change locks, so leave it first (anyone may leave a profile).
+  // Forgot PIN: remove the lock as the proven account holder, then go straight in. A kids
+  // profile may not change locks, so leave it first (anyone may leave a profile).
   const unlock = useMutation({
-    mutationFn: async ({ profile, password }: { profile: Profile; password: string }) => {
-      if (!manages) await applySession(await api().clearProfile());
-      await api().updateProfile({
-        params: { id: profile.id },
-        body: { pin: null, currentPassword: password },
-      });
+    mutationFn: async (profile: Profile) => {
+      if (!manages) {
+        discardPendingEvents();
+        await applySession(await api().clearProfile());
+      }
+      keepForgotProfile(profile.id);
+      await identity.run(() =>
+        api().updateProfile({ params: { id: profile.id }, body: { pin: null } }),
+      );
+      takeForgotProfile();
+      discardPendingEvents();
       return api().selectProfile({ body: { profileId: profile.id } });
     },
     meta: { silent: true },
@@ -183,19 +206,36 @@ export function ProfileGatePage() {
             }}
           >
             {forgot ? (
-              <PasswordPrompt
-                intro={
-                  <>
-                    Forgot {possessive(locked.name)} PIN? Enter your account password to remove the
-                    lock and continue. You can set a new PIN later.
-                  </>
-                }
-                submitLabel="Remove lock"
-                pending={unlock.isPending}
-                error={unlock.error}
-                onCancel={() => setForgot(false)}
-                onSubmit={(password) => unlock.mutate({ profile: locked, password })}
-              />
+              <div className="flex flex-col gap-4">
+                <p className="type-body text-fg-muted">
+                  Forgot {possessive(locked.name)} PIN? Remove the lock and continue as{" "}
+                  {locked.name}. You'll be asked to confirm it's you, and you can set a new PIN
+                  later.
+                </p>
+                {unlock.error && !(unlock.error instanceof IdentityNotConfirmed) ? (
+                  <FormAlert title={describeError(unlock.error).title}>
+                    {describeError(unlock.error).description}
+                  </FormAlert>
+                ) : null}
+                <DialogFooter className="mt-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      unlock.reset();
+                      setForgot(false);
+                    }}
+                  >
+                    Back
+                  </Button>
+                  <Button
+                    variant="accent"
+                    loading={unlock.isPending}
+                    onClick={() => unlock.mutate(locked)}
+                  >
+                    Remove lock
+                  </Button>
+                </DialogFooter>
+              </div>
             ) : (
               <div className="flex flex-col items-center gap-5 pt-2">
                 <Avatar src={locked.avatar.imageUrl} name={locked.name} size="lg" decorative />
@@ -236,6 +276,28 @@ export function ProfileGatePage() {
           </DialogContent>
         ) : null}
       </Dialog>
+      {identity.prompt}
     </div>
   );
+}
+
+const FORGOT_KEY = "webflix:forgot-pin-profile";
+
+/** Which profile's lock is being removed, kept for this tab across a provider round trip. */
+function keepForgotProfile(profileId: string): void {
+  try {
+    sessionStorage.setItem(FORGOT_KEY, profileId);
+  } catch {
+    // Without storage the member chooses the profile again on return: still correct.
+  }
+}
+
+function takeForgotProfile(): string | null {
+  try {
+    const id = sessionStorage.getItem(FORGOT_KEY);
+    sessionStorage.removeItem(FORGOT_KEY);
+    return id;
+  } catch {
+    return null;
+  }
 }

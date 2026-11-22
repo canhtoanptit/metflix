@@ -3,9 +3,9 @@ import type { TitleCard } from "@webflix/contracts";
 import { Button, ChevronDownIcon, cx, MaturityBadge, Skeleton, SkeletonText } from "@webflix/ui";
 import { useState } from "react";
 import { TitleTileLink } from "../../../app/links.ts";
-import { titleOverlayLinkProps } from "../../../app/overlay/titleOverlay.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { formatLength, genreLine } from "../common/format.ts";
+import { cardLinkProps } from "../common/telemetry.ts";
 import { MyListButton } from "../library/MyListButton.tsx";
 
 const COLLAPSED_COUNT = 9;
@@ -38,7 +38,9 @@ export function MoreLikeThis({ titleId }: { titleId: string }) {
                 </span>
               </li>
             ))
-          : visible.map((card) => <SimilarCard key={card.id} card={card} />)}
+          : visible.map((card, index) => (
+              <SimilarCard key={card.id} card={card} rank={index + 1} />
+            ))}
       </ul>
       {items.length > COLLAPSED_COUNT ? (
         <div className="relative mt-2 flex justify-center border-b border-line">
@@ -58,7 +60,7 @@ export function MoreLikeThis({ titleId }: { titleId: string }) {
   );
 }
 
-function SimilarCard({ card }: { card: TitleCard }) {
+function SimilarCard({ card, rank }: { card: TitleCard; rank: number }) {
   return (
     <li className="flex flex-col overflow-hidden rounded-md bg-surface-3">
       <span className="relative block">
@@ -67,7 +69,13 @@ function SimilarCard({ card }: { card: TitleCard }) {
           layout="standard"
           sizes={SIMILAR_SIZES}
           className="rounded-b-none"
-          {...titleOverlayLinkProps(card.id)}
+          {...cardLinkProps(card.id, {
+            surface: "title-detail",
+            rowId: null,
+            rowRank: null,
+            rank,
+            policy: null,
+          })}
         />
       </span>
       <div className="flex flex-1 flex-col gap-2 p-3">

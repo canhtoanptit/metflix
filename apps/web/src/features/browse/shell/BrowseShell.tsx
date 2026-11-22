@@ -1,11 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Outlet, useRouterState } from "@tanstack/react-router";
+import { Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import type { SessionState } from "@webflix/contracts";
 import { toast, useMediaQuery } from "@webflix/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
 import { qk } from "../../../app/query/keys.ts";
 import { preloadable, useModule } from "../common/modules.ts";
+import { takeTitleOpen, track } from "../common/telemetry.ts";
 import { previewModule } from "../preview/prepare.ts";
 import { previewStore, usePreviewRequest } from "../preview/store.ts";
 import { Footer } from "./Footer.tsx";
@@ -88,11 +89,57 @@ interface ShownOverlay {
   closing: boolean;
 }
 
+/**
+ * Reports `title.open` each time the overlay comes to show a title the member opened: from a card,
+ * a preview, the billboard or a result (with that card's place, noted on the way:
+ * `noteTitleOpen`), or a shared link the page was loaded with. Going Back or Forward to an
+ * overlay is not an open.
+ */
+function useTitleOpenReports(titleId: string | undefined) {
+  const router = useRouter();
+  const traversed = useRef(false);
+  const reported = useRef<string | null>(null);
+  useEffect(
+    () =>
+      router.history.subscribe(({ action }) => {
+        traversed.current =
+          action.type === "BACK" || action.type === "FORWARD" || action.type === "GO";
+      }),
+    [router],
+  );
+  useEffect(() => {
+    // Effects run twice for one change in development (StrictMode): one open, one report.
+    if (titleId === reported.current) return;
+    reported.current = titleId ?? null;
+    if (!titleId) return;
+    const context = takeTitleOpen(titleId);
+    if (traversed.current && !context) return;
+    track(
+      "title.open",
+      { titleId },
+      context ?? { surface: surfaceOf(router.state.location.pathname) },
+    );
+  }, [titleId, router]);
+}
+
+/** The surface a page reports as, for an open that did not come from a card on it. */
+function surfaceOf(pathname: string) {
+  if (pathname === "/browse") return "home" as const;
+  if (pathname === "/browse/series") return "series" as const;
+  if (pathname === "/browse/movies") return "movies" as const;
+  if (pathname === "/browse/new-popular") return "new-popular" as const;
+  if (pathname.startsWith("/browse/genre/")) return "genre" as const;
+  if (pathname === "/search") return "search" as const;
+  if (pathname === "/my-list") return "my-list" as const;
+  return null;
+}
+
 function TitleOverlayHost() {
   const { titleId } = useTitleOverlay();
   const [shown, setShown] = useState<ShownOverlay | null>(
     titleId ? { id: titleId, closing: false } : null,
   );
+  useTitleOpenReports(titleId);
 
   useEffect(() => {
     if (titleId) {

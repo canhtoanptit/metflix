@@ -27,16 +27,24 @@ export function MockToolbar() {
   const [settings] = useState(loadSettings);
   const reload = () => window.location.assign(window.location.pathname);
 
+  // Browser automation (the e2e suites, screenshot scripts) drives the app as a member sees it:
+  // the control would sit over real content in every screenshot and spec. Never in production.
+  if (typeof navigator !== "undefined" && navigator.webdriver) return null;
+
   return (
     <div className="fixed bottom-3 start-3 z-(--z-toast)" data-testid="dev-toolbar">
       <Popover>
         <PopoverTrigger asChild>
+          {/* Icon only at phone width, faded until used: it covers as little of a page as it can. */}
           <button
             type="button"
-            className="focus-ring flex h-8 items-center gap-1.5 rounded-full border border-line bg-surface-2/90 px-3 type-caption text-fg-muted shadow-md backdrop-blur-md hover:text-fg"
+            aria-label={__WEBFLIX_MOCK__ ? "Mock" : "Dev"}
+            className="focus-ring flex size-8 items-center justify-center gap-1.5 rounded-full border border-line bg-surface-2/90 type-caption text-fg-muted opacity-60 shadow-md backdrop-blur-md transition-opacity duration-fast hover:text-fg hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 sm:w-auto sm:px-3 sm:opacity-100"
           >
             <SettingsIcon size="sm" />
-            {__WEBFLIX_MOCK__ ? "Mock" : "Dev"}
+            <span aria-hidden className="hidden sm:inline">
+              {__WEBFLIX_MOCK__ ? "Mock" : "Dev"}
+            </span>
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="flex w-72 flex-col gap-5 p-4">

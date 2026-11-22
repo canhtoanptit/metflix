@@ -24,10 +24,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { useTrack } from "../../../app/telemetry/index.ts";
 import { type ClipHandoff, sameClip } from "../common/clipHandoff.ts";
 import { episodeCode } from "../common/format.ts";
 import { clipHasAudio, usePreviewMuted, usePreviewsEnabled } from "../common/previews.ts";
 import { TitleTreatment } from "../common/TitleTreatment.tsx";
+import { watchedSeconds } from "../common/telemetry.ts";
 import { playLabel, watchLink } from "../common/watch.ts";
 import { MyListButton } from "../library/MyListButton.tsx";
 import { RatingControl } from "../library/RatingControl.tsx";
@@ -84,6 +86,9 @@ export function DetailHero({
   const [continued] = useState(() => (handoff && previewsEnabled && !phone ? handoff : null));
   const continues = !!continued && (!clip || sameClip(clip.url, continued.src));
   const clipSrc = continues && continued ? continued.src : (clip?.url ?? null);
+  // The clip is a preview of this title, reported from the details (the overlay's scope).
+  const clipTitleId = card?.id ?? null;
+  const trackClip = useTrack();
   const sound = continues && continued ? continued.hasAudio : clipHasAudio(clip);
   // A continued clip loads during the flight and plays as it lands; otherwise it waits a beat.
   const [armed, setArmed] = useState(continues);
@@ -149,10 +154,22 @@ export function DetailHero({
               active={entered}
               muted={muted}
               onMutedChange={setMuted}
-              onFirstFrame={() => setPhase("playing")}
+              onFirstFrame={() => {
+                setPhase("playing");
+                // A clip handed over by the billboard carries on: it started there.
+                if (clipTitleId && !continues) {
+                  trackClip("preview.start", { titleId: clipTitleId });
+                }
+              }}
               onEnded={() => {
                 setPhase("ended");
                 setFrameShown(false);
+                if (clipTitleId) {
+                  trackClip("preview.complete", {
+                    titleId: clipTitleId,
+                    watchedSec: watchedSeconds(video.current),
+                  });
+                }
               }}
               onError={() => {
                 setPhase("still");

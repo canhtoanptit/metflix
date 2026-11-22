@@ -12,16 +12,19 @@ SESSION ?= profile
 E2E_HOST_GUARD := e2e/scripts/host-guard.sh
 
 E2E_BASE_URL_dev := http://localhost:5173
+# `make web-preview`: the built web app (and the staff console under /admin) on :4173.
+E2E_BASE_URL_preview := http://localhost:4173
 E2E_BASE_URL_k8s := http://localhost:8080
 E2E_BASE_URL_cf := http://localhost:8787
 # Where the conformance suite points in `verify`: dev serves its API on its own origin.
 E2E_SMOKE_URL_dev := http://localhost:4000
+E2E_SMOKE_URL_preview := http://localhost:4000
 E2E_SMOKE_URL_k8s := http://localhost:8080
 E2E_SMOKE_URL_cf := http://localhost:8787
 
-.PHONY: e2e e2e-throttled verify e2e-mock screenshots web-mock
+.PHONY: e2e e2e-throttled verify e2e-mock screenshots web-mock web-preview
 
-e2e: ## Playwright against a running mode: make e2e TARGET=dev|k8s|cf (or BASE_URL=...); E2E_BROWSERS=chromium
+e2e: ## Playwright against a running mode: make e2e TARGET=dev|preview|k8s|cf (or BASE_URL=...); E2E_BROWSERS=chromium
 	BASE_URL=$${BASE_URL:-$(E2E_BASE_URL_$(TARGET))} $(E2E_HOST_GUARD) $(PNPM) --filter @webflix/e2e e2e
 
 e2e-throttled: ## The Chromium suite with the CPU slowed 4x (E2E_CPU_THROTTLE): the timing gate
@@ -45,3 +48,12 @@ screenshots: ## Full-page captures: make screenshots ROUTES="/browse /profiles" 
 
 web-mock: ## Web app with no backend (mock API + generated artwork) on WEB_PORT (default 5173)
 	$(PNPM) --filter @webflix/web dev:mock
+
+# The production bundles of the web app and the staff console, served by `vite preview` (no file
+# watching: steady under a browser suite while the tree changes). The web app is on :4173 and
+# proxies /admin to the console's preview (:4174), as `pnpm dev` does on :5173. Start the API with
+# the matching public origin first:
+#   WEBFLIX_PUBLIC_ORIGIN=http://localhost:4173 pnpm --filter @webflix/api dev
+web-preview: ## Build and serve the web app (:4173) with the staff console at /admin/; then make e2e TARGET=preview
+	$(PNPM) --filter @webflix/web --filter @webflix/admin build
+	$(PNPM) --filter @webflix/web --filter @webflix/admin --parallel run preview

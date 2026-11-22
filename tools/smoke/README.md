@@ -27,6 +27,17 @@ staff realm through the console's authorisation code flow with PKCE. Where a dep
 serve a stand-in (production configuration, Stripe instead of the fake), the journeys that need
 it skip and say what would make them runnable (below).
 
+**Member accounts.** No card ever reaches Webflix (principle 4), so a member account comes about
+only through a checkout at the payment provider (besides the seeded demo account, which is
+shared and cannot change, and staff, who extend an existing membership). The suite signs up
+(`{email, password}`) and checks out with one of the fake provider's labelled test cards (a card
+of its own: the trial, nothing charged). A check that only needs an account (sign-in, profiles,
+PINs, browsing, rate limits) uses an account without a membership. On a deployment without the
+fake provider (production configuration: provider `none` or Stripe) no member can be made: the
+checks that need one skip with that reason ("needs a member account, and a member comes about
+only through a checkout…"). On a no-provider run that is 54 checks besides the 23 that drive the
+fake provider itself.
+
 ## Running it
 
 ```sh
@@ -103,7 +114,7 @@ Requirements are detected from outside, never assumed from the mode name:
 | Packaged media | starting playback yields a same-origin `/media/{token}/…` manifest (titles with preview clips or real artwork are tried first; at most 24 probes) | the `media.*` checks on segments, `plans.quality-cap`, `media.quality-cap` (which also needs a title with a rendition above 720p) |
 | External HLS fallback | starting playback yields an absolute third-party manifest URL | `media.external-fallback` |
 | Demo account | signing in as the documented demo account | `browse.demo-first-load`, `identity.demo-account-protected` |
-| Rate-limit profile | a concurrent burst of PIN attempts on a locked profile of a fresh account (`profile-pin` is keyed by account, so measuring it affects nobody else; locking the profile spent one unit, a password check, which is counted) compared with the documented values: strict 5/min, dev 60/min. `payment` (10 per 10 min), `auth-email` (10 per 15 min) and `playback-start` (60/min) are the same in both profiles | `ratelimit.strict-defaults`, `consistency.rate-limit-exact`, `plans.payment-method`, `ratelimit.playback-start`, `ratelimit.auth-email` |
+| Rate-limit profile | a concurrent burst of PIN attempts on a locked profile of a fresh account (`profile-pin` is keyed by account, so measuring it affects nobody else; locking the profile spent one unit, a password check, which is counted) compared with the documented values: strict 5/min, dev 60/min. `payment` (10 per 10 min), `auth-email` (10 per 15 min) and `playback-start` (60/min) are the same in both profiles | `ratelimit.strict-defaults`, `consistency.rate-limit-exact`, `plans.payment-budget`, `ratelimit.playback-start`, `ratelimit.auth-email` |
 | Popularity diagnostics | `GET /titles/:id/popularity` answers (absent when `WEBFLIX_ENV=production`, which the OpenAPI document tells apart from a missing route) | `pipeline.credit-bounded`, `pipeline.popularity-view` |
 | Probes exposed | `/healthz` answers (k8s routing keeps probes internal: skipped there) | `ops.health` |
 | Development issuer | `GET /auth/providers` offers the provider and `/dev-idp/{provider}/.well-known/openid-configuration` answers; a start that redirects to a real issuer skips the journey | `identity.oidc.*`, `identity.password-reset.drops-identities`, `billing.member-journey` |
@@ -114,7 +125,7 @@ Requirements are detected from outside, never assumed from the mode name:
 | Consent mode | `GET /privacy/consent` → `mode`; the consent check asserts the mode the deployment runs | `privacy.consent` (and `privacy.events`, `privacy.kids-profile` skip in `off`) |
 | Cooling-off | the `scheduledFor` of the check's own deletion request; above 60 s it is cancelled and the check skips | `privacy.deletion.erasure` |
 | Labelled cards | the fake provider takes `<test card>:<label>`, a card of that kind with a fingerprint of its own (a card that never had a trial); a provider that refuses one skips the check with that reason | `billing.trial-*`, `billing.member-journey`, `billing.dunning`, and the spent card below |
-| Export mode | an export still `processing` after the inline budget and listed at `GET /system/privacy/exports` (admin token) is batch mode (`WEBFLIX_EXPORT_EVENTS=batch`); its job's rounds and deferrals are read from the audit log | `privacy.export`, `privacy.export-operator` |
+| Privacy terms | `GET /privacy/requests` → `terms`: the export mode (`inline` or `batch`) and its typical time, the cooling-off period (the erasure check skips above 60 s without creating a request); in batch mode the job's rounds and deferrals are read from the audit log | `privacy.export`, `privacy.export-operator`, `privacy.deletion.erasure` |
 | Service client | the staff realm's `webflix-jobs` client-credentials grant (published development secret) | `staff.service-account` |
 | Recommendation run | `GET /system/recommendations` (`activeModel`) | `experiments.recommendation-status` |
 
@@ -229,7 +240,7 @@ PORT=5750 WEBFLIX_PUBLIC_ORIGIN=http://localhost:5750 WEBFLIX_DATABASE_URL=sqlit
 make smoke BASE_URL=http://localhost:5750
 ```
 
-## Check catalogue (134)
+## Check catalogue (143)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
@@ -249,9 +260,12 @@ never do · `ops.asset-miss` the entry script is immutable JavaScript; missing `
 `max-age`; navigating to a missing build file is a 404, to a client route the HTML shell
 (skipped on a Vite dev server).
 
-**identity (13)**: `identity.email-status` · `identity.signup` approved card, cookie attributes
+**identity (13)**: `identity.email-status` · `identity.signup` an account with no membership
+(`subscription`, `plan` and the card null, `membership.status` none), cookie attributes
 (HttpOnly, SameSite=Lax, Path=/, Secure + `__Host-` on https), duplicate email ·
-`identity.signup.declined-cards` declined / insufficient funds / expired, nothing created ·
+`identity.signup.card-data-refused` a sign-up or a plan change carrying a card is
+`validation_failed` and creates nothing, no answer echoes the card, `PUT /account/payment-method`
+is gone (404) ·
 `identity.signin` persistent vs browser-session cookie · `identity.signin.wrong-password` (same
 answer for unknown emails) · `identity.session-bootstrap` anonymous, `unauthenticated`,
 `profile_required`, profile bound per session, dead cookies cleared · `identity.signout` revoked
@@ -338,13 +352,11 @@ are refused and another device starts on the freed screen.
 
 **plans (6)**: `plans.catalogue` · `plans.stream-limit` Basic across devices, 409 lists the active
 device, release on stop and on sign-out · `plans.change-effects` downgrade ends the newest extra
-stream and caps quality, upgrade adds screens, declined card changes nothing ·
-`plans.cancel-resume` · `plans.quality-cap` Basic master playlist ≤ 720p (skipped when the
-packaged asset has nothing taller) · `plans.payment-method` `PUT /account/payment-method`: declined,
-insufficient funds and expired cards change nothing, a bad CVC is a validation problem, an
-approved card is stored as exactly brand, last four and expiry, the membership is untouched,
-and the account's card verifications stop at the `payment` limit exactly (plan changes with a
-card included, without a card not).
+stream and caps quality, upgrade adds screens, a plan change carrying a card is refused and
+changes nothing · `plans.cancel-resume` · `plans.quality-cap` Basic master playlist ≤ 720p
+(skipped when the packaged asset has nothing taller) · `plans.payment-budget` the account's
+money-moving requests (the checkout's confirmation, every plan change) stop at the `payment`
+limit exactly; another account is unaffected.
 
 **consistency (6)**, all [c]: `consistency.stream-limit` devices starting at once on a 1-stream
 plan: exactly one wins, every round; retries refused and heartbeats accepted from every instance ·
@@ -379,7 +391,7 @@ a release with the final position: the title's views for the day move by exactly
 60 s to the elapsed time credited. Both read `GET /titles/:id/popularity` and skip in
 production.
 
-**identity, milestone 2 (10)**: `identity.oidc.google-signup` providers listed (public,
+**identity, milestone 2 (11)**: `identity.oidc.google-signup` providers listed (public,
 cacheable); the start is a code flow with S256 PKCE, state and nonce and the exact callback; an
 HttpOnly transaction cookie (`__Host-`, Secure on https); `signed-up` back at `returnTo`, a
 session for an account with no password, a verified address and membership `none`; the
@@ -394,7 +406,11 @@ identity then signs in to that account; `identity-in-use` for another account; u
 the password working and the identity signing up anew; the only way in of a Google-only account
 cannot be unlinked · `identity.oidc.unlink-sticks` an identity unlinked from an account with
 the same verified address is `link-required` on its next sign-in (no silent relink), and only a
-deliberate link by the proven account holder brings it back · `identity.oidc.reauth` a
+deliberate link by the proven account holder brings it back · `identity.oidc.refused-start` a refused start followed by a browser (a real navigation:
+`Sec-Fetch-Mode: navigate`, sent through `node:http` because `fetch` replaces that header) is a
+303 to its `returnTo` with `?oidc=failed&oidcError=<code>` (`unauthenticated`,
+`reauthentication_required`; an off-site `returnTo` goes to `/`), while a script still gets the
+problem document, and an accepted start still goes to the issuer · `identity.oidc.reauth` a
 Google-only account is offered Google and not the password; a password is `password_required`
 for it; the start asks `max_age=0`; a stale or missing
 `auth_time` and another identity fail; a fresh sign-in (the page shown despite the issuer's
@@ -410,7 +426,7 @@ device signed out, the old password refused, the address verified, a security al
 address; moved to that address and verified, the account is still `link-required` for the
 dropped identity, until the account holder links it on purpose.
 
-**billing (14)**, the fake provider and its clock: `billing.provider-config` (every deployment)
+**billing (18)**, the fake provider and its clock: `billing.provider-config` (every deployment)
 `GET /billing/config` tells the truth: `none` answers `payments_not_configured` to checkout,
 confirmation, promo validation and card setup, serves no fake form or payment webhook, and
 leaves memberships `none`; a deployment advertising the fake must serve its form ·
@@ -425,6 +441,16 @@ funds, expired: each `declineReason`, nothing starts, the checkout takes another
 `none` / `no_membership` · `billing.checkout-expired` an unconfirmed first payment expires after
 23 h on the clock: membership `none` with no plan, provider or period, the checkout expired,
 nothing left open (both on the run's spent card: no second trial for a card) ·
+`billing.open-checkout` `GET /billing/checkout`: null, then the checkout in progress (plan,
+promotion, `promotionOutcome` pending then applied, state, never a client secret, which only
+`GET /billing/checkout/:id` gives the continuing session), null once complete ·
+`billing.promo-on-trial` a code with a trial: `not_applied_trial`, still named, still valid for
+the account, the next bill and the first bill after the trial at the full price ·
+`billing.form-leads-back` the fake's form: a way back offered, a decline redirects to
+`return?payment=failed`, another card on the same page to `payment=succeeded`, a second
+submission too, then the checkout completes · `billing.next-invoice` `membership.nextInvoice`:
+the plan's price at the trial's end, at the period's end once active, exactly the preview's
+renewal figure and date after a downgrade, null while cancelling, back after resuming ·
 `billing.promo-code.refused` an unknown code (`unknown`), at validation and checkout ·
 `billing.promo-code.applied` the standing `WEBFLIX50` (or `--promo-code`) quoted, the first
 payment asks exactly the quoted price and the invoice charges it · `billing.trial-converts` a
@@ -443,7 +469,7 @@ open invoice and playback returns · `billing.provider-events` [x] forged and un
 refused; with every event delivered twice, late and shuffled the membership is the provider's
 and each email went once; during an outage the checkout and a card change still complete.
 
-**privacy (7)**: `privacy.events` a batch accepted, read back with the client's ids, times,
+**privacy (10)**: `privacy.events` a batch accepted, read back with the client's ids, times,
 payloads and positions, stamped by the server (receipt time, pseudonymous 22-character subject
 keys, plan, consent); a client-supplied subject, two devices in a batch, 51 events, over 64 KiB
 refused; a signed-out device's own consent; read-back is per account · `privacy.kids-profile` client
@@ -453,8 +479,11 @@ kept · `privacy.consent` the configured mode (opt-in: withheld until granted, w
 grant wins; off: nothing), GPC detected, a kids profile cannot answer · `privacy.export` a fresh
 proof, one export at a time (two concurrent requests: exactly one), completed with a link
 (emailed), an attachment matching `DataExport` with the account, profiles, events, consents and
-each area's part; another account, a signed-out browser and a tampered token get nothing. In
-batch mode the pending entry is checked (the account's key, the retention window up to the
+each area's part; another account, a signed-out browser and a tampered token get nothing; the link
+lives as long as the terms say; the email links to the web app's page
+`{origin}/account/privacy/exports/{id}#token=…` (no query, the token in the fragment), whose token
+downloads the document through the API route. The mode comes from the terms: inline must finish
+within twice its typical time; in batch mode the pending entry is checked (the account's key, the retention window up to the
 request), then the check waits for the deployment's job as the audit log shows it (a round
 within `--export-wait`, then its deferral) · `privacy.export-operator` the operator's export
 routes are admin only (four roles refused, a member's session unauthenticated); a results
@@ -462,19 +491,32 @@ document for an unknown request is recorded as `ignored` and creates nothing; on
 request's file, the member's export document, a lake object, or a complete result without its
 checksum is `validation_failed`; in batch mode a `deferred` result keeps the export listed and
 `processing` ·
-`privacy.deletion` a fresh proof, one at a time, scheduled after a cooling-off period,
-cancellable · `privacy.deletion.erasure` the account erased when the period ends (sessions end,
+`privacy.terms` `GET /privacy/requests` serves the terms (cooling-off, export link lifetime,
+export mode and typical time, retention), positive and coherent, the same for another account,
+not to a signed-out caller · `privacy.deletion` a fresh proof, one at a time, scheduled after the
+terms' cooling-off period (membership effect `none` without a membership), cancellable ·
+`privacy.deletion.membership` a paying member's deletion stops the renewals (`ending`, at the
+earlier of the period's close and the erasure; no next bill), no renewal is charged when the
+period closes inside the cooling-off; keeping the account leaves it `ending` and `resumable`
+at the period's close, and resuming renews again · `privacy.deletion.blocks-billing` while the
+deletion is scheduled, resume, a plan change, a new checkout and confirming one started before
+answer `409 account_deletion_scheduled` (the member cannot make it renew), a preview and a card
+change stay allowed, and keeping the account lifts the rule at once · `privacy.deletion.erasure` the account erased when the period ends (sessions end,
 the address is free).
 
-**staff (5)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
+**staff (6)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
 role, none, another client's admin): allowed exactly for the role and admin, otherwise
 `staff_role_required` naming the role; no token, a forged one, an ID token, a member's cookie
 are `unauthenticated`; a mutation without the client header is refused; a staff token opens no
 member route · `staff.refund` a partial refund, its retry answered with the same refund, the key
 with another amount or another staff member `staff_action_conflict`, refunded once on the
-invoice, the rest refunded, nothing more; both audited · `staff.support-audit` reading a member
+invoice (the conflict names the first attempt's audit entry, `auditId`), the rest refunded,
+nothing more; both audited · `staff.support-audit` reading a member
 (no password hash), removing a PIN, recording consent, sending a reset (the email), signing out
 everywhere (both devices out): each audited with its request id, reason and actor ·
+`staff.console-reads` title search (by name, by ids in order, the unknown left out) and
+availability reads for the content role only; `GET /audit/mine` holds the caller's entries
+only, `before` null; `GET /audit?requestId=` exactly that request's entries ·
 `staff.curated-row` [x] a published collection appears on a member's home page in order and goes
 when deleted; both audited · `staff.service-account` the `webflix-jobs` client-credentials grant
 gives an access token only, roles exactly admin and experiments, opening the operator routes; a
@@ -488,8 +530,8 @@ early assignment means an instance went live early), assigned on the first reque
 profile's variant is stable across devices and requests, never given to a kids
 profile; a device's is stable and 32 devices spread over both variants; a profile experiment
 does not assign anonymous devices; creating and starting are audited ·
-`experiments.recommendation-status` admin only (other roles refused); with a run imported, its
-dates hold, and a new profile's page is labelled `rules` (never `learned:` or `neighbours:`), has
+`experiments.recommendation-status` admin only (other roles refused); asking for an import says
+what it did (`outcome`; only `queued` changes anything); with a run imported, its dates hold, and a new profile's page is labelled `rules` (never `learned:` or `neighbours:`), has
 no Top Picks, and has the rows another new profile gets (the billboard rotates per profile by
 design).
 

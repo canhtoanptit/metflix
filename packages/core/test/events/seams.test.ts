@@ -147,7 +147,10 @@ describe("the export email", () => {
       subject: "Your Webflix data is ready to download",
       idempotencyKey: `privacy-export:${request.id}`,
     });
-    expect(mail[0]?.html).toContain(`/api/v1/privacy/exports/${request.id}?token=`);
+    expect(mail[0]?.html).toContain(
+      `${t.deps.config.publicOrigin}/account/privacy/exports/${request.id}#token=`,
+    );
+    expect(mail[0]?.html).not.toContain("/api/v1/privacy/exports/");
   });
 
   it("is not sent to a suppressed address; the export still completes and is listed", async () => {

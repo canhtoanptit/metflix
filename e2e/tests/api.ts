@@ -19,11 +19,6 @@ import {
 export const CLIENT_HEADERS = { "X-Webflix-Client": "web", "content-type": "application/json" };
 export const DEMO = { email: "demo@webflix.dev", password: "webflix-demo" } as const;
 export const PASSWORD = "correct horse battery";
-export const CARDS = {
-  approved: "4242424242424242",
-  declined: "4000000000000002",
-  insufficientFunds: "4000000000009995",
-} as const;
 
 /** Give up after this many refusals in a row (a limit that never recovers is a failure). */
 const MAX_RATE_LIMIT_RETRIES = 6;
@@ -138,8 +133,68 @@ export async function createProfile(
   return ((await response.json()) as { id: string }).id;
 }
 
+/** A new account without a membership, signed in on `request` (sign-up has no card, §5.1). */
+export async function signUp(request: APIRequestContext, email: string): Promise<void> {
+  const signup = await sendPatiently("sign up", () =>
+    request.post("/api/v1/auth/signup", {
+      headers: CLIENT_HEADERS,
+      data: { email, password: PASSWORD },
+    }),
+  );
+  expect(signup.status(), `sign up: ${await signup.text()}`).toBe(201);
+}
+
 /**
- * A fresh account, signed in on `request`'s cookie jar, with one profile selected. Use one for
+ * Makes the signed-in account a member the one way there is (§5.1): a checkout at the payment
+ * provider, the card confirmed through the fake provider's JSON form (`/_pay/api/confirm`, what
+ * its page does in the browser). The card is one of its own (`visa:<label>`, never had a trial),
+ * so the membership starts with the trial and nothing is charged; `active` then moves the
+ * account's test clock past the trial, so it is a paying membership (the first renewal paid),
+ * like milestone 1's accounts were. HTTP only. Needs the fake provider (outside production).
+ */
+export async function becomeMember(
+  request: APIRequestContext,
+  options: { plan?: "basic" | "standard" | "premium"; active?: boolean } = {},
+): Promise<void> {
+  const start = await sendPatiently("start checkout", () =>
+    request.post("/api/v1/billing/checkout", {
+      headers: CLIENT_HEADERS,
+      data: { planId: options.plan ?? "standard" },
+    }),
+  );
+  expect(start.status(), `start checkout: ${await start.text()}`).toBe(201);
+  const started = (await start.json()) as { id: string; clientSecret: string | null };
+  const card = `visa:e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const confirmed = await request.post("/_pay/api/confirm", {
+    data: { clientSecret: started.clientSecret, card },
+  });
+  expect(confirmed.status(), `confirm the card at the provider: ${await confirmed.text()}`).toBe(
+    200,
+  );
+  const confirm = await sendPatiently("confirm checkout", () =>
+    request.post(`/api/v1/billing/checkout/${started.id}/confirm`, { headers: CLIENT_HEADERS }),
+  );
+  expect(confirm.status(), `confirm checkout: ${await confirm.text()}`).toBe(200);
+  let status = ((await confirm.json()) as { status: string }).status;
+  for (let poll = 0; status !== "complete" && poll < 40; poll += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const current = await request.get(`/api/v1/billing/checkout/${started.id}`);
+    status = ((await current.json()) as { status: string }).status;
+  }
+  expect(status, "the checkout completes").toBe("complete");
+  if (options.active !== false) {
+    // Past the 7-day trial and the renewal's collection an hour later: a paid, active month.
+    const advanced = await request.post("/api/v1/diagnostics/billing/clock", {
+      headers: CLIENT_HEADERS,
+      data: { seconds: 7 * 86_400 + 2 * 3_600 },
+    });
+    expect(advanced.status(), `advance the test clock: ${await advanced.text()}`).toBe(200);
+  }
+}
+
+/**
+ * A fresh account, signed in on `request`'s cookie jar, a member (an active, paid membership on
+ * `plan`, through a provider checkout: `becomeMember`), with one profile selected. Use one for
  * every spec that changes data: nothing it does can reach another spec.
  */
 export async function createAccount(
@@ -152,25 +207,9 @@ export async function createAccount(
   } = {},
 ): Promise<TestAccount> {
   const email = uniqueEmail(options.tag ?? "member");
-  const signup = await sendPatiently("sign up", () =>
-    request.post("/api/v1/auth/signup", {
-      headers: CLIENT_HEADERS,
-      data: {
-        email,
-        password: PASSWORD,
-        planId: options.plan ?? "standard",
-        payment: {
-          method: "card",
-          cardNumber: CARDS.approved,
-          expMonth: 12,
-          expYear: new Date().getFullYear() + 3,
-          cvc: "123",
-          nameOnCard: "E2E Tester",
-        },
-      },
-    }),
-  );
-  expect(signup.status(), `sign up: ${await signup.text()}`).toBe(201);
+  await signUp(request, email);
+  // At the profile gate: a checkout needs a profile without restrictions or none at all.
+  await becomeMember(request, { plan: options.plan ?? "standard" });
   const profileId = await createProfile(request, {
     name: options.profileName ?? "Sam",
     ...options.profile,

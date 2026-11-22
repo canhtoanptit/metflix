@@ -3,6 +3,7 @@ import { type Clock, systemClock } from "../ports/clock.ts";
 import {
   type CatalogueEntry,
   type CatalogueSyncResult,
+  type NextInvoicePreview,
   type PaymentFailureCode,
   type PaymentProvider,
   PaymentProviderError,
@@ -247,6 +248,22 @@ export class MemoryPaymentProvider implements PaymentProvider {
     prorationDate: number;
   }): Promise<ProrationPreview> {
     return structuredClone(this.prorate(input));
+  }
+
+  async previewNextInvoice(subscriptionId: string): Promise<NextInvoicePreview | null> {
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (!subscription || subscription.cancelAtPeriodEnd) return null;
+    if (!["trialing", "active", "past_due"].includes(subscription.status)) return null;
+    const at =
+      subscription.status === "trialing" ? subscription.trialEnd : subscription.currentPeriodEnd;
+    if (at === null) return null;
+    const price = this.price(subscription.priceLookupKey);
+    const customer = this.customer(subscription.customerId);
+    return {
+      at,
+      amountMinor: Math.max(0, price.amountMinor - customer.creditMinor),
+      currency: price.currency,
+    };
   }
 
   changePlan(

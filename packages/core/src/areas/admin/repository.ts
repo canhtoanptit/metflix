@@ -26,6 +26,7 @@ export interface AuditLogFilter {
   targetType?: string | undefined;
   targetId?: string | undefined;
   outcome?: AuditOutcome | undefined;
+  requestId?: string | undefined;
 }
 
 /** Newest first: entries strictly older than this position (`createdAt`, then `id`). */

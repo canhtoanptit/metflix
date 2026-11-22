@@ -21,6 +21,7 @@ import { useEffect, useRef } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { useApplySession } from "../../../app/session/session.ts";
+import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { useBrowseProfile, useBrowseSession } from "../common/session.ts";
 import { type HandoverProps, PROFILE_TRIGGER_CLASS, ProfileTriggerContent } from "./menus.tsx";
 
@@ -45,7 +46,12 @@ export function ProfileMenu({
   const navigate = useNavigate();
 
   const switchProfile = useMutation({
-    mutationFn: (next: Profile) => api().selectProfile({ body: { profileId: next.id } }),
+    mutationFn: (next: Profile) => {
+      // Events queued for this profile must never leave once the server answers as the next
+      // one (it stamps the session's profile at receipt): drop them before the switch.
+      discardPendingEvents();
+      return api().selectProfile({ body: { profileId: next.id } });
+    },
     onSuccess: async (next) => {
       await applySession(next);
       await navigate({ to: "/browse" });

@@ -257,6 +257,25 @@ export const experimentChecks: CheckDefinition[] = [
         );
         equal(refused.problem.requiredRole, "admin", "requiredRole");
       }
+      // Asking for an import says what it did; only `queued` queues anything.
+      const asked = await succeeds(
+        () => admin.importRecommendations({ body: { reason: "smoke: what would an import do" } }),
+        "POST /system/recommendations/import",
+      );
+      ctx.note(`import: ${asked.outcome}${asked.run ? ` (published run ${asked.run})` : ""}`);
+      if (asked.outcome === "already_served")
+        equal(asked.run, status.activeModel?.run ?? null, "the run already served");
+      if (asked.outcome !== "queued") {
+        const after = await succeeds(
+          () => admin.getRecommendationStatus(),
+          "GET /system/recommendations",
+        );
+        equal(
+          after.activeModel?.run ?? null,
+          status.activeModel?.run ?? null,
+          "the served run after an import that queued nothing",
+        );
+      }
       if (status.lastImport)
         ctx.note(`last import: ${status.lastImport.run} ${status.lastImport.status}`);
       if (!status.activeModel) {
