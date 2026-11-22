@@ -138,3 +138,63 @@ describe("pseudonymous subject keys", () => {
     ).not.toBe("npMC-8AxrOLdKIKHf5FEdj");
   });
 });
+
+describe("the inline reader's handling of compaction manifests", () => {
+  const ACCOUNT = "aK3vB8nQ2wE5rT7yU9iO1p";
+  const window = {
+    accountKey: ACCOUNT,
+    fromMs: Date.parse("2026-11-22T10:00:00.000Z"),
+    toMs: Date.parse("2026-11-22T11:00:00.000Z"),
+  };
+  async function hourWith(manifest: unknown) {
+    const blobs = new MemoryBlobStore();
+    const sink = createBlobLakeEventSink({ blobs, ids: createUuidV7Generator() });
+    const event = makeLakeEvent("impression", { receivedAt: "2026-11-22T10:05:00.000Z" });
+    const { objects } = await sink.append([event]);
+    if (manifest !== undefined) {
+      await blobs.put(
+        "events/dt=2026-11-22/hh=10/_compaction.json",
+        JSON.stringify({
+          format: "webflix.events-compaction",
+          ...(manifest as object),
+          sources: [{ key: objects[0] }],
+        }),
+      );
+    }
+    return { blobs, sink, event, objects };
+  }
+
+  it("ignores a version 1 manifest (zstd) and reads the raw objects", async () => {
+    const { sink, event } = await hourWith({
+      formatVersion: 1,
+      parquet: "events/dt=2026-11-22/hh=10/part-1.parquet",
+    });
+    expect((await sink.accountEvents(window)).events).toEqual([event]);
+  });
+
+  it("refuses a manifest of an unknown version rather than guess", async () => {
+    const { sink } = await hourWith({ formatVersion: 3 });
+    await expect(sink.accountEvents(window)).rejects.toThrow(/unknown version 3/);
+  });
+
+  it("reads the hour again when an object disappears meanwhile, and gives up after 3 tries", async () => {
+    const { blobs, sink, event, objects } = await hourWith(undefined);
+    const get = blobs.get.bind(blobs);
+    let vanish = 1;
+    blobs.get = async (key, options) => {
+      if (key === objects[0] && vanish-- > 0) return null; // a concurrent rewrite, once
+      return get(key, options);
+    };
+    expect((await sink.accountEvents(window)).events).toEqual([event]);
+    vanish = 10;
+    await expect(sink.accountEvents(window)).rejects.toThrow(/kept changing/);
+  });
+
+  it("waits out a rewrite: a manifest naming a file not listed yet", async () => {
+    const { sink } = await hourWith({
+      formatVersion: 2,
+      parquet: "events/dt=2026-11-22/hh=10/part-missing.parquet",
+    });
+    await expect(sink.accountEvents(window)).rejects.toThrow(/kept changing/);
+  });
+});

@@ -37,13 +37,11 @@ import {
   type Es256PrivateKey,
   type IdTokenAlgorithm,
   importEs256SigningKey,
-  importVerificationKey,
   type ParsedJws,
-  type PublicJwk,
   parseJws,
   signEs256,
-  verifyJwsSignature,
 } from "./jose.ts";
+import { createJwksKeySet, fetchIssuerJson, JwksError } from "./jwks.ts";
 
 export type OidcFetch = (request: Request) => Promise<Response>;
 
@@ -95,13 +93,6 @@ interface Discovery {
   issParameterSupported: boolean;
 }
 
-interface CachedJwks {
-  keys: PublicJwk[];
-  fetchedAt: number;
-  imported: Map<string, CryptoKey | null>;
-}
-
-const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_SUBJECT_LENGTH = 255;
 const EMAIL = /^[^\s@<>()",;:\\[\]]+@[^\s@<>()",;:\\[\]]+\.[^\s@<>()",;:\\[\]]+$/;
 
@@ -133,8 +124,6 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
   const timeoutMs = options.timeoutMs ?? 5000;
   const skewSec = options.skewSec ?? 60;
   const cacheTtlMs = (options.cacheTtlSec ?? 3600) * 1000;
-  const cooldownMs = (options.jwksRefetchCooldownSec ?? 10) * 1000;
-  const algorithms = new Set<IdTokenAlgorithm>(options.algorithms ?? ["RS256"]);
   const scopes = options.scopes ?? ["openid", "email", "profile"];
   const responseMode = options.responseMode ?? "query";
   if (!scopes.includes("openid")) throw new TypeError("OpenID scopes must include openid");
@@ -144,66 +133,20 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
   }
 
   let discovery: { value: Discovery; fetchedAt: number } | null = null;
-  let jwks: CachedJwks | null = null;
   let appleKey: Promise<CryptoKey> | null = null;
 
-  /** Calls the issuer with a deadline (an in-process handler ignores abort signals: race it). */
-  async function call(
+  /** One JSON document from the issuer (deadline, size cap); `provider_unavailable` otherwise. */
+  async function issuerJson(
     url: string,
+    what: string,
     // `RequestInit`, not a derived type: Workers' declarations make `Request` generic over it.
     init: RequestInit = {},
-  ): Promise<Response> {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        reject(new IdentityProviderError("provider_unavailable", "issuer_timeout"));
-      }, timeoutMs);
-    });
+  ): Promise<{ status: number; ok: boolean; body: unknown }> {
     try {
-      return await Promise.race([
-        fetcher(new Request(url, { ...init, signal: controller.signal })),
-        deadline,
-      ]);
+      return await fetchIssuerJson(fetcher, url, what, timeoutMs, init);
     } catch (error) {
-      if (error instanceof IdentityProviderError) throw error;
-      return fail("provider_unavailable", "issuer_unreachable", error);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  }
-
-  async function readJson(response: Response, what: string): Promise<unknown> {
-    const declared = Number(response.headers.get("Content-Length"));
-    if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
-      fail("provider_unavailable", `${what}_too_large`);
-    }
-    const reader = response.body?.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    if (reader) {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > MAX_RESPONSE_BYTES) {
-          await reader.cancel();
-          fail("provider_unavailable", `${what}_too_large`);
-        }
-        chunks.push(value);
-      }
-    }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    try {
-      return JSON.parse(new TextDecoder().decode(bytes));
-    } catch (error) {
-      return fail("provider_unavailable", `${what}_not_json`, error);
+      if (error instanceof JwksError) return fail("provider_unavailable", error.message, error);
+      throw error;
     }
   }
 
@@ -220,11 +163,12 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
   async function metadata(): Promise<Discovery> {
     const now = clock.now();
     if (discovery && now - discovery.fetchedAt < cacheTtlMs) return discovery.value;
-    const response = await call(`${options.issuer}/.well-known/openid-configuration`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) fail("provider_unavailable", `discovery_status_${response.status}`);
-    const document = await readJson(response, "discovery");
+    const answer = await issuerJson(
+      `${options.issuer}/.well-known/openid-configuration`,
+      "discovery",
+    );
+    if (!answer.ok) fail("provider_unavailable", `discovery_status_${answer.status}`);
+    const document = answer.body;
     if (!isRecord(document)) return fail("provider_unavailable", "discovery_invalid");
     // OpenID Connect Discovery §4.3: the issuer in the document must be the one configured.
     if (document.issuer !== options.issuer) fail("issuer_mismatch", "discovery_issuer_mismatch");
@@ -239,62 +183,27 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
     return value;
   }
 
-  async function fetchJwks(jwksUri: string): Promise<CachedJwks> {
-    const response = await call(jwksUri, { headers: { Accept: "application/json" } });
-    if (!response.ok) fail("provider_unavailable", `jwks_status_${response.status}`);
-    const document = await readJson(response, "jwks");
-    if (!isRecord(document) || !Array.isArray(document.keys)) {
-      return fail("provider_unavailable", "jwks_invalid");
-    }
-    const keys = document.keys.filter(
-      (key): key is PublicJwk => isRecord(key) && typeof key.kty === "string",
-    );
-    return { keys, fetchedAt: clock.now(), imported: new Map() };
-  }
+  // The issuer's keys: one implementation for every verifier (jwks.ts).
+  const keySet = createJwksKeySet({
+    jwksUri: async () => (await metadata()).jwksUri,
+    algorithms: options.algorithms ?? ["RS256"],
+    fetch: fetcher,
+    clock,
+    timeoutMs,
+    cacheTtlSec: options.cacheTtlSec ?? 3600,
+    refetchCooldownSec: options.jwksRefetchCooldownSec ?? 10,
+  });
 
-  /** The current JWKS: cached, refreshed when stale; a failed refresh keeps the cached keys. */
-  async function currentJwks(jwksUri: string): Promise<CachedJwks> {
-    if (jwks && clock.now() - jwks.fetchedAt < cacheTtlMs) return jwks;
+  async function verifySignature(jws: ParsedJws): Promise<void> {
     try {
-      jwks = await fetchJwks(jwksUri);
+      await keySet.verify(jws);
     } catch (error) {
-      // An issuer outage must not lock out keys we already trust; with none cached, fail.
-      if (!jwks) throw error;
-    }
-    return jwks;
-  }
-
-  async function keyFor(cache: CachedJwks, kid: string, alg: IdTokenAlgorithm) {
-    const cacheKey = `${alg}\u0000${kid}`;
-    if (cache.imported.has(cacheKey)) return cache.imported.get(cacheKey) ?? null;
-    const jwk = cache.keys.find((candidate) => candidate.kid === kid);
-    const key = jwk ? await importVerificationKey(jwk, alg) : null;
-    cache.imported.set(cacheKey, key);
-    return key;
-  }
-
-  async function verifySignature(jws: ParsedJws, meta: Discovery): Promise<void> {
-    const alg = jws.header.alg;
-    // The algorithm is the configuration's (and the key type's): `none`, HS256 keyed with a
-    // public key, or anything else the header claims is refused before any key is looked at.
-    if (typeof alg !== "string" || !algorithms.has(alg as IdTokenAlgorithm)) {
-      fail("invalid_token", "alg_not_allowed");
-    }
-    const kid = jws.header.kid;
-    if (typeof kid !== "string" || kid.length === 0 || kid.length > 256) {
-      fail("invalid_token", "kid_missing");
-    }
-    let cache = await currentJwks(meta.jwksUri);
-    let key = await keyFor(cache, kid, alg as IdTokenAlgorithm);
-    if (!key && clock.now() - cache.fetchedAt >= cooldownMs) {
-      // A key the cached set lacks: the issuer may have rotated. Refetch once, then decide.
-      jwks = await fetchJwks(meta.jwksUri);
-      cache = jwks;
-      key = await keyFor(cache, kid, alg as IdTokenAlgorithm);
-    }
-    if (!key) fail("invalid_token", "unknown_kid");
-    if (!(await verifyJwsSignature(jws, key, alg as IdTokenAlgorithm))) {
-      fail("invalid_token", "bad_signature");
+      if (!(error instanceof JwksError)) throw error;
+      fail(
+        error.reason === "unavailable" ? "provider_unavailable" : "invalid_token",
+        error.message,
+        error,
+      );
     }
   }
 
@@ -310,11 +219,10 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
     idToken: string,
     accessToken: string | null,
     redemption: OidcRedemption,
-    meta: Discovery,
   ): Promise<VerifiedIdentity> {
     const jws = parseJws(idToken);
     if (!jws) return fail("invalid_token", "id_token_malformed");
-    await verifySignature(jws, meta);
+    await verifySignature(jws);
     const claims = jws.payload;
     const nowSec = clock.now() / 1000;
 
@@ -461,7 +369,7 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
         fail("issuer_mismatch", "response_iss_missing");
       }
       const auth = await clientAuthentication(meta);
-      const response = await call(meta.tokenEndpoint, {
+      const response = await issuerJson(meta.tokenEndpoint, "token_response", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -476,7 +384,7 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
           ...auth.body,
         }).toString(),
       });
-      const body = await readJson(response, "token_response");
+      const body = response.body;
       if (!response.ok) {
         const error = isRecord(body) && typeof body.error === "string" ? body.error : "unknown";
         if (response.status >= 500) fail("provider_unavailable", `token_status_${response.status}`);
@@ -497,7 +405,7 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
       if (accessToken !== null && accessToken === idToken) {
         fail("invalid_token", "id_token_as_access_token");
       }
-      return validateIdToken(idToken, accessToken, redemption, meta);
+      return validateIdToken(idToken, accessToken, redemption);
     },
   };
 }

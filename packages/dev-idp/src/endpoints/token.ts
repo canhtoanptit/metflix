@@ -1,6 +1,7 @@
 /**
  * The token endpoint (RFC 6749 §3.2, OpenID Connect Core §3.1.3): the authorisation code grant
- * with PKCE and the refresh token grant with rotation.
+ * with PKCE, the refresh token grant with rotation, and (generic and keycloak profiles) the
+ * client-credentials grant for clients with a service account.
  */
 import { authenticateClient } from "../client-auth.ts";
 import type { NormalizedClient } from "../config.ts";
@@ -20,6 +21,7 @@ import {
   grantRevokedKey,
   type IdentityFaults,
   identityFaultsOf,
+  mintServiceAccountToken,
   mintTokenResponse,
   refreshAllowed,
   sealRefreshToken,
@@ -232,6 +234,38 @@ async function refreshGrant(
   return json(response);
 }
 
+/**
+ * The client-credentials grant (RFC 6749 §4.4): a confidential client with a service account,
+ * authenticated by its secret, receives an access token for that account. Without `scope` it
+ * gets the client's allowed scopes other than `openid` and `offline_access` (as Keycloak grants
+ * its default client scopes); `scope` may narrow to those (`openid` is refused: there is no
+ * person, so no ID token; nor is `offline_access`: there is no refresh token).
+ */
+async function serviceAccountGrant(
+  context: IssuerContext,
+  client: NormalizedClient,
+  params: URLSearchParams,
+): Promise<Response> {
+  if (!client.serviceAccount || client.public) {
+    return oauthError(400, "unauthorized_client", "This client has no service account");
+  }
+  const grantable = client.allowedScopes.filter(
+    (scope) => scope !== "openid" && scope !== "offline_access",
+  );
+  const requested = param(params, "scope");
+  const scopes =
+    requested === undefined ? grantable : [...new Set(requested.split(" ").filter(Boolean))];
+  if (scopes.some((scope) => !grantable.includes(scope))) {
+    return oauthError(
+      400,
+      "invalid_scope",
+      "A service account may request only its allowed scopes, not openid or offline_access",
+    );
+  }
+  log(context, "info", "client credentials granted", { clientId: client.clientId });
+  return json(await mintServiceAccountToken(context, client, scopes));
+}
+
 export async function handleToken(context: IssuerContext, request: Request): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed(["POST"]);
   const form = await readForm(request);
@@ -246,11 +280,13 @@ export async function handleToken(context: IssuerContext, request: Request): Pro
     return oauthError(400, "invalid_request", `Parameter ${duplicate} is repeated`);
   const grantType = param(params, "grant_type");
   if (grantType === undefined) return oauthError(400, "invalid_request", "grant_type is required");
-  if (grantType !== "authorization_code" && grantType !== "refresh_token") {
+  const clientCredentials = grantType === "client_credentials" && context.profile.clientCredentials;
+  if (grantType !== "authorization_code" && grantType !== "refresh_token" && !clientCredentials) {
     return oauthError(400, "unsupported_grant_type", `grant_type ${grantType} is not supported`);
   }
   const auth = await authenticateClient(context, request, params);
   if (!auth.ok) return auth.response;
+  if (clientCredentials) return serviceAccountGrant(context, auth.client, params);
   return grantType === "authorization_code"
     ? codeGrant(context, auth.client, params)
     : refreshGrant(context, auth.client, params);

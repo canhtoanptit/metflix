@@ -248,10 +248,13 @@ transaction across KV and D1. KV is eventually consistent (a new key can take 60
 reach other locations, and a miss is cached): a location that sees the activation before the
 keys serves the rule engine for those profiles meanwhile (cold start, never an error). Keys expire
 a day after their lists. Limits relied on (developers.cloudflare.com, read 2026-11-22): the KV
-binding writes one key per `put` and a Worker invocation has **1,000 KV operations**, so the
-in-Worker job suits runs of a few hundred profiles; a full run is written from outside Workers
-through the REST bulk endpoint (**10,000 pairs and 100 MB per request**,
-`createKvRestBulkWriter`); D1 allows 100 bound parameters per statement and 1,000 queries per
+binding writes one key per `put` and a Worker invocation has **1,000 KV operations**, so an
+import inside the Worker (the staff API's `POST /system/recommendations/import`, the job) takes
+at most 800 lists (`importCapacity`) and **refuses a larger run before writing anything**: the
+staff request answers `422 recommendation_import_too_large` naming `make cf-recs-import`, and a
+job records the run as `failed` with the same explanation (`GET /system/recommendations`). A full
+run is written from outside Workers through the REST bulk endpoint (**10,000 pairs and 100 MB
+per request**, `createKvRestBulkWriter`, `make cf-recs-import`); D1 allows 100 bound parameters per statement and 1,000 queries per
 invocation (a batch counts once), which the 16- and 25-row INSERTs and the batching respect.
 
 **Serving.** For each browse page (`RecommendationServing.plan`):
@@ -261,9 +264,17 @@ invocation (a batch counts once), which the 16- and 25-row INSERTs and the batch
 | Kids or lowered-ceiling profile | the rule engine; no learned data read, no experiment | `rules` |
 | No active model, or the model is past `expiresAt` | the rule engine | `rules` |
 | Store down, or slower than `WEBFLIX_RECS_READ_TIMEOUT_MS` (250 ms) | the rule engine; the store is skipped for 30 s | `rules` |
-| The experiment assigns the control variant | the rule engine | `rules` |
+| The experiment assigns the control variant | the rule engine; no list, no neighbour | `rules` |
 | Learned, profile has fresh lists | learned candidates (below) | `learned:{run}` |
-| Learned, no lists (new profile, not in the run, lists unreadable) | the rule engine plus the model's neighbours | `learned:{run}` |
+| Learned, no lists (not in the run, lists unreadable), and the model's neighbours help (a session boost, or a Because You Watched source the model knows) | the rule engine plus the model's neighbours | `neighbours:{run}` |
+| Learned, no lists, and nothing the model knows touches the page (a new profile with no history) | exactly the rule engine | `rules` |
+
+**The label says what ranked the page, never more**: `rules` when nothing from a model shaped it,
+`neighbours:{run}` when a fresh model's neighbours helped the rule engine but no personal list
+did, `learned:{run}` only when a fresh personal list ranked it. The ranker's position-bias
+estimate and the experiment analysis read it from impressions (the pipeline treats it as free
+text: only `explore` is interpreted), so a page ranked without a personal list is never counted
+as learned. The engine decides the label after composing the page (`Personalization.modelUse`).
 
 With learned candidates: **Top Picks for {name}** (the model's re-ranked list in its order) comes
 after Continue Watching; the billboard is the model's first eligible pick (rotating daily among

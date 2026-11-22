@@ -51,12 +51,23 @@ export interface IdentityClaimsTable {
   expires_at: number;
 }
 
+/** Identities removed from an account (migration 0015_identity_removals): never auto-linked again. */
+export interface IdentityRemovalsTable {
+  provider: string;
+  subject: string;
+  account_id: string;
+  /** `unlinked` (the member) | `password_reset` (linked under another address). */
+  reason: string;
+  removed_at: number;
+}
+
 export interface IdentityTables {
   account_identities: AccountIdentitiesTable;
   account_tokens: AccountTokensTable;
   email_outbox: EmailOutboxTable;
   email_suppressions: EmailSuppressionsTable;
   identity_claims: IdentityClaimsTable;
+  identity_removals: IdentityRemovalsTable;
 }
 
 /** Parents first. */
@@ -66,4 +77,5 @@ export const IDENTITY_TABLES = [
   "email_outbox",
   "email_suppressions",
   "identity_claims",
+  "identity_removals",
 ] as const satisfies readonly (keyof IdentityTables)[];

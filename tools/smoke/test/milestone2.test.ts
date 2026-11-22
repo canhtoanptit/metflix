@@ -159,3 +159,16 @@ describe("the deployment's public origin", () => {
     expect(outcomeOf(agent, answer)).toBeNull();
   });
 });
+
+describe("labelled cards", () => {
+  it("names a card of a test card's kind that no run has used", async () => {
+    const { labelledCard } = await import("../src/payments.ts");
+    const first = labelledCard("visa", "run-1", "converts");
+    const second = labelledCard("visa", "run-1", "converts");
+    expect(first).toMatch(/^visa:smk-run-1-converts-[0-9a-f]{6}$/);
+    expect(first).not.toBe(second);
+    expect(
+      labelledCard("charge-declined", "r", "x".repeat(80)).split(":")[1]?.length,
+    ).toBeLessThanOrEqual(64);
+  });
+});

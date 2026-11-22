@@ -76,6 +76,17 @@ export function snapshotMembership(
 ): MembershipSnapshot {
   if (isProviderMembership(record)) {
     const effective = effectiveMembership(record, graceSec, now);
+    if (effective.status === "none") {
+      // A first payment never confirmed: the account never subscribed (§5.2).
+      return {
+        record,
+        effective,
+        entitlement: entitlementOf(effective),
+        state: presentMembershipState(effective),
+        legacy: noMembershipView(accountCreatedAt),
+        paymentMethod: null,
+      };
+    }
     return {
       record,
       effective,

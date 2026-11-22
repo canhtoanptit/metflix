@@ -48,6 +48,8 @@ async function populated(config: Record<string, string> = {}) {
 }
 
 async function exportOf(t: Awaited<ReturnType<typeof eventServices>>, member: Member) {
+  // An export holds the events received before its request ([from, to), to = the request).
+  t.clock.advance(1000);
   await elevate(t, member);
   const request = await t.services.events.requestExport(member.as("adult"));
   expect(request).toMatchObject({ kind: "export", status: "pending", downloadUrl: null });
@@ -126,6 +128,7 @@ describe("data export", () => {
     const viewer = { session: member.as("adult").session, profile: member.profiles.adult };
     const playback = await t.services.playback.start(viewer, { titleId: "t-lanterns" });
     await t.services.playback.end(viewer, playback.id);
+    t.clock.advance(1000);
     await elevate(t, member);
     const request = await t.services.events.requestExport(member.as("adult"));
     await t.queue.drain(); // the export job only: no scheduler tick has drained the outbox
@@ -255,15 +258,8 @@ describe("account deletion", () => {
     // The lake keeps the events until compaction erases them: the subject is listed for it.
     const pending = await t.services.events.staff.pendingErasures(100);
     expect(pending).toEqual([await keys.account(member.accountId)]);
-    const all = await repos.events.pendingErasures(100);
-    expect(all.map((record) => record.subjectKey).sort()).toEqual(
-      (
-        await Promise.all([
-          keys.account(member.accountId),
-          ...Object.values(member.profiles).map((profile) => keys.profile(profile.id)),
-        ])
-      ).sort(),
-    );
+    // Its profiles' records are covered by the account's key: not listed, settled with it.
+    expect(await repos.events.pendingErasures(100)).toHaveLength(1);
     await t.services.events.staff.confirmErasures(pending);
     expect(await t.services.events.staff.pendingErasures(100)).toEqual([]);
     // Events emitted for the erased account afterwards are not stored.

@@ -36,6 +36,11 @@ export interface Profile {
   readonly formPostScopes: readonly string[];
   readonly tokenEndpointAuthMethods: readonly string[];
   readonly claimsSupported: readonly string[];
+  /**
+   * The client-credentials grant (RFC 6749 §4.4) for clients with a service account (Keycloak's
+   * service accounts; Google and Apple have no such grant for relying parties).
+   */
+  readonly clientCredentials: boolean;
 }
 
 const COMMON_CLAIMS = ["iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "at_hash"];
@@ -59,6 +64,7 @@ export const PROFILES: Readonly<Record<ProfileName, Profile>> = {
     azp: true,
     formPostScopes: [],
     tokenEndpointAuthMethods: ["client_secret_basic", "client_secret_post", "none"],
+    clientCredentials: true,
     claimsSupported: [
       ...COMMON_CLAIMS,
       "azp",
@@ -89,6 +95,7 @@ export const PROFILES: Readonly<Record<ProfileName, Profile>> = {
     azp: true,
     formPostScopes: [],
     tokenEndpointAuthMethods: ["client_secret_post", "client_secret_basic"],
+    clientCredentials: false,
     claimsSupported: [
       ...COMMON_CLAIMS,
       "azp",
@@ -118,6 +125,7 @@ export const PROFILES: Readonly<Record<ProfileName, Profile>> = {
     azp: false,
     formPostScopes: ["email", "name"],
     tokenEndpointAuthMethods: ["client_secret_post"],
+    clientCredentials: false,
     claimsSupported: [
       ...COMMON_CLAIMS,
       "email",
@@ -145,6 +153,7 @@ export const PROFILES: Readonly<Record<ProfileName, Profile>> = {
     azp: true,
     formPostScopes: [],
     tokenEndpointAuthMethods: ["client_secret_basic", "client_secret_post", "none"],
+    clientCredentials: true,
     claimsSupported: [
       ...COMMON_CLAIMS,
       "azp",

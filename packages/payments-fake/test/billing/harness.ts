@@ -20,7 +20,7 @@ import {
   MemoryStreamGate,
 } from "@webflix/core/memory";
 import { ManualClock, MemoryLogger } from "@webflix/core/testing";
-import type { FakeTestCard } from "../../src/cards.ts";
+import type { FakeCardChoice } from "../../src/cards.ts";
 import { FakePaymentProvider, type FakePaymentProviderOptions } from "../../src/provider.ts";
 import { type FakeStore, MemoryFakeStore } from "../../src/store.ts";
 import { TEST_WEBHOOK_SECRET } from "../harness.ts";
@@ -42,14 +42,15 @@ export interface BillingHarness {
   /** Processes every queued job (webhook events). */
   drain(): Promise<void>;
   /** The browser's part: confirm a client secret in the fake's form (challenges completed). */
-  confirm(clientSecret: string | null, card: FakeTestCard | null): Promise<void>;
+  /** A test card, or a labelled one (`visa:run-42`: its own fingerprint). */
+  confirm(clientSecret: string | null, card: FakeCardChoice | null): Promise<void>;
   /** Start + confirm the card + confirm the checkout (+ pay when asked): a member. */
   subscribe(
     auth: AuthContext,
     options?: {
       plan?: "basic" | "standard" | "premium";
-      card?: FakeTestCard;
-      payCard?: FakeTestCard;
+      card?: FakeCardChoice;
+      payCard?: FakeCardChoice;
     },
   ): Promise<{ checkoutId: string }>;
 }

@@ -2,6 +2,7 @@ import {
   type ConsentRecord,
   type EventsRepository,
   OPEN_PRIVACY_STATUSES,
+  PARTIAL_EXPORT_SUFFIX,
   type PrivacyErasureRecord,
   type PrivacyRequestRecord,
   type PrivacyRequestStatus,
@@ -118,17 +119,55 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
         .map(copy);
     },
 
+    async waitingExports(limit) {
+      tick();
+      return [...requests.values()]
+        .filter(
+          (record) =>
+            record.kind === "export" &&
+            record.status === "processing" &&
+            record.exportBlobKey?.endsWith(PARTIAL_EXPORT_SUFFIX) === true,
+        )
+        .sort((a, b) => a.requestedAt - b.requestedAt || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
+    async staleExports(before, limit) {
+      tick();
+      return [...requests.values()]
+        .filter(
+          (record) =>
+            record.kind === "export" &&
+            (record.status === "pending" || record.status === "processing") &&
+            record.exportBlobKey === null &&
+            record.updatedAt < before,
+        )
+        .sort((a, b) => a.updatedAt - b.updatedAt || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
     async addErasures(records) {
       tick();
       for (const record of records) {
-        if (!erasures.has(record.subjectKey)) erasures.set(record.subjectKey, copy(record));
+        const existing = erasures.get(record.subjectKey);
+        if (!existing) erasures.set(record.subjectKey, copy(record));
+        else if (existing.compactedAt !== null) {
+          // Asked for again after it was settled: new history to erase.
+          erasures.set(record.subjectKey, {
+            ...existing,
+            requestedAt: record.requestedAt,
+            compactedAt: null,
+          });
+        }
       }
     },
 
     async pendingErasures(limit) {
       tick();
       return [...erasures.values()]
-        .filter((record) => record.compactedAt === null)
+        .filter((record) => record.compactedAt === null && record.accountKey === null)
         .sort(
           (a, b) =>
             a.requestedAt - b.requestedAt ||
@@ -140,10 +179,15 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
 
     async markErasuresCompacted(subjectKeys, at) {
       tick();
-      for (const key of subjectKeys) {
-        const record = erasures.get(key);
-        if (record && record.compactedAt === null)
+      const confirmed = new Set(subjectKeys);
+      for (const [key, record] of erasures) {
+        if (record.compactedAt !== null) continue;
+        if (
+          confirmed.has(key) ||
+          (record.accountKey !== null && confirmed.has(record.accountKey))
+        ) {
           erasures.set(key, { ...record, compactedAt: at });
+        }
       }
     },
 

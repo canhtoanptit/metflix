@@ -409,7 +409,9 @@ export function createIdentityService(
    * - an identity already linked signs in to its account (keyed by issuer and subject only);
    * - otherwise an account with the asserted address is linked automatically only when the
    *   issuer verified the address AND the account's address is verified (and it is not the
-   *   shared demo account); anything less is `link-required`: sign in first, then link;
+   *   shared demo account) AND the identity was never removed from an account (unlinked by the
+   *   member, or dropped by a password reset); anything less is `link-required`: sign in first,
+   *   then link deliberately;
    * - with no such account, a new one is created (membership `none`), only for an address the
    *   issuer verified, so nobody can squat an address they do not control.
    */
@@ -440,6 +442,11 @@ export function createIdentityService(
       const automatic =
         identity.emailVerified && existing.emailVerifiedAt !== null && !isDemoAccount(existing.id);
       if (!automatic) throw new OidcFailure("link_not_automatic", "link-required");
+      // An identity removed from an account (the member unlinked it, or a password reset dropped
+      // it) never comes back by itself: only the deliberate, proven link (intent=link).
+      if (await repos.identity.findRemoval(identity.provider, identity.subject)) {
+        throw new OidcFailure("identity_removed", "link-required");
+      }
       let added: boolean;
       try {
         added = await repos.identity.linkIdentity(identityRecord(identity, existing.id, now));
@@ -598,10 +605,20 @@ export function createIdentityService(
     jobs: jobBindings,
     scheduled: () => [identityCleanupJob.create({})],
 
+    /**
+     * The identity area's part of "Download your data" (§6.3): what the member can see of their
+     * own account, sign-in methods, profiles and signed-in devices. Never a password hash, a PIN
+     * or a session token.
+     */
     async exportAccountData(accountId) {
-      const account = await repos.identity.getAccount(accountId);
+      const now = clock.now();
+      const [account, identities, profiles, devices] = await Promise.all([
+        repos.identity.getAccount(accountId),
+        repos.identity.listIdentities(accountId),
+        repos.profiles.list(accountId),
+        repos.sessions.listForAccount(accountId, now),
+      ]);
       if (!account) return null;
-      const identities = await repos.identity.listIdentities(accountId);
       return {
         emailVerified: account.emailVerifiedAt !== null,
         emailVerifiedAt:
@@ -612,6 +629,32 @@ export function createIdentityService(
           emailAtLink: identity.emailAtLink,
           linkedAt: toIsoString(identity.createdAt),
           lastUsedAt: toIsoString(identity.lastUsedAt),
+        })),
+        profiles: profiles.map((profile) => ({
+          id: profile.id,
+          name: profile.name,
+          avatarId: profile.avatarId,
+          avatar: profile.avatar
+            ? {
+                id: profile.avatar.id,
+                name: profile.avatar.name,
+                imageUrl: profile.avatar.imageUrl,
+              }
+            : null,
+          kids: profile.isKids,
+          maturityCeiling: profile.maturityCeiling,
+          // Whether a PIN is set, never the PIN (or its hash).
+          locked: profile.pinHash !== null,
+          settings: { ...profile.settings },
+          createdAt: toIsoString(profile.createdAt),
+        })),
+        devices: devices.map((session) => ({
+          id: session.id,
+          label: session.deviceLabel,
+          type: session.deviceType,
+          signedInAt: toIsoString(session.createdAt),
+          lastSeenAt: toIsoString(session.lastSeenAt),
+          expiresAt: toIsoString(session.expiresAt),
         })),
       };
     },
@@ -796,7 +839,11 @@ export function createIdentityService(
     async unlinkIdentity(auth, provider) {
       requireNotDemo(auth.session.accountId);
       if (!(await credentials.isElevated(auth))) throw new AppError("reauthentication_required");
-      const outcome = await repos.identity.unlinkIdentity(auth.session.accountId, provider);
+      const outcome = await repos.identity.unlinkIdentity(
+        auth.session.accountId,
+        provider,
+        clock.now(),
+      );
       if (outcome === "not_found")
         throw new AppError("not_found", { detail: "No such sign-in method" });
       if (outcome === "last") throw new AppError("identity_last_sign_in_method");

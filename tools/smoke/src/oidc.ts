@@ -479,3 +479,39 @@ export const STAFF_PERSONAS: Record<StaffRole | "none" | "other-client", string>
   none: "staff-no-role",
   "other-client": "staff-other-client-admin",
 };
+
+/** The development staff realm's service client for jobs (published development values). */
+export const DEV_JOBS_CLIENT = { id: "webflix-jobs", secret: "dev-only-jobs-client-secret" };
+
+/**
+ * A job's access token by the client-credentials grant (a service account, as with a Keycloak
+ * client): `POST {token_endpoint}` with HTTP Basic client authentication. Returns the token
+ * response's status and body, for the check to judge.
+ */
+export async function clientCredentialsToken(
+  agent: Agent,
+  client: { id: string; secret: string },
+): Promise<{ result: HttpResult; json: Record<string, unknown> }> {
+  const discovered = await discoverIssuer(agent, "staff");
+  if ("absent" in discovered) fail(`the staff issuer is not reachable: ${discovered.absent}`);
+  const publicOrigin = new URL(discovered.document.issuer).origin;
+  if (publicOrigin !== agent.origin) agent.alias(publicOrigin);
+  const basic = Buffer.from(
+    `${encodeURIComponent(client.id)}:${encodeURIComponent(client.secret)}`,
+  ).toString("base64");
+  const result = await agent.fetch(discovered.document.token_endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${basic}`,
+    },
+    body: new URLSearchParams({ grant_type: "client_credentials" }).toString(),
+  });
+  let json: Record<string, unknown> = {};
+  try {
+    json = result.json<Record<string, unknown>>();
+  } catch {
+    json = {};
+  }
+  return { result, json };
+}

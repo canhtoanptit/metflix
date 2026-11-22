@@ -14,7 +14,11 @@ import type {
   TitlePopularity,
   TitleType,
 } from "@webflix/contracts";
-import type { MemberFacts, RecommendationServing } from "../areas/personalisation/serving.ts";
+import {
+  type MemberFacts,
+  policyFor,
+  type RecommendationServing,
+} from "../areas/personalisation/serving.ts";
 import type { ShowcaseData } from "../catalog/cache.ts";
 import { AppError } from "../errors.ts";
 import { type BadgeSurface, Personalization, type RowPlan } from "../recommendations/engine.ts";
@@ -103,18 +107,20 @@ export function createBrowseService(
       repos.library.loadSignals(viewer.profile.id),
       hybrid ? hybrid.serving.plan(viewer, hybrid.memberFacts) : null,
     ]);
+    const personalization = new Personalization({
+      snapshot,
+      popularity,
+      signals,
+      profile: viewer.profile,
+      now: clock.now(),
+      learned: plan?.learned ?? null,
+      exploreSeed: plan?.exploreSeed ?? null,
+      editorial: plan?.editorial ?? null,
+    });
     return {
-      personalization: new Personalization({
-        snapshot,
-        popularity,
-        signals,
-        profile: viewer.profile,
-        now: clock.now(),
-        learned: plan?.learned ?? null,
-        exploreSeed: plan?.exploreSeed ?? null,
-        editorial: plan?.editorial ?? null,
-      }),
-      policy: plan?.policy,
+      personalization,
+      // The label says what actually ranked the page, never more.
+      policy: plan ? policyFor(plan, personalization.modelUse()) : undefined,
     };
   }
 

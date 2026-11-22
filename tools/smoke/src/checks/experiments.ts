@@ -10,6 +10,7 @@ import type { Agent } from "../http.ts";
 import { needs } from "../needs.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
 import { audited, auditOf, expectAudited, staffClient, subjectOf } from "./staff.ts";
+import { cardsOfRow } from "./util.ts";
 
 const VARIANTS = ["control", "treatment"] as const;
 
@@ -199,7 +200,7 @@ export const experimentChecks: CheckDefinition[] = [
     id: "experiments.recommendation-status",
     area: "experiments",
     title:
-      "The served recommendation model and its last import are visible to admin staff only; with a model imported, a new profile still gets the rule engine (cold start)",
+      "The served recommendation model and its last import are visible to admin staff only; with a model imported, a new profile gets the rule engine's page, labelled rules (never learned or neighbours), and no Top Picks",
     needs: [needs.staffIssuer],
     async run(ctx: CheckContext) {
       const admin = await staffClient(ctx, "admin");
@@ -220,7 +221,7 @@ export const experimentChecks: CheckDefinition[] = [
         ctx.note(`last import: ${status.lastImport.run} ${status.lastImport.status}`);
       if (!status.activeModel) {
         ctx.skip(
-          "no recommendation run is imported (GET /system/recommendations: activeModel null): learned serving needs a pipeline run (make recs) published to the blob store and imported (node apps/api/src/recs.ts import, or POST /system/recommendations/import)",
+          "no recommendation run is imported (GET /system/recommendations: activeModel null): learned serving needs a pipeline run (make recs) published to the blob store and imported: node apps/api/src/recs.ts import on Node (or POST /system/recommendations/import), make cf-recs-import on Cloudflare (a run larger than one Worker invocation is refused by the route with recommendation_import_too_large)",
         );
       }
       const model = status.activeModel;
@@ -234,16 +235,42 @@ export const experimentChecks: CheckDefinition[] = [
           observed: JSON.stringify(model),
         },
       );
-      const viewer = await ctx.env.isolatedViewer("recs-cold");
+      // A profile with no history: the model never saw it and has nothing for it, so the page
+      // is the rule engine's, labelled `rules` (never `learned:` or `neighbours:`), the same
+      // page another new profile gets.
+      const cold = await ctx.env.isolatedViewer("recs-cold");
+      const twin = await ctx.env.isolatedViewer("recs-cold-twin");
       const page = await succeeds(
-        () => viewer.agent.api.getBrowse({ query: { view: "home" } }),
-        "GET /browse",
+        () => cold.agent.api.getBrowse({ query: { view: "home" } }),
+        "GET /browse (a new profile)",
       );
-      equal(
-        page.policy?.id,
-        "rules",
-        "the ranking policy of a profile the model never saw (cold start)",
+      const twinPage = await succeeds(
+        () => twin.agent.api.getBrowse({ query: { view: "home" } }),
+        "GET /browse (another new profile)",
       );
+      equal(page.policy?.id, "rules", "the ranking policy of a profile with no history");
+      check(
+        !page.rows.some((row) => row.kind === "top-picks"),
+        "a profile the model never scored has a Top Picks row",
+        { observed: page.rows.map((row) => row.kind).join(", ") },
+      );
+      if (page.policy?.explore || twinPage.policy?.explore) {
+        ctx.note(
+          "an exploration page (random order): the two new profiles' pages are not compared",
+        );
+      } else {
+        // The billboard rotates daily per profile among the engine's best few (by design), so
+        // the rows are what two new profiles share.
+        const shape = (current: typeof page) =>
+          JSON.stringify(
+            current.rows.map((row) => [row.kind, cardsOfRow(row).map((card) => card.id)]),
+          );
+        equal(
+          shape(page),
+          shape(twinPage),
+          "a new profile's rows vs another new profile's (the rule engine's)",
+        );
+      }
       ctx.note(`serving run ${model.run}, expires ${model.expiresAt}`);
     },
   },

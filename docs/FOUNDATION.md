@@ -282,9 +282,8 @@ The factory returns a fresh harness for each test. Add `time: { advance(ms) }` w
 
 ## 8. Milestone 2: the foundation and the hand-off
 
-Written 2026-11-22 at the end of step 1 of docs/BLUEPRINT-M2.md §11. Everything milestone 2
-needs to build on in parallel is in place and every gate is green; no business behaviour is
-implemented. Milestone 1 behaves exactly as before.
+Written at the end of step 1 of docs/BLUEPRINT-M2.md §11 (the foundation); §8.2, §8.3 and §8.5
+describe the tree after the parallel build, when every route of the contract is implemented.
 
 ### 8.1 How the pieces fit
 
@@ -301,7 +300,9 @@ implemented. Milestone 1 behaves exactly as before.
   and its `scheduled(now)` jobs the scheduler tick, without touching `services/jobs.ts`.
 - **Seams between areas** (`areas/module.ts`, `AreaSeams`, passed to every area service):
   `emitServerEvent` (the events area's; drops events with a debug log until events implements
-  it, so callers can call it now) and `assignments` (the experiments area's). Billing owns
+  it, so callers can call it now), `forgetProfileBehaviour({ accountId, profileId })` (the
+  events area's: queues a profile that became restricted for the lake's erasure; identity calls
+  it) and `assignments` (the experiments area's). Billing owns
   `playbackEntitlement` (services/subscriptions.ts), the one entitlement decision playback asks.
 - **Database.** Each area has its migrations in `packages/db/src/migrations/<area>/`, its table
   types in `src/tables/<area>.ts` (composed into `DB` and `TABLES`) and its repository in
@@ -318,45 +319,38 @@ implemented. Milestone 1 behaves exactly as before.
 
 ### 8.2 Routes that are registered but not implemented
 
-A route its area has not built has `notImplemented()` as its handler. It answers every request,
-**before** the guard, validation and rate limits, with:
+None today: the 80 member routes and the 40 staff routes all have handlers, and the conformance
+check `ops.pending-routes` reports "every route of the contract is implemented".
 
-```
-501 application/problem+json
-{ "type": "urn:webflix:problem:not_implemented", "title": "Not implemented yet", "status": 501,
-  "code": "not_implemented", "operationId": "startCheckout", "area": "billing",
-  "detail": "POST /api/v1/billing/checkout (startCheckout) is part of the contract, but the billing area has not implemented it yet." }
-```
-
-The same answer to every caller (signed in or not, with or without the client header, with any
-body), so the conformance suite recognises it from one anonymous request; the served OpenAPI
-document marks exactly these operations `x-webflix-implementation: pending` with a 501
-response; the conformance check `ops.pending-routes` reads that mark, probes each one and lists
-them per area (63 today: identity 13, billing 11, events 8, admin 31). Implementing a route is
-replacing `notImplemented()` in your handler file: the mark, the 501 and the probe go away by
-themselves. Of the staff API only `GET /me` is implemented (the guard and the verified
-identity, nothing more).
+The mechanism stays for the next route added to the contract before its handler: give it
+`notImplemented()` in its area's handler file and it answers every request, **before** the
+guard, validation and rate limits, with `501 not_implemented` (`operationId`, `area`), the same
+to every caller; the served OpenAPI document marks it `x-webflix-implementation: pending`, and
+`ops.pending-routes` probes and lists it. Implementing it is replacing `notImplemented()`: the
+mark, the 501 and the probe go away by themselves. `packages/http/test/milestone2.test.ts`
+checks the mechanism on a probe route.
 
 ### 8.3 Hand-off: who owns what
 
-Six engineers: identity (with email and the development issuer), billing (with the fake provider
+Six owners: identity (with email and the development issuer), billing (with the fake provider
 and the Stripe adapter), events (with the lake and privacy), the Python pipeline
-(`services/recs`, unchanged by this step apart from its event schema), experimentation with
-recommendation serving (the `experiments` and `personalisation` areas), and the admin API.
-"Owns" means create and change freely; everything else is shared (§8.4).
+(`services/recs`), experimentation with recommendation serving (the `experiments` and
+`personalisation` areas), and the admin API. "Owns" means create and change freely; everything
+else is shared (§8.4). Every route below is implemented.
 
 | Area | Owned files | Routes | Ports | Tables |
 | --- | --- | --- | --- | --- |
-| **identity** | contracts `identity.ts`, `routes/identity.ts`, and in `account.ts` the account, session, auth and device declarations; core `areas/identity/**`, `ports/identity-provider.ts`, `ports/email-sender.ts`, their memory adapters and suites, `memory/areas/identity.ts`, `testing/areas/identity.contract.ts`, milestone 1's `services/auth.ts`, `credentials.ts`, `privileges.ts`, `device.ts`, `profiles.ts` and, in `services/account.ts`, `updateAccount`, `listDevices`, `revokeDevice`; db `migrations/identity/**`, `tables/identity.ts`, `repositories/areas/identity.ts`, milestone 1's `repositories/identity.ts`; http `handlers/identity.ts`; apps `areas/identity.ts` (api and edge); packages `dev-idp`, new `packages/email` | milestone 1: sign-up, sign-in, sign-out, session, profile selection, account details, devices, profiles, avatars (16); milestone 2: OIDC start and callbacks, identities, elevation, email verification, password reset, email webhook, mailbox (13) | `IdentityProvider`, `EmailSender` | `account_identities`, `account_tokens`, `email_outbox`, `email_suppressions`, `accounts.email_verified_at`, `sessions.elevated_until`; milestone 1's `accounts`, `sessions`, `profiles` |
+| **identity** | contracts `identity.ts`, `routes/identity.ts`, and in `account.ts` the account, session, auth and device declarations; core `areas/identity/**`, `ports/identity-provider.ts`, `ports/email-sender.ts`, their memory adapters and suites, `memory/areas/identity.ts`, `testing/areas/identity.contract.ts`, milestone 1's `services/auth.ts`, `credentials.ts`, `privileges.ts`, `device.ts`, `profiles.ts` and, in `services/account.ts`, `updateAccount`, `listDevices`, `revokeDevice`; db `migrations/identity/**`, `tables/identity.ts`, `repositories/areas/identity.ts`, milestone 1's `repositories/identity.ts`; http `handlers/identity.ts`; apps `areas/identity.ts` (api and edge); packages `dev-idp`, new `packages/email` | milestone 1: sign-up, sign-in, sign-out, session, profile selection, account details, devices, profiles, avatars (16); milestone 2: sign-in providers, OIDC start and callbacks, identities, elevation, email verification, password reset, email webhook, mailbox (14) | `IdentityProvider`, `EmailSender` | `account_identities`, `account_tokens`, `email_outbox`, `email_suppressions`, `identity_claims`, `accounts.email_verified_at`, `sessions.elevated_until`; milestone 1's `accounts`, `sessions`, `profiles` |
 | **billing** | contracts `billing.ts`, `routes/billing.ts`, `plans.ts`, and in `account.ts` the subscription, payment-method, membership and card declarations; core `areas/billing/**`, `ports/payment-provider.ts` with its memory adapter and suite, area memory and suite files, milestone 1's `services/subscriptions.ts` (incl. `playbackEntitlement`), `domain/plans.ts` and, in `services/account.ts`, `getAccount`, `changePlan`, `updatePaymentMethod`, `cancel`, `resume`; db `migrations/billing/**`, `tables/billing.ts`, `repositories/areas/billing.ts`; http `handlers/billing.ts`; apps `areas/billing.ts`; packages `payments-fake`, `adapters-stripe` (new), `tools/stripe`; `packages/contracts/test/no-card-data.test.ts`'s `LEGACY_CARD_FIELDS` | milestone 1: account, plans, plan change, card, cancel, resume (6); milestone 2: billing config, checkout (3), plan-change preview, card setup (2), invoices, promo validation, payment webhook, billing clock (11) | `PaymentProvider` | `memberships`, `billing_customers`, `billing_operations`, `provider_events`, `trial_fingerprints`, `invoices`, `refunds`, `plan_prices`, `provider_prices`, `checkouts`, `payment_method_setups`, `payments_fake_objects`, `payments_fake_idempotency`, `payments_fake_clocks`; milestone 1's `subscriptions` |
-| **events** | contracts `events.ts`, `event-schema.ts`, `privacy.ts`, `routes/events.ts`, `fixtures/events.ts` (and through the generator `services/recs/schemas/event.schema.json`); core `areas/events/**` (the `emitServerEvent` seam), `ports/event-sink.ts` with memory adapter and suite, area memory and suite files; custodian of milestone 1's streaming surface: `services/playback.ts` (playback events), `services/library.ts`, `routes/streaming.ts`, `handlers/streaming.ts`; db `migrations/events/**`, `tables/events.ts`, `repositories/areas/events.ts`, milestone 1's `repositories/activity.ts`; http `handlers/events.ts`; apps `areas/events.ts`; new `packages/telemetry` | milestone 2: events, consent (2), export, privacy requests, account deletion (2), events read-back (8); custodian of the 14 streaming routes | `EventSink` | `consents`, `privacy_requests`, `privacy_erasures`, `analytics_daily` (events themselves: the lake, in the blob store) |
-| **personalisation** (experiments engineer) | contracts `routes/personalisation.ts`, `browse.ts`, `titles.ts`; core `areas/personalisation/**`, `ports/recommendation-store.ts` with memory adapter and suite, area memory and suite files, milestone 1's `services/browse.ts`, `services/search.ts`, `recommendations/**`, `catalog/**`; db `migrations/personalisation/**`, `tables/personalisation.ts`, `repositories/areas/personalisation.ts`, milestone 1's `repositories/catalog.ts`, `search.ts`; http `handlers/personalisation.ts`; apps `areas/personalisation.ts` | milestone 1: browse, rows, genres, showcase, titles, episodes, popularity, similar, search (10) | `RecommendationStore` | `recommendation_models`, `recommendation_neighbours`, `recommendation_profiles`, `editorial_billboards`, `editorial_collections`, `editorial_collection_items`, `title_availability` |
+| **events** | contracts `events.ts`, `event-schema.ts`, `privacy.ts`, `routes/events.ts`, `fixtures/events.ts` (and through the generator `services/recs/schemas/event.schema.json`); core `areas/events/**` (the `emitServerEvent` seam), `ports/event-sink.ts` with memory adapter and suite, area memory and suite files; custodian of milestone 1's streaming surface: `services/playback.ts` (playback events), `services/library.ts`, `routes/streaming.ts`, `handlers/streaming.ts`; db `migrations/events/**`, `tables/events.ts`, `repositories/areas/events.ts`, milestone 1's `repositories/activity.ts`; http `handlers/events.ts`; apps `areas/events.ts`; new `packages/telemetry` | milestone 2: events, consent (2), export and its download, privacy requests, account deletion (2), events read-back (9); custodian of the 14 streaming routes | `EventSink` | `consents`, `privacy_requests`, `privacy_erasures`, `analytics_daily`, `event_outbox` (events themselves: the lake, in the blob store) |
+| **personalisation** (experiments engineer) | contracts `routes/personalisation.ts`, `browse.ts`, `titles.ts`; core `areas/personalisation/**`, `ports/recommendation-store.ts` with memory adapter and suite, area memory and suite files, milestone 1's `services/browse.ts`, `services/search.ts`, `recommendations/**`, `catalog/**`; db `migrations/personalisation/**`, `tables/personalisation.ts`, `repositories/areas/personalisation.ts`, milestone 1's `repositories/catalog.ts`, `search.ts`; http `handlers/personalisation.ts`; apps `areas/personalisation.ts` | milestone 1: browse, rows, genres, showcase, titles, episodes, popularity, similar, search (10) | `RecommendationStore` | `recommendation_models`, `recommendation_neighbours`, `recommendation_profiles`, `recommendation_profile_lists`, `editorial_billboards`, `editorial_collections`, `editorial_collection_items`, `title_availability` |
 | **experiments** | contracts `experiments.ts`; core `areas/experiments/**`, `ports/experiments.ts` with memory adapter and suite, area memory and suite files; db `migrations/experiments/**`, `tables/experiments.ts`, `repositories/areas/experiments.ts`; http `handlers/experiments.ts`; apps `areas/experiments.ts` | none (assignments travel in `GET /session`; its staff routes are the admin area's handlers) | `Experiments` | `experiments`, `experiment_results` |
-| **admin** | contracts `admin.ts`, `admin-routes.ts`; core `areas/admin/**`, `ports/staff-verifier.ts` with memory adapter and suite, area memory and suite files; db `migrations/admin/**`, `tables/admin.ts`, `repositories/areas/admin.ts`; http `handlers/admin.ts`; apps `areas/admin.ts`; new `apps/admin` | the 32 staff routes (`GET /me` implemented, 31 pending) | `StaffVerifier` | `audit_log`, `job_dead_letters` |
+| **admin** | contracts `admin.ts`, `admin-routes.ts`; core `areas/admin/**`, `ports/staff-verifier.ts` with memory adapter and suite, area memory and suite files; db `migrations/admin/**`, `tables/admin.ts`, `repositories/areas/admin.ts`; http `handlers/admin.ts`; apps `areas/admin.ts`; new `apps/admin` | the 40 staff routes: members and support, member privacy, billing actions, plans and prices, editorial, experiments, system (health, dead letters, recommendations, the pipeline's erasures and exports), the audit log | `StaffVerifier` | `audit_log` (written by experiments and personalisation too, in their own batches), `job_dead_letters` |
 
 The Python pipeline owns `services/recs` except `schemas/event.schema.json` (generated from
 contracts: change `packages/contracts/src/events.ts`, run the generator) and keeps reading it
-through `src/webflix_recs/schemas.py`.
+through `src/webflix_recs/schemas.py`. It reaches the product only through the staff API
+(`src/webflix_recs/admin_api.py`: erasures, exports, experiment definitions) and the blob store.
 
 ### 8.4 Shared files and how to change them
 
@@ -388,21 +382,23 @@ Common moves without touching a shared file:
 - **A job or a periodic job**: `jobs` / `scheduled` of your area service.
 - **Another area's data**: call its service (or a seam); never its repository.
 
-### 8.5 What is stubbed, and how each stub answers
+### 8.5 What each mode composes, and what is still left
 
-| What | Today | Where it is replaced |
+Each area builds its ports from configuration in `apps/api/src/areas/<area>.ts` and
+`apps/edge/src/areas/<area>.ts` (settings: docs/BACKEND.md §4). Nothing answers as a stub.
+
+| What | Today | Still left |
 | --- | --- | --- |
-| 63 routes (§8.2) | `501 not_implemented` before the guard | the area's handler file |
-| `services.<area>` | no methods (jobs: none) | `areas/<area>/service.ts` |
-| `repos.<area>` | empty object | memory, db and suite files of the area |
-| `emitServerEvent` seam | logs `events.server_event_dropped` at debug, drops | `areas/events/service.ts` |
-| `assignments` seam | real: `deps.experiments.assign` (memory definitions: none, so `{}`) | `areas/experiments/service.ts` |
-| `authenticateStaff` | real: verifies with `deps.staff`; `unauthenticated` otherwise | `areas/admin/service.ts` |
-| Area ports in every mode | memory (`identityProviders` empty; the staff verifier mints only in process) | `apps/*/src/areas/<area>.ts` |
-| `WEBFLIX_EVENT_SINK=lake` | real: the lake writer over the mode's blob store | (works today) |
-| Development issuer, Node | mounted at `/dev-idp/*` outside production and called in process by the relying party (identity wave: done); its issuer URLs use `WEBFLIX_PUBLIC_ORIGIN` (`:5173` in dev), so a *browser* reaches it only once the Vite dev server proxies `/dev-idp` (apps/web) and, on kind, once the gateway routes `/dev-idp` to the API (deploy) | the web and platform owners (the proxy and the route) |
-| Development issuer, Worker | mounted at `/dev-idp/*` outside production by `handleIdentityRequest` (identity wave: done; `packages/dev-idp` now typechecks under `@cloudflare/workers-types`), single use kept in D1 | — |
-| `/_pay/*` (fake provider's form) | routed to the Worker / not mounted anywhere | billing's area composition files |
+| Routes | all implemented (§8.2) | — |
+| `emitServerEvent`, `assignments`, `logExposure`, `sendEmail` seams | real (events, experiments, identity) | — |
+| Identity | the OpenID relying party per issuer (outside production Google and Apple fall back to the development issuer, called in process); email: memory, database outbox, SMTP (Node), HTTP provider | — |
+| Billing | the fake provider outside production (state in the mode's database, its form at `/_pay/*` in the Node runtime and the Worker), Stripe by configuration, memory | — |
+| Events | the lake writer over the mode's blob store, or memory; a deployed mode's export events come from the pipeline's `export-events` job through the staff API | — |
+| Personalisation, experiments | the database (Workers KV for per-profile lists on Cloudflare) | — |
+| Staff verifier | `oidc` against the development issuer's `staff` realm outside production (in process); Keycloak or any issuer by `WEBFLIX_STAFF_ISSUER`; production defaults to `memory`, which admits nobody | Keycloak in the chart (platform) |
+| Development issuer, `/_pay/*` | served at `/dev-idp/*` and `/_pay/*` by the Node runtime and the Worker outside production | a browser at `:5173` needs the Vite proxy to forward them (web), kind needs gateway routes for them (platform) |
+| Admin console | the staff API and its typed client (`createAdminApiClient`) | `apps/admin` (web adoption) |
+| Job queue depth | `null` in `GET /system/health` (no queue port reports it; Valkey's is on `/metrics`) | — |
 
 ### 8.6 Decisions the blueprint left open (with the reason)
 

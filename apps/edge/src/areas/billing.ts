@@ -44,6 +44,7 @@ function createPaymentProvider(context: AreaContext): PaymentProvider {
           clock: context.clock,
           logger: context.logger.child({ component: "payments-fake" }),
           retriesExhausted: settings.retriesExhausted,
+          promotions: settings.promotions,
           delivery:
             settings.delivery === "unruly"
               ? { mode: "unruly", duplicateRate: 0.2, maxDelayMs: 2_000 }

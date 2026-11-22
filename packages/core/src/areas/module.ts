@@ -77,6 +77,14 @@ export interface AreaSeams {
    */
   emitServerEvent(event: ServerEventInput): Promise<void>;
   /**
+   * Events area: a profile became restricted (kids, or a lowered ceiling): it emits nothing from
+   * now on, and its earlier behaviour must leave the training data. Queues that profile's
+   * pseudonymous key for the pipeline's erase job (which removes its history from the lake,
+   * datasets and recommendation artefacts). Only that profile, never the account's others;
+   * safe to call twice. Throws only when the record cannot be written.
+   */
+  forgetProfileBehaviour(input: { accountId: string; profileId: string }): Promise<void>;
+  /**
    * Experiments area: a unit's assignments (key → variant), e.g. the ranking policy a profile's
    * browse page uses. Logging the exposure is the caller's, when the treatment is experienced.
    */

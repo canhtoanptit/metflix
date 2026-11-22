@@ -76,12 +76,20 @@ export interface IdentityRepository {
   touchIdentity(provider: OidcProvider, subject: string, now: number): Promise<void>;
   /**
    * Unlinks the account's identity for `provider`, unless it is the account's last way to sign
-   * in (no password and no other identity): decided in the same statement.
+   * in (no password and no other identity): decided in the same statement. An unlinked identity
+   * is recorded as removed (`findRemoval`) in the same batch.
    */
   unlinkIdentity(
     accountId: string,
     provider: OidcProvider,
+    now: number,
   ): Promise<"unlinked" | "not_found" | "last">;
+  /**
+   * The latest removal of an identity from an account (the member unlinked it, or a password
+   * reset dropped it): such an identity is never linked again automatically (§4.1), only
+   * deliberately. Null when it was never removed (or its account is gone).
+   */
+  findRemoval(provider: OidcProvider, subject: string): Promise<IdentityRemoval | null>;
 
   // --- Sessions: the account-holder proof (§4.2) ------------------------------------------------
 
@@ -118,8 +126,8 @@ export interface IdentityRepository {
    * Password reset, atomically: consumes the live `reset_password` token and every other open
    * reset token of the account, sets the new password hash, marks the address verified (the
    * link proved it), signs out every device, and unlinks the issuer identities linked under an
-   * address other than the account's (a takeover planted before the owner proved the address
-   * does not survive). The account, or null when the token is unknown, used, expired or no longer
+   * address other than the account's, recording them as removed (a takeover planted before the
+   * owner proved the address does not survive, nor come back by itself). The account, or null when the token is unknown, used, expired or no longer
    * for the account's address (then nothing changes).
    */
   completePasswordReset(input: {
@@ -194,6 +202,12 @@ export interface LinkedIdentityRecord {
   emailAtLink: string | null;
   createdAt: number;
   lastUsedAt: number;
+}
+
+export interface IdentityRemoval {
+  accountId: string;
+  reason: "unlinked" | "password_reset";
+  removedAt: number;
 }
 
 export interface IdentitySession {

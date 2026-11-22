@@ -8,10 +8,12 @@ import { parseArgs } from "node:util";
  *   node src/recs.ts import [--run <run>] [--from <dir>]   publish the pipeline's run
  *   node src/recs.ts rollback                             serve the previous run again
  *   node src/recs.ts status                               the served model and the last import
+ *   node src/recs.ts experiments-import [--from <dir>]    the pipeline's experiment results
  *
- * Artefacts are read from the mode's blob store (the pipeline publishes `recs/current.json` into
- * the same bucket), or from `--from <dir>`, a pipeline store in the filesystem layout
- * (`.cache/recs/<preset>/store`). One JSON line per result on stdout; exit 1 on failure.
+ * Artefacts are read from the mode's blob store (the pipeline publishes `recs/current.json` and
+ * `experiments/results/current.json` into the same bucket), or from `--from <dir>`, a pipeline
+ * store in the filesystem layout (`.cache/recs/<preset>/store`). One JSON line per result on
+ * stdout; exit 1 on failure (for `experiments-import`, also when a result was refused).
  */
 import { createFsBlobStore } from "@webflix/adapters-node";
 import { serializeError } from "@webflix/core";
@@ -19,13 +21,15 @@ import { migrateToLatest } from "@webflix/db";
 import { loadApiConfig } from "./config.ts";
 import { createRuntime } from "./runtime.ts";
 
-const USAGE = `Usage: node src/recs.ts <import|rollback|status> [options]
+const USAGE = `Usage: node src/recs.ts <import|rollback|status|experiments-import> [options]
 
   import                Import the published run (recs/current.json) and serve it
       --run <run>       Import this version instead (recs/v=<run>/manifest.json)
       --from <dir>      Read artefacts from a pipeline store directory, not the mode's blob store
   rollback              Serve the previously served run again (one write)
   status                Print the served model and the last import
+  experiments-import    Import the experiment results the pipeline published
+                        (experiments/results/current.json); --from <dir> as above
 `;
 
 async function main(argv: string[]): Promise<number> {
@@ -39,7 +43,8 @@ async function main(argv: string[]): Promise<number> {
     },
   });
   const command = positionals[0];
-  if (values.help || !command || !["import", "rollback", "status"].includes(command)) {
+  const commands = ["import", "rollback", "status", "experiments-import"];
+  if (values.help || !command || !commands.includes(command)) {
     process.stderr.write(USAGE);
     return values.help ? 0 : 2;
   }
@@ -54,6 +59,14 @@ async function main(argv: string[]): Promise<number> {
         ...(values.run ? { run: values.run } : {}),
         ...(values.from ? { artefacts: createFsBlobStore({ root: values.from }) } : {}),
       });
+    } else if (command === "experiments-import") {
+      const imported = await runtime.services.experiments.importResults(
+        values.from ? { artefacts: createFsBlobStore({ root: values.from }) } : {},
+      );
+      process.stdout.write(`${JSON.stringify(imported)}\n`);
+      // Unknown experiments are expected (the pipeline analyses what it was given); a result
+      // that failed verification is not.
+      return imported.skipped.some((entry) => entry.reason !== "unknown experiment") ? 1 : 0;
     } else if (command === "rollback") {
       result = await personalisation.rollbackRecommendations();
     } else {

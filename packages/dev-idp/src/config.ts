@@ -103,6 +103,13 @@ export interface DevIdpClient {
   requireNonce?: boolean;
   /** Browser origins allowed to call the token and userinfo endpoints. Default: the redirect URIs' origins. */
   allowedCorsOrigins?: readonly string[];
+  /**
+   * A service account: the client-credentials grant (RFC 6749 §4.4) issues this client an access
+   * token for itself, shaped like a Keycloak service account's (`preferred_username:
+   * service-account-<clientId>`, `azp`, the roles below). Confidential clients only, on a profile
+   * with the grant (generic, keycloak); such a client needs no redirect URI.
+   */
+  serviceAccount?: { roles?: PersonaRoles };
 }
 
 export interface DevIdpLifetimes {
@@ -184,6 +191,7 @@ export interface NormalizedClient {
   requireNonce: boolean;
   corsOrigins: readonly string[];
   public: boolean;
+  serviceAccount: { roles: PersonaRoles } | null;
 }
 
 export interface NormalizedConfig {
@@ -302,7 +310,7 @@ function normalizeClient(
   if (!CLIENT_ID.test(id)) {
     throw new DevIdpConfigError(`Client id ${JSON.stringify(id)} must match ${CLIENT_ID}`);
   }
-  if (client.redirectUris.length === 0) {
+  if (client.redirectUris.length === 0 && !client.serviceAccount) {
     throw new DevIdpConfigError(`Client ${id} needs at least one redirect URI`);
   }
   for (const uri of client.redirectUris) validateRedirectUri(uri, `Client ${id} redirect URI`);
@@ -333,6 +341,16 @@ function normalizeClient(
   }
   if (isPublic && client.requirePkce === false) {
     throw new DevIdpConfigError(`Client ${id}: public clients always use PKCE`);
+  }
+  if (client.serviceAccount) {
+    if (!profile.clientCredentials) {
+      throw new DevIdpConfigError(
+        `Client ${id}: the ${profile.name} profile has no client-credentials grant`,
+      );
+    }
+    if (isPublic || client.clientSecret === undefined) {
+      throw new DevIdpConfigError(`Client ${id}: a service account needs a client secret`);
+    }
   }
   let signed: Required<SignedClientSecret> | null = null;
   if (client.signedClientSecret) {
@@ -386,6 +404,7 @@ function normalizeClient(
     requireNonce: client.requireNonce !== false,
     corsOrigins,
     public: isPublic,
+    serviceAccount: client.serviceAccount ? { roles: client.serviceAccount.roles ?? {} } : null,
   };
 }
 

@@ -17,6 +17,7 @@ import {
   EditorialBillboard,
   EditorialCollection,
   EditorialCollectionList,
+  ExportResultsBody,
   ExtendTrialBody,
   MemberDetail,
   MemberPrivacy,
@@ -25,6 +26,8 @@ import {
   MemberSearchQuery,
   PendingErasures,
   PendingErasuresQuery,
+  PendingExports,
+  PendingExportsQuery,
   PlanPriceParams,
   PlanSyncResult,
   ReasonBody,
@@ -529,9 +532,12 @@ export const adminRoutes = {
     auth: "staff",
     staffRole: "admin",
     summary: "Import the current recommendation artefacts now",
+    description:
+      "Queues the import. A run larger than this runtime can write in one invocation (a Worker) is refused up front with `recommendation_import_too_large`, naming the importer that runs outside it; nothing is imported and the served run is untouched.",
     body: ReasonBody,
     response: RecommendationStatus,
     successStatus: 202,
+    errors: ["recommendation_import_too_large"],
     examples: { request: { reason: "New run published" } },
   }),
   rollbackRecommendations: defineRoute({
@@ -576,6 +582,67 @@ export const adminRoutes = {
       request: {
         subjectKeys: ["k3Jx9QvT0bYzA1c2D3e4F5"],
         reason: "Compaction run 2026-11-22T03:00Z with --erase",
+      },
+    },
+  }),
+  listPendingExports: defineRoute({
+    method: "GET",
+    path: "/system/privacy/exports",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "admin",
+    summary: "Data exports whose events the pipeline's export-events job must extract",
+    description:
+      "For the operator who runs `export-events`: each pending export with the account's pseudonymous key and the receipt window, listed until a result is recorded with `POST /system/privacy/exports/results`.",
+    query: PendingExportsQuery,
+    response: PendingExports,
+    examples: {
+      response: {
+        requests: [
+          {
+            requestId: "0193f7d2-cccc-7ddd-8eee-000000000001",
+            accountKey: "k3Jx9QvT0bYzA1c2D3e4F5",
+            from: "2025-10-22T09:00:00.000Z",
+            to: "2026-11-22T09:00:00.000Z",
+          },
+        ],
+      },
+    },
+  }),
+  recordExportResults: defineRoute({
+    method: "POST",
+    path: "/system/privacy/exports/results",
+    tag: "admin",
+    area: "admin",
+    auth: "staff",
+    staffRole: "admin",
+    summary: "Record what export-events extracted; complete exports are folded in and finished",
+    description:
+      "The job's results document (`webflix.export-events-results`) with a `reason`. `complete`: the events file is read, checked against `bytes` and `sha256`, folded into the export, and the job's documents deleted; `erased`: no events; `deferred` and `failed`: listed again.",
+    body: ExportResultsBody,
+    response: null,
+    examples: {
+      request: {
+        format: "webflix.export-events-results",
+        formatVersion: 1,
+        generatedAt: "2026-11-22T09:20:00.000Z",
+        results: [
+          {
+            requestId: "0193f7d2-cccc-7ddd-8eee-000000000001",
+            status: "complete",
+            from: "2025-10-22T09:00:00.000Z",
+            to: "2026-11-22T09:00:00.000Z",
+            events: 412,
+            file: "privacy/export-events/0193f7d2-cccc-7ddd-8eee-000000000001/events.ndjson.gz",
+            manifest: "privacy/export-events/0193f7d2-cccc-7ddd-8eee-000000000001/manifest.json",
+            bytes: 18234,
+            sha256: "9f2c0d6a3b1e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+            generatedAt: "2026-11-22T09:19:58.000Z",
+            reused: false,
+          },
+        ],
+        reason: "export-events run 2026-11-22T09:15Z",
       },
     },
   }),

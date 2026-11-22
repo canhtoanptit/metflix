@@ -7,6 +7,7 @@ import {
   type ProfileList,
   type ProfileSettings,
 } from "@webflix/contracts";
+import type { AreaSeams } from "../areas/module.ts";
 import { resolveMaturityCeiling } from "../domain/maturity.ts";
 import { AppError } from "../errors.ts";
 import type { ProfilePatch, ProfileRow } from "../repositories/records.ts";
@@ -19,6 +20,7 @@ import {
   proofForProfileChange,
   proofForProfileCreation,
   proofForProfileDeletion,
+  standingOf,
 } from "./privileges.ts";
 
 export interface CreateProfileInput {
@@ -69,7 +71,10 @@ function settingsChanges(settings: Partial<ProfileSettings> | undefined): Partia
  * Profiles. Who may add, change or delete one is decided by `privileges.ts`; every password or
  * PIN check goes through `credentials.ts`, charged with the caller's `charge` first.
  */
-export function createProfileService(deps: ServiceDependencies) {
+export function createProfileService(
+  deps: ServiceDependencies,
+  seams?: Pick<AreaSeams, "forgetProfileBehaviour">,
+) {
   const { repos, clock, ids, passwords, streamGate } = deps;
   const credentials = createCredentialChecks(deps);
 
@@ -175,6 +180,16 @@ export function createProfileService(deps: ServiceDependencies) {
       if (input.pin !== undefined) {
         patch.pinHash = input.pin === null ? null : await passwords.hash(input.pin);
       }
+      // A profile becoming restricted (kids, or a ceiling below 18+) emits nothing from now on;
+      // its earlier behaviour must leave the training data too. Queued before the change is
+      // written: a lost erasure would be invisible, an extra one only forgets more.
+      const becomesRestricted =
+        standingOf(profile) === "unrestricted" &&
+        standingOf({
+          isKids: change.isKids ?? profile.isKids,
+          maturityCeiling: change.maturityCeiling ?? profile.maturityCeiling,
+        }) !== "unrestricted";
+      if (becomesRestricted) await seams?.forgetProfileBehaviour({ accountId, profileId });
       if (locking) {
         unbound = (await repos.sessions.listForAccount(accountId, clock.now()))
           .filter(

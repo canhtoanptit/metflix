@@ -81,8 +81,9 @@ Environment:
   `WEBFLIX_STAFF_TOKEN`, or `WEBFLIX_STAFF_TOKEN_URL` + `WEBFLIX_STAFF_CLIENT_ID` with
   `WEBFLIX_STAFF_CLIENT_SECRET` (client credentials: a service account of the staff issuer
   holding `admin` for erasures, `experiments` for definitions, in the `webflix-admin-api`
-  audience) or `WEBFLIX_STAFF_REFRESH_TOKEN`, and optionally `WEBFLIX_STAFF_SCOPE`. The
-  development issuer has no client-credentials grant: in dev, pass an access token.
+  audience) or `WEBFLIX_STAFF_REFRESH_TOKEN`, and optionally `WEBFLIX_STAFF_SCOPE`. In dev the
+  development issuer's staff realm has such a service account: client `webflix-jobs`, token
+  endpoint `{origin}/dev-idp/staff/token` (docs/BACKEND.md, "Jobs (service accounts)").
 
 ## Jobs: what a scheduler runs
 

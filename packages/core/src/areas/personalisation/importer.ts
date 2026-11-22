@@ -5,6 +5,7 @@ import type { Clock } from "../../ports/clock.ts";
 import { type Logger, serializeError } from "../../ports/logger.ts";
 import {
   decodeProfileLists,
+  type ImportCapacity,
   MAX_NEIGHBOURS_PER_TITLE,
   type Neighbour,
   type ProfileLists,
@@ -43,7 +44,57 @@ const PROFILE_BATCH = 500;
 export const DEFAULT_KEPT_RUNS = 2;
 
 export class RecommendationImportError extends Error {
-  override readonly name = "RecommendationImportError";
+  override readonly name: string = "RecommendationImportError";
+}
+
+/** The run has more lists than the store can take in one import (`importCapacity`). */
+export class RecommendationImportTooLargeError extends RecommendationImportError {
+  override readonly name = "RecommendationImportTooLargeError";
+  readonly profileLists: number;
+  readonly maxProfileLists: number;
+
+  constructor(message: string, profileLists: number, maxProfileLists: number) {
+    super(message);
+    this.profileLists = profileLists;
+    this.maxProfileLists = maxProfileLists;
+  }
+}
+
+/** What a published (or named) version holds, read from its pointer and manifest only. */
+export interface RecommendationVersionSummary {
+  run: string;
+  /** Rows of its profile shards (an upper bound on the lists an import writes). */
+  profileLists: number;
+  neighbourRows: number;
+}
+
+/** The version the importer would import, verified like an import, without importing it. */
+export async function inspectRecommendations(
+  blobs: BlobStore,
+  run?: string,
+): Promise<RecommendationVersionSummary> {
+  const { manifest } = await locateVersion(blobs, run);
+  return {
+    run: manifest.run,
+    profileLists: rowsOf(manifest, "profiles"),
+    neighbourRows: rowsOf(manifest, "neighbours"),
+  };
+}
+
+/** The refusal of a run larger than `capacity`, or null when it fits. */
+export function importCapacityProblem(
+  run: string,
+  profileLists: number,
+  capacity: ImportCapacity | undefined,
+): string | null {
+  if (!capacity || profileLists <= capacity.maxProfileLists) return null;
+  return `Run ${run} has ${profileLists} profile lists; an import here writes at most ${capacity.maxProfileLists}: ${capacity.explanation}`;
+}
+
+function rowsOf(manifest: Manifest, table: string): number {
+  return manifest.files
+    .filter((file) => file.table === table)
+    .reduce((sum, file) => sum + file.rows, 0);
 }
 
 export interface RecommendationImportOptions {
@@ -115,6 +166,25 @@ export async function importRecommendations(
   }
   const { manifest } = located;
   const run = manifest.run;
+  const model = {
+    run,
+    asOf: manifest.asOf,
+    expiresAt: manifest.expiresAt,
+    importedAt: started,
+    manifestSha256: located.manifestSha256,
+  };
+  // Refused before anything is written, and recorded on the run so the operator sees why.
+  const tooLarge = importCapacityProblem(run, rowsOf(manifest, "profiles"), store.importCapacity);
+  if (tooLarge) {
+    await store.beginImport(model);
+    await store.failImport(run, tooLarge);
+    logger.warn("recs.import_refused", { run, reason: tooLarge });
+    throw new RecommendationImportTooLargeError(
+      tooLarge,
+      rowsOf(manifest, "profiles"),
+      store.importCapacity?.maxProfileLists ?? 0,
+    );
+  }
   await store.beginImport({
     run,
     asOf: manifest.asOf,

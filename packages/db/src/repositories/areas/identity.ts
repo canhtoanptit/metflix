@@ -189,6 +189,40 @@ export function createIdentityRepository(database: Database): IdentityRepository
         ),
       );
 
+  /**
+   * Records as removed (never auto-linked again, §4.1) the identities `select` picks, keeping the
+   * latest removal per identity. Runs in the same batch as the delete, before it.
+   */
+  const recordRemovals = (
+    reason: "unlinked" | "password_reset",
+    now: number,
+    // biome-ignore lint/suspicious/noExplicitAny: a WHERE over account_identities, built by the caller.
+    where: (query: any) => any,
+  ) =>
+    db
+      .insertInto("identity_removals")
+      .columns(["provider", "subject", "account_id", "reason", "removed_at"])
+      .expression(
+        where(
+          db
+            .selectFrom("account_identities")
+            .select((eb) => [
+              "account_identities.provider",
+              "account_identities.subject",
+              "account_identities.account_id",
+              eb.val(reason).as("reason"),
+              eb.val(now).as("removed_at"),
+            ]),
+        ),
+      )
+      .onConflict((oc) =>
+        oc.columns(["provider", "subject"]).doUpdateSet((eb) => ({
+          account_id: excluded(eb, "account_id"),
+          reason: excluded(eb, "reason"),
+          removed_at: excluded(eb, "removed_at"),
+        })),
+      );
+
   return {
     async getAccount(accountId) {
       const row = await db
@@ -370,33 +404,41 @@ export function createIdentityRepository(database: Database): IdentityRepository
         .execute();
     },
 
-    async unlinkIdentity(accountId, provider) {
-      // Deleted only while another way to sign in remains: a password, or another identity.
-      const result = await db
-        .deleteFrom("account_identities")
-        .where("account_id", "=", accountId)
-        .where("provider", "=", provider)
-        .where((eb) =>
-          eb.or([
-            eb.exists(
-              eb
-                .selectFrom("accounts")
-                .select("accounts.id")
-                .where("accounts.id", "=", accountId)
-                .where("accounts.password_hash", "<>", NO_PASSWORD),
-            ),
-            eb(
-              eb
-                .selectFrom("account_identities as other")
-                .select((inner) => inner.fn.countAll().as("n"))
-                .where("other.account_id", "=", accountId),
-              ">",
-              1,
-            ),
-          ]),
-        )
-        .executeTakeFirst();
-      if (Number(result.numDeletedRows) > 0) return "unlinked";
+    async unlinkIdentity(accountId, provider, now) {
+      // Only while another way to sign in remains: a password, or another identity. The removal
+      // is recorded under the same condition, in the same batch, before the row goes.
+      // biome-ignore lint/suspicious/noExplicitAny: the same WHERE on both statements.
+      const removable = (query: any) =>
+        query
+          .where("account_identities.account_id", "=", accountId)
+          .where("account_identities.provider", "=", provider)
+          // biome-ignore lint/suspicious/noExplicitAny: Kysely's expression builder.
+          .where((eb: any) =>
+            eb.or([
+              eb.exists(
+                eb
+                  .selectFrom("accounts")
+                  .select("accounts.id")
+                  .where("accounts.id", "=", accountId)
+                  .where("accounts.password_hash", "<>", NO_PASSWORD),
+              ),
+              eb(
+                eb
+                  .selectFrom("account_identities as other")
+                  .select((inner: { fn: { countAll: () => { as: (name: string) => unknown } } }) =>
+                    inner.fn.countAll().as("n"),
+                  )
+                  .where("other.account_id", "=", accountId),
+                ">",
+                1,
+              ),
+            ]),
+          );
+      const [, deleted] = await database.batch([
+        recordRemovals("unlinked", now, removable),
+        removable(db.deleteFrom("account_identities")),
+      ]);
+      if (deleted.numAffectedRows > 0) return "unlinked";
       const exists = await db
         .selectFrom("account_identities")
         .select("subject")
@@ -404,6 +446,22 @@ export function createIdentityRepository(database: Database): IdentityRepository
         .where("provider", "=", provider)
         .executeTakeFirst();
       return exists ? "last" : "not_found";
+    },
+
+    async findRemoval(provider, subject) {
+      const row = await db
+        .selectFrom("identity_removals")
+        .selectAll()
+        .where("provider", "=", provider)
+        .where("subject", "=", subject)
+        .executeTakeFirst();
+      return row
+        ? {
+            accountId: row.account_id,
+            reason: row.reason as "unlinked" | "password_reset",
+            removedAt: row.removed_at,
+          }
+        : null;
     },
 
     async getSession(sessionId, now) {
@@ -497,7 +555,19 @@ export function createIdentityRepository(database: Database): IdentityRepository
           }))
           .where("id", "in", live()),
         db.deleteFrom("sessions").where("account_id", "in", live()),
-        // Identities linked under another address than the one the link just proved.
+        // Identities linked under another address than the one the link just proved: recorded as
+        // removed (never auto-linked again), then deleted.
+        recordRemovals("password_reset", now, (query) =>
+          query
+            .where("account_identities.account_id", "in", live())
+            // biome-ignore lint/suspicious/noExplicitAny: Kysely's expression builder.
+            .where((eb: any) =>
+              eb.or([
+                eb("account_identities.email_at_link", "is", null),
+                eb("account_identities.email_at_link", "<>", token.email),
+              ]),
+            ),
+        ),
         db
           .deleteFrom("account_identities")
           .where("account_id", "in", live())
@@ -519,7 +589,7 @@ export function createIdentityRepository(database: Database): IdentityRepository
               .where("done.used_at", "=", now),
           ),
       ]);
-      if (results[3].numAffectedRows !== 1) return null;
+      if (results[4].numAffectedRows !== 1) return null;
       return {
         accountId: token.account_id,
         email: token.email,

@@ -190,6 +190,30 @@ async function harness(recorded: StripeEvent[]) {
     ),
   ];
   for (const customerId of customers) {
+    const accountId = `acct-${customerId}`;
+    await repos.identity.createAccount({
+      account: {
+        id: accountId,
+        email: `${accountId}@example.test`,
+        passwordHash: null,
+        emailVerifiedAt: null,
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      session: {
+        id: `ses-${accountId}`,
+        tokenHash: `hash-${accountId}`,
+        accountId,
+        activeProfileId: null,
+        deviceLabel: "Test",
+        deviceType: "desktop",
+        persistent: true,
+        createdAt: 0,
+        lastSeenAt: 0,
+        expiresAt: 1,
+      },
+      identity: null,
+    });
     await repos.billing.saveCustomer({
       accountId: `acct-${customerId}`,
       provider: "stripe",

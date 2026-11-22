@@ -67,3 +67,28 @@ describe("local cron for conformance runs", () => {
     stop();
   });
 });
+
+describe("the pipeline jobs loop", () => {
+  it("starts a round only when the previous one has finished", async () => {
+    vi.useFakeTimers();
+    const { startJobsLoop } = await import("../../scripts/lib/local-jobs.ts");
+    let running = 0;
+    let overlapped = false;
+    let rounds = 0;
+    const stop = startJobsLoop({
+      everySec: 10,
+      log: () => undefined,
+      round: async () => {
+        running += 1;
+        if (running > 1) overlapped = true;
+        rounds += 1;
+        await new Promise((resolve) => setTimeout(resolve, 25_000)); // a slow round
+        running -= 1;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100_000);
+    stop();
+    expect(overlapped).toBe(false);
+    expect(rounds).toBe(3); // 10 s wait + 25 s round, three times in 100 s
+  });
+});

@@ -23,7 +23,7 @@ Contents: [Mounting](#mounting-it) · [Tests](#starting-it-in-tests) ·
 | --- | --- | --- | --- |
 | `google` | `{origin}/dev-idp/google` | Google | `webflix-web`, secret `dev-only-google-client-secret` (basic or post), callback `/api/v1/auth/oidc/google/callback` |
 | `apple` | `{origin}/dev-idp/apple` | Sign in with Apple | `dev.webflix.web`, ES256 JWT client secret (team `DEVTEAM001`, key `DEVKEY0001`, private key `DEVELOPMENT_APPLE_CLIENT_KEY`), callback `/api/v1/auth/oidc/apple/callback` |
-| `staff` | `{origin}/dev-idp/staff` | Keycloak | `webflix-admin`, public (PKCE), callback `/admin/auth/callback`, post-logout `/admin/`, access-token audience `webflix-admin-api` |
+| `staff` | `{origin}/dev-idp/staff` | Keycloak | `webflix-admin`, public (PKCE), callback `/admin/auth/callback`, post-logout `/admin/`, access-token audience `webflix-admin-api`; and the jobs' service account (`staffJobs`): `webflix-jobs`, secret `dev-only-jobs-client-secret` (basic or post), client credentials at `{origin}/dev-idp/staff/token`, roles `admin` and `experiments` |
 
 ```ts
 // apps/api (Node, Hono)
@@ -137,7 +137,7 @@ token response without a flow (for resource servers such as the admin API's `Sta
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `clientId` | required | `[A-Za-z0-9._~-]{1,128}` |
-| `redirectUris` | required | Exact-match list; http(s), no fragment. A registered query string is kept and the response parameters appended. |
+| `redirectUris` | required | Exact-match list; http(s), no fragment. A registered query string is kept and the response parameters appended. May be empty for a client with `serviceAccount` only. |
 | `postLogoutRedirectUris` | `[]` | Exact-match list for end-session. |
 | `tokenEndpointAuthMethods` | `["none"]` without a secret, `["client_secret_post"]` with `signedClientSecret`, else `["client_secret_basic"]` | Methods the client may use; must be ones the profile advertises. |
 | `clientSecret` | — | Shared secret, 16+ characters. |
@@ -149,6 +149,7 @@ token response without a flow (for resource servers such as the admin API's `Sta
 | `allowedScopes` | the profile's scopes | |
 | `requirePkce` / `requireState` / `requireNonce` | `true` | PKCE cannot be turned off for public clients. |
 | `allowedCorsOrigins` | the redirect URIs' origins | Browser origins for the token and userinfo endpoints. |
+| `serviceAccount` | — | `{ roles?: { realm?, clients? } }`: the client may use the client credentials grant (generic and keycloak profiles only; needs `clientSecret`). Its tokens are for the realm user `service-account-<clientId>` with these roles, as a Keycloak client with service accounts enabled. |
 
 `DevIdpPersona`: `id` (`[a-z0-9-]`), `description`, `sub` (default: derived from issuer and id,
 shaped like the profile's), `email` (`null` means no email claim), `emailVerified` (default true),
@@ -185,6 +186,7 @@ Profiles (checked against each provider's published discovery document, November
 | Userinfo | yes | yes | no | yes |
 | End-session | yes | no | no | yes |
 | Refresh token | with `offline_access` | with `access_type=offline` | always | always |
+| Client credentials grant | yes (clients with `serviceAccount`) | no | no | yes (clients with `serviceAccount`) |
 | `iss` in the authorisation response (RFC 9207) | yes | yes | no | yes |
 | `azp` in the ID token | yes | yes | no | yes |
 | `response_mode` | query, form_post | query, form_post | form_post required with `email` or `name` | query, form_post |
@@ -215,6 +217,12 @@ Endpoints, relative to the issuer: `/.well-known/openid-configuration`, `/jwks`,
   `nonce`). Client
   authentication by `client_secret_basic` (RFC 6749 §2.3.1 encoding), `client_secret_post`, Apple's
   JWT client secret and `none`, one method per request, constant-time comparison.
+  `client_credentials` (generic, keycloak; RFC 6749 §4.4) for a confidential client configured
+  with `serviceAccount` (`unauthorized_client` for any other): an access token only, no refresh or
+  ID token, Keycloak's service-account shape (`sub` the service-account user, `azp` the client,
+  `preferred_username: service-account-<clientId>`, the configured roles, `typ: Bearer`). Without
+  `scope` it grants the client's scopes other than `openid` and `offline_access`; asking for
+  either is `invalid_scope`. Standing faults on access tokens apply.
   `Cache-Control: no-store`.
 - **ID token**: `iss`, `sub`, `aud`, `exp`, `iat`, `auth_time` (always), `nonce`, `at_hash`,
   `azp`, `sid`, `email`, `email_verified`, `name`, `given_name`, `family_name`, `picture`, plus
@@ -234,8 +242,9 @@ Endpoints, relative to the issuer: `/.well-known/openid-configuration`, `/jwks`,
 
 Deliberately unsupported: implicit and hybrid flows, `response_mode=fragment`, PKCE `plain`,
 request objects (`request`, `request_uri`), PAR, dynamic registration, `claims` parameter,
-`private_key_jwt` and `client_secret_jwt` client assertions, the client credentials, password and
-device grants, token introspection and revocation endpoints, front- and back-channel logout,
+`private_key_jwt` and `client_secret_jwt` client assertions, the client credentials grant for a
+client without a service account (and on the google and apple profiles), the password and device
+grants, token introspection and revocation endpoints, front- and back-channel logout,
 DPoP and mTLS, encrypted tokens, `acr`/`amr`, consent screens, `id_token_hint` on `prompt=none`
 (ignored). Discovery says so (`request_parameter_supported: false` and so on).
 

@@ -5,10 +5,16 @@ import {
   LakeEvent,
   type PrivacyRequest,
 } from "@webflix/contracts";
-import { utf8Decode, utf8Encode } from "../../encoding.ts";
+import * as z from "zod";
+import { hexEncode, utf8Decode, utf8Encode } from "../../encoding.ts";
 import { AppError } from "../../errors.ts";
 import { toIsoString } from "../../ports/clock.ts";
-import type { SubjectKeys } from "../../ports/event-sink.ts";
+import {
+  decodeLakeObject,
+  PRIVATE_DOCUMENT_PREFIX,
+  type SubjectKeys,
+} from "../../ports/event-sink.ts";
+import { keepEarliestReceipt } from "../../ports/lake-reader.ts";
 import { serializeError } from "../../ports/logger.ts";
 import { createHmacTokenSigner } from "../../ports/token-signer.ts";
 import type { AuthContext, ServiceDependencies } from "../../services/context.ts";
@@ -18,11 +24,73 @@ import { sendTemplatedEmail } from "../identity/email.ts";
 import type { AreaModule } from "../module.ts";
 import { privacyEraseJob, privacyExportJob } from "./jobs.ts";
 import type { OtherAreas } from "./neighbours.ts";
-import type { PrivacyRequestRecord } from "./repository.ts";
+import { PARTIAL_EXPORT_SUFFIX, type PrivacyRequestRecord } from "./repository.ts";
+
+const Instant = z
+  .string()
+  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$/);
+const RequestId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+
+/** What the export takes from identity's `exportAccountData` (its other fields stay there). */
+const IdentityExportPart = z.object({
+  profiles: DataExport.shape.profiles.default([]),
+  devices: DataExport.shape.devices.default([]),
+});
+
+/**
+ * The results document of the pipeline's `export-events`
+ * (services/recs/schemas/export-events-results.schema.json), as the operator route passes it.
+ */
+export const ExportEventsResults = z.object({
+  format: z.literal("webflix.export-events-results"),
+  formatVersion: z.literal(1),
+  generatedAt: Instant,
+  results: z.array(
+    z.object({
+      requestId: RequestId,
+      status: z.enum(["complete", "erased", "deferred", "failed"]),
+      from: Instant,
+      to: Instant,
+      events: z.number().int().nonnegative().optional(),
+      file: z.string().optional(),
+      manifest: z.string().optional(),
+      bytes: z.number().int().nonnegative().optional(),
+      sha256: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
+      generatedAt: Instant.optional(),
+      reused: z.boolean().optional(),
+      notBefore: Instant.optional(),
+      error: z.string().optional(),
+    }),
+  ),
+});
+export type ExportEventsResults = z.input<typeof ExportEventsResults>;
+
+/** The exports the pipeline must extract (services/recs/schemas/export-events-requests.schema.json). */
+export interface ExportEventsRequestList {
+  requests: { requestId: string; accountKey: string; from: string; to: string }[];
+}
+
+/** What `recordExportResults` did with each result, by request id. */
+export interface ExportResultsOutcome {
+  /** Events folded in, the export finished and emailed. */
+  completed: string[];
+  /** The account is being deleted: finished with no events. */
+  erased: string[];
+  /** Deferred, failed or refused (size, digest, content): still listed. */
+  kept: string[];
+  /** Unknown, already finished, or not waiting for events: nothing changed. */
+  ignored: string[];
+}
 
 const DAY_MS = 24 * 3600 * 1000;
 const HISTORY_PAGE = 100;
 const SWEEP_BATCH = 25;
+/** An export job not heard of for this long is queued again; a request this old is given up. */
+const RECOVER_EXPORT_AFTER_MS = 15 * 60_000;
+const GIVE_UP_EXPORT_AFTER_MS = 24 * 3600_000;
 const EXPORT_TOKEN_PURPOSE = "privacy-export";
 
 async function pipe(bytes: Uint8Array, transform: TransformStream<Uint8Array, Uint8Array>) {
@@ -120,28 +188,30 @@ export function createPrivacy(
 
   // --- Export -------------------------------------------------------------------------------
 
-  /** Every lake event of the account within the raw retention window, as stored. */
-  async function accountEvents(accountId: string, now: number): Promise<LakeEvent[]> {
-    const accountKey = await keys.account(accountId);
-    const fromMs = now - config.events.rawRetentionDays * DAY_MS;
-    const toMs = now + 3600 * 1000;
-    const found: LakeEvent[] = [];
-    let cursor: string | null = null;
-    do {
-      const page = await eventSink.scan({ fromMs, toMs, cursor, limit: 100 });
-      for (const object of page.objects) {
-        for (const raw of object.events) {
-          const parsed = LakeEvent.safeParse(raw);
-          if (parsed.success && parsed.data.subject.account === accountKey) found.push(parsed.data);
-        }
-      }
-      cursor = page.cursor;
-    } while (cursor !== null);
-    // At least once: the lake may hold an event twice; the member gets each once.
-    const unique = new Map(found.map((event) => [event.eventId, event]));
-    return [...unique.values()].sort((a, b) =>
-      a.receivedAt < b.receivedAt ? -1 : a.receivedAt > b.receivedAt ? 1 : 0,
-    );
+  /** The receipt window of an export's events: the raw retention up to the request. */
+  function eventsWindow(record: PrivacyRequestRecord): { fromMs: number; toMs: number } {
+    return {
+      fromMs: record.requestedAt - config.events.rawRetentionDays * DAY_MS,
+      toMs: record.requestedAt,
+    };
+  }
+
+  /**
+   * Inline mode: every lake event of the account in the window, read by this job through the
+   * port (raw objects and compacted hours, by the pipeline's reader contract), validated.
+   */
+  async function inlineEvents(record: PrivacyRequestRecord): Promise<LakeEvent[]> {
+    const read = await eventSink.accountEvents({
+      accountKey: await keys.account(record.accountId),
+      ...eventsWindow(record),
+    });
+    const events: LakeEvent[] = [];
+    for (const raw of read.events) {
+      const parsed = LakeEvent.safeParse(raw);
+      if (parsed.success) events.push(parsed.data);
+      else logger.warn("privacy.export_event_invalid", { requestId: record.id });
+    }
+    return events;
   }
 
   async function historyOf(profileId: string) {
@@ -161,25 +231,28 @@ export function createPrivacy(
   }
 
   /**
-   * The export document. Milestone 1's account, membership, profiles, devices and library are
-   * read here directly (identity and billing contribute their milestone 2 data through
-   * `AreaModule.exportAccountData`, under `areas`).
+   * The export document without its events: the account (identity's service), the library,
+   * consents and privacy requests (this area's), and every other area's part through its
+   * export hook (`areas`). The events come from the lake: inline, or from the pipeline.
    */
-  async function collectExport(record: PrivacyRequestRecord): Promise<DataExport> {
+  async function collectAccountParts(record: PrivacyRequestRecord): Promise<DataExport> {
     const now = clock.now();
     const accountId = record.accountId;
     // The account through identity's service: it exists with or without a membership.
     const member = await otherAreas().identity.getMemberIdentity(accountId);
-    // Profiles and devices in full (settings, avatars, each device): identity's milestone 1
-    // tables, keyed by the account, which `getMemberIdentity` summarises without them.
-    const [profiles, devices, consents, requests] = await Promise.all([
-      repos.profiles.list(accountId),
-      repos.sessions.listForAccount(accountId, now),
+    const [consents, requests] = await Promise.all([
       repos.events.listConsents(accountId),
       repos.events.listPrivacyRequests(accountId),
     ]);
+    const areas: Record<string, JsonValue> = {};
+    for (const [name, module] of Object.entries(otherAreas()) as [string, AreaModule][]) {
+      if (module.exportAccountData) areas[name] = await module.exportAccountData(accountId);
+    }
+    // Profiles (settings, avatars) and devices in full are identity's part (its milestone 1
+    // tables); the document's top-level lists repeat them in the contract's shape.
+    const identityPart = IdentityExportPart.parse(areas.identity ?? {});
     const library: DataExport["library"] = [];
-    for (const profile of profiles) {
+    for (const profile of member.profiles) {
       const [signals, history] = await Promise.all([
         repos.library.loadSignals(profile.id),
         historyOf(profile.id),
@@ -210,10 +283,6 @@ export function createPrivacy(
         })),
       });
     }
-    const areas: Record<string, JsonValue> = {};
-    for (const [name, module] of Object.entries(otherAreas()) as [string, AreaModule][]) {
-      if (module.exportAccountData) areas[name] = await module.exportAccountData(accountId);
-    }
     return {
       format: "webflix.data-export",
       formatVersion: 1,
@@ -224,24 +293,8 @@ export function createPrivacy(
         email: member.account.email,
         createdAt: member.account.createdAt,
       },
-      profiles: profiles.map((profile) => ({
-        id: profile.id,
-        name: profile.name,
-        avatarId: profile.avatarId,
-        kids: profile.isKids,
-        maturityCeiling: profile.maturityCeiling,
-        locked: profile.pinHash !== null,
-        settings: { ...profile.settings },
-        createdAt: toIsoString(profile.createdAt),
-      })),
-      devices: devices.map((session) => ({
-        id: session.id,
-        label: session.deviceLabel,
-        type: session.deviceType,
-        signedInAt: toIsoString(session.createdAt),
-        lastSeenAt: toIsoString(session.lastSeenAt),
-        expiresAt: toIsoString(session.expiresAt),
-      })),
+      profiles: identityPart.profiles,
+      devices: identityPart.devices,
       library,
       consents: consents.map((entry) => ({
         purpose: entry.purpose,
@@ -256,7 +309,7 @@ export function createPrivacy(
         requestedAt: toIsoString(entry.requestedAt),
         completedAt: entry.completedAt === null ? null : toIsoString(entry.completedAt),
       })),
-      events: await accountEvents(accountId, now),
+      events: [],
       areas,
       notes: [
         "Behaviour events are stored under pseudonymous keys derived from your account and profile ids; the ones listed are every event the event lake holds for your account within its retention period.",
@@ -282,49 +335,209 @@ export function createPrivacy(
     }
   }
 
-  /** The `privacy.export` job. */
+  const finalKey = (id: string) => `${PRIVATE_DOCUMENT_PREFIX}exports/${id}.json.gz`;
+  const partialKey = (id: string) =>
+    `${PRIVATE_DOCUMENT_PREFIX}exports/${id}${PARTIAL_EXPORT_SUFFIX}`;
+  const pipelineKeys = (id: string) => ({
+    events: `${PRIVATE_DOCUMENT_PREFIX}export-events/${id}/events.ndjson.gz`,
+    manifest: `${PRIVATE_DOCUMENT_PREFIX}export-events/${id}/manifest.json`,
+  });
+  const nameOf = (key: string) => key.slice(PRIVATE_DOCUMENT_PREFIX.length);
+
+  /** Batch mode: assembled, its partial document stored, waiting for the pipeline's result. */
+  function isWaitingForEvents(record: PrivacyRequestRecord): boolean {
+    return (
+      record.kind === "export" &&
+      record.status === "processing" &&
+      record.exportBlobKey?.endsWith(PARTIAL_EXPORT_SUFFIX) === true
+    );
+  }
+
+  async function errorOn(requestId: string, error: unknown): Promise<void> {
+    await repos.events
+      .transitionPrivacyRequest(requestId, ["processing"], {
+        lastError: String((error as Error)?.message ?? error).slice(0, 500),
+        updatedAt: clock.now(),
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Write the finished document, email the link (at most once per export), complete the
+   * request. A retry replaces what an interrupted attempt left. False when the request was
+   * finished (or cancelled) meanwhile.
+   */
+  async function finishExport(
+    record: PrivacyRequestRecord,
+    document: DataExport,
+    events: LakeEvent[],
+  ): Promise<boolean> {
+    const finished: DataExport = { ...document, generatedAt: toIsoString(clock.now()), events };
+    await eventSink.deleteDocument(finalKey(record.id));
+    const key = await eventSink.putDocument(nameOf(finalKey(record.id)), await gzipJson(finished));
+    const expiresAt = clock.now() + config.events.exportLinkTtlSec * 1000;
+    await sendExportEmail({ ...record, exportBlobKey: key, expiresAt }, document.account.email);
+    const completed = await repos.events.transitionPrivacyRequest(record.id, ["processing"], {
+      status: "completed",
+      exportBlobKey: key,
+      expiresAt,
+      completedAt: clock.now(),
+      lastError: null,
+      updatedAt: clock.now(),
+    });
+    if (completed) {
+      logger.info("privacy.export_completed", { requestId: record.id, events: events.length });
+    }
+    return completed;
+  }
+
+  /** The `privacy.export` job: inline, the whole export; batch, all but the events. */
   async function runExport(requestId: string): Promise<void> {
     const record = await repos.events.getPrivacyRequest(requestId);
     if (record?.kind !== "export") return;
     if (record.status !== "pending" && record.status !== "processing") return;
-    const now = clock.now();
-    await repos.events.transitionPrivacyRequest(requestId, ["pending"], {
+    if (isWaitingForEvents(record)) return; // assembled already: the pipeline's turn
+    await repos.events.transitionPrivacyRequest(requestId, ["pending", "processing"], {
       status: "processing",
-      updatedAt: now,
+      updatedAt: clock.now(),
     });
     try {
       await drainOutbox();
-      const document = await collectExport(record);
-      const name = `exports/${record.id}.json.gz`;
-      // A retried attempt replaces what an interrupted one left.
-      await eventSink.deleteDocument(`privacy/${name}`);
-      const key = await eventSink.putDocument(name, await gzipJson(document));
-      const completed: PrivacyRequestRecord = {
-        ...record,
-        status: "completed",
-        exportBlobKey: key,
-        expiresAt: clock.now() + config.events.exportLinkTtlSec * 1000,
-        completedAt: clock.now(),
-      };
-      await sendExportEmail(completed, document.account.email);
+      const document = await collectAccountParts(record);
+      if (config.events.exportEvents === "inline") {
+        await finishExport(record, document, await inlineEvents(record));
+        return;
+      }
+      await eventSink.deleteDocument(partialKey(record.id));
+      const key = await eventSink.putDocument(
+        nameOf(partialKey(record.id)),
+        await gzipJson(document),
+      );
       await repos.events.transitionPrivacyRequest(requestId, ["processing"], {
-        status: "completed",
-        exportBlobKey: completed.exportBlobKey,
-        expiresAt: completed.expiresAt,
-        completedAt: completed.completedAt,
+        exportBlobKey: key,
         lastError: null,
         updatedAt: clock.now(),
       });
-      logger.info("privacy.export_completed", { requestId, events: document.events.length });
+      logger.info("privacy.export_waiting_for_events", { requestId });
     } catch (error) {
-      await repos.events
-        .transitionPrivacyRequest(requestId, ["processing"], {
-          lastError: String((error as Error)?.message ?? error).slice(0, 500),
-          updatedAt: clock.now(),
-        })
-        .catch(() => undefined);
+      await errorOn(requestId, error);
       throw error;
     }
+  }
+
+  /** Batch mode: the requests the pipeline's `export-events` must extract (listed until done). */
+  async function pendingExports(limit: number): Promise<ExportEventsRequestList> {
+    const records = await repos.events.waitingExports(limit);
+    return {
+      requests: await Promise.all(
+        records.map(async (record) => {
+          const window = eventsWindow(record);
+          return {
+            requestId: record.id,
+            accountKey: await keys.account(record.accountId),
+            from: toIsoString(window.fromMs),
+            to: toIsoString(window.toMs),
+          };
+        }),
+      ),
+    };
+  }
+
+  /**
+   * The pipeline's output for one complete request, verified: the file under the request's
+   * own prefix, its size and SHA-256 as the result says, every line a lake event of this
+   * account in the request's window.
+   */
+  async function pipelineEvents(
+    record: PrivacyRequestRecord,
+    result: ExportEventsResults["results"][number],
+  ): Promise<LakeEvent[]> {
+    const expected = pipelineKeys(record.id).events;
+    if (result.file !== undefined && result.file !== expected) {
+      throw new Error(`the result names ${result.file}, not ${expected}`);
+    }
+    if (result.bytes === undefined || result.sha256 === undefined) {
+      throw new Error("the result has no size or SHA-256");
+    }
+    const bytes = await eventSink.getDocument(expected);
+    if (!bytes) throw new Error(`${expected} is missing`);
+    if (bytes.byteLength !== result.bytes) {
+      throw new Error(`${expected}: ${bytes.byteLength} bytes, the result says ${result.bytes}`);
+    }
+    const digest = hexEncode(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))),
+    );
+    if (digest !== result.sha256) throw new Error(`${expected}: SHA-256 does not match`);
+    const accountKey = await keys.account(record.accountId);
+    const window = eventsWindow(record);
+    const events: LakeEvent[] = [];
+    for (const raw of await decodeLakeObject(bytes)) {
+      const parsed = LakeEvent.safeParse(raw);
+      if (!parsed.success) throw new Error(`${expected}: a line is not a lake event`);
+      const received = Date.parse(parsed.data.receivedAt);
+      if (parsed.data.subject.account !== accountKey) {
+        throw new Error(`${expected}: an event of another account`);
+      }
+      if (received < window.fromMs || received >= window.toMs) {
+        throw new Error(`${expected}: an event outside the request's window`);
+      }
+      events.push(parsed.data);
+    }
+    if (result.events !== undefined && result.events !== events.length) {
+      throw new Error(`${expected}: ${events.length} events, the result says ${result.events}`);
+    }
+    return keepEarliestReceipt(events) as LakeEvent[];
+  }
+
+  /**
+   * Batch mode: fold the pipeline's results in (its `--results` document). `complete`: the
+   * events verified and folded in, the export finished and emailed, the pipeline's documents
+   * deleted. `erased` (the account is being deleted): finished with no events. `deferred` and
+   * `failed`: listed again next time (a failure's error recorded). A result for an unknown,
+   * finished or not-yet-assembled request changes nothing.
+   */
+  async function recordExportResults(input: ExportEventsResults): Promise<ExportResultsOutcome> {
+    const document = ExportEventsResults.parse(input);
+    const outcome: ExportResultsOutcome = { completed: [], erased: [], kept: [], ignored: [] };
+    for (const result of document.results) {
+      const record = await repos.events.getPrivacyRequest(result.requestId);
+      if (!record || !isWaitingForEvents(record) || record.exportBlobKey === null) {
+        outcome.ignored.push(result.requestId);
+        continue;
+      }
+      if (result.status === "deferred") {
+        outcome.kept.push(record.id);
+        continue;
+      }
+      if (result.status === "failed") {
+        await errorOn(record.id, `export-events failed: ${result.error ?? "no detail"}`);
+        outcome.kept.push(record.id);
+        continue;
+      }
+      try {
+        const partial = await eventSink.getDocument(record.exportBlobKey);
+        if (!partial) throw new Error(`${record.exportBlobKey} is missing`);
+        const assembled = DataExport.parse(await gunzipJson(partial));
+        const events = result.status === "complete" ? await pipelineEvents(record, result) : [];
+        if (!(await finishExport(record, assembled, events))) {
+          outcome.ignored.push(record.id);
+          continue;
+        }
+        const pipeline = pipelineKeys(record.id);
+        await eventSink.deleteDocument(record.exportBlobKey);
+        await eventSink.deleteDocument(pipeline.events);
+        await eventSink.deleteDocument(pipeline.manifest);
+        (result.status === "complete" ? outcome.completed : outcome.erased).push(record.id);
+      } catch (error) {
+        logger.warn("privacy.export_result_refused", {
+          requestId: record.id,
+          error: serializeError(error),
+        });
+        await errorOn(record.id, error);
+        outcome.kept.push(record.id);
+      }
+    }
+    return outcome;
   }
 
   // --- Deletion and erasure ------------------------------------------------------------------
@@ -356,17 +569,21 @@ export function createPrivacy(
           if (error instanceof AppError && error.code === "not_found") return [];
           throw error;
         });
+      const accountKey = await keys.account(accountId);
       await repos.events.addErasures([
         {
-          subjectKey: await keys.account(accountId),
+          subjectKey: accountKey,
           kind: "account",
+          accountKey: null,
           requestedAt: now,
           compactedAt: null,
         },
+        // The account's key covers its profiles: listed under it, settled with it.
         ...(await Promise.all(
           profiles.map(async (profile) => ({
             subjectKey: await keys.profile(profile.id),
             kind: "profile" as const,
+            accountKey,
             requestedAt: now,
             compactedAt: null,
           })),
@@ -377,9 +594,14 @@ export function createPrivacy(
       }
       await deps.streamGate.releaseAll(accountId);
       for (const request of await repos.events.listPrivacyRequests(accountId)) {
-        if (request.exportBlobKey === null) continue;
-        await eventSink.deleteDocument(request.exportBlobKey);
+        // An export still in progress ends here: there will be nothing to send it to.
+        const open =
+          request.kind === "export" &&
+          (request.status === "pending" || request.status === "processing");
+        if (request.exportBlobKey === null && !open) continue;
+        if (request.exportBlobKey !== null) await eventSink.deleteDocument(request.exportBlobKey);
         await repos.events.transitionPrivacyRequest(request.id, [request.status], {
+          ...(open ? { status: "canceled" as const } : {}),
           exportBlobKey: null,
           updatedAt: clock.now(),
         });
@@ -403,7 +625,7 @@ export function createPrivacy(
     }
   }
 
-  /** The `privacy.sweep` job (every scheduler tick): due erasures, expired exports. */
+  /** The `privacy.sweep` job (every scheduler tick): due erasures, lost and expired exports. */
   async function sweep(): Promise<void> {
     const now = clock.now();
     const due = await repos.events.dueDeletions(now, SWEEP_BATCH);
@@ -411,6 +633,28 @@ export function createPrivacy(
       await jobs.publishBatch(
         due.map((record) => privacyEraseJob.create({ requestId: record.id })),
       );
+    }
+    // Exports whose job was lost or dead-lettered: queued again, and given up after a day so
+    // the member is never left unable to ask again.
+    for (const record of await repos.events.staleExports(
+      now - RECOVER_EXPORT_AFTER_MS,
+      SWEEP_BATCH,
+    )) {
+      if (record.requestedAt < now - GIVE_UP_EXPORT_AFTER_MS) {
+        await repos.events.transitionPrivacyRequest(record.id, ["pending", "processing"], {
+          status: "failed",
+          lastError: "the export did not complete in time; ask for a new one",
+          updatedAt: now,
+        });
+        logger.warn("privacy.export_given_up", { requestId: record.id });
+        continue;
+      }
+      if (
+        await repos.events.transitionPrivacyRequest(record.id, [record.status], { updatedAt: now })
+      ) {
+        await jobs.publish(privacyExportJob.create({ requestId: record.id }));
+        logger.info("privacy.export_requeued", { requestId: record.id });
+      }
     }
     for (const record of await repos.events.expiredExports(now, SWEEP_BATCH)) {
       if (record.exportBlobKey === null) continue;
@@ -520,6 +764,8 @@ export function createPrivacy(
     runExport,
     runErasure,
     sweep,
+    pendingExports,
+    recordExportResults,
   };
 }
 

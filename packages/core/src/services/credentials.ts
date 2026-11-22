@@ -29,17 +29,32 @@ export function createCredentialChecks(
 ) {
   const { repos, passwords, clock } = deps;
 
-  async function passwordMatches(
+  /**
+   * Compares a candidate with the account's password, charged first. `none`: the account has no
+   * password (created through an issuer), so nothing is compared and nothing can match.
+   */
+  async function checkPassword(
     accountId: string,
     candidate: string,
     charge: ChargeCredentialCheck,
-  ): Promise<boolean> {
+  ): Promise<"match" | "mismatch" | "none"> {
     await charge();
     const account = await repos.identity.getAccount(accountId);
     if (!account) throw new AppError("unauthenticated");
     // No password set: there is nothing a candidate could match (never hash against "").
-    if (account.passwordHash === null) return false;
-    return (await passwords.verify(candidate, account.passwordHash)).valid;
+    if (account.passwordHash === null) return "none";
+    return (await passwords.verify(candidate, account.passwordHash)).valid ? "match" : "mismatch";
+  }
+
+  /** `password_required` for an account without a password, `current_password_invalid` if wrong. */
+  async function requireMatch(
+    accountId: string,
+    candidate: string,
+    charge: ChargeCredentialCheck,
+  ): Promise<void> {
+    const outcome = await checkPassword(accountId, candidate, charge);
+    if (outcome === "none") throw new AppError("password_required");
+    if (outcome === "mismatch") throw new AppError("current_password_invalid");
   }
 
   /** True while the session holds a fresh account-holder proof. */
@@ -59,8 +74,8 @@ export function createCredentialChecks(
 
     /**
      * The password, or (when none is sent) a fresh proof held by the session.
-     * `password_required` without either, `current_password_invalid` when a sent one is wrong
-     * (a proof never excuses a wrong password).
+     * `password_required` without either, or when the account has no password at all;
+     * `current_password_invalid` when a sent one is wrong (a proof never excuses a wrong password).
      */
     async requirePassword(
       prover: Prover,
@@ -71,23 +86,20 @@ export function createCredentialChecks(
         if (await isElevated(prover)) return;
         throw new AppError("password_required");
       }
-      if (!(await passwordMatches(prover.session.accountId, candidate, charge))) {
-        throw new AppError("current_password_invalid");
-      }
+      await requireMatch(prover.session.accountId, candidate, charge);
     },
 
     /**
      * The account-holder proof by password (`POST /session/elevation`): charged like every
-     * password check. Returns normally only for the right password of an account that has one.
+     * password check. Returns normally only for the right password of an account that has one;
+     * an account without one answers `password_required` (its proof is a fresh sign-in).
      */
     async provePassword(
       prover: Prover,
       candidate: string,
       charge: ChargeCredentialCheck,
     ): Promise<void> {
-      if (!(await passwordMatches(prover.session.accountId, candidate, charge))) {
-        throw new AppError("current_password_invalid");
-      }
+      await requireMatch(prover.session.accountId, candidate, charge);
     },
 
     /** `profile_pin_invalid` unless `candidate` is the profile's PIN. */

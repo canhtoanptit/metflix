@@ -3,6 +3,7 @@ import {
   type ConsentRecord,
   type EventsRepository,
   OPEN_PRIVACY_STATUSES,
+  PARTIAL_EXPORT_SUFFIX,
   type PrivacyErasureRecord,
   type PrivacyRequestRecord,
 } from "@webflix/core";
@@ -13,10 +14,10 @@ import type {
   PrivacyRequestsTable,
 } from "../../tables/events.ts";
 import { toPlaybackSession } from "../activity.ts";
-import { fromBool, toBool, typed } from "../mapping.ts";
+import { excluded, fromBool, toBool, typed } from "../mapping.ts";
 
-/** Erasure keys per statement: 4 bound parameters each, well within D1's 100. */
-const ERASURE_CHUNK = 20;
+/** Erasure keys per statement: 5 bound parameters each (and the upsert's), within D1's 100. */
+const ERASURE_CHUNK = 15;
 
 function toConsent(row: ConsentsTable): ConsentRecord {
   return {
@@ -51,6 +52,7 @@ function toErasure(row: PrivacyErasuresTable): PrivacyErasureRecord {
   return {
     subjectKey: row.subject_key,
     kind: row.kind as PrivacyErasureRecord["kind"],
+    accountKey: row.account_key,
     requestedAt: Number(row.requested_at),
     compactedAt: nullableTime(row.compacted_at),
   };
@@ -229,6 +231,35 @@ export function createEventsRepository(database: Database): EventsRepository {
       return rows.map(toPrivacyRequest);
     },
 
+    async waitingExports(limit) {
+      const rows = await db
+        .selectFrom("privacy_requests")
+        .selectAll()
+        .where("kind", "=", "export")
+        .where("status", "=", "processing")
+        .where("export_blob_key", "like", `%${PARTIAL_EXPORT_SUFFIX}`)
+        .orderBy("requested_at", "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPrivacyRequest);
+    },
+
+    async staleExports(before, limit) {
+      const rows = await db
+        .selectFrom("privacy_requests")
+        .selectAll()
+        .where("kind", "=", "export")
+        .where("status", "in", ["pending", "processing"])
+        .where("export_blob_key", "is", null)
+        .where("updated_at", "<", before)
+        .orderBy("updated_at", "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPrivacyRequest);
+    },
+
     async addErasures(records) {
       for (let index = 0; index < records.length; index += ERASURE_CHUNK) {
         const chunk = records.slice(index, index + ERASURE_CHUNK);
@@ -238,11 +269,21 @@ export function createEventsRepository(database: Database): EventsRepository {
             chunk.map((record) => ({
               subject_key: record.subjectKey,
               kind: record.kind,
+              account_key: record.accountKey,
               requested_at: record.requestedAt,
               compacted_at: record.compactedAt,
             })),
           )
-          .onConflict((oc) => oc.column("subject_key").doNothing())
+          // A pending record stays as it was; a settled one asked for again is pending again.
+          .onConflict((oc) =>
+            oc
+              .column("subject_key")
+              .doUpdateSet((eb) => ({
+                requested_at: excluded(eb, "requested_at"),
+                compacted_at: null,
+              }))
+              .where("privacy_erasures.compacted_at", "is not", null),
+          )
           .execute();
       }
     },
@@ -252,6 +293,7 @@ export function createEventsRepository(database: Database): EventsRepository {
         .selectFrom("privacy_erasures")
         .selectAll()
         .where("compacted_at", "is", null)
+        .where("account_key", "is", null)
         .orderBy("requested_at", "asc")
         .orderBy("subject_key", "asc")
         .limit(limit)
@@ -260,12 +302,13 @@ export function createEventsRepository(database: Database): EventsRepository {
     },
 
     async markErasuresCompacted(subjectKeys, at) {
-      for (let index = 0; index < subjectKeys.length; index += 90) {
-        const chunk = subjectKeys.slice(index, index + 90);
+      // Each key is bound twice (as a key, and as the account of profile records): 45 a time.
+      for (let index = 0; index < subjectKeys.length; index += 45) {
+        const chunk = subjectKeys.slice(index, index + 45);
         await db
           .updateTable("privacy_erasures")
           .set({ compacted_at: at })
-          .where("subject_key", "in", chunk)
+          .where((eb) => eb.or([eb("subject_key", "in", chunk), eb("account_key", "in", chunk)]))
           .where("compacted_at", "is", null)
           .execute();
       }

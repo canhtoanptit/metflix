@@ -100,7 +100,11 @@ function discoveryDocument(context: IssuerContext): Record<string, unknown> {
     scopes_supported: profile.scopes,
     response_types_supported: ["code"],
     response_modes_supported: ["query", "form_post"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
+    grant_types_supported: [
+      "authorization_code",
+      "refresh_token",
+      ...(profile.clientCredentials ? ["client_credentials"] : []),
+    ],
     subject_types_supported: [profile.subjectType],
     id_token_signing_alg_values_supported: context.ring.algorithms(),
     token_endpoint_auth_methods_supported: profile.tokenEndpointAuthMethods,

@@ -228,6 +228,9 @@ describe("route table", () => {
       "POST /system/recommendations/rollback",
       "GET /system/privacy/erasures",
       "POST /system/privacy/erasures/confirm",
+      // Fix round: the operator's side of members' data exports (the pipeline's export-events).
+      "GET /system/privacy/exports",
+      "POST /system/privacy/exports/results",
     ];
     const actual = adminEntries.map(([, route]) => `${route.method} ${route.path}`);
     expect(actual.sort()).toEqual(staff.sort());

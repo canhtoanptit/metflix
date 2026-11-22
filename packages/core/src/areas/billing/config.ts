@@ -32,14 +32,48 @@ export interface BillingAreaConfig {
     delivery: (typeof FAKE_DELIVERY_MODES)[number];
     /** What happens when every retry of a renewal failed (Stripe's dunning setting, §5.2). */
     retriesExhausted: (typeof FAKE_RETRIES_EXHAUSTED)[number];
+    /** Standing promo codes (never expiring, never exhausted, every plan). */
+    promotions: { code: string; percentOff?: number; amountOffMinor?: number }[];
   };
+}
+
+/** The fake's standing promo code by default: 50% off any plan, unlimited (finding M2-F1). */
+export const DEFAULT_FAKE_PROMOTIONS = "WEBFLIX50:50%";
+
+/** `CODE:50%` (a percentage) or `CODE:500` (minor units, USD), comma-separated; `none`. */
+export function parseFakePromotions(
+  value: string,
+  issues: string[],
+): BillingAreaConfig["fake"]["promotions"] {
+  if (value.trim() === "none") return [];
+  const promotions: BillingAreaConfig["fake"]["promotions"] = [];
+  for (const entry of value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)) {
+    const match = /^([A-Za-z0-9_-]{1,64}):(\d+)(%?)$/.exec(entry);
+    const amount = Number(match?.[2]);
+    if (!match?.[1] || !Number.isInteger(amount) || amount <= 0 || (match[3] && amount > 100)) {
+      issues.push(
+        `WEBFLIX_PAYMENTS_FAKE_PROMOTIONS: "${entry}" is not CODE:<1-100>% or CODE:<amount in minor units>`,
+      );
+      continue;
+    }
+    promotions.push(
+      match[3]
+        ? { code: match[1], percentOff: amount }
+        : { code: match[1], amountOffMinor: amount },
+    );
+  }
+  return promotions;
 }
 
 /**
  * Variables: WEBFLIX_PAYMENT_PROVIDER (default `fake` outside production, `memory` in
  * production), WEBFLIX_BILLING_GRACE_SEC (default 7 days), STRIPE_SECRET_KEY,
  * STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET, WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET,
- * WEBFLIX_PAYMENTS_FAKE_DELIVERY, WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED.
+ * WEBFLIX_PAYMENTS_FAKE_DELIVERY, WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED,
+ * WEBFLIX_PAYMENTS_FAKE_PROMOTIONS.
  */
 export function loadBillingConfig(input: AreaConfigInput): AreaConfigResult<BillingAreaConfig> {
   const issues: string[] = [];
@@ -97,6 +131,10 @@ export function loadBillingConfig(input: AreaConfigInput): AreaConfigResult<Bill
           "WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED",
           FAKE_RETRIES_EXHAUSTED,
           "unpaid",
+          issues,
+        ),
+        promotions: parseFakePromotions(
+          input.vars.WEBFLIX_PAYMENTS_FAKE_PROMOTIONS ?? DEFAULT_FAKE_PROMOTIONS,
           issues,
         ),
       },

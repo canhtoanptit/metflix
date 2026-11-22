@@ -11,7 +11,7 @@ web app can rely on. Companion documents: `docs/DECISIONS.md` (why things are th
 | --- | --- | --- |
 | `packages/core` | Application services (`createServices`), repository ports, recommendation engine, catalog/popularity caches, mock billing, seeder, jobs and scheduler, in-memory repositories (`@webflix/core/memory`), contract suites and test harness (`@webflix/core/testing`) | portable (Web APIs only) |
 | `packages/db` | Kysely schema, migrations (authored once), repositories, SQL search index. Entry points: `@webflix/db` (portable), `@webflix/db/sqlite` (node:sqlite), `@webflix/db/postgres` (pg), `@webflix/db/d1` (D1 binding, portable). Generated D1 SQL in `packages/db/migrations/d1/` | portable + Node-only subpaths |
-| `packages/http` | `createApp(container)`: the 79 member routes and the 38-route staff API (every route is implemented; a route registered without a handler would answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
+| `packages/http` | `createApp(container)`: the 80 member routes and the 40-route staff API (every route is implemented; a route registered without a handler would answer `501 not_implemented`, docs/FOUNDATION.md §8.2), guard (session, active profile, staff token and role, CSRF, rate limits), media delivery, ops endpoints, OpenAPI + docs UI, security headers, request ids, access logs, Prometheus registry | portable |
 | `apps/api` | Node entrypoint: `serve`, `worker`, `migrate`, `seed`; composition of adapters from env | Node |
 
 ## 2. Running the API
@@ -144,6 +144,14 @@ ratings so the home page is full on first load.
   `PUT /account/subscription` with its `previewToken` (charged exactly as previewed). Card
   replacement: `POST /billing/payment-method/setup`, confirm in the form, poll the setup.
   Accounts on milestone 1's mock membership keep milestone 1's behaviour on every route.
+- **The fake provider's test cards** (`/_pay`, local modes): every card of `FAKE_CARDS`, by name
+  (`visa`) or by Stripe's test number. Trials are one per card fingerprint, and a test card has
+  one fingerprint deployment-wide, as a real card would: a suite that needs a card that never
+  had a trial asks for a **labelled card**, `<test card>:<label>` (e.g. `visa:run-42`, label
+  `[A-Za-z0-9_.-]{1,64}`), in the form's `card` field, its number field or `POST
+  /_pay/api/confirm`'s `card`. It behaves exactly like the test card with its own fingerprint;
+  the same label again is the same card (no second trial). Promo code `WEBFLIX50` (50% off any
+  plan) exists on every fake deployment by default (`WEBFLIX_PAYMENTS_FAKE_PROMOTIONS`).
 - **Signed-out artwork**: `GET /showcase` (no session) lists up to 40 titles rated 13+ at most
   with their versioned `ImageSet`s; it is public and cacheable (`Cache-Control: public`, ETag).
 - **Rate limits.** Every 429 is `rate_limited` with `retryAfterSec` and `Retry-After`. Client
@@ -192,7 +200,11 @@ ratings so the home page is full on first load.
     verified. `intent=link` needs an account holder holding a fresh proof
     (`reauthentication_required` otherwise) and an issuer-verified address; one identity per
     issuer per account. Unlinking needs a fresh proof and refuses the last way to sign in
-    (`identity_last_sign_in_method`).
+    (`identity_last_sign_in_method`). A removed identity stays removed (finding M2-F5): an
+    unlinked one, or one a password reset dropped, never links itself again, even with both
+    addresses verified; its next sign-in is `link-required`, and only `intent=link` (the rule
+    above) brings it back. The removal is remembered per (issuer, subject) in
+    `identity_removals` until the account is deleted.
   - *Account-holder proof* ("Confirm it's you"): `POST /session/elevation {password}` or a fresh
     sign-in (`intent=reauth`, `max_age=0`, judged by `auth_time`) sets the session's proof for
     five minutes (`GET /session/elevation` → `elevatedUntil`, `methods`). While it lasts it
@@ -275,13 +287,45 @@ ratings so the home page is full on first load.
   listed either way); `GET /privacy/requests` lists it with `downloadUrl` until `expiresAt`.
   The link (`GET /privacy/exports/:id?token=`) works only for its account, signed in as the
   account holder; it answers the document as an attachment.
+  **Where the events come from** is `WEBFLIX_EXPORT_EVENTS` (§4). `inline` (dev's default): the
+  job reads the retention window itself, by the pipeline's reader contract for compacted hours
+  (services/recs README, "Compacted hours: the contract for readers": a version 2 manifest's
+  Parquet file, only the row groups whose `account` statistics admit the key, never the raw
+  objects it covers; a version 1 manifest ignored; an hour re-listed when an object vanishes).
+  `batch` (k8s and Cloudflare): the job assembles everything else, keeps it as
+  `privacy/exports/{id}.partial.json.gz` and leaves the request `processing`, listed by
+  `services.events.staff.pendingExports(limit)` (`{ requests: [{ requestId, accountKey, from,
+  to }] }`, `from` = request time minus the raw retention, `to` = the request time;
+  `GET /system/privacy/exports`) until a result is recorded. The pipeline's `export-events`
+  (services/recs README, "Exports of members' events") writes the member's events under
+  `privacy/export-events/{id}/`; `services.events.staff.recordExportResults(document)`
+  (`POST /system/privacy/exports/results`) folds a `complete` result in (the file's size and
+  SHA-256 verified, each line a lake event of that account inside the window, each `eventId`
+  once), deletes both pipeline documents, finishes the export and sends the email; `erased`
+  finishes with no events; `deferred` and `failed` keep the request listed; a result for an
+  unknown or finished request does nothing. **Until something runs the job (no deployment
+  schedules it yet), a batch export stays `processing`.** A lost or dead-lettered export job
+  never blocks the member: the sweep republishes the job of an export untouched for 15 minutes
+  (pending, or processing and not yet waiting for its events) and fails it after a day, which
+  frees "one at a time".
 - **Delete account.** `POST /account/deletion` (fresh proof, not the demo account) schedules
   the erasure after `WEBFLIX_DELETION_COOLING_OFF_SEC`; `DELETE /account/deletion` cancels it
   meanwhile. The erasure then lists the account's and profiles' pseudonymous keys for the lake's
   compaction (`compact --erase`, `services.events.staff.pendingErasures`), runs every area's
   `eraseAccountData`, frees the streams, deletes the account's export documents and the account
   row (sessions, profiles and their library, membership, consents, linked identities and tokens
-  cascade); billing records and the record of the request itself are kept (D-M2-6).
+  cascade); billing records and the record of the request itself are kept (D-M2-6). An open
+  export of the account is cancelled and its documents deleted. The erasure listing
+  (`pendingErasures`) is every key not yet confirmed, the limit applied after that filter: an
+  erased account's key (its profiles' keys ride on it and are settled when it is confirmed,
+  since the lake's compaction drops an account's events by account key) and each restricted
+  profile's key. Recording a key twice keeps one entry; recording a confirmed key again re-opens
+  it.
+- **A profile that becomes restricted** (kids, or a maturity restriction): identity calls the
+  seam `forgetProfileBehaviour({ accountId, profileId })`, which queues that profile's
+  pseudonymous key for erasure (listed by `pendingErasures`, dropped by `compact --erase`, then
+  confirmed). Safe to call twice; the account's other profiles and the account key are never
+  touched. From then on the profile produces no events (the privacy rules below).
 - **Server events.** Other areas call `emitServerEvent` (never throws; one queue message per
   event, stamped by the consumer with the consent in force at receipt). Playback produces
   `playback.start`, `progress` at each quarter of credited watching, `complete` at 95% or the
@@ -328,6 +372,17 @@ For the admin console (`createAdminApiClient({ accessToken })`) and for operator
   `admin.staff_token_refused`); an issuer whose keys cannot be fetched while none are cached is
   `503`. Cookies are ignored: a member session never opens a staff route, and a staff token never
   opens a member route. Mutations need `X-Webflix-Client: web`, like the member API.
+- **Jobs (service accounts).** A job with no person behind it (the recommendation pipeline's
+  calls) gets its token by the client-credentials grant, as from a Keycloak client with a
+  service account: `POST {WEBFLIX_STAFF_TOKEN_URL}` with `grant_type=client_credentials` and
+  HTTP Basic `WEBFLIX_STAFF_CLIENT_ID:WEBFLIX_STAFF_CLIENT_SECRET`. The token is an access token
+  for the realm's `service-account-<clientId>` user (`azp` the client, the roles fixed on the
+  client, no refresh or ID token, five minutes: fetch another when it ends). Outside production
+  the development staff issuer has one such client: `WEBFLIX_STAFF_TOKEN_URL` =
+  `{WEBFLIX_PUBLIC_ORIGIN}/dev-idp/staff/token`, client `webflix-jobs`, secret
+  `dev-only-jobs-client-secret`, roles `admin` and `experiments` (`WEBFLIX_DEV_CLIENTS.staffJobs`
+  in `@webflix/dev-idp`). Against Keycloak, create a confidential client with service accounts
+  enabled and give its service-account user the `webflix-admin` client roles the job needs.
 - **Roles** come from `resource_access["webflix-admin"].roles`: `support`, `billing`, `content`,
   `experiments`, `admin` (passes every check). Each route names one role
   (`x-webflix-staff-role` in OpenAPI); without it, `403 staff_role_required` with `requiredRole`.
@@ -353,9 +408,15 @@ For the admin console (`createAdminApiClient({ accessToken })`) and for operator
   links to the member's invoice). The privacy view has the consent and the requests, never an
   export's download link (`downloadUrl` is always null) and never the member's behaviour events.
   Dead letters are listed without their payloads.
-- **Operators.** `GET /system/privacy/erasures` lists the pseudonymous account keys the lake's
-  compaction must drop (`compact --erase FILE`); `POST /system/privacy/erasures/confirm` records
-  that it did. `POST /system/recommendations/rollback` serves the previous model run again.
+- **Operators.** `GET /system/privacy/erasures` lists the pseudonymous keys (deleted accounts,
+  profiles made restricted) the lake's compaction must drop (`compact --erase FILE`); `POST /system/privacy/erasures/confirm` records
+  that it did. `GET /system/privacy/exports` lists the data exports whose events the pipeline's
+  `export-events` job must extract (request id, pseudonymous account key, receipt window);
+  `POST /system/privacy/exports/results` takes the job's results document, whose `file` and
+  `manifest` can only name that request's own `privacy/export-events/{requestId}/` documents.
+  Both audited like the erasure routes (calling them from `export-events` is the pipeline
+  owner's wiring, as it was for `erase`). `POST /system/recommendations/rollback` serves
+  the previous model run again.
   Dead letters: the job processor records a job that fails its last attempt (the fifth, every
   queue's setting) in `job_dead_letters` in every mode; `POST /system/dead-letters/:id/replay`
   publishes it again, once. `GET /system/health` probes the database, the cache and the
@@ -413,6 +474,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | billing | Required for `stripe`; the names `tools/stripe` writes to `.cache/stripe/stripe.env`. Never logged. A test secret key in production is refused |
 | `WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET` | development constant | billing | The fake provider's webhook signing secret (24+ chars); every replica or isolate must share it |
 | `WEBFLIX_PAYMENTS_FAKE_DELIVERY` | `orderly` | billing | How the fake delivers its webhooks at start: `orderly`, `unruly` (any order, some twice, some up to 2 s late) or `outage` (none; reconciliation recovers). Changeable at run time: `PUT /_pay/api/delivery` |
+| `WEBFLIX_PAYMENTS_FAKE_PROMOTIONS` | `WEBFLIX50:50%` | billing | Standing promo codes of the fake provider (never expiring, never exhausted, every plan): `CODE:<1-100>%` or `CODE:<amount in minor units, USD>`, comma-separated; `none` for no code. A fake-provider deployment has no other way to get one (finding M2-F1) |
 | `WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED` | `unpaid` | billing | What the fake does when a renewal's retries (3, 5 and 8 days after the first failure) all fail: `unpaid` (recoverable by paying, §5.2's recommended setting) or `cancel` (Stripe's implied default) |
 | `WEBFLIX_EVENT_SINK` | `memory` | events | `memory` (in process: tests, and nothing to keep) or `lake` (gzip NDJSON under `events/dt=…/hh=…/` in the mode's blob store: `.data/blobs` in dev, S3 on k8s, R2 on Cloudflare). A Worker's memory sink is per isolate: use `lake` there |
 | `WEBFLIX_CONSENT_MODE` | `opt-in` | events | `opt-in` (nothing collected until a purpose is granted), `opt-out` (collected until withdrawn; Global Privacy Control records a withdrawal) or `off` (nothing collected, server events included) (§6.3) |
@@ -420,6 +482,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_EVENTS_RETENTION_DAYS` / `WEBFLIX_AGGREGATES_RETENTION_DAYS` | `396` / `1126` | events | Raw events 13 months, aggregates 37 months; the data export reads raw events this far back |
 | `WEBFLIX_DELETION_COOLING_OFF_SEC` | `1209600` (14 days) | events | A requested account deletion waits this long (cancellable) before the erasure job runs |
 | `WEBFLIX_EXPORT_LINK_TTL_SEC` | `604800` (7 days) | events | How long a data export's signed link and its document stay available (then the sweep deletes the document) |
+| `WEBFLIX_EXPORT_EVENTS` | `inline` in dev; `batch` on k8s and Cloudflare | events | Where a data export's events come from (§3 "Download your data"). `inline`: the export job reads the account's events across the raw retention itself (small deployments: one job reads up to 13 months of hours). `batch`: the pipeline's `export-events` job extracts them and the result is recorded through `GET /system/privacy/exports` and `POST /system/privacy/exports/results`. `inline` is refused on Cloudflare (a Worker invocation cannot read the retention window) |
 | `WEBFLIX_RELEASE` | `dev` | events | `app.version` of server events (1-40 of `[A-Za-z0-9._+-]`): set it to the deployed release |
 | `WEBFLIX_RECOMMENDATION_STORE` | `database` | personalisation | Where imported models live: `database` (SQLite in dev, PostgreSQL on k8s, D1 for everything on Cloudflare), `kv` (Cloudflare only: per-profile lists in Workers KV `RECS`, models and neighbours in D1; wrangler.jsonc sets it), `memory` (tests) |
 | `WEBFLIX_RECS_DEFAULT_POLICY` | `learned` | personalisation | Ranking policy of profiles no experiment assigns: `learned` (learned candidates where a fresh model has them, the rule engine elsewhere) or `rules` |
@@ -485,7 +548,11 @@ Secrets, the same names in both sections: `WEBFLIX_MEDIA_TOKEN_KEYS`, `WEBFLIX_P
 Recommendation runs are imported from Node, not inside the Worker (a Worker invocation has
 1,000 KV operations): `make cf-recs-import` (`node apps/edge/scripts/ops.ts recs import [--run
 <run>] [--from <dir>] [--target production]`), with `cf-lake-pull` / `cf-recs-push` moving the
-lake out of R2 and a scored run back in (docs/CLOUDFLARE.md §10.4).
+lake out of R2 and a scored run back in (docs/CLOUDFLARE.md §10.4). The events of a data export
+(`WEBFLIX_EXPORT_EVENTS=batch`, the only mode on Cloudflare) and the erasure of lake rows are the
+pipeline's jobs; against the local Worker, `make cf-export-events` and `make cf-erase` run them
+with a `webflix-jobs` token and write their output back into the local R2, and
+`make cf-dev CF_JOBS_EVERY=<seconds>` runs them on a loop for test runs (docs/CLOUDFLARE.md §10.4).
 
 ### Recommendation importer (Node)
 
@@ -496,7 +563,17 @@ again (one write); `status` prints the served model and the last import. Same en
 API (it opens the database with the `worker` role). The staff API's
 `POST /system/recommendations/import` queues the same import as a job
 (`recommendations.import`). Scheduling it (a CronJob, a Cron Trigger) is wiring: it is cheap when
-nothing new was published (one pointer and one manifest read).
+nothing new was published (one pointer and one manifest read). In the Worker an import is bounded
+by one invocation's KV budget: a run with more than 800 profile lists is refused up front (`422
+recommendation_import_too_large`, naming `make cf-recs-import`, the importer outside the Worker).
+
+`node apps/api/src/recs.ts experiments-import [--from <dir>]` imports the experiment results the
+pipeline's `analyse-experiments` published (`experiments/results/current.json`, each result
+checked against its size and SHA-256; services/recs/README.md, "Experiment results"): one report
+per experiment and analysis time, experiments the product does not know skipped, the same pointer
+imported twice changing nothing; exit 1 when a result failed verification. The same import is the
+job `experiments.import-results`, which every scheduler tick publishes in both runtimes; it stops
+at once when the pointer is the one it last imported.
 
 ## 5. Composition and plugging in adapters
 

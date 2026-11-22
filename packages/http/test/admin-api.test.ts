@@ -6,11 +6,13 @@
  */
 import {
   ADMIN_API_BASE_PATH,
+  API_BASE_PATH,
   type AuditLogEntry,
   adminRoutes,
   createRouteClient,
 } from "@webflix/contracts";
-import { AppError, PENDING_AUDIT_TIMEOUT_MS } from "@webflix/core";
+import { makeClientEventInput } from "@webflix/contracts/fixtures";
+import { AppError, encodeLakeObject, hexEncode, PENDING_AUDIT_TIMEOUT_MS } from "@webflix/core";
 import type { MemoryAdminRepository, MemoryStaffVerifier, MemoryStore } from "@webflix/core/memory";
 import { describe, expect, it } from "vitest";
 import { createTestApp, DEMO, type Device, onboard, type TestApp } from "./support.ts";
@@ -412,6 +414,51 @@ describe("billing actions", () => {
     expect(second.id).not.toBe(first.id);
   });
 
+  it("cancels now with a refund of the unused time, and the entry shows the money that moved", async () => {
+    const t = await createTestApp();
+    const { accountId, invoice } = await payingMember(t, "cancel-now@example.test");
+    const staff = staffClient(t, ["billing"]);
+    const body = {
+      when: "now" as const,
+      refundUnused: true,
+      reason: "Moving abroad; refund the rest",
+      idempotencyKey: KEY,
+    };
+    const membership = await staff.cancelMemberSubscription({ params: { accountId }, body });
+    expect(membership.status).toBe("canceled");
+    const [entry] = auditRows(t).filter((row) => row.action === "billing.subscription_canceled");
+    const after = entry?.after as {
+      membership: { status: string };
+      refund: { invoiceId: string; amount: { amountMinor: number }; status: string } | null;
+    };
+    expect(entry?.outcome).toBe("succeeded");
+    expect(after.membership).toEqual(membership);
+    expect(after.refund).toMatchObject({ invoiceId: invoice.id, status: "succeeded" });
+    expect(after.refund?.amount.amountMinor).toBeGreaterThan(0);
+    expect(after.refund?.amount.amountMinor).toBeLessThanOrEqual(invoice.amountPaid.amountMinor);
+    // A retry is answered from the entry: the same membership, no second refund.
+    expect(await staff.cancelMemberSubscription({ params: { accountId }, body })).toEqual(
+      membership,
+    );
+    const invoices = await t.ports.payments.listInvoices({
+      customerId: await customerOf(t, accountId),
+      limit: 10,
+    });
+    expect(invoices.reduce((sum, candidate) => sum + candidate.amountRefundedMinor, 0)).toBe(
+      after.refund?.amount.amountMinor,
+    );
+    // At period end nothing is refunded, and the entry says so.
+    const later = await payingMember(t, "cancel-later@example.test");
+    await staff.cancelMemberSubscription({
+      params: { accountId: later.accountId },
+      body: { when: "period_end", reason: "Member asked", idempotencyKey: `${KEY.slice(0, -1)}9` },
+    });
+    const periodEnd = auditRows(t).find(
+      (row) => row.action === "billing.subscription_canceled" && row.target.id === later.accountId,
+    );
+    expect(periodEnd?.after).toMatchObject({ refund: null });
+  });
+
   it("requires an idempotency key on every billing action", async () => {
     const t = await createTestApp();
     for (const path of [
@@ -596,6 +643,176 @@ describe("member privacy", () => {
       outcome: "succeeded",
       before: { request: { subjectKeys: ["k3Jx9QvT0bYzA1c2D3e4F5"] } },
     });
+  });
+
+  it("lists a batch-mode export for the pipeline and finishes it from the job's results; an unknown request changes nothing", async () => {
+    const t = await createTestApp({
+      config: { WEBFLIX_EXPORT_EVENTS: "batch", WEBFLIX_CONSENT_MODE: "opt-out" },
+    });
+    const { device } = await onboard(t, { email: "batch-export@example.test" });
+    const accountId = await accountIdOf(device);
+    const ingested = await device.request(`${API_BASE_PATH}/events`, {
+      method: "POST",
+      headers: { "X-Webflix-Client": "web", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        events: [
+          makeClientEventInput("title.open", {
+            eventId: "0193a1d2-7c4e-7a10-8f00-00000000ba01",
+            deviceId: "dev-batch-export",
+            sessionSeq: 1,
+            payload: { titleId: "t-orbit" },
+          }),
+        ],
+      }),
+    });
+    expect(ingested.status).toBe(202);
+    await t.queue.drain();
+    // The export's window ends at the request: received before it.
+    t.clock.advance(1000);
+    const store = (t.deps.repos as unknown as { store: MemoryStore }).store;
+    for (const record of store.sessions.values()) {
+      if (record.accountId === accountId) {
+        await t.deps.repos.identity.elevateSession(
+          record.id,
+          accountId,
+          t.clock.now() + 300_000,
+          t.clock.now(),
+        );
+      }
+    }
+    const request = await device.api.requestDataExport();
+    await t.queue.drain();
+
+    const staff = staffClient(t, ["admin"]);
+    // Answered as the events area gives it: `{ requests: [...] }`, the shape the pipeline reads.
+    const pending = await staff.listPendingExports({ query: { limit: 10 } });
+    expect(pending.requests).toEqual([
+      expect.objectContaining({ requestId: request.id, to: request.requestedAt }),
+    ]);
+    const [listed] = pending.requests;
+    if (!listed) throw new Error("not listed");
+
+    const document = (result: Record<string, unknown>) => ({
+      format: "webflix.export-events-results" as const,
+      formatVersion: 1 as const,
+      generatedAt: new Date(t.clock.now()).toISOString(),
+      results: [{ from: listed.from, to: listed.to, ...result }] as never,
+      reason: "export-events run",
+    });
+
+    // A result for a request the product never had: nothing changes.
+    await staff.recordExportResults({
+      body: document({ requestId: "unknown-request-1", status: "deferred" }),
+    });
+    expect((await staff.listPendingExports({ query: {} })).requests).toEqual([listed]);
+    expect((await device.api.listPrivacyRequests()).items[0]).toMatchObject({
+      status: "processing",
+      downloadUrl: null,
+    });
+
+    // What export-events writes: the account's events, gzip NDJSON, and its manifest.
+    const theirs = t.ports.eventSink
+      .events()
+      .filter((event) => event.subject.account === listed.accountKey);
+    expect(theirs.length).toBeGreaterThan(0);
+    const bytes = await encodeLakeObject(theirs);
+    const file = await t.ports.eventSink.putDocument(
+      `export-events/${request.id}/events.ndjson.gz`,
+      bytes,
+    );
+    const manifest = await t.ports.eventSink.putDocument(
+      `export-events/${request.id}/manifest.json`,
+      new TextEncoder().encode("{}"),
+    );
+    const sha256 = hexEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+    await staff.recordExportResults({
+      body: document({
+        requestId: request.id,
+        status: "complete",
+        events: theirs.length,
+        file,
+        manifest,
+        bytes: bytes.byteLength,
+        sha256,
+      }),
+    });
+
+    // The member sees the finished export, with the pipeline's events in it.
+    const [done] = (await device.api.listPrivacyRequests()).items;
+    expect(done).toMatchObject({ id: request.id, status: "completed" });
+    const download = await device.request(done?.downloadUrl ?? "");
+    expect(download.status).toBe(200);
+    const exported = (await download.json()) as { events: { eventId: string }[] };
+    expect(exported.events.map((event) => event.eventId).sort()).toEqual(
+      theirs.map((event) => event.eventId).sort(),
+    );
+    expect((await staff.listPendingExports({ query: {} })).requests).toEqual([]);
+
+    // Each call has its entry; neither keeps anything resembling a download link.
+    const entries = auditRows(t).filter((row) => row.action === "privacy.export_events_recorded");
+    expect(entries.map((row) => [row.outcome, row.after])).toEqual([
+      ["succeeded", { completed: [], erased: [], kept: [], ignored: ["unknown-request-1"] }],
+      ["succeeded", { completed: [request.id], erased: [], kept: [], ignored: [] }],
+    ]);
+    expect(entries[1]?.before).toMatchObject({
+      request: { results: [{ requestId: request.id, status: "complete", file, sha256 }] },
+    });
+    const logged = JSON.stringify(entries);
+    expect(logged).not.toContain("/api/v1/privacy/exports/");
+    expect(logged).not.toContain("token=");
+  });
+
+  it("refuses export results that point anywhere but the request's own documents, before anything runs", async () => {
+    const t = await createTestApp();
+    const requestId = "0193f7d2-cccc-7ddd-8eee-000000000001";
+    const complete = {
+      requestId,
+      status: "complete",
+      from: "2025-10-22T09:00:00.000Z",
+      to: "2026-11-22T09:00:00.000Z",
+      events: 3,
+      file: `privacy/export-events/${requestId}/events.ndjson.gz`,
+      manifest: `privacy/export-events/${requestId}/manifest.json`,
+      bytes: 120,
+      sha256: "a".repeat(64),
+    };
+    const document = (results: unknown[]) => ({
+      format: "webflix.export-events-results",
+      formatVersion: 1,
+      generatedAt: "2026-11-22T09:20:00.000Z",
+      results,
+      reason: "export-events run",
+    });
+    const cases: [unknown, string][] = [
+      [{ ...complete, file: "privacy/exports/someone-else/document.json" }, "results.0.file"],
+      [
+        { ...complete, file: "privacy/export-events/other-request/events.ndjson.gz" },
+        "results.0.file",
+      ],
+      [
+        { ...complete, manifest: `privacy/export-events/${requestId}/../x.json` },
+        "results.0.manifest",
+      ],
+      [{ ...complete, file: undefined }, "results.0.status"],
+      [{ ...complete, requestId: "../escape" }, "results.0.requestId"],
+    ];
+    for (const [result, path] of cases) {
+      const response = await rawStaff(
+        t,
+        ["admin"],
+        "POST",
+        "/system/privacy/exports/results",
+        document([result]),
+      );
+      expect(response.status, path).toBe(400);
+      const problem = await response.json();
+      expect(
+        problem.issues.map((issue: { path: string }) => issue.path),
+        path,
+      ).toContain(path);
+    }
+    // Refused by validation: nothing was audited, nothing ran.
+    expect(auditRows(t)).toEqual([]);
   });
 });
 

@@ -46,16 +46,16 @@ describe("the request itself", () => {
     );
     expect(((await duplicate.json()) as { error: string }).error).toBe("invalid_request");
     expect((await tokenRequest(t, {})).body.error).toBe("invalid_request");
-    for (const grant of [
-      "client_credentials",
-      "password",
-      "implicit",
-      "urn:ietf:params:oauth:grant-type:device_code",
-    ]) {
+    for (const grant of ["password", "implicit", "urn:ietf:params:oauth:grant-type:device_code"]) {
       expect((await tokenRequest(t, { grant_type: grant })).body.error).toBe(
         "unsupported_grant_type",
       );
     }
+    // The generic profile supports client credentials, but only for a client configured with a
+    // service account (test/client-credentials.test.ts); this client has none.
+    expect((await tokenRequest(t, { grant_type: "client_credentials" })).body.error).toBe(
+      "unauthorized_client",
+    );
   });
 
   it("answers with no-store, Bearer tokens and the granted scope", async () => {

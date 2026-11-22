@@ -2,6 +2,7 @@ import { EVENT_LAKE_PREFIX, type LakeEvent } from "@webflix/contracts";
 import { base64UrlDecode, base64UrlEncode, utf8Decode, utf8Encode } from "../encoding.ts";
 import type { BlobStore } from "./blob-store.ts";
 import type { IdGenerator } from "./ids.ts";
+import { readAccountEvents } from "./lake-reader.ts";
 
 /**
  * Port: durable append of validated, enriched event batches to the event lake (milestone 2 §3,
@@ -28,6 +29,14 @@ export interface EventSink {
   append(events: readonly LakeEvent[]): Promise<EventSinkReceipt>;
   /** Stored objects whose receipt hour lies in `[fromMs, toMs)`, in key (time) order, paged. */
   scan(options: LakeScanOptions): Promise<LakeScanPage>;
+  /**
+   * One account's events received in `[fromMs, toMs)`, each `eventId` once (the earliest
+   * receipt), by the pipeline's reader contract (services/recs README, "Compacted hours"): the
+   * current Parquet file of a compacted hour (only the row groups whose `account` statistics
+   * admit the key) and every raw object its manifest does not cover. For small deployments:
+   * every hour of the window is read in this one call (the inline data export).
+   */
+  accountEvents(options: AccountEventsOptions): Promise<AccountEventsRead>;
   /** Store a private document under `privacy/{name}` (never overwrites); returns its key. */
   putDocument(name: string, bytes: Uint8Array): Promise<string>;
   /** A private document's bytes, or null when it does not exist (any more). */
@@ -50,6 +59,21 @@ export interface LakeScanOptions {
   cursor?: string | null;
   /** Objects listed per page, 1..200 (default 50): bounds the work and memory of one call. */
   limit?: number;
+}
+
+export interface AccountEventsOptions {
+  /** The account's pseudonymous key (`subject.account`). */
+  accountKey: string;
+  fromMs: number;
+  /** Exclusive. */
+  toMs: number;
+}
+
+export interface AccountEventsRead {
+  /** Events as stored (unvalidated), ordered by `receivedAt` then `eventId`. */
+  events: unknown[];
+  /** What was read: raw objects and, per Parquet file, the row groups decoded. */
+  read: { objects: string[]; rowGroups: Record<string, number[]> };
 }
 
 export interface LakeScanPage {
@@ -298,6 +322,8 @@ export function createBlobLakeEventSink(options: {
         cursor: position.p < prefixes.length ? encodeScanCursor(position) : null,
       };
     },
+
+    accountEvents: (read) => readAccountEvents(blobs, read),
 
     async putDocument(name, bytes) {
       const key = privateDocumentKey(name);

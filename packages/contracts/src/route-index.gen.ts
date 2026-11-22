@@ -155,6 +155,8 @@ export const ADMIN_ROUTE_INDEX = {
   rollbackRecommendations: { method: "POST", path: "/system/recommendations/rollback" },
   listPendingErasures: { method: "GET", path: "/system/privacy/erasures" },
   confirmErasures: { method: "POST", path: "/system/privacy/erasures/confirm" },
+  listPendingExports: { method: "GET", path: "/system/privacy/exports" },
+  recordExportResults: { method: "POST", path: "/system/privacy/exports/results" },
   listAuditLog: { method: "GET", path: "/audit" },
 } as const satisfies {
   readonly [K in keyof AdminClientRoutes]: {

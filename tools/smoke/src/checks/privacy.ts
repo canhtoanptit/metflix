@@ -5,18 +5,24 @@
  * Events are read back through `GET /diagnostics/events` (non-production).
  */
 import {
+  ADMIN_API_BASE_PATH,
+  type ClientEventInput,
   type ConsentState,
   DataExport,
   type LakeEvent,
+  type PrivacyRequest,
   type RecentEventsQuery,
 } from "@webflix/contracts";
 import type { TestAccount } from "../env.ts";
 import { check, equal, fail, problem, rejects, status, succeeds } from "../expect.ts";
 import { type Agent, isApiError } from "../http.ts";
 import { awaitMail } from "../mail.ts";
+import { needs } from "../needs.ts";
+import { STAFF_PERSONAS } from "../oidc.ts";
 import { deviceId, EventStream } from "../telemetry.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
-import { API, CSRF, maturityRank } from "./util.ts";
+import { audited, auditOf } from "./staff.ts";
+import { API, CSRF, maturityRank, unique } from "./util.ts";
 
 const SUBJECT_KEY = /^[A-Za-z0-9_-]{22}$/;
 
@@ -90,6 +96,193 @@ async function anyTitle(ctx: CheckContext, kidsSafe = false): Promise<string> {
   );
   check(card, kidsSafe ? "no movie rated 7+ or below" : "no movie");
   return card.id;
+}
+
+/** The pipeline's export-events results document with the audit reason. */
+function resultsDocument(results: Record<string, unknown>[], reason: string) {
+  return {
+    format: "webflix.export-events-results" as const,
+    formatVersion: 1 as const,
+    generatedAt: new Date().toISOString(),
+    results: results.map((result) =>
+      Object.fromEntries(Object.entries(result).filter(([, value]) => value !== undefined)),
+    ) as never,
+    reason,
+  };
+}
+
+/** The export's status while it is not finished yet. */
+async function exportStatus(agent: Agent, requestId: string) {
+  const list = await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests");
+  const request = list.items.find((item) => item.id === requestId);
+  if (request?.status === "failed")
+    fail("the export failed", { observed: JSON.stringify(request) });
+  return request;
+}
+
+/**
+ * Wait for an export to complete. Inline (`WEBFLIX_EXPORT_EVENTS=inline`) it finishes within the
+ * eventual budget. In batch mode it stays `processing` until the pipeline's `export-events` job
+ * records its result: the suite recognises that mode from the operator's list (staff token),
+ * checks the entry, and waits for the deployment's job as the job shows itself in the audit log
+ * (a round within `--export-wait`; then until its deferral of this request, within
+ * `--export-wait-max`). No round at all is a skip naming the two fixes; rounds that never finish
+ * the export, or a job that fails it, are failures.
+ */
+async function awaitExport(
+  ctx: CheckContext,
+  agent: Agent,
+  started: { id: string; requestedAt: string },
+  event: ClientEventInput | null,
+): Promise<PrivacyRequest> {
+  const inlineBudget = Math.min(ctx.options.eventualTimeoutMs, 30_000);
+  const begun = Date.now();
+  let request: PrivacyRequest | undefined;
+  while (Date.now() - begun < inlineBudget) {
+    request = await exportStatus(agent, started.id);
+    if (request?.status === "completed" && request.downloadUrl) return request;
+    await ctx.sleep(500);
+  }
+  if (!(await ctx.env.staffIssuer()).available) {
+    ctx.skip(
+      `the export is still ${request?.status ?? "unlisted"} after ${Math.round(inlineBudget / 1000)} s, and without a staff token the suite cannot tell batch mode (WEBFLIX_EXPORT_EVENTS=batch waits for the pipeline's export-events job) from an export that never finishes`,
+    );
+  }
+  const admin = ctx
+    .agent("export-operator")
+    .staffApi(await ctx.env.staffToken(STAFF_PERSONAS.admin));
+  const pending = await succeeds(
+    () => admin.listPendingExports({ query: { limit: 500 } }),
+    "GET /system/privacy/exports",
+  );
+  const entry = pending.requests.find((item) => item.requestId === started.id);
+  if (!entry) {
+    fail("the export neither completed nor waits for the pipeline's job", {
+      expected: `completed within ${Math.round(inlineBudget / 1000)} s (inline), or listed at GET /api/admin/v1/system/privacy/exports (batch)`,
+      observed: `status ${request?.status ?? "unlisted"}, not among ${pending.requests.length} pending exports`,
+    });
+  }
+  // Batch mode: the entry the job reads (the account's key, the retention window up to the request).
+  equal(entry.to, started.requestedAt, "the pending export's window ends at the request");
+  check(
+    Date.parse(entry.to) - Date.parse(entry.from) >= 365 * 86_400_000,
+    "the pending export's window does not cover the raw retention",
+    { observed: `${entry.from} → ${entry.to}` },
+  );
+  if (event) {
+    const stored = await agent.api
+      .getRecentEvents({ query: { deviceId: event.deviceId } })
+      .then((page) => page.items.find((item) => item.eventId === event.eventId))
+      .catch(() => undefined);
+    if (stored?.subject.account) {
+      equal(entry.accountKey, stored.subject.account, "the pending export's account key");
+    }
+  }
+  // How long to wait is read from the deployment's job itself, as it shows in the audit log:
+  // whether a round ran since the request, and when it deferred this request until.
+  const firstRoundMs = ctx.options.exportWaitMs;
+  const capMs = Math.max(ctx.options.exportWaitMaxMs, firstRoundMs);
+  const requestedAt = Date.parse(started.requestedAt);
+  ctx.note(
+    `batch export (WEBFLIX_EXPORT_EVENTS=batch): waiting up to ${Math.round(firstRoundMs / 1000)} s for a round of the deployment's export-events job, then as its deferral says (at most ${Math.round(capMs / 1000)} s)`,
+  );
+  let deadline = Date.now() + firstRoundMs;
+  let observed: JobRounds = { rounds: [], deferredUntil: null, seen: false };
+  for (;;) {
+    request = await exportStatus(agent, started.id);
+    if (request?.status === "completed" && request.downloadUrl) {
+      ctx.note(
+        `completed by the deployment's job ${Math.round((Date.now() - requestedAt) / 1000)} s after the request (${observed.rounds.length} job rounds seen)`,
+      );
+      return request;
+    }
+    observed = await jobRounds(ctx, admin, started.id, requestedAt);
+    if (observed.deferredUntil !== null) {
+      const period = roundPeriodMs(observed.rounds, requestedAt);
+      const due = observed.deferredUntil + period + 30_000;
+      if (due - requestedAt > capMs) {
+        ctx.skip(
+          `batch export mode: the deployment's export-events job deferred this export until ${new Date(observed.deferredUntil).toISOString()} (its grace), beyond what the suite waits (--export-wait-max ${Math.round(capMs / 1000)} s): raise --export-wait-max, or give the job a shorter grace`,
+        );
+      }
+      deadline = Math.max(deadline, due);
+    } else if (observed.rounds.length > 0) {
+      deadline = Math.max(
+        deadline,
+        Date.now() + roundPeriodMs(observed.rounds, requestedAt) + 30_000,
+      );
+    }
+    deadline = Math.min(deadline, requestedAt + capMs);
+    if (Date.now() >= deadline) break;
+    await ctx.sleep(Math.min(5_000, Math.max(500, (deadline - Date.now()) / 10)));
+  }
+  if (observed.rounds.length === 0) {
+    ctx.skip(
+      `batch export mode (WEBFLIX_EXPORT_EVENTS=batch): no export-events job recorded anything in the ${Math.round(firstRoundMs / 1000)} s after the request (no results at POST /system/privacy/exports/results; the export stays ${request?.status ?? "unlisted"}, listed at GET /system/privacy/exports). Fix the deployment one of two ways: run the pipeline's export-events job on a schedule shorter than --export-wait (services/recs/README.md, "Exports of members' events"; locally on Cloudflare make cf-dev CF_JOBS_EVERY=10, or make cf-export-events by hand), or set WEBFLIX_EXPORT_EVENTS=inline where it is allowed (dev; refused at startup on Kubernetes and Cloudflare)`,
+    );
+  }
+  fail("the deployment's export-events job runs but did not finish this export", {
+    expected: "completed after the job's round (or its deferral)",
+    observed: `status ${request?.status ?? "unlisted"} ${Math.round((Date.now() - requestedAt) / 1000)} s after the request; ${observed.rounds.length} job rounds since, ${observed.seen ? "this request in them" : "this request in none of them"}${observed.deferredUntil ? `, deferred until ${new Date(observed.deferredUntil).toISOString()}` : ""}`,
+  });
+}
+
+interface JobRounds {
+  /** When the deployment's job recorded results since the request (epoch ms, oldest first). */
+  rounds: number[];
+  /** The latest `notBefore` the job gave this request (a deferral), if any. */
+  deferredUntil: number | null;
+  /** Whether any round named this request. */
+  seen: boolean;
+}
+
+/** The deployment's export-events rounds since the request, from the audit log (not the suite's). */
+async function jobRounds(
+  ctx: CheckContext,
+  admin: ReturnType<Agent["staffApi"]>,
+  requestId: string,
+  since: number,
+): Promise<JobRounds> {
+  const page = await succeeds(
+    () =>
+      admin.listAuditLog({ query: { targetType: "event_lake", targetId: "exports", limit: 50 } }),
+    "GET /audit (export-events rounds)",
+  );
+  const own = `smk-${ctx.options.runId}-`;
+  const rounds = page.items.filter(
+    (entry) =>
+      entry.action === "privacy.export_events_recorded" &&
+      Date.parse(entry.createdAt) >= since &&
+      !(entry.requestId ?? "").startsWith(own),
+  );
+  let deferredUntil: number | null = null;
+  let seen = false;
+  for (const entry of rounds) {
+    const results =
+      ((entry.before as { request?: { results?: unknown[] } } | null)?.request?.results as
+        | { requestId?: string; status?: string; notBefore?: string }[]
+        | undefined) ?? [];
+    for (const result of results) {
+      if (result.requestId !== requestId) continue;
+      seen = true;
+      if (result.status === "deferred" && result.notBefore) {
+        deferredUntil = Math.max(deferredUntil ?? 0, Date.parse(result.notBefore));
+      }
+    }
+  }
+  return {
+    rounds: rounds.map((entry) => Date.parse(entry.createdAt)).sort((a, b) => a - b),
+    deferredUntil,
+    seen,
+  };
+}
+
+/** The job's period as observed (the median gap between rounds), else the wait for the first. */
+function roundPeriodMs(rounds: number[], since: number): number {
+  const gaps = rounds.slice(1).map((at, index) => at - (rounds[index] ?? at));
+  if (gaps.length > 0)
+    return [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] ?? 60_000;
+  return rounds[0] !== undefined ? Math.max(5_000, rounds[0] - since) : 60_000;
 }
 
 export const privacyChecks: CheckDefinition[] = [
@@ -472,7 +665,9 @@ export const privacyChecks: CheckDefinition[] = [
     id: "privacy.export",
     area: "privacy",
     title:
-      "Download your data: needs a fresh proof, one at a time, completes with a signed link (emailed) to a document holding the account, its profiles and events; only its account may open it",
+      "Download your data: needs a fresh proof, one at a time, completes (inline, or in batch mode once the deployment's export-events job ran) with a signed link (emailed) to a document holding the account, its profiles and events; only its account may open it",
+    // Batch mode waits for the deployment's job (--export-wait, --export-wait-max).
+    timeoutMs: 1_800_000,
     async run(ctx: CheckContext) {
       const account = await member(ctx, "export");
       const agent = account.agent;
@@ -509,16 +704,9 @@ export const privacyChecks: CheckDefinition[] = [
       const refused = raced.find((result) => result.status !== 202);
       check(refused, "both concurrent exports answered 202");
       problem(refused, "privacy_request_pending", "the second concurrent export");
-      const requestId = (started[0]?.json<{ id: string }>() ?? { id: "" }).id;
-      const { value: done } = await ctx.eventually("the export completes", async () => {
-        const list = await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests");
-        const request = list.items.find((item) => item.id === requestId);
-        if (request?.status === "failed")
-          fail("the export failed", { observed: JSON.stringify(request) });
-        return request?.status === "completed" && request.downloadUrl
-          ? { done: true, value: request }
-          : { done: false, observed: request ? request.status : "not listed" };
-      });
+      const startedRequest = started[0]?.json<{ id: string; requestedAt: string }>();
+      check(startedRequest, "the started export has no body");
+      const done = await awaitExport(ctx, agent, startedRequest, collected ? event : null);
       const link = agent.ownPath(done.downloadUrl ?? "");
       check(link, "the export link points to another origin", {
         observed: String(done.downloadUrl),
@@ -548,7 +736,7 @@ export const privacyChecks: CheckDefinition[] = [
       }
       const document = parsed.data;
       equal(document.account.email, account.email, "export: account email");
-      equal(document.requestId, requestId, "export: requestId");
+      equal(document.requestId, startedRequest.id, "export: requestId");
       check(
         document.profiles.some((profile) => profile.name === "Holder"),
         "export: the profile is missing",
@@ -598,6 +786,202 @@ export const privacyChecks: CheckDefinition[] = [
           { observed: mail?.links.join(", ") },
         );
       }
+    },
+  },
+  {
+    id: "privacy.export-operator",
+    area: "privacy",
+    title:
+      "The operator's side of data exports (admin only): a results document for an unknown request changes nothing, one pointing at a file that is not the request's own or a complete result without its checksum is refused; in batch mode a deferred result keeps the export listed",
+    needs: [needs.staffIssuer],
+    async run(ctx: CheckContext) {
+      const admin = ctx
+        .agent("exports-admin")
+        .staffApi(await ctx.env.staffToken(STAFF_PERSONAS.admin));
+      const route = `${ADMIN_API_BASE_PATH}/system/privacy/exports`;
+      for (const role of ["support", "billing", "content", "experiments"] as const) {
+        const api = ctx
+          .agent(`exports-${role}`)
+          .staffApi(await ctx.env.staffToken(STAFF_PERSONAS[role]));
+        const refused = await rejects(
+          () => api.listPendingExports({ query: {} }),
+          "staff_role_required",
+          `GET /system/privacy/exports as ${role}`,
+        );
+        equal(refused.problem.requiredRole, "admin", "requiredRole");
+        await rejects(
+          () => api.recordExportResults({ body: resultsDocument([], "smoke: refused") }),
+          "staff_role_required",
+          `POST /system/privacy/exports/results as ${role}`,
+        );
+      }
+      const member = await ctx.env.bareSignup("exports-member");
+      problem(
+        await member.agent.fetch(route),
+        "unauthenticated",
+        "a member's session on the operator's route",
+      );
+
+      // A result for a request the product does not know is recorded as ignored, changing nothing.
+      const unknownId = `smoke-${ctx.options.runId}-${unique("unknown")}`;
+      const now = new Date().toISOString();
+      const before = await succeeds(
+        () => admin.listPendingExports({ query: { limit: 500 } }),
+        "GET /system/privacy/exports",
+      );
+      check(
+        !before.requests.some((item) => item.requestId === unknownId),
+        "an unknown request is listed",
+      );
+      const recorded = await audited(
+        () =>
+          admin.recordExportResults({
+            body: resultsDocument(
+              [{ requestId: unknownId, status: "erased", from: now, to: now }],
+              "smoke: unknown request",
+            ),
+          }),
+        "POST /system/privacy/exports/results (an unknown request)",
+      );
+      const after = await succeeds(
+        () => admin.listPendingExports({ query: { limit: 500 } }),
+        "GET /system/privacy/exports",
+      );
+      check(
+        !after.requests.some((item) => item.requestId === unknownId),
+        "a result for an unknown request created an export",
+      );
+      const entries = await auditOf(admin, { targetId: "exports", targetType: "event_lake" });
+      const entry = entries.find((candidate) => candidate.requestId === recorded.requestId);
+      check(entry, "the results document has no audit entry", {
+        expected: `requestId ${recorded.requestId}`,
+      });
+      equal(entry.outcome, "succeeded", "audit outcome");
+      check(
+        JSON.stringify(entry.after).includes(unknownId) &&
+          JSON.stringify(entry.after).includes("ignored"),
+        "the audit entry does not record the unknown request as ignored",
+        {
+          observed: JSON.stringify(entry.after),
+        },
+      );
+
+      // The job can only point at the request's own documents, and a complete result is verifiable.
+      const subject = before.requests[0]?.requestId ?? unknownId;
+      const adminToken = await ctx.env.staffToken(STAFF_PERSONAS.admin);
+      const post = (body: unknown) =>
+        ctx.agent("exports-raw").fetch(`${route}/results`, {
+          method: "POST",
+          headers: { ...CSRF, Authorization: `Bearer ${adminToken}` },
+          body: body as object,
+        });
+      const own = `privacy/export-events/${subject}`;
+      const complete = (extra: Record<string, unknown>) =>
+        resultsDocument(
+          [
+            {
+              requestId: subject,
+              status: "complete",
+              from: now,
+              to: now,
+              events: 1,
+              manifest: `${own}/manifest.json`,
+              bytes: 10,
+              sha256: "0".repeat(64),
+              file: `${own}/events.ndjson.gz`,
+              ...extra,
+            },
+          ],
+          "smoke: forged result",
+        );
+      for (const [what, document] of [
+        [
+          "another request's events file",
+          complete({ file: `privacy/export-events/${unknownId}-other/events.ndjson.gz` }),
+        ],
+        [
+          "the member's export document itself",
+          complete({ file: `privacy/exports/${subject}.json.gz` }),
+        ],
+        [
+          "a file outside the job's prefix",
+          complete({ file: "events/dt=2026-11-22/hh=00/x.ndjson.gz" }),
+        ],
+        ["a complete result without its checksum", complete({ sha256: undefined })],
+      ] as const) {
+        const refused = problem(
+          await post(document),
+          "validation_failed",
+          `a results document naming ${what}`,
+        );
+        check(
+          (refused as { issues?: unknown[] }).issues?.length,
+          `${what}: no validation issue named`,
+        );
+      }
+
+      // Batch mode: the member's own export, deferred by the job, stays listed.
+      const account = await ctx.env.bareHolder("exports-batch");
+      await succeeds(
+        () => account.agent.api.elevate({ body: { password: account.password } }),
+        "POST /session/elevation",
+      );
+      const requested = await succeeds(
+        () => account.agent.api.requestDataExport(),
+        "POST /privacy/export",
+      );
+      const listed = await ctx.eventually(
+        "the export completes (inline) or is listed for the job (batch)",
+        async () => {
+          const status_ = (await exportStatus(account.agent, requested.id))?.status;
+          if (status_ === "completed") return { done: true, value: "inline" as const };
+          const pending = await succeeds(
+            () => admin.listPendingExports({ query: { limit: 500 } }),
+            "GET /system/privacy/exports",
+          );
+          return pending.requests.some((item) => item.requestId === requested.id)
+            ? { done: true, value: "batch" as const }
+            : { done: false, observed: String(status_) };
+        },
+      );
+      if (listed.value === "inline") {
+        ctx.note(
+          "inline exports (WEBFLIX_EXPORT_EVENTS=inline): nothing waits for the job, the deferred case does not apply",
+        );
+        return;
+      }
+      await succeeds(
+        () =>
+          admin.recordExportResults({
+            body: resultsDocument(
+              [
+                {
+                  requestId: requested.id,
+                  status: "deferred",
+                  from: now,
+                  to: now,
+                  notBefore: new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+              "smoke: deferred",
+            ),
+          }),
+        "POST /system/privacy/exports/results (deferred)",
+      );
+      const still = await succeeds(
+        () => admin.listPendingExports({ query: { limit: 500 } }),
+        "GET /system/privacy/exports",
+      );
+      check(
+        still.requests.some((item) => item.requestId === requested.id),
+        "a deferred export is no longer listed for the job",
+      );
+      equal(
+        (await exportStatus(account.agent, requested.id))?.status,
+        "processing",
+        "a deferred export's status",
+      );
+      ctx.note("batch exports (WEBFLIX_EXPORT_EVENTS=batch)");
     },
   },
   {

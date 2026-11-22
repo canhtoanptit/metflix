@@ -117,6 +117,18 @@ export const WEBFLIX_DEV_CLIENTS = {
     callbackPath: "/admin/auth/callback",
     postLogoutPath: "/admin/",
   },
+  /**
+   * The batch jobs' service account (the pipeline's erasure, exports and experiment analysis):
+   * the client-credentials grant at `{origin}/dev-idp/staff/token`, as a Keycloak client with a
+   * service account would answer (`WEBFLIX_STAFF_TOKEN_URL`, `WEBFLIX_STAFF_CLIENT_ID`,
+   * `WEBFLIX_STAFF_CLIENT_SECRET`). Its access token carries these roles of `webflix-admin`.
+   */
+  staffJobs: {
+    clientId: "webflix-jobs",
+    clientSecret: "dev-only-jobs-client-secret",
+    roles: ["admin", "experiments"],
+    tokenPath: "/token",
+  },
 } as const;
 
 export interface WebflixRealmsInput {
@@ -129,7 +141,7 @@ export function webflixRealms(
   input: WebflixRealmsInput,
 ): Record<"google" | "apple" | "staff", RealmOptions> {
   const at = (path: string) => input.appOrigins.map((origin) => `${new URL(origin).origin}${path}`);
-  const { google, apple, staff } = WEBFLIX_DEV_CLIENTS;
+  const { google, apple, staff, staffJobs } = WEBFLIX_DEV_CLIENTS;
   return {
     google: {
       profile: "google",
@@ -167,6 +179,15 @@ export function webflixRealms(
           redirectUris: at(staff.callbackPath),
           postLogoutRedirectUris: at(staff.postLogoutPath),
           accessTokenAudience: [staff.audience, "account"],
+        },
+        {
+          clientId: staffJobs.clientId,
+          displayName: "Webflix batch jobs (service account)",
+          clientSecret: staffJobs.clientSecret,
+          tokenEndpointAuthMethods: ["client_secret_basic", "client_secret_post"],
+          redirectUris: [],
+          accessTokenAudience: [staff.audience, "account"],
+          serviceAccount: { roles: { clients: { [staff.clientId]: [...staffJobs.roles] } } },
         },
       ],
     },

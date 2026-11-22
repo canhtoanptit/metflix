@@ -154,7 +154,9 @@ describe("collection on D1 and R2 in workerd", () => {
       country: "DE",
     });
 
-    // Export: the document lands in R2 under privacy/, the download serves it.
+    // Export: the document lands in R2 under privacy/, the download serves it. Its window is
+    // [request − retention, request): the events above must be received before the request.
+    t.clock.advance(1_000);
     await t.deps.repos.identity.elevateSession(session.id, accountId, TEST_NOW + 300_000, TEST_NOW);
     await services.events.requestExport(auth);
     await t.queue.drain();

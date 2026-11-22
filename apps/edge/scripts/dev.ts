@@ -14,7 +14,9 @@
  * server may well be there) is left alone, with an explanation.
  *
  * While the server runs, this runner also fires the Worker's Cron Trigger on its schedule
- * (lib/local-cron.ts): `wrangler dev` never does. `--no-cron` turns that off.
+ * (lib/local-cron.ts): `wrangler dev` never does. `--no-cron` turns that off. With
+ * `--jobs-every <sec>` it also runs the pipeline's privacy jobs (erase, export-events) against
+ * this server when something is pending (lib/local-jobs.ts, lib/pipeline-jobs.ts).
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +25,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { unstable_readConfig } from "wrangler";
 import { startLocalCron } from "./lib/local-cron.ts";
+import { startJobsLoop } from "./lib/local-jobs.ts";
 import {
   type DevServerRecord,
   findRepoDevServer,
@@ -57,6 +60,7 @@ async function start(options: {
   extra: string[];
   cron: boolean;
   cronEverySec: number | undefined;
+  jobs: { everySec: number; store: string | undefined; graceMinutes: string } | undefined;
 }): Promise<number> {
   mkdirSync(options.state, { recursive: true });
   // The record says "a dev.ts runner in apps/edge": make the working directory true to it.
@@ -105,9 +109,38 @@ async function start(options: {
     log: say,
     ...(options.cronEverySec ? { everySec: options.cronEverySec } : {}),
   });
+  const { jobs } = options;
+  const stopJobs = jobs
+    ? startJobsLoop({
+        everySec: jobs.everySec,
+        log: say,
+        round: () =>
+          new Promise<void>((done) => {
+            const round = spawn(
+              process.execPath,
+              [
+                join(EDGE_DIR, "scripts", "ops.ts"),
+                "jobs",
+                "run",
+                "--port",
+                String(options.port),
+                "--state",
+                options.state,
+                "--grace-minutes",
+                jobs.graceMinutes,
+                ...(jobs.store ? ["--store", jobs.store] : []),
+              ],
+              { cwd: EDGE_DIR, stdio: "inherit" },
+            );
+            round.once("exit", () => done());
+            round.once("error", () => done());
+          }),
+      })
+    : () => undefined;
   return new Promise((resolveExit) => {
     child.once("exit", (code, signal) => {
       stopCron();
+      stopJobs();
       // Only remove the record if it is still ours (a second start may have replaced it).
       if (readRecord(options.state)?.pid === process.pid) rmSync(recordPath, { force: true });
       resolveExit(code ?? (signal ? 0 : 1));
@@ -178,6 +211,9 @@ async function main(argv: readonly string[]): Promise<number> {
       assets: { type: "string", default: join(EDGE_DIR, "dist", "public") },
       "no-cron": { type: "boolean", default: false },
       "cron-every": { type: "string" },
+      "jobs-every": { type: "string" },
+      "jobs-store": { type: "string" },
+      "jobs-grace-minutes": { type: "string" },
     },
   });
   const port = Number(values.port);
@@ -192,12 +228,19 @@ async function main(argv: readonly string[]): Promise<number> {
         extra,
         cron: !values["no-cron"],
         cronEverySec: values["cron-every"] ? Number(values["cron-every"]) : undefined,
+        jobs: values["jobs-every"]
+          ? {
+              everySec: Number(values["jobs-every"]),
+              store: values["jobs-store"] ? resolve(values["jobs-store"]) : undefined,
+              graceMinutes: values["jobs-grace-minutes"] ?? "0",
+            }
+          : undefined,
       });
     case "stop":
       return stop({ port, state });
     default:
       console.error(
-        "Usage: node scripts/dev.ts <start|stop> [--port] [--state] [--assets] [--no-cron] [--cron-every <sec>]",
+        "Usage: node scripts/dev.ts <start|stop> [--port] [--state] [--assets] [--no-cron] [--cron-every <sec>] [--jobs-every <sec> [--jobs-store <dir>] [--jobs-grace-minutes <n>]]",
       );
       return 2;
   }

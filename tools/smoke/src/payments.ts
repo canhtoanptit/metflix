@@ -6,6 +6,7 @@
  * web drives it: start, confirm the card at the provider, confirm, pay the first invoice when
  * there is no trial, poll until complete.
  */
+import { randomBytes } from "node:crypto";
 import type {
   AccountDetails,
   Checkout,
@@ -13,7 +14,7 @@ import type {
   PlanId,
   PlaybackSession,
 } from "@webflix/contracts";
-import { check, equal, fail, succeeds } from "./expect.ts";
+import { check, equal, fail, SkipSignal, succeeds } from "./expect.ts";
 import type { Agent } from "./http.ts";
 import type { CheckContext } from "./types.ts";
 
@@ -33,6 +34,22 @@ export type FakeCard =
   | "authentication-required"
   | "challenge";
 
+/**
+ * A card as the provider's form takes it: a test card, or a labelled one (`visa:run-42`) that
+ * behaves like the test card with a fingerprint of its own, so a card that never had a trial
+ * (one trial per card fingerprint, §5.4); the same label again is the same card.
+ */
+export type CardChoice = FakeCard | `${FakeCard}:${string}`;
+
+/**
+ * A card of `card`'s kind no other run has used: `card:smk-<run>-<purpose>-<random>` (random
+ * too, so a run repeated with the same `--run-id` still gets a card that never had a trial).
+ */
+export function labelledCard(card: FakeCard, runId: string, purpose: string): CardChoice {
+  const label = `smk-${runId}-${purpose}`.slice(0, 55);
+  return `${card}:${label}-${randomBytes(3).toString("hex")}` as CardChoice;
+}
+
 export type FormOutcome =
   | { status: "succeeded" }
   | { status: "requires_action" }
@@ -45,7 +62,7 @@ export type FormOutcome =
 export async function confirmAtProvider(
   agent: Agent,
   clientSecret: string,
-  options: { card?: FakeCard; challenge?: "complete" | "fail" } = {},
+  options: { card?: CardChoice; challenge?: "complete" | "fail" } = {},
 ): Promise<FormOutcome> {
   const result = await agent.fetch(`${FAKE_BASE}/api/confirm`, {
     method: "POST",
@@ -56,6 +73,11 @@ export async function confirmAtProvider(
     },
   });
   const type = result.headers.get("Content-Type") ?? "";
+  if (result.status === 422 && options.card?.includes(":")) {
+    throw new SkipSignal(
+      `the fake provider does not take labelled cards (${options.card} → ${result.status} ${result.exchange.responseBody ?? ""}): an older payments-fake; a card that never had a trial needs \`<test card>:<label>\``,
+    );
+  }
   if (result.status !== 200 || !type.includes("json")) {
     fail("the fake provider's form refused the confirmation", {
       expected: "200 {status}",
@@ -70,7 +92,7 @@ export async function confirmAtProvider(
 export async function confirmCard(
   agent: Agent,
   clientSecret: string,
-  card: FakeCard | undefined,
+  card: CardChoice | undefined,
   what: string,
 ): Promise<{ challenged: boolean }> {
   let outcome = await confirmAtProvider(agent, clientSecret, card === undefined ? {} : { card });
@@ -122,7 +144,7 @@ export interface Subscription {
 export async function subscribe(
   ctx: CheckContext,
   agent: Agent,
-  options: { planId: PlanId; card: FakeCard; promotionCode?: string },
+  options: { planId: PlanId; card: CardChoice; promotionCode?: string },
 ): Promise<Subscription> {
   const what = `checkout (${options.planId}, ${options.card})`;
   const started = await succeeds(
@@ -202,7 +224,7 @@ export async function convertTrial(agent: Agent, membership: MembershipState): P
 export async function paidMembership(
   ctx: CheckContext,
   agent: Agent,
-  options: { planId: PlanId; card: FakeCard },
+  options: { planId: PlanId; card: CardChoice },
 ): Promise<{ trialConverted: boolean; membership: MembershipState; account: AccountDetails }> {
   const subscribed = await subscribe(ctx, agent, options);
   if (subscribed.trial) {

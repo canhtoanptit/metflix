@@ -287,16 +287,35 @@ export function describeIdentityRepositoryContract(
 
       it("never unlinks the last way to sign in", async () => {
         await create("acc-1", { passwordHash: null }, identity("acc-1", "google", "g-1"));
-        expect(await repo().unlinkIdentity("acc-1", "apple")).toBe("not_found");
-        expect(await repo().unlinkIdentity("acc-1", "google")).toBe("last");
+        expect(await repo().unlinkIdentity("acc-1", "apple", T0 + 1)).toBe("not_found");
+        expect(await repo().unlinkIdentity("acc-1", "google", T0 + 1)).toBe("last");
         expect(await repo().findIdentity("google", "g-1")).not.toBeNull();
         await repo().linkIdentity(identity("acc-1", "apple", "a-1"));
-        expect(await repo().unlinkIdentity("acc-1", "google")).toBe("unlinked");
-        expect(await repo().unlinkIdentity("acc-1", "apple")).toBe("last");
+        expect(await repo().unlinkIdentity("acc-1", "google", T0 + 1)).toBe("unlinked");
+        expect(await repo().unlinkIdentity("acc-1", "apple", T0 + 1)).toBe("last");
 
         await create("acc-2", {}, identity("acc-2", "google", "g-2"));
-        expect(await repo().unlinkIdentity("acc-2", "google")).toBe("unlinked");
+        expect(await repo().unlinkIdentity("acc-2", "google", T0 + 2)).toBe("unlinked");
         expect(await repo().listIdentities("acc-2")).toEqual([]);
+      });
+
+      it("remembers an unlinked identity as removed, and not one it refused to unlink", async () => {
+        await create("acc-1", { passwordHash: null }, identity("acc-1", "google", "g-1"));
+        expect(await repo().unlinkIdentity("acc-1", "google", T0 + 1)).toBe("last");
+        expect(await repo().findRemoval("google", "g-1")).toBeNull();
+        await create("acc-2", {}, identity("acc-2", "google", "g-2"));
+        expect(await repo().findRemoval("google", "g-2")).toBeNull();
+        expect(await repo().unlinkIdentity("acc-2", "google", T0 + 5)).toBe("unlinked");
+        expect(await repo().findRemoval("google", "g-2")).toEqual({
+          accountId: "acc-2",
+          reason: "unlinked",
+          removedAt: T0 + 5,
+        });
+        // Linked again (deliberately) and unlinked again: the latest removal is kept.
+        expect(await repo().linkIdentity(identity("acc-2", "google", "g-2"))).toBe(true);
+        expect(await repo().unlinkIdentity("acc-2", "google", T0 + 9)).toBe("unlinked");
+        expect((await repo().findRemoval("google", "g-2"))?.removedAt).toBe(T0 + 9);
+        expect(await repo().findRemoval("apple", "g-2")).toBeNull();
       });
     });
 
@@ -400,6 +419,13 @@ export function describeIdentityRepositoryContract(
         expect((await repo().listIdentities("acc-1")).map((entry) => entry.provider)).toEqual([
           "google",
         ]);
+        // The dropped identity is remembered as removed; the kept one is not.
+        expect(await repo().findRemoval("apple", "a-1")).toEqual({
+          accountId: "acc-1",
+          reason: "password_reset",
+          removedAt: T0 + 7,
+        });
+        expect(await repo().findRemoval("google", "g-1")).toBeNull();
         // The other open link died with it; the token itself cannot be used again.
         expect(await repo().findLiveToken("t-2", "reset_password", T0 + 8)).toBeNull();
         expect(

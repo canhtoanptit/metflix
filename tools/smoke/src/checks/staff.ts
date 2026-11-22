@@ -16,7 +16,7 @@ import { capture } from "../http.ts";
 import { lockedProfile } from "../limits.ts";
 import { awaitMail } from "../mail.ts";
 import { needs } from "../needs.ts";
-import { STAFF_PERSONAS, staffTokens } from "../oidc.ts";
+import { clientCredentialsToken, DEV_JOBS_CLIENT, STAFF_PERSONAS, staffTokens } from "../oidc.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
 import { memberWithPaidInvoice } from "./billing.ts";
 import { browseAll, cardsOfRow, unique } from "./util.ts";
@@ -189,6 +189,82 @@ export const staffChecks: CheckDefinition[] = [
         }),
         "unauthenticated",
         "a staff token on a member route",
+      );
+    },
+  },
+  {
+    id: "staff.service-account",
+    area: "staff",
+    title:
+      "A job's service account (client credentials, no person behind it) holds exactly its roles and opens the operator routes; a wrong secret gets no token, a member's session opens no operator route and the job's token no member route",
+    needs: [needs.staffIssuer],
+    async run(ctx: CheckContext) {
+      const agent = ctx.agent("staff-job");
+      const granted = await clientCredentialsToken(agent, DEV_JOBS_CLIENT);
+      if (granted.result.status !== 200) {
+        const error = String(granted.json.error ?? "");
+        if (error === "unauthorized_client" || error === "invalid_client") {
+          ctx.skip(
+            `the staff issuer has no service client ${DEV_JOBS_CLIENT.id} with the client-credentials grant (${granted.result.status} ${error}): its token endpoint is the development issuer's (WEBFLIX_DEV_CLIENTS.staffJobs); against Keycloak the job's client is the deployment's own`,
+          );
+        }
+        fail("the client-credentials grant failed", {
+          observed: `${granted.result.status} ${granted.result.exchange.responseBody ?? ""}`,
+          exchange: granted.result.exchange,
+        });
+      }
+      const token = granted.json.access_token;
+      check(typeof token === "string", "no access token");
+      equal(String(granted.json.token_type).toLowerCase(), "bearer", "token_type");
+      check(
+        !("refresh_token" in granted.json) && !("id_token" in granted.json),
+        "a service account's grant must carry an access token only",
+        { observed: Object.keys(granted.json).join(", ") },
+      );
+      const wrong = await clientCredentialsToken(ctx.agent("staff-job-wrong"), {
+        id: DEV_JOBS_CLIENT.id,
+        secret: `${DEV_JOBS_CLIENT.secret}-wrong`,
+      });
+      check(
+        wrong.result.status === 401 && typeof wrong.json.access_token !== "string",
+        "a wrong client secret got a token",
+        {
+          expected: "401 invalid_client",
+          observed: `${wrong.result.status} ${wrong.result.exchange.responseBody ?? ""}`,
+          exchange: wrong.result.exchange,
+        },
+      );
+      const api = agent.staffApi(token);
+      const me = await succeeds(() => api.getStaffSelf(), "GET /me with the job's token");
+      equal([...me.roles].sort().join(","), "admin,experiments", "the service account's roles");
+      await succeeds(
+        () => api.listPendingExports({ query: {} }),
+        "GET /system/privacy/exports (job)",
+      );
+      await succeeds(
+        () => api.listPendingErasures({ query: {} }),
+        "GET /system/privacy/erasures (job)",
+      );
+      await succeeds(() => api.getRecommendationStatus(), "GET /system/recommendations (job)");
+      await succeeds(() => api.listExperiments(), "GET /experiments (job)");
+      const member = await ctx.env.bareSignup("staff-job-member");
+      for (const path of [
+        "/system/privacy/exports",
+        "/system/privacy/erasures",
+        "/system/recommendations",
+      ]) {
+        problem(
+          await member.agent.fetch(`${ADMIN_API_BASE_PATH}${path}`),
+          "unauthenticated",
+          `a member's session on ${path}`,
+        );
+      }
+      problem(
+        await ctx.agent("staff-job-member-route").fetch("/api/v1/account", {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        "unauthenticated",
+        "the job's token on a member route",
       );
     },
   },

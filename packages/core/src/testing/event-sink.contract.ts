@@ -127,6 +127,46 @@ export function describeEventSinkContract(
       ).rejects.toThrow();
     });
 
+    it("reads one account's events in a window, each once (the earliest receipt), in order", async () => {
+      const mine = "aK3vB8nQ2wE5rT7yU9iO1p";
+      const theirs = "zZ9yX8wV7uT6sR5qP4oN3m";
+      const event = (account: string, receivedAt: string, eventId?: string) =>
+        makeLakeEvent("impression", {
+          receivedAt,
+          ...(eventId ? { eventId } : {}),
+          subject: {
+            account,
+            profile: null,
+            plan: null,
+            country: null,
+            restricted: false,
+            consent: { analytics: true, personalisation: true },
+          },
+        });
+      const early = event(mine, "2026-11-22T10:00:01.000Z");
+      const retried = { ...early, receivedAt: "2026-11-22T11:00:05.000Z" };
+      const later = event(mine, "2026-11-22T11:30:00.000Z");
+      const outside = event(mine, "2026-11-22T13:10:00.000Z");
+      await h().sink.append([later, event(theirs, "2026-11-22T11:31:00.000Z")]);
+      await h().sink.append([early]);
+      await h().sink.append([retried as LakeEvent, outside]);
+      const read = await h().sink.accountEvents({
+        accountKey: mine,
+        fromMs: Date.parse("2026-11-22T10:00:00.000Z"),
+        toMs: Date.parse("2026-11-22T13:00:00.000Z"),
+      });
+      expect(read.events).toEqual([early, later]);
+      expect(
+        (
+          await h().sink.accountEvents({
+            accountKey: "nobodyNobodyNobody0000",
+            fromMs: 0,
+            toMs: Date.parse("2027-01-01T00:00:00.000Z"),
+          })
+        ).events,
+      ).toEqual([]);
+    });
+
     it("keeps private documents beside the lake, never under a served prefix", async () => {
       const bytes = new Uint8Array([1, 2, 3, 250]);
       const key = await h().sink.putDocument("exports/req-1.json.gz", bytes);

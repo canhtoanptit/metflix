@@ -32,6 +32,12 @@ const MIN_EXPIRATION_AHEAD_SEC = 120;
 const READ_CACHE_TTL_SEC = 300;
 /** Binding writes in flight at once (each `put` is one of the invocation's 1,000 KV operations). */
 const BINDING_WRITE_CONCURRENCY = 32;
+/**
+ * Lists one in-Worker import may write through the binding: a Worker invocation has 1,000 KV
+ * operations (developers.cloudflare.com/kv/platform/limits), less headroom for the import's own
+ * cache reads and invalidations and for other jobs of the same queue batch.
+ */
+export const KV_BINDING_LISTS_PER_IMPORT = 800;
 
 export interface KvRecommendationStoreOptions {
   /** The namespace holding per-profile lists (`RECS`). */
@@ -73,6 +79,17 @@ export function createKvRecommendationStore(
   const keyOf = (run: string, profileKey: string) => `${prefix}${run}:${profileKey}`;
 
   return {
+    // Through the binding an import is one Worker invocation's KV budget; the REST bulk writer
+    // (outside Workers) has none.
+    ...(options.writer
+      ? {}
+      : {
+          importCapacity: {
+            maxProfileLists: KV_BINDING_LISTS_PER_IMPORT,
+            explanation:
+              "a Worker invocation may make at most 1,000 Workers KV operations, so a larger run is imported from outside the Worker with the KV REST bulk API: make cf-recs-import (node apps/edge/scripts/ops.ts recs import)",
+          },
+        }),
     activeModel: () => base.activeModel(),
     models: () => base.models(),
     servingSnapshot: () => base.servingSnapshot(),

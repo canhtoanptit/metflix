@@ -229,38 +229,86 @@ export function describeEventsRepositoryContract(
       ]);
     });
 
-    it("records erasures once and marks them compacted", async () => {
+    it("finds exports waiting for their events, and exports whose job may be lost", async () => {
+      await account("acc-1");
+      await account("acc-2");
+      await account("acc-3");
+      await account("acc-4");
+      await repo().createPrivacyRequest(
+        request({
+          id: "w-1",
+          accountId: "acc-1",
+          status: "processing",
+          exportBlobKey: "privacy/exports/w-1.partial.json.gz",
+          requestedAt: T0 + 5,
+          updatedAt: T0,
+        }),
+      );
+      await repo().createPrivacyRequest(
+        request({ id: "s-1", accountId: "acc-2", status: "pending", updatedAt: T0 }),
+      );
+      await repo().createPrivacyRequest(
+        request({ id: "s-2", accountId: "acc-3", status: "processing", updatedAt: T0 + 10 }),
+      );
+      await repo().createPrivacyRequest(
+        request({
+          id: "done",
+          accountId: "acc-4",
+          status: "completed",
+          exportBlobKey: "privacy/exports/done.json.gz",
+          updatedAt: T0,
+        }),
+      );
+      expect((await repo().waitingExports(10)).map((record) => record.id)).toEqual(["w-1"]);
+      expect((await repo().staleExports(T0 + 100, 10)).map((record) => record.id)).toEqual([
+        "s-1",
+        "s-2",
+      ]);
+      expect((await repo().staleExports(T0 + 5, 10)).map((record) => record.id)).toEqual(["s-1"]);
+      expect((await repo().staleExports(T0 + 100, 1)).map((record) => record.id)).toEqual(["s-1"]);
+    });
+
+    it("records erasures once, lists what the operator must run, settles what is confirmed", async () => {
+      const ACCOUNT = "aK3vB8nQ2wE5rT7yU9iO1p";
+      const OTHER = "bB2cC3dD4eE5fF6gG7hH8i";
+      const LONE = "pL4sD8fG2hJ6kZ1xC5vB9n";
+      const erasure = (
+        subjectKey: string,
+        kind: "account" | "profile",
+        accountKey: string | null,
+        requestedAt = T0,
+      ) => ({ subjectKey, kind, accountKey, requestedAt, compactedAt: null });
+      // An account deletion: its key, and 30 profile records that belong to it.
       await repo().addErasures([
-        {
-          subjectKey: "aK3vB8nQ2wE5rT7yU9iO1p",
-          kind: "account",
-          requestedAt: T0,
-          compactedAt: null,
-        },
-        {
-          subjectKey: "pL4sD8fG2hJ6kZ1xC5vB9n",
-          kind: "profile",
-          requestedAt: T0,
-          compactedAt: null,
-        },
+        erasure(ACCOUNT, "account", null),
+        ...Array.from({ length: 30 }, (_, index) =>
+          erasure(`prof${index.toString().padStart(18, "0")}`, "profile", ACCOUNT),
+        ),
       ]);
-      await repo().addErasures([
-        {
-          subjectKey: "aK3vB8nQ2wE5rT7yU9iO1p",
-          kind: "account",
-          requestedAt: T0 + 9,
-          compactedAt: null,
-        },
-      ]);
-      const pending = await repo().pendingErasures(10);
-      expect(pending.map((record) => record.subjectKey)).toEqual([
-        "aK3vB8nQ2wE5rT7yU9iO1p",
-        "pL4sD8fG2hJ6kZ1xC5vB9n",
-      ]);
-      expect(pending[0]?.requestedAt).toBe(T0);
-      await repo().markErasuresCompacted(["aK3vB8nQ2wE5rT7yU9iO1p"], T0 + 50);
+      await repo().addErasures([erasure(OTHER, "account", null, T0 + 2)]);
+      // A profile erased alone (it became restricted), asked for twice.
+      await repo().addErasures([erasure(LONE, "profile", null, T0 + 1)]);
+      await repo().addErasures([erasure(LONE, "profile", null, T0 + 9)]);
+      // Only what must be run is listed, the limit applied to that, the first request kept.
+      const listed = await repo().pendingErasures(2);
+      expect(listed.map((record) => record.subjectKey)).toEqual([ACCOUNT, LONE]);
+      expect(listed[1]).toMatchObject({ kind: "profile", accountKey: null, requestedAt: T0 + 1 });
       expect((await repo().pendingErasures(10)).map((record) => record.subjectKey)).toEqual([
-        "pL4sD8fG2hJ6kZ1xC5vB9n",
+        ACCOUNT,
+        LONE,
+        OTHER,
+      ]);
+      // Confirming the account settles its profile records too, and nothing else.
+      await repo().markErasuresCompacted([ACCOUNT, LONE], T0 + 50);
+      expect((await repo().pendingErasures(10)).map((record) => record.subjectKey)).toEqual([
+        OTHER,
+      ]);
+      await repo().markErasuresCompacted([OTHER], T0 + 60);
+      expect(await repo().pendingErasures(10)).toEqual([]);
+      // A settled key asked for again (new history) is pending again.
+      await repo().addErasures([erasure(LONE, "profile", null, T0 + 100)]);
+      expect(await repo().pendingErasures(10)).toMatchObject([
+        { subjectKey: LONE, requestedAt: T0 + 100, compactedAt: null },
       ]);
     });
 

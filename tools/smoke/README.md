@@ -65,7 +65,8 @@ Exit status: `0` nothing failed, `1` a check failed (or something was skipped wi
 | `--eventual-timeout <ms>` / `--poll-interval <ms>` | 30000 / 500 | Budget and interval for effects polled with `eventually` |
 | `--demo-email`, `--demo-password` | documented demo | The seeded demo account (read-only checks) |
 | `--media-title <id>` | discovered | Title for the packaged-media checks |
-| `--promo-code <code>` | none | A promo code the deployment honours for the Standard plan (`billing.promo-code.applied`) |
+| `--promo-code <code>` | the fake provider's standing `WEBFLIX50` | A promo code the deployment honours for the Standard plan (`billing.promo-code.applied`): needed only where the standing code is absent (another `WEBFLIX_PAYMENTS_FAKE_PROMOTIONS`) |
+| `--export-wait <ms>` / `--export-wait-max <ms>` | 300000 / 1200000 | Batch-mode data export: how long to wait for a first round of the deployment's `export-events` job, and the longest wait once the job has deferred the request (its grace) |
 | `--verbose`, `--no-color`, `--run-id <id>` | | Every request, plain output, tag for emails and request ids |
 
 As a library:
@@ -112,7 +113,9 @@ Requirements are detected from outside, never assumed from the mode name:
 | Events read-back | `GET /diagnostics/events` answers for a signed-in account | `privacy.events`, `privacy.kids-profile`, `privacy.consent` |
 | Consent mode | `GET /privacy/consent` → `mode`; the consent check asserts the mode the deployment runs | `privacy.consent` (and `privacy.events`, `privacy.kids-profile` skip in `off`) |
 | Cooling-off | the `scheduledFor` of the check's own deletion request; above 60 s it is cancelled and the check skips | `privacy.deletion.erasure` |
-| Trials left | each card that can carry a trial is tried in turn; one trial per card fingerprint, deployment-wide | `billing.trial-converts`, `billing.trial-cancelled`, `billing.checkout-abandoned`, `billing.checkout-expired` |
+| Labelled cards | the fake provider takes `<test card>:<label>`, a card of that kind with a fingerprint of its own (a card that never had a trial); a provider that refuses one skips the check with that reason | `billing.trial-*`, `billing.member-journey`, `billing.dunning`, and the spent card below |
+| Export mode | an export still `processing` after the inline budget and listed at `GET /system/privacy/exports` (admin token) is batch mode (`WEBFLIX_EXPORT_EVENTS=batch`); its job's rounds and deferrals are read from the audit log | `privacy.export`, `privacy.export-operator` |
+| Service client | the staff realm's `webflix-jobs` client-credentials grant (published development secret) | `staff.service-account` |
 | Recommendation run | `GET /system/recommendations` (`activeModel`) | `experiments.recommendation-status` |
 
 ## Effect on the target
@@ -153,10 +156,11 @@ Requirements are detected from outside, never assumed from the mode name:
   `experiments.assignment` starts two experiments in layers of their own and completes them when
   the run ends. Two suites must not run at once against one deployment (the delivery policy is
   shared).
-- **Trials are spent for good.** One trial per card fingerprint (§5.4), and the fake provider
-  gives every customer the same fingerprint per test card, so the five cards that can carry a
-  trial grant five trials per deployment, ever. The first run on a fresh database proves the
-  trial journeys; later runs skip them with that reason (finding M2-F2).
+- **Trials use labelled cards.** One trial per card fingerprint (§5.4), deployment-wide, so a
+  check that needs a first trial confirms a labelled card no run has used
+  (`mastercard:smk-<run>-converts-<random>`); the trial checks pass on every rerun against one
+  database. Checks that need the opposite (a checkout that stops at its first payment) share one
+  labelled card per run whose trial a throwaway account takes first (it stays trialing).
 - Federated sign-ins are paced within the `oidc` budget (the start and the callback each count):
   a strict deployment (30 per minute per address) gets at most 14 sign-ins a minute from the
   suite, because a callback refused by the limit can only redirect with `?oidc=failed`.
@@ -178,12 +182,15 @@ suite detects; without it the named checks skip with this reason, never pass.
 | `WEBFLIX_PUBLIC_ORIGIN` on the same host as the base URL (any port) | the issuer and the callbacks are built from it; the suite follows another port of the same host (a browser shares cookies across ports) but not another host | federated checks |
 | A shared `WEBFLIX_DEV_IDP_SECRET` across replicas and isolates (the derived default is shared) | codes minted by one instance are redeemed by another | federated checks fail (not skip) without it |
 | `WEBFLIX_DELETION_COOLING_OFF_SEC` ≤ 30 and a scheduler tick ≤ 30 s (`WEBFLIX_SCHEDULER_INTERVAL_SEC` on Node, minimum 5; the Worker's cron, and on `wrangler dev` its scheduled handler triggered) | the erasure runs on the scheduler's sweep after the cooling-off period | `privacy.deletion.erasure` |
-| A fresh database (or never-trialled test cards) | trials are one per card, deployment-wide (finding M2-F2) | `billing.trial-*`; `billing.checkout-abandoned` and `billing.checkout-expired` need the opposite (a card already trialled), which other checks of the same run usually provide |
-| A promo code for the Standard plan, passed as `--promo-code` | none can be created on a fake-provider deployment today (finding M2-F1) | `billing.promo-code.applied` |
-| An imported recommendation run (`make recs`, then `node apps/api/src/recs.ts import`) | the served model's status | `experiments.recommendation-status` |
+| The fake provider's standing promo code (`WEBFLIX_PAYMENTS_FAKE_PROMOTIONS`, default `WEBFLIX50`), or `--promo-code` | the code the promo journey applies | `billing.promo-code.applied` |
+| Batch exports (`WEBFLIX_EXPORT_EVENTS=batch`, the default on Kubernetes and Cloudflare): the pipeline's `export-events` job running on a schedule shorter than `--export-wait` (5 minutes), with a grace that fits `--export-wait-max` (20 minutes; the job's own default grace is 15 minutes), posting to `POST /system/privacy/exports/results`. Locally on Cloudflare `make cf-dev CF_JOBS_EVERY=10` (or `make cf-export-events` by hand); on Node, `inline` where it is allowed | without a job a batch export never completes: the check skips naming both fixes; a job that runs and does not finish the export, or fails it, fails the check | `privacy.export` |
+| The development staff realm's service client `webflix-jobs` (client credentials, roles admin and experiments) | a job's token for the operator routes | `staff.service-account` |
+| An imported recommendation run (`make recs`, then `node apps/api/src/recs.ts import` on Node, `make cf-recs-import` on Cloudflare: the staff route refuses a run too large for one Worker invocation with `recommendation_import_too_large`) | the served model's status | `experiments.recommendation-status` |
 | `WEBFLIX_CONSENT_MODE` | the consent check proves the configured mode only: run once per mode to prove all three (`opt-in` default, `opt-out`, `off`) | `privacy.events` and `privacy.kids-profile` skip in `off` |
 
-A dev API configured for the whole suite (on a port of your own):
+The local Worker under test: `make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10` with a 30 s
+deletion cooling-off (docs/CLOUDFLARE.md). A dev API configured for the whole suite (on a port
+of your own):
 
 ```sh
 PORT=5750 WEBFLIX_PUBLIC_ORIGIN=http://localhost:5750 WEBFLIX_DATABASE_URL=sqlite:/tmp/smoke/webflix.sqlite \
@@ -192,7 +199,7 @@ PORT=5750 WEBFLIX_PUBLIC_ORIGIN=http://localhost:5750 WEBFLIX_DATABASE_URL=sqlit
 make smoke BASE_URL=http://localhost:5750
 ```
 
-## Check catalogue (131)
+## Check catalogue (133)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
@@ -355,10 +362,11 @@ an unverified account (and the demo account's) is `link-required`; linking needs
 (`reauthentication_required`, wrong password refused, the proof lasts 5 minutes); `linked`; the
 identity then signs in to that account; `identity-in-use` for another account; unlinking leaves
 the password working and the identity signing up anew; the only way in of a Google-only account
-cannot be unlinked · `identity.oidc.unlink-sticks` [finding M2-F5] Google unlinked from an
-account with the same verified address does not sign in or relink itself on its next sign-in ·
-`identity.oidc.reauth` a Google-only account is offered Google and not the
-password; no password proves anything; the start asks `max_age=0`; a stale or missing
+cannot be unlinked · `identity.oidc.unlink-sticks` an identity unlinked from an account with
+the same verified address is `link-required` on its next sign-in (no silent relink), and only a
+deliberate link by the proven account holder brings it back · `identity.oidc.reauth` a
+Google-only account is offered Google and not the password; a password is `password_required`
+for it; the start asks `max_age=0`; a stale or missing
 `auth_time` and another identity fail; a fresh sign-in (the page shown despite the issuer's
 session) proves it for 5 minutes and stands in for the password (a first password set with it) ·
 `identity.oidc.faults` eleven faults of the issuer's catalogue (alg none, HMAC key confusion,
@@ -369,34 +377,39 @@ a forged one refused · `identity.oidc.auto-link` both sides verified: the Googl
 itself · `identity.password-reset` the same 204 for an unknown address, a single-use link, every
 device signed out, the old password refused, the address verified, a security alert ·
 `identity.password-reset.drops-identities` a reset drops an identity linked under another
-address.
+address; moved to that address and verified, the account is still `link-required` for the
+dropped identity, until the account holder links it on purpose.
 
 **billing (13)**, the fake provider and its clock: `billing.checkout` refused playback (402
 naming `none`), a kids profile cannot start one, the provider's form serves the secret,
-confirming before the card is refused, the trial or the first payment, `complete`, entitled
-with the plan's streams and quality, plays, a paid invoice of the plan's price, no second
-checkout · `billing.challenge` a challenge must be completed; failed, it declines and a new
+confirming before the card is refused, a card whose trial is spent gets none and pays the plan's
+price (playback refused while `incomplete`), `complete`, entitled with the plan's streams and
+quality, plays, a paid invoice of the plan's price, no second checkout · `billing.challenge` a challenge must be completed; failed, it declines and a new
 setup is offered; completed, the membership starts · `billing.declined` declined, insufficient
 funds, expired: each `declineReason`, nothing starts, the checkout takes another card ·
-`billing.checkout-abandoned` [finding M2-F3] another plan chosen before the first payment
-leaves membership `none` · `billing.checkout-expired` [finding M2-F4] an unconfirmed first
-payment expires after 23 h on the clock: membership `none` with no plan, provider or period, the
-checkout expired, nothing left open (both need a card whose trial is spent) · `billing.promo-code.refused` an unknown code (`unknown`), at
-validation and checkout · `billing.promo-code.applied` (needs `--promo-code`) quoted, then
-charged as quoted · `billing.trial-converts` entitled, nothing charged, then the plan's price
-charged at the trial end · `billing.trial-cancelled` cancelled, resumed, cancelled: entitled
-until the trial end, then `canceled`, refused playback, nothing charged or owed, no resume ·
+`billing.checkout-abandoned` another plan chosen before the first payment leaves membership
+`none` / `no_membership` · `billing.checkout-expired` an unconfirmed first payment expires after
+23 h on the clock: membership `none` with no plan, provider or period, the checkout expired,
+nothing left open (both on the run's spent card: no second trial for a card) ·
+`billing.promo-code.refused` an unknown code (`unknown`), at validation and checkout ·
+`billing.promo-code.applied` the standing `WEBFLIX50` (or `--promo-code`) quoted, the first
+payment asks exactly the quoted price and the invoice charges it · `billing.trial-converts` a
+labelled card that never had a trial: entitled, nothing charged, then the plan's price charged at
+the trial end · `billing.trial-cancelled` (a labelled card that declines whenever charged)
+cancelled, resumed, cancelled: entitled until the trial end, then `canceled`, refused playback,
+nothing charged or owed, no resume ·
 `billing.plan-change` an upgrade invoiced exactly as previewed, a preview of one plan refused for
 another, no double charge on replay, a downgrade credits, and the next renewal bills what the
-preview said · `billing.member-journey` Google sign-up, pay, watch, cancel, resume, cancel, end,
-resubscribe without a second trial, watch · `billing.dunning` a failing renewal: `past_due`
+preview said · `billing.member-journey` Google sign-up, a first trial paid when it converts,
+watch, cancel, resume, cancel, end, resubscribe with another new card and no second trial (one
+per account), watch · `billing.dunning` a failing renewal: `past_due`
 with `graceEndsAt`, still playing, an open invoice, the payment-failed email, a failed retry;
 `suspended (grace_expired)` after grace, refused playback, no new checkout; a new card pays the
 open invoice and playback returns · `billing.provider-events` [x] forged and unsigned events
 refused; with every event delivered twice, late and shuffled the membership is the provider's
 and each email went once; during an outage the checkout and a card change still complete.
 
-**privacy (6)**: `privacy.events` a batch accepted, read back with the client's ids, times,
+**privacy (7)**: `privacy.events` a batch accepted, read back with the client's ids, times,
 payloads and positions, stamped by the server (receipt time, pseudonymous 22-character subject
 keys, plan, consent); a client-supplied subject, two devices in a batch, 51 events, over 64 KiB
 refused; a signed-out device's own consent; read-back is per account · `privacy.kids-profile` client
@@ -406,12 +419,20 @@ kept · `privacy.consent` the configured mode (opt-in: withheld until granted, w
 grant wins; off: nothing), GPC detected, a kids profile cannot answer · `privacy.export` a fresh
 proof, one export at a time (two concurrent requests: exactly one), completed with a link
 (emailed), an attachment matching `DataExport` with the account, profiles, events, consents and
-each area's part; another account, a signed-out browser and a tampered token get nothing ·
+each area's part; another account, a signed-out browser and a tampered token get nothing. In
+batch mode the pending entry is checked (the account's key, the retention window up to the
+request), then the check waits for the deployment's job as the audit log shows it (a round
+within `--export-wait`, then its deferral) · `privacy.export-operator` the operator's export
+routes are admin only (four roles refused, a member's session unauthenticated); a results
+document for an unknown request is recorded as `ignored` and creates nothing; one naming another
+request's file, the member's export document, a lake object, or a complete result without its
+checksum is `validation_failed`; in batch mode a `deferred` result keeps the export listed and
+`processing` ·
 `privacy.deletion` a fresh proof, one at a time, scheduled after a cooling-off period,
 cancellable · `privacy.deletion.erasure` the account erased when the period ends (sessions end,
 the address is free).
 
-**staff (4)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
+**staff (5)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
 role, none, another client's admin): allowed exactly for the role and admin, otherwise
 `staff_role_required` naming the role; no token, a forged one, an ID token, a member's cookie
 are `unauthenticated`; a mutation without the client header is refused; a staff token opens no
@@ -421,28 +442,35 @@ invoice, the rest refunded, nothing more; both audited · `staff.support-audit` 
 (no password hash), removing a PIN, recording consent, sending a reset (the email), signing out
 everywhere (both devices out): each audited with its request id, reason and actor ·
 `staff.curated-row` [x] a published collection appears on a member's home page in order and goes
-when deleted; both audited.
+when deleted; both audited · `staff.service-account` the `webflix-jobs` client-credentials grant
+gives an access token only, roles exactly admin and experiments, opening the operator routes; a
+wrong secret gets no token; a member's session opens no operator route and the job's token no
+member route.
 
 **experiments (2)**: `experiments.assignment` [x] two experiments the suite starts (profile and
 device units): a profile's variant is stable across devices and requests, never given to a kids
 profile; a device's is stable and 32 devices spread over both variants; a profile experiment
 does not assign anonymous devices; creating and starting are audited ·
 `experiments.recommendation-status` admin only (other roles refused); with a run imported, its
-dates hold and a new profile gets the rule engine (cold start).
+dates hold, and a new profile's page is labelled `rules` (never `learned:` or `neighbours:`), has
+no Top Picks, and has the rows another new profile gets (the billboard rotates per profile by
+design).
 
 ## Known findings
 
 Product defects the suite found, reported to their owners. The checks stay in place, asserting
-what the design calls for; a check marked with a finding reports `XFAIL` while it fails and
-`XPASS` once fixed (then remove its `knownFinding`).
+what the design calls for; a check marked with a finding (`knownFinding`) reports `XFAIL` while
+it fails and `XPASS` once fixed (then remove the mark).
 
-| Id | Owner | Finding | Check |
+None is open. Fixed, and now asserted as ordinary checks:
+
+| Id | Owner | Finding | Now |
 | --- | --- | --- | --- |
-| M2-F1 | billing | No promo code can exist on a deployment with the fake provider: codes are defined only in process (`definePromotion`), with no seed, setting or route, so the §12 promo-code journey cannot be driven anywhere but against Stripe | `billing.promo-code.applied` skips |
-| M2-F2 | billing (payments-fake) | One trial per card fingerprint, and the fake gives every customer the same fingerprint per test card: each deployment grants five trials, ever, so trial journeys pass once per database, not three runs in a row | `billing.trial-*` skip after the first run |
-| M2-F3 | billing | A checkout abandoned before its first payment (another plan chosen) projects to `canceled` / `ended` instead of `none` / `no_membership` (§5.2: a never-confirmed first payment returns the account to `none`) | `billing.checkout-abandoned` (XFAIL) |
-| M2-F4 | billing | After an unconfirmed first payment expires, the membership is `none` but still carries `planId`, `provider` and `currentPeriodEnd` (`MembershipState`: null while `none`) | `billing.checkout-expired` (XFAIL) |
-| M2-F5 | identity | Unlinking Google from an account whose verified address is Google's verified address has no lasting effect: the identity's next sign-in is `signed-in` and relinks it (§4.1's automatic link), so a member cannot remove a Google account they lost control of without changing their address | `identity.oidc.unlink-sticks` (XFAIL) |
+| M2-F1 | billing | No promo code could exist on a fake-provider deployment | standing codes, `WEBFLIX_PAYMENTS_FAKE_PROMOTIONS` (`billing.promo-code.applied`) |
+| M2-F2 | billing (payments-fake) | Every customer had the same fingerprint per test card: five trials per deployment, ever | labelled cards (`billing.trial-*` pass on every rerun) |
+| M2-F3 | billing | An abandoned first payment projected to `canceled` / `ended` | `none` / `no_membership` (`billing.checkout-abandoned`) |
+| M2-F4 | billing | `none` after an expired first payment kept `planId`, `provider`, `currentPeriodEnd` | all null (`billing.checkout-expired`) |
+| M2-F5 | identity | An unlinked identity relinked itself on its next sign-in | removed identities stay removed, a reset's included (`identity.oidc.unlink-sticks`, `identity.password-reset.drops-identities`) |
 
 ## Known limits
 

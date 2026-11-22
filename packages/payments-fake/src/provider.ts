@@ -26,7 +26,13 @@ import {
   type WebhookReceiver,
   WebhookSignatureError,
 } from "@webflix/core";
-import { cardFingerprint, FAKE_CARDS, type FakeTestCard } from "./cards.ts";
+import {
+  cardFingerprint,
+  FAKE_CARDS,
+  type FakeCardChoice,
+  type FakeTestCard,
+  parseCardChoice,
+} from "./cards.ts";
 import {
   CUSTOMER_STATE_KINDS,
   type FakeDocument,
@@ -71,6 +77,19 @@ export interface FakePaymentProviderOptions {
   retriesExhausted?: RetriesExhausted;
   /** Used until a policy is stored (`setDeliveryPolicy`). Default orderly. */
   delivery?: DeliveryPolicy;
+  /**
+   * Promo codes the deployment always has (a fake-provider deployment has no other way to get
+   * one): never expiring, never exhausted, valid for every plan. Stored on first redemption.
+   */
+  promotions?: readonly FakePromotionSeed[];
+}
+
+/** A standing promo code: a percentage (1-100) or a fixed amount in minor units. */
+export interface FakePromotionSeed {
+  code: string;
+  percentOff?: number;
+  amountOffMinor?: number;
+  currency?: string;
 }
 
 // --- Documents ------------------------------------------------------------------------------
@@ -86,6 +105,7 @@ interface CustomerData {
 
 interface MethodData extends ProviderPaymentMethod {
   customerId: string;
+  /** How it behaves (a labelled card behaves like its test card). */
   card: FakeTestCard;
 }
 
@@ -96,7 +116,7 @@ interface SetupData {
   secret: string;
   paymentMethodId: string | null;
   /** The card whose challenge is in progress. */
-  pendingCard: FakeTestCard | null;
+  pendingCard: FakeCardChoice | null;
   failureCode: PaymentFailureCode | null;
 }
 
@@ -138,7 +158,7 @@ interface InvoiceData {
   firstFailureAt: number | null;
   /** Set while the browser can pay it on-session (a first payment, an action required). */
   secret: string | null;
-  pendingCard: FakeTestCard | null;
+  pendingCard: FakeCardChoice | null;
   lines: { description: string; amountMinor: number }[];
 }
 
@@ -283,6 +303,7 @@ export class FakePaymentProvider implements PaymentProvider {
   private readonly retryDays: readonly number[];
   private readonly retriesExhausted: RetriesExhausted;
   private readonly defaultDelivery: DeliveryPolicy;
+  private readonly seededPromotions: ReadonlyMap<string, PromotionData>;
   private readonly locks = new Map<string, Promise<void>>();
   private receiver: WebhookReceiver | undefined;
   private pumping: Promise<unknown> | undefined;
@@ -297,6 +318,26 @@ export class FakePaymentProvider implements PaymentProvider {
     this.retryDays = options.retryDays ?? [3, 5, 8];
     this.retriesExhausted = options.retriesExhausted ?? "cancel";
     this.defaultDelivery = options.delivery ?? { mode: "orderly" };
+    this.seededPromotions = new Map(
+      (options.promotions ?? []).map((seed) => {
+        const code = seed.code.toUpperCase();
+        return [
+          code,
+          {
+            // Stable across processes and isolates: every instance names it the same.
+            id: `promo_fake_${code.toLowerCase().replaceAll(/[^a-z0-9]/g, "")}`,
+            code,
+            percentOff: seed.percentOff ?? null,
+            amountOffMinor: seed.amountOffMinor ?? null,
+            currency: seed.amountOffMinor === undefined ? null : (seed.currency ?? "USD"),
+            expiresAt: null,
+            maxRedemptions: null,
+            timesRedeemed: 0,
+            appliesTo: null,
+          } satisfies PromotionData,
+        ];
+      }),
+    );
   }
 
   attachWebhookReceiver(receiver: WebhookReceiver): void {
@@ -711,13 +752,11 @@ export class FakePaymentProvider implements PaymentProvider {
     code: string;
     priceLookupKey: string;
   }): Promise<PromotionLookup> {
-    const document = await this.store.get("promotion", input.code.toUpperCase());
-    if (!document) return { valid: false, reason: "unknown" };
-    return this.promotionLookup(
-      document.data as PromotionData,
-      input.priceLookupKey,
-      this.clock.now(),
-    );
+    const code = input.code.toUpperCase();
+    const stored = (await this.store.get("promotion", code))?.data as PromotionData | undefined;
+    const promotion = stored ?? this.seededPromotions.get(code);
+    if (!promotion) return { valid: false, reason: "unknown" };
+    return this.promotionLookup(promotion, input.priceLookupKey, this.clock.now());
   }
 
   async syncCatalogue(entries: readonly CatalogueEntry[]): Promise<CatalogueSyncResult> {
@@ -895,7 +934,7 @@ export class FakePaymentProvider implements PaymentProvider {
    */
   async confirmSetup(
     clientSecret: string,
-    card: FakeTestCard | null,
+    card: FakeCardChoice | null,
     options: { challenge?: "complete" | "fail" } = {},
   ): Promise<FormOutcome> {
     const setupId = idFromSecret(clientSecret);
@@ -914,7 +953,7 @@ export class FakePaymentProvider implements PaymentProvider {
       if (setup.status !== "requires_confirmation" && setup.status !== "requires_action") {
         throw new PaymentProviderError("invalid_request", "this setup is complete");
       }
-      const spec = FAKE_CARDS[chosen];
+      const spec = FAKE_CARDS[behaviourOf(chosen)];
       const fail = (code: PaymentFailureCode): FormOutcome => {
         setup.status = "failed";
         setup.failureCode = code;
@@ -951,7 +990,7 @@ export class FakePaymentProvider implements PaymentProvider {
    */
   async confirmPayment(
     clientSecret: string,
-    card: FakeTestCard | null,
+    card: FakeCardChoice | null,
     options: { challenge?: "complete" | "fail" } = {},
   ): Promise<FormOutcome> {
     const invoiceId = idFromSecret(clientSecret);
@@ -973,7 +1012,7 @@ export class FakePaymentProvider implements PaymentProvider {
       );
       const chosen = card ?? invoice.pendingCard ?? onFile?.card ?? null;
       if (!chosen) throw new PaymentProviderError("invalid_request", "choose a card");
-      const spec = FAKE_CARDS[chosen];
+      const spec = FAKE_CARDS[behaviourOf(chosen)];
       const fail = (code: PaymentFailureCode): FormOutcome => {
         invoice.attemptCount += 1;
         invoice.firstFailureAt ??= set.now;
@@ -1198,7 +1237,19 @@ export class FakePaymentProvider implements PaymentProvider {
       this.store.byKind("price"),
       this.store.byKind("promotion"),
     ]);
-    return new WorkingSet(wall, now, [...state, ...prices, ...promotions]);
+    // Standing codes not redeemed yet join as unsaved documents (written once touched).
+    const seeds: FakeDocument[] = [...this.seededPromotions.values()]
+      .filter((seed) => !promotions.some((document) => document.id === seed.code))
+      .map((seed) => ({
+        kind: "promotion",
+        id: seed.code,
+        customerId: null,
+        data: structuredClone(seed),
+        version: 0,
+        createdAt: wall,
+        updatedAt: wall,
+      }));
+    return new WorkingSet(wall, now, [...state, ...prices, ...promotions, ...seeds]);
   }
 
   private async commit(set: WorkingSet): Promise<void> {
@@ -1519,7 +1570,10 @@ export class FakePaymentProvider implements PaymentProvider {
     return FAKE_CARDS[method.card].declineOffSession;
   }
 
-  private attachCard(set: WorkingSet, customerId: string, card: FakeTestCard): MethodData {
+  private attachCard(set: WorkingSet, customerId: string, choice: FakeCardChoice): MethodData {
+    const parsed = parseCardChoice(choice);
+    if (!parsed) throw new PaymentProviderError("invalid_request", "not a test card");
+    const { card, label } = parsed;
     const spec = FAKE_CARDS[card];
     const method: MethodData = {
       id: this.newId("pm"),
@@ -1529,7 +1583,7 @@ export class FakePaymentProvider implements PaymentProvider {
       last4: spec.number.slice(-4),
       expMonth: 12,
       expYear: new Date(set.now).getUTCFullYear() + 3,
-      fingerprint: cardFingerprint(card),
+      fingerprint: cardFingerprint(card, label),
       wallet: null,
     };
     set.put("payment_method", method.id, customerId, method);
@@ -1824,6 +1878,13 @@ function publicInvoice(invoice: InvoiceData): ProviderInvoice {
     hostedUrl: null,
     pdfUrl: null,
   };
+}
+
+/** The test card a choice behaves like (`visa:run-42` behaves like `visa`). */
+function behaviourOf(choice: FakeCardChoice): FakeTestCard {
+  const parsed = parseCardChoice(choice);
+  if (!parsed) throw new PaymentProviderError("invalid_request", "not a test card");
+  return parsed.card;
 }
 
 function displayMethod(method: MethodData): ProviderPaymentMethod {

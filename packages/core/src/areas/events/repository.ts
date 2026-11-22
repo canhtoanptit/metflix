@@ -51,12 +51,34 @@ export interface EventsRepository {
   dueDeletions(now: number, limit: number): Promise<PrivacyRequestRecord[]>;
   /** Exports whose link expired before `now` and that still name a document, oldest first. */
   expiredExports(now: number, limit: number): Promise<PrivacyRequestRecord[]>;
+  /**
+   * Exports assembled in batch mode and waiting for their events from the pipeline
+   * (`processing`, holding their partial document `privacy/exports/{id}.partial.json.gz`),
+   * oldest request first, at most `limit`.
+   */
+  waitingExports(limit: number): Promise<PrivacyRequestRecord[]>;
+  /**
+   * Exports whose job may be lost: `pending` or `processing` without a document, not updated
+   * since `before`, least recently updated first, at most `limit`.
+   */
+  staleExports(before: number, limit: number): Promise<PrivacyRequestRecord[]>;
 
-  /** Subject keys whose lake events the next compaction drops. Idempotent (first one kept). */
+  /**
+   * Subject keys whose lake events the pipeline's erase job drops. Idempotent: a pending
+   * record is kept as it was; a confirmed one asked for again is pending again (a profile that
+   * became restricted a second time has new history to erase).
+   */
   addErasures(records: readonly PrivacyErasureRecord[]): Promise<void>;
-  /** Erasures compaction has not confirmed yet, oldest first. */
+  /**
+   * The erasures the operator must run, oldest first, at most `limit`: pending records listed
+   * on their own (accounts, and profiles erased alone). A profile record of an account
+   * deletion (`accountKey` set) is never listed: the account's key covers it.
+   */
   pendingErasures(limit: number): Promise<PrivacyErasureRecord[]>;
-  /** Compaction dropped these subjects' events (idempotent). */
+  /**
+   * The erase job removed these keys' events (idempotent): their records, and the profile
+   * records of the accounts among them, are settled.
+   */
   markErasuresCompacted(subjectKeys: readonly string[], at: number): Promise<void>;
 
   /**
@@ -125,9 +147,14 @@ export type PrivacyRequestPatch = Partial<
 export interface PrivacyErasureRecord {
   subjectKey: string;
   kind: "account" | "profile";
+  /** The account erasure this profile record belongs to; null for one listed on its own. */
+  accountKey: string | null;
   requestedAt: number;
   compactedAt: number | null;
 }
+
+/** The suffix of an export's partial document while it waits for its events (batch mode). */
+export const PARTIAL_EXPORT_SUFFIX = ".partial.json.gz";
 
 /** Statuses of a request still in progress (one per kind and account at a time). */
 export const OPEN_PRIVACY_STATUSES = [

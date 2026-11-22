@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   createKvRecommendationStore,
   createKvRestBulkWriter,
+  KV_BINDING_LISTS_PER_IMPORT,
   KV_REST_BULK_MAX_PAIRS,
   type KvPair,
 } from "../src/index.ts";
@@ -23,6 +24,21 @@ describeRecommendationStoreContract("Workers KV lists over a models store", () =
     prefix: `t-${crypto.randomUUID()}:`,
   }),
 }));
+
+describe("import capacity", () => {
+  it("bounds an import through the binding to one invocation's KV budget, not one through REST", () => {
+    const base = new MemoryRecommendationStore();
+    const binding = createKvRecommendationStore({ namespace: env.CACHE, base });
+    expect(binding.importCapacity?.maxProfileLists).toBe(KV_BINDING_LISTS_PER_IMPORT);
+    expect(binding.importCapacity?.explanation).toContain("make cf-recs-import");
+    const rest = createKvRecommendationStore({
+      namespace: env.CACHE,
+      base,
+      writer: createKvRestBulkWriter({ accountId: "a", namespaceId: "n", apiToken: "t" }),
+    });
+    expect(rest.importCapacity).toBeUndefined();
+  });
+});
 
 describe("KV REST bulk writer", () => {
   function recordingApi(unsuccessfulOnce: string[] = []) {

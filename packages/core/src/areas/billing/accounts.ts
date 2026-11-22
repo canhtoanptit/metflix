@@ -53,7 +53,8 @@ export async function mirrorLegacySubscription(
     startedAt: record.createdAt,
     currentPeriodEnd: entitled ? periodEnd : Math.min(ended, now),
     canceledAt: entitled ? (effective.cancelAtPeriodEnd ? now : null) : Math.min(ended, now),
-    card: record.paymentMethod,
+    // No card on the row of an account that never subscribed: milestone 1 reads that as none.
+    card: effective.status === "none" ? null : record.paymentMethod,
     updatedAt: now,
   });
 }

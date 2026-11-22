@@ -89,6 +89,7 @@ describe("a member without a membership", () => {
   it("gets a complete export", async () => {
     const { t, member } = await bare();
     await t.deps.repos.library.addToMyList(member.profiles.adult.id, "t-lanterns", t.clock.now());
+    t.clock.advance(1000);
     await elevate(t, member);
     const request = await t.services.events.requestExport(member.as("adult"));
     await settle(t);
@@ -102,7 +103,7 @@ describe("a member without a membership", () => {
     expect(
       document.library.find((entry) => entry.profileId === member.profiles.adult.id)?.myList,
     ).toMatchObject([{ titleId: "t-lanterns" }]);
-    expect(document.areas.billing).toMatchObject({ membership: null, invoices: [] });
+    expect(document.areas.billing).toMatchObject({ invoices: [] });
     expect(document.areas.identity).toMatchObject({ hasPassword: false, linkedIdentities: [] });
   });
 

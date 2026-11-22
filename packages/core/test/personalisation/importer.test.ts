@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   importRecommendations,
   RecommendationImportError,
+  RecommendationImportTooLargeError,
   rollbackRecommendations,
 } from "../../src/areas/personalisation/importer.ts";
 import { MemoryBlobStore, MemoryRecommendationStore } from "../../src/memory/index.ts";
@@ -235,6 +236,39 @@ describe("recommendation importer", () => {
     const bumped = JSON.stringify({ ...manifest, formatVersion: 2 });
     await blobs.put(written.manifestKey, bumped);
     await expect(run({ run: RUN_A })).rejects.toThrow(/format version 2 is not supported/);
+  });
+
+  it("refuses up front a run larger than the store can take, says why, writes nothing", async () => {
+    const { blobs, store, run } = await setup();
+    await publish(blobs, RUN_A);
+    await run();
+    await publish(blobs, RUN_B, { profiles: 11 });
+    let writes = 0;
+    const bounded: RecommendationStore = {
+      ...bind(store),
+      importCapacity: { maxProfileLists: 10, explanation: "use the outside importer" },
+      async putNeighbours(target, rows) {
+        writes += 1;
+        return store.putNeighbours(target, rows);
+      },
+      async putProfileLists(target, lists) {
+        writes += 1;
+        return store.putProfileLists(target, lists);
+      },
+    };
+    const refused = await run({ store: bounded }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(RecommendationImportTooLargeError);
+    expect(refused).toMatchObject({ profileLists: 11, maxProfileLists: 10 });
+    expect(String(refused)).toContain("use the outside importer");
+    expect(writes).toBe(0);
+    expect((await store.activeModel())?.run).toBe(RUN_A);
+    expect((await store.models()).find((model) => model.run === RUN_B)).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("has 11 profile lists"),
+    });
+    // At the limit it imports.
+    await publish(blobs, RUN_C, { profiles: 10 });
+    expect(await run({ store: bounded })).toMatchObject({ status: "imported", profiles: 10 });
   });
 
   it("imports a scored version that was never published, by run", async () => {

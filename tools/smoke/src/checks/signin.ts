@@ -453,17 +453,12 @@ export const signinChecks: CheckDefinition[] = [
     id: "identity.oidc.unlink-sticks",
     area: "identity",
     title:
-      "Unlinking Google ends it as a way in: the same identity does not sign in again (nor relink itself) because the addresses match",
+      "An unlinked identity stays removed: with the addresses verified on both sides its next sign-in is link-required, never a silent relink; only a deliberate link by the proven account holder brings it back",
     needs: [needs.googleIssuer],
-    knownFinding: {
-      id: "M2-F5",
-      owner: "identity",
-      summary:
-        "an identity unlinked from an account with the same verified address relinks itself on its next sign-in (§4.1 auto-link), so unlinking cannot stop it",
-    },
     async run(ctx: CheckContext) {
       const env = ctx.env;
       const account = await env.bareHolder("unlink-sticks");
+      const accountId = account.session.account.id;
       await succeeds(
         () => account.agent.api.elevate({ body: { password: account.password } }),
         "POST /session/elevation",
@@ -483,23 +478,42 @@ export const signinChecks: CheckDefinition[] = [
         "signed-in",
         "the linked identity signs in",
       );
+      equal(
+        (await signedIn(account.agent, "after the linked sign-in")).account.emailVerified,
+        true,
+        "the shared address is verified",
+      );
       status(await unlink(account.agent, "google"), 204, "DELETE /account/identities/google");
       const after = ctx.agent("unlink-sticks-after");
       const again = await signIn(env, after, "google", { email: { address: account.email } });
-      const relinked = await succeeds(
-        () => account.agent.api.listIdentities(),
-        "GET /account/identities after the sign-in",
+      expectOutcome(
+        again,
+        "link-required",
+        "the unlinked identity's next sign-in (both addresses verified)",
       );
-      check(
-        !(again.outcome === "signed-in" && relinked.items.length > 0),
-        "the unlinked identity signed in and relinked itself",
-        {
-          expected:
-            "link-required (the member removed it): a removed identity is not linked again automatically",
-          observed: `?oidc=${again.outcome}, identities: ${relinked.items.map((item) => item.provider).join(", ")}`,
-          exchange: again.callback.exchange,
-        },
+      await signedOut(after, "after the removed identity's sign-in");
+      equal(
+        (await succeeds(() => account.agent.api.listIdentities(), "GET /account/identities")).items
+          .length,
+        0,
+        "identities after the removed identity's sign-in (no silent relink)",
       );
+      // The account holder links it again, on purpose (the proof is still fresh).
+      const relinked = await signIn(
+        env,
+        account.agent,
+        "google",
+        { email: { address: account.email } },
+        { intent: "link", returnTo: "/account" },
+      );
+      expectOutcome(relinked, "linked", "a deliberate link by the account holder");
+      const back = ctx.agent("unlink-sticks-back");
+      expectOutcome(
+        await signIn(env, back, "google", { email: { address: account.email } }),
+        "signed-in",
+        "the identity linked again signs in",
+      );
+      equal((await signedIn(back, "relinked")).account.id, accountId, "account signed in to");
     },
   },
   {
@@ -530,21 +544,11 @@ export const signinChecks: CheckDefinition[] = [
           observed: JSON.stringify(before.methods),
         },
       );
-      // No password proves anything for an account that has none (any password is wrong).
-      const guessed = await agent.fetch(`${API}/session/elevation`, {
-        method: "POST",
-        headers: CSRF,
-        body: { password: "no password exists here" },
-      });
-      check(
-        guessed.status === 403 &&
-          /"code":"(current_password_invalid|password_required)"/.test(guessed.text()),
-        "a password was accepted as proof for an account without one",
-        {
-          expected: "403 current_password_invalid (or password_required)",
-          observed: `${guessed.status} ${guessed.exchange.responseBody ?? ""}`,
-          exchange: guessed.exchange,
-        },
+      // No password proves anything for an account that has none.
+      await rejects(
+        () => agent.api.elevate({ body: { password: "no password exists here" } }),
+        "password_required",
+        "POST /session/elevation on an account without a password",
       );
       await rejects(
         () => agent.api.updateAccount({ body: { newPassword: `${env.password}-first` } }),
@@ -800,7 +804,7 @@ export const signinChecks: CheckDefinition[] = [
     id: "identity.password-reset.drops-identities",
     area: "identity",
     title:
-      "Account recovery evicts what an intruder linked: a completed reset drops issuer identities linked under another address",
+      "Account recovery evicts what an intruder linked: a completed reset drops identities linked under another address, and a dropped identity never links itself again (only a deliberate link brings it back)",
     needs: [needs.mailbox, needs.googleIssuer],
     async run(ctx: CheckContext) {
       const env = ctx.env;
@@ -849,15 +853,49 @@ export const signinChecks: CheckDefinition[] = [
         "GET /account/identities",
       );
       equal(identities.items.length, 0, "identities linked under another address after the reset");
+      // A dropped identity never links itself again, even once the account's verified address is
+      // its own: the member moves the account to that address and verifies it.
+      await succeeds(
+        () => device.api.updateAccount({ body: { email: intruder, currentPassword: newPassword } }),
+        "PATCH /account {email} (the dropped identity's address)",
+      );
+      const [verify] = await awaitMail(ctx, anonymous, intruder, "verify-email");
+      check(verify, "no verification email for the new address");
+      await succeeds(
+        () =>
+          anonymous.api.confirmEmailVerification({
+            body: { token: linkToken(verify, "/verify-email") },
+          }),
+        "verify the new address",
+      );
       const evicted = ctx.agent("recover-intruder");
       const after = await signIn(env, evicted, "google", { email: { address: intruder } });
-      check(
-        after.outcome !== "signed-in" ||
-          (await signedIn(evicted, "intruder")).account.id !== account.session.account.id,
-        "the dropped identity still signs in to the account",
-        {
-          observed: after.outcome ?? "(none)",
-        },
+      expectOutcome(
+        after,
+        "link-required",
+        "the identity a reset dropped (addresses now match, both verified)",
+      );
+      await signedOut(evicted, "the dropped identity's browser");
+      equal(
+        (await succeeds(() => device.api.listIdentities(), "GET /account/identities")).items.length,
+        0,
+        "identities after the dropped identity's sign-in (no silent relink)",
+      );
+      // Only the account holder, proving it, links it back.
+      await succeeds(
+        () => device.api.elevate({ body: { password: newPassword } }),
+        "POST /session/elevation",
+      );
+      expectOutcome(
+        await signIn(
+          env,
+          device,
+          "google",
+          { email: { address: intruder } },
+          { intent: "link", returnTo: "/account" },
+        ),
+        "linked",
+        "a deliberate link by the account holder",
       );
     },
   },

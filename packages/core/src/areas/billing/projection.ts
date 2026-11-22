@@ -11,6 +11,7 @@ import {
 import { getPlan } from "../../domain/plans.ts";
 import { toIsoString } from "../../ports/clock.ts";
 import type {
+  ProviderInvoice,
   ProviderPaymentMethod,
   ProviderSubscription,
   ProviderSubscriptionStatus,
@@ -73,8 +74,31 @@ export interface ProjectionInput {
   subscription: ProviderSubscription;
   /** The earliest recorded `invoice.payment_failed` of the subscription's latest invoice. */
   firstFailureAt: number | null;
+  /** The subscription's latest invoice, as the provider has it now (null when unknown). */
+  latestInvoice?: ProviderInvoice | null;
   /** Our time (epoch ms). */
   now: number;
+}
+
+/**
+ * A subscription that ended without ever starting (§5.2: "a first payment that is never
+ * confirmed ... returns the account to `none`"): no trial, and its only invoice, the first
+ * one, was never paid. Read from the provider's own state, so it holds whatever order the
+ * facts arrive in (an abandoned checkout cancelled by Webflix, or one the provider expired).
+ */
+export function neverStarted(
+  subscription: ProviderSubscription,
+  latestInvoice: ProviderInvoice | null | undefined,
+): boolean {
+  if (subscription.status === "incomplete_expired") return true;
+  if (subscription.status !== "canceled" || subscription.trialEnd !== null || !latestInvoice) {
+    return false;
+  }
+  return (
+    latestInvoice.billingReason === "subscription_create" &&
+    latestInvoice.status !== "paid" &&
+    latestInvoice.amountPaidMinor === 0
+  );
 }
 
 /**
@@ -96,7 +120,9 @@ export function supersedes(
 /** The record the provider's current state projects to (the caller writes it with CAS). */
 export function projectMembership(input: ProjectionInput): MembershipRecord {
   const { previous, subscription, now } = input;
-  const mapped = PROVIDER_STATUS_MAP[subscription.status];
+  const mapped = neverStarted(subscription, input.latestInvoice)
+    ? PROVIDER_STATUS_MAP.incomplete_expired
+    : PROVIDER_STATUS_MAP[subscription.status];
   const clockOffsetMs = subscription.clockNow === null ? 0 : subscription.clockNow - now;
   const providerNow = now + clockOffsetMs;
   const sameSubscription = previous?.providerSubscriptionId === subscription.id;
@@ -241,6 +267,8 @@ export function effectiveMembership(
   if (status === "past_due") entitledUntil = graceEndsAt;
   else if (ENTITLED.has(status) && record.cancelAtPeriodEnd) entitledUntil = periodEnd;
 
+  // `none` is no membership at all: no plan, provider or period (MembershipState's contract).
+  if (status === "none") return NO_MEMBERSHIP;
   return {
     status,
     suspendedReason: status === "suspended" ? suspendedReason : null,

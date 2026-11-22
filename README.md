@@ -130,7 +130,7 @@ summary. It exits non-zero if either suite has a failure or a flaky test. Report
 | Suite | What it checks | Details |
 | --- | --- | --- |
 | Browser suite | Playwright: every spec in Chromium; sign-in, browse and playback in Firefox and WebKit | [e2e/README.md](e2e/README.md) |
-| Conformance suite | 131 black-box HTTP checks of the contract and the documented behaviour, milestone 2's journeys included (`make smoke-list` prints the current catalogue; what a deployment must provide for none to skip is in the suite's README) | [tools/smoke/README.md](tools/smoke/README.md) |
+| Conformance suite | 133 black-box HTTP checks of the contract and the documented behaviour, milestone 2's journeys included (`make smoke-list` prints the current catalogue; what a deployment must provide for none to skip is in the suite's README) | [tools/smoke/README.md](tools/smoke/README.md) |
 
 The conformance suite ends by exhausting the sign-in budgets of the address it runs from, so
 it runs second, after a 65 s pause ([why the order matters](e2e/README.md#verify-the-browser-suite-then-the-conformance-suite)).

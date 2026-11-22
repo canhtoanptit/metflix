@@ -67,8 +67,30 @@ export type MemberFacts = (
   accountId: string,
 ) => Promise<{ plan: PlanId | null; joinedAt: number | null }>;
 
+/**
+ * The ranking policy's label (`BrowsePage.policy.id`, copied into impressions and title-opens;
+ * the ranker's position-bias estimate and the experiment analysis read it): `rules` when nothing
+ * from a model shaped the page, `neighbours:{run}` when the rule engine was helped by a fresh
+ * model's neighbours but the profile has no personal list, `learned:{run}` only when a fresh
+ * personal list ranked the page.
+ */
 export const RULES_POLICY_ID = "rules";
+export const neighboursPolicyId = (run: string): string => `neighbours:${run}`;
 export const learnedPolicyId = (run: string): string => `learned:${run}`;
+
+/** The label of a page the engine composed under `plan` (what the model actually contributed). */
+export function policyFor(
+  plan: ServingPlan,
+  use: "personal" | "neighbours" | "none",
+): RankingPolicy {
+  const explore = plan.policy.explore;
+  if (!plan.learned || use === "none") return { id: RULES_POLICY_ID, explore };
+  return {
+    id:
+      use === "personal" ? learnedPolicyId(plan.learned.run) : neighboursPolicyId(plan.learned.run),
+    explore,
+  };
+}
 
 interface ModelData {
   model: RecommendationModel;
@@ -300,19 +322,19 @@ export class RecommendationServing {
           unit,
           accountId: viewer.session.accountId,
           profileId: viewer.profile.id,
-          context: {
-            experiments: assigned,
-            policy: {
-              id: policy === "rules" ? RULES_POLICY_ID : learnedPolicyId(snapshot.model.run),
-              explore: exploreSeed !== null,
-            },
-          },
+          // The page's own label follows on its impressions; the exposure says which arm.
+          context: { experiments: assigned },
         });
       }
       if (policy === "rules") return rules;
       const lists = await this.lists(snapshot.model.run, viewer.profile.id, now);
+      // Provisional: the label is decided once the engine knows what the model contributed
+      // (`policyFor`); a learned plan's page may still be exactly the rule engine's.
       return {
-        policy: { id: learnedPolicyId(snapshot.model.run), explore: exploreSeed !== null },
+        policy: {
+          id: lists ? learnedPolicyId(snapshot.model.run) : neighboursPolicyId(snapshot.model.run),
+          explore: exploreSeed !== null,
+        },
         editorial,
         learned: { run: snapshot.model.run, neighbours: snapshot.neighbours, lists },
         exploreSeed,

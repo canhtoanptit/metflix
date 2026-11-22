@@ -262,6 +262,7 @@ export const identityRoutes = {
       "profile_last_remaining",
       "profile_unlock_required",
       "profile_pin_invalid",
+      "password_required",
       "current_password_invalid",
       "unrestricted_profile_required",
       "demo_account_protected",
@@ -398,7 +399,7 @@ export const identityRoutes = {
     auth: "account",
     summary: "Prove it is the account holder with the password",
     description:
-      "Sets `elevatedUntil` for `ELEVATION_TTL_SEC`. The other proof is a fresh sign-in (`GET /auth/oidc/{provider}/start?intent=reauth`). Every attempt counts against the account's `profile-pin` budget, like every password check after sign-in.",
+      "Sets `elevatedUntil` for `ELEVATION_TTL_SEC`. The other proof is a fresh sign-in (`GET /auth/oidc/{provider}/start?intent=reauth`). `password_required` for an account that has no password (created through an issuer): its proof is the fresh sign-in. Every attempt counts against the account's `profile-pin` budget, like every password check after sign-in.",
     body: ElevateBody,
     response: Elevation,
     errors: ["current_password_invalid", "password_required"],

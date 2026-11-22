@@ -16,6 +16,14 @@ export const EVENT_SINK_ADAPTERS = ["memory", "lake"] as const;
  */
 export const DEV_ONLY_PSEUDONYM_KEY = "dev-only-insecure-pseudonym-key-do-not-deploy";
 
+/**
+ * Where the events of a data export come from: `inline` reads the account's events from the
+ * lake inside the export job (small deployments: every hour of the retention window in one job
+ * invocation); `batch` leaves them to the pipeline's `export-events` job and folds in its
+ * result (services/recs README, "Exports of members' events").
+ */
+export const EXPORT_EVENTS_MODES = ["inline", "batch"] as const;
+
 /** Server events' `app.version` when WEBFLIX_RELEASE is unset. */
 export const DEFAULT_SERVER_RELEASE = "dev";
 const RELEASE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$/;
@@ -34,6 +42,8 @@ export interface EventsAreaConfig {
   exportLinkTtlSec: number;
   /** `app.version` of server events: the deployed release. */
   serverRelease: string;
+  /** Who reads a data export's events: the export job itself, or the pipeline. */
+  exportEvents: (typeof EXPORT_EVENTS_MODES)[number];
 }
 
 /**
@@ -41,7 +51,8 @@ export interface EventsAreaConfig {
  * WEBFLIX_PSEUDONYM_KEY (32+ characters), WEBFLIX_EVENTS_RETENTION_DAYS (default 396, 13
  * months), WEBFLIX_AGGREGATES_RETENTION_DAYS (default 1126, 37 months),
  * WEBFLIX_DELETION_COOLING_OFF_SEC (default 1209600, 14 days), WEBFLIX_EXPORT_LINK_TTL_SEC
- * (default 604800, 7 days), WEBFLIX_RELEASE (default `dev`).
+ * (default 604800, 7 days), WEBFLIX_RELEASE (default `dev`), WEBFLIX_EXPORT_EVENTS (`inline`
+ * in dev mode, `batch` otherwise; `inline` refused on Cloudflare).
  */
 export function loadEventsConfig(input: AreaConfigInput): AreaConfigResult<EventsAreaConfig> {
   const issues: string[] = [];
@@ -51,6 +62,21 @@ export function loadEventsConfig(input: AreaConfigInput): AreaConfigResult<Event
     issues.push("WEBFLIX_PSEUDONYM_KEY: required in production once events are stored");
   }
   const release = input.vars.WEBFLIX_RELEASE ?? DEFAULT_SERVER_RELEASE;
+  // Inline in dev (one process, a small lake); the pipeline everywhere else. A Worker cannot
+  // read 13 months of hourly partitions in one invocation, so Cloudflare refuses inline.
+  const mode = input.vars.WEBFLIX_MODE;
+  const exportEvents = choice(
+    input,
+    "WEBFLIX_EXPORT_EVENTS",
+    EXPORT_EVENTS_MODES,
+    mode === "dev" ? "inline" : "batch",
+    issues,
+  );
+  if (exportEvents === "inline" && mode === "cloudflare") {
+    issues.push(
+      "WEBFLIX_EXPORT_EVENTS=inline: not on Cloudflare (a Worker cannot read the retention window in one invocation); use batch",
+    );
+  }
   if (!RELEASE.test(release)) {
     issues.push("WEBFLIX_RELEASE: 1-40 characters of [A-Za-z0-9._+-]");
   }
@@ -79,6 +105,7 @@ export function loadEventsConfig(input: AreaConfigInput): AreaConfigResult<Event
         issues,
       ),
       serverRelease: RELEASE.test(release) ? release : DEFAULT_SERVER_RELEASE,
+      exportEvents,
     },
     issues,
   };

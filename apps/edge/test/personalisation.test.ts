@@ -20,7 +20,28 @@ import { beforeAll, describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index.ts";
 import { getRuntime } from "../src/runtime.ts";
 
+// Vite's import.meta.glob (provided by the Vitest plugin), declared here: the Worker's types do
+// not include Vite's.
+declare global {
+  interface ImportMeta {
+    glob<T = unknown>(
+      pattern: string,
+      options: { query?: string; import?: string; eager: true },
+    ): Record<string, T>;
+  }
+}
+
 const DAY = 86_400_000;
+/** The pipeline's own smoke-size analysis results (packages/core/test/fixtures). */
+const RESULTS: Record<string, string> = Object.fromEntries(
+  Object.entries(
+    import.meta.glob<string>("../../../packages/core/test/fixtures/experiment-results/*.fixture", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }),
+  ).map(([path, text]) => [path.split("/").at(-1)?.replace(".fixture", "") ?? path, text]),
+);
 const RUN = "20261121-000000-feedf00d";
 const PREVIOUS = "20261120-000000-0dd0dd00";
 const counts = { d1: 0, kv: 0 };
@@ -276,6 +297,65 @@ describe("hybrid serving in the Worker (D1 + KV)", () => {
     expect(cold.page.rows.some((row) => row.kind === "top-picks")).toBe(false);
   });
 
+  it("refuses up front a run too large for one Worker invocation, naming the outside importer", async () => {
+    const now = Date.now();
+    const run = "20261122-120000-0b16b16b";
+    const profiles = Array.from({ length: 801 }, (_, index) => ({
+      profileKey: `big${String(index).padStart(19, "0")}`,
+      run,
+      generatedAt: now,
+      expiresAt: now + DAY,
+      rows: [],
+    }));
+    await writeRecsVersion(createR2BlobStore(env.MEDIA), {
+      run,
+      asOf: now - DAY,
+      expiresAt: now + DAY,
+      neighbours: [{ titleId: "t-orbit", rank: 1, neighbourId: "t-owl", score: 0.5, support: 1 }],
+      profiles,
+    });
+    const { personalisation } = runtime().services;
+    const served = (await personalisation.recommendationStatus()).activeModel?.run;
+    counts.kv = 0;
+    await expect(personalisation.requestImport()).rejects.toMatchObject({
+      code: "recommendation_import_too_large",
+      detail: expect.stringContaining("make cf-recs-import"),
+    });
+    // The job path refuses too, before writing a single list, and says why in the status.
+    await expect(personalisation.importRecommendations()).rejects.toThrow(/801 profile lists/);
+    expect(counts.kv).toBeLessThan(5);
+    const status = await personalisation.recommendationStatus();
+    expect(status.activeModel?.run).toBe(served);
+    expect(status.lastImport).toMatchObject({ run, status: "failed" });
+    expect(status.lastImport?.error).toContain("make cf-recs-import");
+  });
+
+  it("imports the pipeline's experiment results from R2 inside the Worker", async () => {
+    const blobs = createR2BlobStore(env.MEDIA);
+    const dir = "experiments/results/r=20261122-111623-700";
+    await blobs.put("experiments/results/current.json", RESULTS["current.json"] ?? "");
+    await blobs.put(`${dir}/recs-aa.json`, RESULTS["recs-aa.json"] ?? "");
+    await blobs.put(`${dir}/recs-ranking.json`, RESULTS["recs-ranking.json"] ?? "");
+    const { experiments } = runtime().services;
+    const {
+      status: _s,
+      salt: _salt,
+      registeredAt: _r,
+      createdAt: _c,
+      updatedAt: _u,
+      ...design
+    } = experimentDefinition({ key: "recs-aa", layer: "aa" });
+    await experiments.createExperiment(design, staff);
+    expect(await experiments.importResults()).toMatchObject({
+      imported: ["recs-aa"],
+      skipped: [{ key: "recs-ranking", reason: "unknown experiment" }],
+    });
+    expect((await experiments.importResults()).unchanged).toEqual(["recs-aa"]);
+    expect((await experiments.getExperimentResults("recs-aa")).computedAt).toBe(
+      "2026-11-22T11:16:23.700Z",
+    );
+  });
+
   it("rolls back across D1 and KV in one D1 write", async () => {
     await runtime().services.experiments.setExperimentStatus(
       "recs.learned-vs-rules",
@@ -286,7 +366,8 @@ describe("hybrid serving in the Worker (D1 + KV)", () => {
     const status = await runtime().services.personalisation.rollbackRecommendations();
     expect(status.activeModel?.run).toBe(PREVIOUS);
     const { cold } = await coldAndWarm();
-    expect(cold.page.policy?.id).toBe(`learned:${PREVIOUS}`);
+    // The previous run has no list for this profile: its neighbours help the rule engine.
+    expect(cold.page.policy?.id).toBe(`neighbours:${PREVIOUS}`);
     expect(cold.page.rows.some((row) => row.kind === "top-picks")).toBe(false);
     for (const [name, row] of Object.entries(table)) {
       console.log(

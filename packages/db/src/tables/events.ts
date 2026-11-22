@@ -29,6 +29,8 @@ export interface PrivacyErasuresTable {
   kind: string;
   requested_at: number;
   compacted_at: number | null;
+  /** Migration 0016: the account erasure a profile record belongs to; null when listed alone. */
+  account_key: string | null;
 }
 
 export interface AnalyticsDailyTable {

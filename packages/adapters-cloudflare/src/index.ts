@@ -39,6 +39,7 @@ export {
   bindingBulkWriter,
   createKvRecommendationStore,
   createKvRestBulkWriter,
+  KV_BINDING_LISTS_PER_IMPORT,
   KV_REST_BULK_MAX_BYTES,
   KV_REST_BULK_MAX_PAIRS,
   type KvBulkWriter,

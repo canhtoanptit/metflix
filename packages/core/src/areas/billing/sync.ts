@@ -1,6 +1,6 @@
 import { serializeError } from "../../ports/logger.ts";
 import type { ProviderEvent, ProviderSubscription } from "../../ports/payment-provider.ts";
-import { mirrorLegacySubscription } from "./accounts.ts";
+import { mirrorLegacySubscription, readAccount } from "./accounts.ts";
 import type { BillingContext } from "./context.ts";
 import { emailReceipt, emailsForChange, emailTrialsEnding } from "./emails.ts";
 import { invoiceRecord } from "./presenters.ts";
@@ -161,9 +161,20 @@ export async function syncSubscription(
     if (!supersedes(previous, subscription)) {
       return previous ? { accountId, membership: previous, changed: false } : null;
     }
+    // An erased account (§6.3): its provider objects can still send events (the cancellation
+    // its erasure caused, for one). The billing records stay; there is no projection to write.
+    if (!previous && !(await readAccount(context.deps, accountId))) {
+      logger.info("billing.account_gone", { subscriptionId });
+      return null;
+    }
     const firstFailureAt = subscription.latestInvoiceId
       ? await repos.billing.firstFailureAt(context.provider, subscription.latestInvoiceId)
       : null;
+    // Only an ended subscription needs its invoice to tell "ended" from "never started".
+    const latestInvoice =
+      subscription.status === "canceled" && subscription.latestInvoiceId
+        ? await context.payments.retrieveInvoice(subscription.latestInvoiceId)
+        : null;
     const now = context.now();
     const next = projectMembership({
       previous,
@@ -171,6 +182,7 @@ export async function syncSubscription(
       provider: context.provider,
       subscription,
       firstFailureAt,
+      latestInvoice,
       now,
     });
     if (!(await repos.billing.saveMembership(next, previous?.version ?? null))) continue;

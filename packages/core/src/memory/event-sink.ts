@@ -1,5 +1,7 @@
 import type { LakeEvent } from "@webflix/contracts";
 import {
+  type AccountEventsOptions,
+  type AccountEventsRead,
   assertPrivateDocumentKey,
   decodeScanCursor,
   type EventSink,
@@ -13,6 +15,7 @@ import {
   scanLimit,
 } from "../ports/event-sink.ts";
 import { createUuidV7Generator, type IdGenerator } from "../ports/ids.ts";
+import { keepEarliestReceipt } from "../ports/lake-reader.ts";
 
 /**
  * In-process `EventSink`: keeps each append's objects (decoded) in memory. Same partitioning
@@ -55,6 +58,26 @@ export class MemoryEventSink implements EventSink {
       })),
       cursor: start + limit < keys.length ? encodeScanCursor({ p: start + limit, c: null }) : null,
     };
+  }
+
+  async accountEvents(options: AccountEventsOptions): Promise<AccountEventsRead> {
+    const objects: string[] = [];
+    const events: unknown[] = [];
+    for (const { key, events: stored } of this.objects()) {
+      if (!isLakeObjectInRange(key, options.fromMs, options.toMs)) continue;
+      objects.push(key);
+      for (const event of stored) {
+        const at = Date.parse(event.receivedAt);
+        if (
+          event.subject.account === options.accountKey &&
+          at >= options.fromMs &&
+          at < options.toMs
+        ) {
+          events.push(event);
+        }
+      }
+    }
+    return { events: keepEarliestReceipt(events), read: { objects, rowGroups: {} } };
   }
 
   async putDocument(name: string, bytes: Uint8Array): Promise<string> {

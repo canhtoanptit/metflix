@@ -8,19 +8,20 @@
 import type { Checkout, Invoice, MembershipState, PlanId, TitleCard } from "@webflix/contracts";
 import type { Environment, TestAccount } from "../env.ts";
 import { check, equal, fail, problem, rejects, status, succeeds } from "../expect.ts";
-import type { Agent } from "../http.ts";
+import { type Agent, isApiError } from "../http.ts";
 import { awaitMail, mailboxNow } from "../mail.ts";
 import { needs } from "../needs.ts";
 import { federatedSignIn } from "../oidc.ts";
 import {
   advancePast,
   awaitCheckout,
+  type CardChoice,
   confirmAtProvider,
   confirmCard,
-  convertTrial,
   deliverPending,
   deliveryPolicy,
   type FakeCard,
+  labelledCard,
   paidMembership,
   playsOnce,
   RENEWAL_SETTLE_SEC,
@@ -30,6 +31,9 @@ import {
 } from "../payments.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
 import { API, CSRF } from "./util.ts";
+
+/** The fake provider's standing promo code by default (WEBFLIX_PAYMENTS_FAKE_PROMOTIONS). */
+const FAKE_STANDING_PROMOTION = "WEBFLIX50";
 
 /** A movie every adult profile may play (the catalogue's first). */
 async function movie(env: Environment): Promise<TitleCard> {
@@ -76,90 +80,84 @@ async function refusedPlayback(agent: Agent, titleId: string, status_: string, w
   );
 }
 
-const TRIAL_CARDS_CONVERTS: FakeCard[] = ["mastercard", "visa", "challenge"];
-const TRIAL_CARDS_CANCELLED: FakeCard[] = [
-  "charge-declined",
-  "mastercard",
-  "visa",
-  "challenge",
-  "authentication-required",
-];
-
 /**
- * A running trial (§5.4: one per account and per card fingerprint, deployment-wide). Cards are
- * tried in turn on one account: a card whose trial is spent leaves an unpaid first invoice,
- * which a checkout for another plan abandons, so the account stays eligible for the next.
+ * A running trial (§5.4: one per account and per card fingerprint, deployment-wide), with a
+ * labelled card no run has used, so it is a first trial on every rerun against one database.
  */
 async function trialMembership(
   ctx: CheckContext,
   account: TestAccount,
-  cards: readonly FakeCard[],
-): Promise<{ card: FakeCard; checkout: Checkout; membership: MembershipState; planId: PlanId }> {
-  const plans: PlanId[] = ["standard", "basic"];
-  const spent: string[] = [];
-  for (const [index, card] of cards.entries()) {
-    const planId = plans[index % 2] ?? "standard";
-    const started = await succeeds(
-      () => account.agent.api.startCheckout({ body: { planId } }),
-      `checkout (${planId}) for a trial with ${card}`,
-    );
-    check(started.clientSecret, "a new checkout carries no client secret");
-    await confirmCard(account.agent, started.clientSecret, card, `trial card ${card}`);
-    const confirmed = await succeeds(
-      () => account.agent.api.confirmCheckout({ params: { id: started.id } }),
-      `confirm the checkout with ${card}`,
-    );
-    if (confirmed.trial) {
-      const checkout =
-        confirmed.status === "complete"
-          ? confirmed
-          : await awaitCheckout(ctx, account.agent, started.id, `trial with ${card}`);
-      if (spent.length > 0)
-        ctx.note(`test cards whose trial was already spent: ${spent.join(", ")}`);
-      return { card, checkout, membership: await membership(account.agent, "trial"), planId };
-    }
-    equal(confirmed.status, "requires_payment", `a checkout with ${card} and no trial`);
-    spent.push(card);
-  }
-  ctx.skip(
-    `no trial left on this deployment for the test cards ${cards.join(", ")}: one trial per card fingerprint (§5.4) and the fake provider gives every customer the same fingerprint per test card, so each card grants one trial per deployment (finding M2-F2). Trial journeys need a deployment whose cards have not had one (a fresh database)`,
+  base: FakeCard,
+  purpose: string,
+): Promise<{ card: CardChoice; checkout: Checkout; membership: MembershipState; planId: PlanId }> {
+  const card = labelledCard(base, ctx.options.runId, purpose);
+  const planId: PlanId = "standard";
+  const started = await succeeds(
+    () => account.agent.api.startCheckout({ body: { planId } }),
+    `checkout (${planId}) for a trial`,
   );
+  check(started.clientSecret, "a new checkout carries no client secret");
+  await confirmCard(account.agent, started.clientSecret, card, `trial card ${card}`);
+  const confirmed = await succeeds(
+    () => account.agent.api.confirmCheckout({ params: { id: started.id } }),
+    `confirm the checkout with ${card}`,
+  );
+  check(confirmed.trial, "a new account with a card that never had a trial got no trial", {
+    expected: `trial: { days: 7 } (§5.4: one trial per account and per card; both are new)`,
+    observed: JSON.stringify(confirmed),
+  });
+  const checkout =
+    confirmed.status === "complete"
+      ? confirmed
+      : await awaitCheckout(ctx, account.agent, started.id, `trial with ${card}`);
+  return { card, checkout, membership: await membership(account.agent, "trial"), planId };
 }
 
 /**
- * A new account whose checkout stopped at its first payment (no trial: the checkout's card had
- * spent its trial on this deployment). Each card is tried on a fresh account, because a granted
- * trial is a membership.
+ * A card whose trial is spent, for this run: a labelled card whose one trial a throwaway account
+ * took. Checkouts with it stop at the first payment, deterministically.
+ */
+function spentCard(ctx: CheckContext): Promise<CardChoice> {
+  return ctx.env.once("card:spent", async () => {
+    const card = labelledCard("visa", ctx.options.runId, "spent");
+    const account = await ctx.env.bareHolder("spend-trial");
+    const subscribed = await subscribe(ctx, account.agent, { planId: "basic", card });
+    check(subscribed.trial, "a card that never had a trial got none (spending its trial)", {
+      observed: JSON.stringify(subscribed.checkout),
+    });
+    return card;
+  });
+}
+
+/**
+ * A new account whose checkout stopped at its first payment: its card's trial is spent, so the
+ * account (eligible itself) gets none (§5.4: one trial per card as well as per account).
  */
 async function firstPaymentPending(
   ctx: CheckContext,
   tag: string,
 ): Promise<{ account: TestAccount; checkout: Checkout }> {
-  for (const card of ["visa", "mastercard", "challenge"] as const) {
-    const account = await ctx.env.bareHolder(`${tag}-${card}`);
-    const agent = account.agent;
-    const started = await succeeds(
-      () => agent.api.startCheckout({ body: { planId: "basic" } }),
-      "POST /billing/checkout (basic)",
-    );
-    check(started.clientSecret, "no client secret");
-    await confirmCard(agent, started.clientSecret, card, `card ${card}`);
-    const confirmed = await succeeds(
-      () => agent.api.confirmCheckout({ params: { id: started.id } }),
-      "confirm the checkout",
-    );
-    if (confirmed.trial) continue;
-    equal(confirmed.status, "requires_payment", "a checkout without a trial");
-    equal(
-      (await membership(agent, "awaiting the first payment")).status,
-      "incomplete",
-      "status awaiting the first payment",
-    );
-    return { account, checkout: confirmed };
-  }
-  ctx.skip(
-    "every card tried (visa, mastercard, challenge) still had its trial on this deployment, so no checkout stopped at a first payment (one trial per card, finding M2-F2); this runs once those trials are spent",
+  const card = await spentCard(ctx);
+  const account = await ctx.env.bareHolder(tag);
+  const agent = account.agent;
+  const started = await succeeds(
+    () => agent.api.startCheckout({ body: { planId: "basic" } }),
+    "POST /billing/checkout (basic)",
   );
+  check(started.clientSecret, "no client secret");
+  await confirmCard(agent, started.clientSecret, card, `card ${card} (trial spent)`);
+  const confirmed = await succeeds(
+    () => agent.api.confirmCheckout({ params: { id: started.id } }),
+    "confirm the checkout",
+  );
+  equal(confirmed.trial, null, "a trial on a card that already had one");
+  equal(confirmed.status, "requires_payment", "a checkout without a trial");
+  equal(
+    (await membership(agent, "awaiting the first payment")).status,
+    "incomplete",
+    "status awaiting the first payment",
+  );
+  return { account, checkout: confirmed };
 }
 
 /** The account once its membership is no longer `incomplete` (it follows provider events). */
@@ -178,7 +176,7 @@ export const billingChecks: CheckDefinition[] = [
     id: "billing.checkout",
     area: "billing",
     title:
-      "An account without a membership is refused playback, checks out through the provider's form, pays (at once, or when its trial converts), becomes entitled and plays",
+      "An account without a membership is refused playback, checks out through the provider's form, pays its first invoice (a card whose trial is spent), becomes entitled and plays",
     needs: [needs.fakePayments],
     async run(ctx: CheckContext) {
       const account = await ctx.env.bareHolder("checkout");
@@ -223,24 +221,27 @@ export const billingChecks: CheckDefinition[] = [
         "checkout_state_conflict",
         "confirming before the card was confirmed at the provider",
       );
-      await confirmCard(agent, started.clientSecret, "visa", "card");
+      const card = await spentCard(ctx);
+      await confirmCard(agent, started.clientSecret, card, "card");
       const confirmed = await succeeds(
         () => agent.api.confirmCheckout({ params: { id: started.id } }),
         "POST /billing/checkout/:id/confirm",
       );
       const standard = await price(agent, "standard");
-      if (confirmed.trial) {
-        equal(confirmed.trial.days, 7, "trial days");
-        equal(confirmed.amountDue?.amountMinor, 0, "amount due with a trial");
-      } else {
-        equal(confirmed.status, "requires_payment", "status without a trial");
-        equal(confirmed.amountDue?.amountMinor, standard, "first payment amount");
-        check(confirmed.clientSecret, "requires_payment without a client secret");
-        await confirmCard(agent, confirmed.clientSecret, undefined, "first payment");
-      }
-      const checkout = await awaitCheckout(ctx, agent, started.id, "checkout");
+      equal(confirmed.trial, null, "a trial on a card that already had one");
+      equal(confirmed.status, "requires_payment", "status without a trial");
+      equal(confirmed.amountDue?.amountMinor, standard, "first payment amount");
+      check(confirmed.clientSecret, "requires_payment without a client secret");
+      equal(
+        (await membership(agent, "awaiting the first payment")).status,
+        "incomplete",
+        "membership awaiting the first payment",
+      );
+      await refusedPlayback(agent, title.id, "incomplete", "playback before the first payment");
+      await confirmCard(agent, confirmed.clientSecret, undefined, "first payment");
+      await awaitCheckout(ctx, agent, started.id, "checkout");
       const after = await succeeds(() => agent.api.getAccount(), "GET /account after checkout");
-      equal(after.membership?.status, checkout.trial ? "trialing" : "active", "membership.status");
+      equal(after.membership?.status, "active", "membership.status");
       equal(after.membership?.planId, "standard", "membership.planId");
       equal(after.membership?.provider, "fake", "membership.provider");
       equal(after.entitlement?.entitled, true, "entitled after checkout");
@@ -257,15 +258,6 @@ export const billingChecks: CheckDefinition[] = [
         observed: String(played.maxVideoHeight),
       });
 
-      if (checkout.trial && after.membership) {
-        ctx.note("the checkout granted the trial: paid when it converts");
-        await convertTrial(agent, after.membership);
-        equal(
-          (await membership(agent, "after the trial")).status,
-          "active",
-          "status after the trial",
-        );
-      }
       const paid = (await invoices(agent, "after paying")).find(
         (invoice) => invoice.amountPaid.amountMinor > 0,
       );
@@ -411,12 +403,6 @@ export const billingChecks: CheckDefinition[] = [
     title:
       "A checkout abandoned before its first payment (another plan chosen) leaves the account without a membership, as an expired one does (§5.2)",
     needs: [needs.fakePayments],
-    knownFinding: {
-      id: "M2-F3",
-      owner: "billing",
-      summary:
-        "an abandoned unpaid first subscription projects to `canceled` (entitlement `ended`) instead of `none` (`no_membership`)",
-    },
     async run(ctx: CheckContext) {
       const { account, checkout } = await firstPaymentPending(ctx, "abandon");
       const agent = account.agent;
@@ -450,12 +436,6 @@ export const billingChecks: CheckDefinition[] = [
     title:
       "A first payment never confirmed expires at the provider (23 h on its clock): the account is back to no membership, with no plan, provider or period (§5.2)",
     needs: [needs.fakePayments],
-    knownFinding: {
-      id: "M2-F4",
-      owner: "billing",
-      summary:
-        "after an expired first payment the membership is `none` but keeps `planId`, `provider` and `currentPeriodEnd` (the contract: null while `none`)",
-    },
     async run(ctx: CheckContext) {
       const { account, checkout } = await firstPaymentPending(ctx, "expire");
       const agent = account.agent;
@@ -509,26 +489,24 @@ export const billingChecks: CheckDefinition[] = [
     id: "billing.promo-code.applied",
     area: "billing",
     title:
-      "A promo code is quoted before it is applied, and the first invoice charges the discounted price",
-    needs: [
-      needs.fakePayments,
-      {
-        id: "promo-code",
-        async evaluate(env) {
-          return env.options.promoCode
-            ? null
-            : "no promo code known to the suite (pass --promo-code CODE: a code valid for the Standard plan). A deployment with the fake provider has none: codes exist only in process (FakePaymentProvider.definePromotion) and no route, seed or setting creates one (finding M2-F1)";
-        },
-      },
-    ],
+      "A promo code is quoted before it is applied, and the first payment charges exactly the quoted price (the fake provider's standing code, or --promo-code)",
+    needs: [needs.fakePayments],
     async run(ctx: CheckContext) {
-      const code = ctx.options.promoCode ?? "";
+      // The fake provider's standing code (WEBFLIX_PAYMENTS_FAKE_PROMOTIONS, default WEBFLIX50).
+      const code = ctx.options.promoCode ?? FAKE_STANDING_PROMOTION;
       const account = await ctx.env.bareHolder("promo");
       const agent = account.agent;
-      const quote = await succeeds(
-        () => agent.api.validatePromotion({ body: { code, planId: "standard" } }),
-        "POST /billing/promotions/validate",
-      );
+      let quote: Awaited<ReturnType<typeof agent.api.validatePromotion>>;
+      try {
+        quote = await agent.api.validatePromotion({ body: { code, planId: "standard" } });
+      } catch (error) {
+        if (!ctx.options.promoCode && isApiError(error, "promotion_code_invalid")) {
+          ctx.skip(
+            `the fake provider has no standing promo code ${code} (WEBFLIX_PAYMENTS_FAKE_PROMOTIONS is set otherwise, or none): pass --promo-code CODE (a code valid for the Standard plan)`,
+          );
+        }
+        quote = await succeeds(() => Promise.reject(error), "POST /billing/promotions/validate");
+      }
       const standard = await price(agent, "standard");
       equal(quote.price.amountMinor, standard, "quoted price");
       check(
@@ -541,18 +519,35 @@ export const billingChecks: CheckDefinition[] = [
         "exactly one of percentOff and amountOff must be set",
         { observed: JSON.stringify(quote.promotion) },
       );
-      const subscribed = await subscribe(ctx, agent, {
-        planId: "standard",
-        card: "visa",
-        promotionCode: code,
-      });
-      equal(subscribed.checkout.promotion?.code, quote.promotion.code, "checkout promotion");
-      if (subscribed.trial) await convertTrial(agent, subscribed.membership);
+      // A card whose trial is spent: the first invoice is charged now, with the discount.
+      const card = await spentCard(ctx);
+      const started = await succeeds(
+        () => agent.api.startCheckout({ body: { planId: "standard", promotionCode: code } }),
+        "POST /billing/checkout with the promo code",
+      );
+      equal(started.promotion?.code, quote.promotion.code, "the checkout's promotion");
+      check(started.clientSecret, "no client secret");
+      await confirmCard(agent, started.clientSecret, card, "card");
+      const confirmed = await succeeds(
+        () => agent.api.confirmCheckout({ params: { id: started.id } }),
+        "confirm the checkout",
+      );
+      equal(confirmed.status, "requires_payment", "a checkout without a trial");
+      equal(
+        confirmed.amountDue?.amountMinor,
+        quote.discountedPrice.amountMinor,
+        "the first payment's amount (as quoted)",
+      );
+      check(confirmed.clientSecret, "requires_payment without a client secret");
+      await confirmCard(agent, confirmed.clientSecret, undefined, "first payment");
+      await awaitCheckout(ctx, agent, started.id, "checkout with the promo code");
       const charged = (await invoices(agent, "after the promo checkout")).find(
         (invoice) => invoice.amountPaid.amountMinor > 0,
       );
       check(charged, "no paid invoice");
       equal(charged.amountPaid.amountMinor, quote.discountedPrice.amountMinor, "charged as quoted");
+      equal((await entitlement(agent, "after the promo checkout")).entitled, true, "entitled");
+      ctx.note(`${quote.promotion.code}: ${standard} → ${quote.discountedPrice.amountMinor}`);
     },
   },
   {
@@ -564,7 +559,7 @@ export const billingChecks: CheckDefinition[] = [
     async run(ctx: CheckContext) {
       const account = await ctx.env.bareHolder("trial-converts");
       const agent = account.agent;
-      const trial = await trialMembership(ctx, account, TRIAL_CARDS_CONVERTS);
+      const trial = await trialMembership(ctx, account, "mastercard", "converts");
       equal(trial.membership.status, "trialing", "membership.status");
       check(trial.membership.trialEndsAt, "trialing without trialEndsAt");
       const days = (Date.parse(trial.membership.trialEndsAt) - Date.now()) / 86_400_000;
@@ -604,7 +599,8 @@ export const billingChecks: CheckDefinition[] = [
       const account = await ctx.env.bareHolder("trial-cancelled");
       const agent = account.agent;
       const title = await movie(ctx.env);
-      const trial = await trialMembership(ctx, account, TRIAL_CARDS_CANCELLED);
+      // A card that declines whenever it is charged: a cancelled trial must never be charged.
+      const trial = await trialMembership(ctx, account, "charge-declined", "cancelled");
       check(trial.membership.trialEndsAt, "trialing without trialEndsAt");
       await succeeds(() => agent.api.cancelMembership(), "DELETE /account/subscription");
       const cancelling = await membership(agent, "after cancelling");
@@ -663,7 +659,7 @@ export const billingChecks: CheckDefinition[] = [
     async run(ctx: CheckContext) {
       const account = await ctx.env.bareHolder("plan-change");
       const agent = account.agent;
-      await paidMembership(ctx, agent, { planId: "standard", card: "visa" });
+      await paidMembership(ctx, agent, { planId: "standard", card: await spentCard(ctx) });
       const up = await succeeds(
         () => agent.api.previewPlanChange({ body: { planId: "premium" } }),
         "POST /billing/subscription/preview (premium)",
@@ -772,7 +768,12 @@ export const billingChecks: CheckDefinition[] = [
       const account: TestAccount = { tag: "journey", email, password: "", agent, session };
       await env.holder(account);
       const title = await movie(env);
-      const paid = await paidMembership(ctx, agent, { planId: "standard", card: "visa" });
+      // A first trial on a card that never had one, paid when it converts.
+      const paid = await paidMembership(ctx, agent, {
+        planId: "standard",
+        card: labelledCard("visa", ctx.options.runId, "journey"),
+      });
+      equal(paid.trialConverted, true, "a new member's first checkout with a new card is a trial");
       await playsOnce(agent, title.id, "watch after paying");
 
       await succeeds(() => agent.api.cancelMembership(), "DELETE /account/subscription");
@@ -806,8 +807,12 @@ export const billingChecks: CheckDefinition[] = [
         "checkout_state_conflict",
         "resuming an ended membership",
       );
-      const restarted = await subscribe(ctx, agent, { planId: "standard", card: "visa" });
-      equal(restarted.trial, false, "a second trial for the same account");
+      // Another card that never had a trial: the account has had its one (§5.4).
+      const restarted = await subscribe(ctx, agent, {
+        planId: "standard",
+        card: labelledCard("mastercard", ctx.options.runId, "journey-restart"),
+      });
+      equal(restarted.trial, false, "a second trial for the same account (on a new card)");
       equal(restarted.membership.status, "active", "status after resubscribing");
       await playsOnce(agent, title.id, "watch after resubscribing");
     },
@@ -824,7 +829,10 @@ export const billingChecks: CheckDefinition[] = [
       const agent = account.agent;
       const title = await movie(ctx.env);
       // Saved fine, declined whenever it is charged later (packages/payments-fake).
-      const subscribed = await subscribe(ctx, agent, { planId: "basic", card: "charge-declined" });
+      const subscribed = await subscribe(ctx, agent, {
+        planId: "basic",
+        card: labelledCard("charge-declined", ctx.options.runId, "dunning"),
+      });
       const renewalAt = subscribed.membership.trialEndsAt ?? subscribed.membership.currentPeriodEnd;
       check(renewalAt, "no renewal date");
       await advancePast(agent, renewalAt, RENEWAL_SETTLE_SEC, "the renewal");
@@ -934,7 +942,7 @@ export const billingChecks: CheckDefinition[] = [
         });
         const unruly = await env.bareHolder("webhooks-unruly");
         const agent = unruly.agent;
-        await paidMembership(ctx, agent, { planId: "standard", card: "visa" });
+        await paidMembership(ctx, agent, { planId: "standard", card: await spentCard(ctx) });
         const preview = await succeeds(
           () => agent.api.previewPlanChange({ body: { planId: "premium" } }),
           "preview the upgrade",
@@ -1024,7 +1032,7 @@ export async function memberWithPaidInvoice(
   tag: string,
 ): Promise<{ account: TestAccount; invoice: Invoice }> {
   const account = await ctx.env.bareHolder(tag);
-  await paidMembership(ctx, account.agent, { planId: "standard", card: "visa" });
+  await paidMembership(ctx, account.agent, { planId: "standard", card: await spentCard(ctx) });
   const paid = (await invoices(account.agent, "paid invoices")).find(
     (invoice) => invoice.amountPaid.amountMinor > 0 && invoice.amountRefunded.amountMinor === 0,
   );

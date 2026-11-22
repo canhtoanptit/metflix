@@ -31,12 +31,14 @@ import type {
   ExperimentDefinition,
   ExperimentList,
   ExperimentResults,
+  ExportResultsBody,
   JsonValue,
   MemberDetail,
   MemberPrivacy,
   MemberSearchPage,
   MembershipState,
   PendingErasures,
+  PendingExports,
   PlanId,
   PlanSyncResult,
   RecommendationStatus,
@@ -85,6 +87,12 @@ export interface StaffOperations {
     cancelDeletion(context: StaffContext, accountId: string, reason: string): Promise<void>;
     pendingErasures(limit: number): Promise<PendingErasures>;
     confirmErasures(context: StaffContext, subjectKeys: string[], reason: string): Promise<void>;
+    pendingExports(limit: number): Promise<PendingExports>;
+    recordExportResults(
+      context: StaffContext,
+      document: ExportResultsDocument,
+      reason: string,
+    ): Promise<void>;
   };
   billing: {
     refund(
@@ -189,6 +197,13 @@ export interface StaffOperations {
     list(query: AuditQuery): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
   };
 }
+
+/** `export-events`'s results document, as the staff route parsed it (without its `reason`). */
+export type ExportResultsDocument = Omit<ExportResultsBody, "reason">;
+
+/** Request ids only: the pattern holds no `/`, `?` or `:`, so no link can pass as one. */
+const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const requestIds = (ids: readonly string[]) => ids.filter((id) => REQUEST_ID.test(id));
 
 /** Settles within `ms` or rejects with a timeout (a hung dependency must not hang the probe). */
 function within<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -380,6 +395,30 @@ export function createStaffOperations(
         after: () => ({ confirmed: keys.length }),
       });
     },
+
+    // Already `{ requests }`, the shape the pipeline reads.
+    pendingExports: (limit) => areas().events.staff.pendingExports(limit),
+
+    async recordExportResults(context, document, reason) {
+      await trail.audited({
+        context,
+        action: "privacy.export_events_recorded",
+        target: { type: "event_lake", id: "exports" },
+        reason,
+        // The parsed document only (unknown members were dropped by validation): request ids,
+        // statuses, the job's private document locations, sizes and hashes. Never a link.
+        parameters: asJson(document),
+        run: () => areas().events.staff.recordExportResults(document),
+        // What became of each request, by id (completed, erased, kept listed, ignored); ids only,
+        // so nothing the events area might add to its answer reaches the log.
+        after: (outcome) => ({
+          completed: requestIds(outcome.completed),
+          erased: requestIds(outcome.erased),
+          kept: requestIds(outcome.kept),
+          ignored: requestIds(outcome.ignored),
+        }),
+      });
+    },
   };
 
   const billing: StaffOperations["billing"] = {
@@ -402,16 +441,19 @@ export function createStaffOperations(
       });
     },
 
-    cancel(context, accountId, input) {
-      return trail.audited<MembershipState>({
+    async cancel(context, accountId, input) {
+      // The entry's `after` is the membership and the refund of the unused time (null when
+      // none was made), so the money that moved is visible where the action is. A retry is
+      // answered from it.
+      const outcome = await trail.audited<{ membership: MembershipState; refund: Refund | null }>({
         context,
         action: "billing.subscription_canceled",
         target: member(accountId),
         reason: input.reason,
         idempotencyKey: input.idempotencyKey,
         parameters: { when: input.when, refundUnused: input.refundUnused ?? false },
-        // Cancelling now and refunding the unused time are two provider calls: a refusal of the
-        // second leaves the first done, so such an error is `unknown`, not `failed`.
+        // Cancelling now and refunding the unused time are two provider calls: a refusal of
+        // the second leaves the first done, so such an error is `unknown`, not `failed`.
         singleStep: !(input.when === "now" && input.refundUnused === true),
         run: () =>
           areas().billing.cancelForStaff({
@@ -422,6 +464,7 @@ export function createStaffOperations(
             staffSubject: context.staff.subject,
           }),
       });
+      return outcome.membership;
     },
 
     extendTrial(context, accountId, input) {

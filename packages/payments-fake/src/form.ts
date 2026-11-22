@@ -1,5 +1,5 @@
 import { PaymentProviderError } from "@webflix/core";
-import { FAKE_CARDS, FAKE_TEST_CARDS, type FakeTestCard, resolveTestCard } from "./cards.ts";
+import { FAKE_CARDS, FAKE_TEST_CARDS, type FakeCardChoice, parseCardChoice } from "./cards.ts";
 import type { DeliveryPolicy, FakePaymentProvider, FormOutcome } from "./provider.ts";
 
 export interface FakePaymentFormOptions {
@@ -19,6 +19,10 @@ export interface FakePaymentFormOptions {
  * - `POST {base}/form`                         confirm (form post); 303 to the challenge or back
  * - `GET|POST {base}/challenge`                the 3-D Secure stand-in: complete or fail
  * - `POST {base}/api/confirm`                  the same as JSON, for suites: `{ clientSecret, card?, challenge? }`
+ *
+ * A card is a test card by name or number, or a labelled one, `visa:run-42`: the same behaviour
+ * with its own fingerprint (a card that never had a trial, for suites that rerun on one
+ * database); the same label is the same card again.
  * - `GET {base}/api/cards`                     the test cards
  * - `GET|PUT {base}/api/delivery`, `POST {base}/api/deliver`   webhook delivery: policy, flush
  *
@@ -70,7 +74,7 @@ export function createFakePaymentForm(
 
   async function confirm(
     secret: string,
-    card: FakeTestCard | null,
+    card: FakeCardChoice | null,
     challenge?: "complete" | "fail",
   ): Promise<FormOutcome> {
     const described = await fake.describeSecret(secret);
@@ -120,9 +124,9 @@ export function createFakePaymentForm(
     const secret = form.get("secret") ?? "";
     const back = safeReturn(form.get("return"));
     const typed = (form.get("number") ?? "").trim();
-    let card: FakeTestCard | null = null;
+    let card: FakeCardChoice | null = null;
     if (typed !== "") {
-      card = resolveTestCard(typed);
+      card = parseCardChoice(typed)?.choice ?? null;
       if (!card) {
         return page(
           422,
@@ -131,7 +135,7 @@ export function createFakePaymentForm(
         );
       }
     } else if (form.get("card")) {
-      card = resolveTestCard(form.get("card") ?? "");
+      card = parseCardChoice(form.get("card") ?? "")?.choice ?? null;
     }
     const outcome = await confirm(secret, card);
     return afterConfirm(outcome, secret, back, url);
@@ -209,7 +213,8 @@ export function createFakePaymentForm(
       challenge?: unknown;
     } | null;
     if (typeof body?.clientSecret !== "string") return json({ error: "invalid_request" }, 400);
-    const card = typeof body.card === "string" ? resolveTestCard(body.card) : null;
+    const card =
+      typeof body.card === "string" ? (parseCardChoice(body.card)?.choice ?? null) : null;
     if (typeof body.card === "string" && !card) return json({ error: "unknown_test_card" }, 422);
     const challenge =
       body.challenge === "complete" || body.challenge === "fail" ? body.challenge : undefined;

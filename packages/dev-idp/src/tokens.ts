@@ -2,7 +2,7 @@
  * Minting the token response (ID token, access token, refresh token) for a grant, with faults
  * applied, and verifying tokens this issuer signed (userinfo, `id_token_hint`).
  */
-import type { NormalizedClient } from "./config.ts";
+import type { NormalizedClient, PersonaRoles } from "./config.ts";
 import { endpoint, type IssuerContext, nowSec, storeKey } from "./context.ts";
 import { DEVELOPMENT_UNPUBLISHED_KEYS } from "./development-keys.ts";
 import { randomToken, utf8Encode } from "./encoding.ts";
@@ -28,7 +28,7 @@ import {
   unsecuredJws,
   verifyJws,
 } from "./jose.ts";
-import { type Identity, type PersonaRef, resolveIdentity } from "./personas.ts";
+import { deriveSubject, type Identity, type PersonaRef, resolveIdentity } from "./personas.ts";
 
 /** One authorisation: what a code, and every refresh token rotated from it, carries. */
 export interface Grant {
@@ -207,15 +207,12 @@ export function identityClaims(
   return { ...identity.extra, ...claims };
 }
 
-function rolesClaims(identity: Identity): Claims {
+function rolesClaims(granted: PersonaRoles): Claims {
   const claims: Claims = {};
-  if (identity.roles.realm) claims.realm_access = { roles: [...identity.roles.realm] };
-  if (identity.roles.clients) {
+  if (granted.realm) claims.realm_access = { roles: [...granted.realm] };
+  if (granted.clients) {
     claims.resource_access = Object.fromEntries(
-      Object.entries(identity.roles.clients).map(([client, roles]) => [
-        client,
-        { roles: [...roles] },
-      ]),
+      Object.entries(granted.clients).map(([client, roles]) => [client, { roles: [...roles] }]),
     );
   }
   return claims;
@@ -303,7 +300,7 @@ async function accessToken(
         azp: client.clientId,
         sid: grant.sid,
         scope: scopes.join(" "),
-        ...rolesClaims(identity),
+        ...rolesClaims(identity.roles),
         ...identityClaims(context, identity, scopes, faults, "access_token"),
       }
     : {
@@ -317,7 +314,7 @@ async function accessToken(
         scope: scopes.join(" "),
         auth_time: grant.authTime,
         sid: grant.sid,
-        ...rolesClaims(identity),
+        ...rolesClaims(identity.roles),
         ...identityClaims(context, identity, scopes, faults, "access_token"),
       };
   applyClaimFaults(context, claims, client, faults, "access_token", lifetime);
@@ -411,6 +408,60 @@ export async function mintTokenResponse(
   }
   if (options.refreshToken !== null) response.refresh_token = options.refreshToken;
   return response;
+}
+
+/**
+ * The client-credentials grant's answer (RFC 6749 §4.4.3): an access token for the client's own
+ * service account, in Keycloak's shape (a JWT with claim `typ: Bearer`, `azp`, the account's
+ * roles, `preferred_username: service-account-<clientId>`), and no refresh or ID token. Standing
+ * token faults apply, so a resource server can be proven against them with this grant too.
+ */
+export async function mintServiceAccountToken(
+  context: IssuerContext,
+  client: NormalizedClient,
+  scopes: readonly string[],
+): Promise<TokenResponse> {
+  const roles = client.serviceAccount?.roles ?? {};
+  const now = nowSec(context);
+  const lifetime = context.lifetimes.accessTokenSec;
+  const sub = await deriveSubject(
+    context.profile,
+    context.issuer,
+    `service-account:${client.clientId}`,
+  );
+  const claims: Claims = {
+    exp: now + lifetime,
+    iat: now,
+    jti: `sa.${randomToken(12)}`,
+    iss: context.issuer,
+    aud: client.accessTokenAudience,
+    sub,
+    typ: "Bearer",
+    azp: client.clientId,
+    scope: scopes.join(" "),
+    preferred_username: `service-account-${client.clientId}`,
+    client_id: client.clientId,
+    email_verified: false,
+    ...rolesClaims(roles),
+  };
+  const faults = context.standingFaults;
+  applyClaimFaults(context, claims, client, faults, "access_token", lifetime);
+  const keycloak = context.profile.accessTokenStyle === "keycloak";
+  const access = await sign(
+    context,
+    keycloak ? "JWT" : "at+jwt",
+    claims,
+    client.accessTokenAlg,
+    faults,
+    "access_token",
+    null,
+  );
+  return {
+    access_token: access,
+    token_type: "Bearer",
+    expires_in: lifetime,
+    scope: scopes.join(" "),
+  };
 }
 
 /**

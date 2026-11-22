@@ -35,7 +35,12 @@ import {
 import { createConsentLedger } from "./ledger.ts";
 import type { OtherAreas } from "./neighbours.ts";
 import { isCompleted, playbackEvent } from "./playback-events.ts";
-import { createPrivacy } from "./privacy.ts";
+import {
+  createPrivacy,
+  type ExportEventsRequestList,
+  type ExportEventsResults,
+  type ExportResultsOutcome,
+} from "./privacy.ts";
 import type { ConsentPurposeName } from "./repository.ts";
 
 const HOUR_MS = 3600 * 1000;
@@ -77,10 +82,25 @@ export interface EventsStaffMethods {
   cancelDeletion(accountId: string): Promise<boolean>;
   /** What the lake holds for the account recently (newest first). */
   recentEvents(accountId: string, filter: RecentEventsFilter): Promise<RecentEvents>;
-  /** Pseudonymous account keys the next compaction must erase (`compact --erase FILE`). */
+  /**
+   * The pseudonymous keys the pipeline's erase job must run, oldest first: accounts being
+   * deleted, and profiles erased alone (they became restricted). A deleted account's profiles
+   * are covered by its key and never listed; nothing pending is hidden by the limit.
+   */
   pendingErasures(limit: number): Promise<string[]>;
-  /** Compaction dropped these keys' events. */
+  /**
+   * The erase job removed these keys' events: their records are settled, with the profile
+   * records of the accounts among them.
+   */
   confirmErasures(subjectKeys: readonly string[]): Promise<void>;
+  /**
+   * Batch mode: the exports whose events the pipeline's `export-events` must extract, oldest
+   * first (`from` = the request time minus the raw retention, `to` = the request time),
+   * listed until a result is recorded.
+   */
+  pendingExports(limit: number): Promise<ExportEventsRequestList>;
+  /** Batch mode: fold in `export-events`' results document (see `ExportResultsOutcome`). */
+  recordExportResults(document: ExportEventsResults): Promise<ExportResultsOutcome>;
 }
 
 /**
@@ -117,6 +137,8 @@ export interface EventsService extends AreaModule {
   recentEvents(auth: AuthContext, query: RecentEventsQuery): Promise<RecentEvents>;
   /** The lake's pseudonymous key of an account or profile (serving derives the same). */
   subjectKey(kind: SubjectKind, id: string): Promise<string>;
+  /** The `AreaSeams.forgetProfileBehaviour` seam (see areas/module.ts). */
+  forgetProfileBehaviour(input: { accountId: string; profileId: string }): Promise<void>;
   staff: EventsStaffMethods;
 }
 
@@ -285,13 +307,13 @@ export function createEventsService(
     cancelDeletion: (accountId) => privacy.cancelDeletion(accountId),
     recentEvents: (accountId, filter) => readBack(accountId, filter),
     async pendingErasures(limit) {
-      return (await deps.repos.events.pendingErasures(limit))
-        .filter((record) => record.kind === "account")
-        .map((record) => record.subjectKey);
+      return (await deps.repos.events.pendingErasures(limit)).map((record) => record.subjectKey);
     },
     async confirmErasures(subjectKeys) {
       await deps.repos.events.markErasuresCompacted(subjectKeys, clock.now());
     },
+    pendingExports: (limit) => privacy.pendingExports(limit),
+    recordExportResults: (document) => privacy.recordExportResults(document),
   };
 
   return {
@@ -376,6 +398,21 @@ export function createEventsService(
     },
 
     subjectKey: (kind, id) => keys.of(kind, id),
+
+    async forgetProfileBehaviour({ profileId }) {
+      // That profile's key alone, listed on its own: the account and its other profiles are
+      // untouched. Pending already: unchanged; erased before: pending again (new history).
+      await deps.repos.events.addErasures([
+        {
+          subjectKey: await keys.profile(profileId),
+          kind: "profile",
+          accountKey: null,
+          requestedAt: clock.now(),
+          compactedAt: null,
+        },
+      ]);
+      deps.logger.info("events.profile_behaviour_forgotten", {});
+    },
     staff,
   };
 }

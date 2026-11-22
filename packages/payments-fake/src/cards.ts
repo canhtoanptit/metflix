@@ -99,7 +99,41 @@ export function resolveTestCard(input: string): FakeTestCard | null {
   return null;
 }
 
-/** The same card has the same fingerprint for every customer (like a real provider). */
-export function cardFingerprint(card: FakeTestCard): string {
-  return `fp_fake_${card.replaceAll("-", "_")}`;
+/**
+ * A card as chosen in the form: a test card (by name or number), optionally followed by
+ * `:<label>` to mean *another card of that kind* (`visa:run-42`): it behaves exactly like the
+ * test card but has its own fingerprint, so a suite can get a card that never had a trial, as
+ * often as it likes. The same label is the same card again (no second trial).
+ */
+export type FakeCardChoice = FakeTestCard | `${FakeTestCard}:${string}`;
+
+const LABEL = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/** A card choice as typed (`visa`, `4242 4242 4242 4242`, `visa:run-42`); null if not one. */
+export function parseCardChoice(
+  input: string,
+): { card: FakeTestCard; label: string | null; choice: FakeCardChoice } | null {
+  const [base = "", label, ...rest] = input.trim().split(":");
+  if (rest.length > 0) return null;
+  const card = resolveTestCard(base);
+  if (!card) return null;
+  if (label === undefined) return { card, label: null, choice: card };
+  if (!LABEL.test(label)) return null;
+  return { card, label, choice: `${card}:${label}` };
+}
+
+/**
+ * The same card has the same fingerprint for every customer (like a real provider); a labelled
+ * card (`visa:run-42`) has its own, the same every time that label is used.
+ */
+export function cardFingerprint(card: FakeTestCard, label: string | null = null): string {
+  const base = `fp_fake_${card.replaceAll("-", "_")}`;
+  if (label === null) return base;
+  // FNV-1a: stable everywhere, no crypto needed for a test double's fingerprint.
+  let hash = 0x811c9dc5;
+  for (const char of label) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${base}_${hash.toString(16).padStart(8, "0")}${label.length.toString(16)}`;
 }

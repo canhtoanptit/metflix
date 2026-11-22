@@ -161,7 +161,7 @@ export interface BillingService extends AreaModule {
     refundUnused?: boolean | undefined;
     reason: string;
     staffSubject: string;
-  }): Promise<MembershipState>;
+  }): Promise<{ membership: MembershipState; refund: Refund | null }>;
   extendTrial(input: { accountId: string; days: number }): Promise<MembershipState>;
   grantComplimentaryPeriod(input: { accountId: string; days: number }): Promise<MembershipState>;
   listAdminPlans(): Promise<AdminPlanList>;
@@ -478,21 +478,39 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     scheduled: () => [{ type: RECONCILE_JOB, payload: {} }],
 
     async exportAccountData(accountId): Promise<JsonValue> {
-      const record = await repos.billing.getMembership(accountId);
+      // What the member sees on their account page (§6.3 "Download your data"): the membership
+      // (milestone 1's mock row included: plan, period, card brand and last four digits), the
+      // entitlement, then the invoices and refunds Webflix keeps.
+      const loaded = await readAccount(deps, accountId);
+      const current = loaded
+        ? await readMembership(
+            deps,
+            accountId,
+            loaded.subscription,
+            context.now(),
+            loaded.account.createdAt,
+          )
+        : null;
       const invoices = await repos.billing.listInvoices(accountId, { limit: 100, before: null });
-      return {
-        membership: record
+      const refunds = (
+        await Promise.all(invoices.map((invoice) => repos.billing.listRefunds(invoice.id)))
+      ).flat();
+      const data = {
+        membership: current?.state ?? null,
+        entitlement: current?.entitlement ?? null,
+        subscription: current?.legacy.subscription ?? null,
+        plan: current
           ? {
-              status: record.status,
-              planId: record.planId,
-              provider: record.provider,
-              trialEndsAt: record.trialEndsAt,
-              currentPeriodEnd: record.currentPeriodEnd,
-              cancelAtPeriodEnd: record.cancelAtPeriodEnd,
+              id: current.legacy.plan.id,
+              name: current.legacy.plan.name,
+              monthlyPrice: current.legacy.plan.monthlyPrice,
             }
           : null,
-        invoices: invoices.map((invoice) => presentInvoice(invoice)) as unknown as JsonValue,
+        paymentMethod: current?.paymentMethod ?? null,
+        invoices: invoices.map(presentInvoice),
+        refunds: refunds.map(presentRefund),
       };
+      return JSON.parse(JSON.stringify(data)) as JsonValue;
     },
 
     async eraseAccountData(accountId): Promise<void> {
@@ -1208,6 +1226,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       const subscriptionId = record.providerSubscriptionId;
       if (!subscriptionId)
         throw new AppError("subscription_required", { subscriptionStatus: "ended" });
+      let refund: Refund | null = null;
       if (input.when === "period_end") {
         await providerCall(
           context,
@@ -1253,7 +1272,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
             : [];
           const local = stored.find((candidate) => candidate.providerInvoiceId === invoice?.id);
           if (local && amount > 0) {
-            await service.refundInvoice({
+            refund = await service.refundInvoice({
               accountId: input.accountId,
               invoiceId: local.id,
               amount: { amountMinor: amount, currency: local.currency },
@@ -1264,7 +1283,9 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         }
       }
       await syncSubscription(context, subscriptionId, input.accountId);
-      return (await snapshot(input.accountId)).state;
+      // The refund (of the unused time, when asked) comes back with the membership, for the
+      // staff audit entry; the member-facing routes are unaffected.
+      return { membership: (await snapshot(input.accountId)).state, refund };
     },
 
     async extendTrial(input) {

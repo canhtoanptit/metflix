@@ -8,8 +8,10 @@ import {
   type JsonValue,
   type PlanId,
 } from "@webflix/contracts";
+import * as z from "zod";
 import { hexEncode, randomBytes } from "../../encoding.ts";
 import { AppError } from "../../errors.ts";
+import type { BlobStore } from "../../ports/blob-store.ts";
 import { toIsoString } from "../../ports/clock.ts";
 import {
   type AssignmentContext,
@@ -19,14 +21,30 @@ import {
   overlappingAllocations,
   resolveAssignmentContext,
 } from "../../ports/experiments.ts";
+import { defineJob, handleJob } from "../../ports/job-queue.ts";
 import { serializeError } from "../../ports/logger.ts";
 import { DAY_MS } from "../../recommendations/hash.ts";
 import type { ProfileRecord } from "../../repositories/records.ts";
 import type { ServiceDependencies } from "../../services/context.ts";
 import { standingOf } from "../../services/privileges.ts";
-import { type AreaModule, type AreaSeams, NO_JOBS } from "../module.ts";
+import type { AreaModule, AreaSeams } from "../module.ts";
 import { auditRecord, type StaffAction } from "./audit.ts";
 import type { StoredExperiment } from "./repository.ts";
+import {
+  ExperimentResultsImportError,
+  type ExperimentResultsImportResult,
+  importExperimentResults,
+  RESULTS_POINTER_KEY,
+} from "./results-importer.ts";
+
+/**
+ * Import the pipeline's latest experiment results (published every scheduler tick: cheap when
+ * nothing new was published, a pointer read and a cache read).
+ */
+export const experimentResultsImportJob = defineJob("experiments.import-results", z.object({}));
+/** The last results run imported completely (shared cache): a tick that finds it again stops. */
+const RESULTS_MARKER = "webflix:v1:experiment-results:imported-run";
+const RESULTS_MARKER_TTL_SEC = 7 * 24 * 60 * 60;
 
 /** What staff design (the contract's `CreateExperimentBody` without its `reason`). */
 export type ExperimentDesign = Omit<
@@ -99,6 +117,11 @@ export interface ExperimentsService extends AreaModule {
   getExperimentResults(key: string): Promise<ExperimentResults>;
   /** Stores an analysis report (the analysis job's import). */
   saveExperimentResults(key: string, report: JsonValue, computedAt: number): Promise<void>;
+  /**
+   * Imports the pipeline's published results (`experiments/results/current.json`) from the
+   * artefact store, or from `artefacts`: the command-line entry and the job.
+   */
+  importResults(options?: { artefacts?: BlobStore }): Promise<ExperimentResultsImportResult>;
 }
 
 /** Status changes staff may make; anything else is `experiment_conflict`. */
@@ -219,8 +242,52 @@ export function createExperimentsService(
     return next;
   }
 
+  async function importResults(
+    options: { artefacts?: BlobStore } = {},
+  ): Promise<ExperimentResultsImportResult> {
+    const blobs = options.artefacts ?? deps.recommendationArtefacts;
+    if (!blobs) {
+      throw new AppError("service_unavailable", {
+        detail: `No artefact store is configured to read ${RESULTS_POINTER_KEY} from`,
+      });
+    }
+    return importExperimentResults({
+      blobs,
+      logger,
+      target: {
+        knows: async (key) => (await repos.experiments.getExperiment(key)) !== null,
+        latestComputedAt: async (key) =>
+          (await repos.experiments.latestResults(key))?.computedAt ?? null,
+        save: (key, report, computedAt) =>
+          repos.experiments.saveResults(key, { computedAt, report }),
+      },
+    });
+  }
+
   return {
-    ...NO_JOBS,
+    jobs: [
+      handleJob(experimentResultsImportJob, async () => {
+        const blobs = deps.recommendationArtefacts;
+        if (!blobs) return;
+        try {
+          const pointer = await blobs.head(RESULTS_POINTER_KEY);
+          if (!pointer) return;
+          // The pointer's etag names its content: the same pointer imported again stops here.
+          if ((await deps.cache.get(RESULTS_MARKER)) === pointer.etag) return;
+          const result = await importResults();
+          if (result.skipped.every((entry) => entry.reason === "unknown experiment")) {
+            await deps.cache.set(RESULTS_MARKER, pointer.etag, { ttlSec: RESULTS_MARKER_TTL_SEC });
+          }
+        } catch (error) {
+          // A pointer the importer cannot read stays as it is until the pipeline writes the next:
+          // retrying cannot help, so it is logged, not retried.
+          if (!(error instanceof ExperimentResultsImportError)) throw error;
+          logger.error("experiments.results_import_failed", { error: serializeError(error) });
+        }
+      }),
+    ],
+    scheduled: () => [experimentResultsImportJob.create({})],
+    importResults,
     assignments,
 
     async sessionAssignments(input) {

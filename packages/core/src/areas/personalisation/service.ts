@@ -16,7 +16,9 @@ import { createProfileService } from "../../services/profiles.ts";
 import { auditRecord, type StaffAction } from "../experiments/audit.ts";
 import type { AreaModule, AreaSeams } from "../module.ts";
 import {
+  importCapacityProblem,
   importRecommendations,
+  inspectRecommendations,
   RecommendationImportError,
   type RecommendationImportResult,
   rollbackRecommendations,
@@ -291,6 +293,19 @@ export function createPersonalisationService(
     recommendationStatus: status,
 
     async requestImport(run) {
+      // A run this runtime cannot import in one invocation is refused now, naming the importer
+      // that can, instead of failing half-way in the job.
+      const blobs = deps.recommendationArtefacts;
+      const capacity = deps.recommendations.importCapacity;
+      if (blobs && capacity) {
+        const version = await inspectRecommendations(blobs, run).catch(() => null);
+        const active = await deps.recommendations.activeModel();
+        const problem =
+          version && version.run !== active?.run
+            ? importCapacityProblem(version.run, version.profileLists, capacity)
+            : null;
+        if (problem) throw new AppError("recommendation_import_too_large", { detail: problem });
+      }
       await deps.jobs.publish(recommendationImportJob.create({ run: run ?? null }));
       return status();
     },

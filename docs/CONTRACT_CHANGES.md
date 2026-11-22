@@ -488,3 +488,80 @@ unchanged. Behaviour for the console and operators: docs/BACKEND.md §3, "The st
 - **Constants**: `AUDIT_OUTCOMES`, `AuditOutcome`, `IDEMPOTENCY_KEY_PATTERN`.
 - **Schemas**: `IdempotencyKey`, `AuditOutcome`, `AuditLogEntry`, `MemberPrivacy`,
   `SetMemberConsentBody`, `PendingErasuresQuery`, `PendingErasures`, `ConfirmErasuresBody`.
+
+## 2026-11-22 — admin fix round: the operator's side of members' data exports (additive)
+
+The events part of a data export is produced in a deployed mode by the pipeline's
+`export-events` job (services/recs/README.md, "Exports of members' events"), on the pattern of
+erasure. Two staff routes, role `admin`, shaped as the job expects (40 staff routes now):
+
+- `GET /system/privacy/exports?limit=` (`listPendingExports`): `PendingExports { requests:
+  [{ requestId, accountKey, from, to }] }`: the exports whose events are not extracted yet, with
+  the account's pseudonymous key and the receipt window `[from, to)`; listed until a result is
+  recorded.
+- `POST /system/privacy/exports/results` (`recordExportResults`): `ExportResultsBody`, the
+  job's results document (`format: "webflix.export-events-results"`, `formatVersion: 1`,
+  `generatedAt`, `results` of at most 500) plus `reason`; 204. A result's `file` and `manifest`
+  can only be that request's own documents (`privacy/export-events/{requestId}/events.ndjson.gz`,
+  `…/manifest.json`), and a `complete` result must carry `file`, `bytes` and `sha256`
+  (`validation_failed` otherwise). Unknown members of the document are dropped, never stored.
+  Audited like the erasure confirmation (`privacy.export_events_recorded`, written before the
+  call and settled after); the entry keeps the request ids, statuses, file locations, sizes and
+  hashes, never a download link.
+- **Schemas**: `PendingExportsQuery`, `PendingExports`, `ExportResultsBody`.
+
+## 2026-11-22 — billing fix round (no schema change)
+
+- **`membership.status: "none"` now always reads as no membership**: `planId`, `provider`,
+  `currentPeriodEnd`, `trialEndsAt`, `graceEndsAt` and `suspendedReason` are null, as
+  `MembershipState` says (they leaked from an expired first payment: finding M2-F4), and the
+  entitlement is `no_membership`.
+- **A first payment never confirmed is `none`, never `canceled`**, whether it expired at the
+  provider or the member abandoned it by starting a checkout for another plan (§5.2; finding
+  M2-F3). A trial cancelled before its end, or a paid membership that ended, stays `canceled`.
+- Fake provider (local modes only, not the contract): standing promo code `WEBFLIX50` (50% off
+  any plan, unlimited) by default, `WEBFLIX_PAYMENTS_FAKE_PROMOTIONS`; labelled test cards
+  `<test card>:<label>` for a card that never had a trial (docs/BACKEND.md §3).
+
+## 2026-11-22 — personalisation fix round: policy labels, import capacity (additive)
+
+- **`BrowsePage.policy.id` has three values** (the field stays free text, 1 to 64 characters, so
+  `RankingPolicy`, `EventPolicy` and the generated event schema are unchanged): `rules` (nothing
+  from a model shaped the page, the control arm of `recs.learned-vs-rules` included),
+  `neighbours:{run}` (a fresh model's neighbours helped the rule engine; the profile has no
+  personal list) and `learned:{run}` (a fresh personal list ranked the page). Copy it verbatim
+  into impressions and title-opens as before. A profile the model never saw is no longer labelled
+  `learned:{run}`.
+- **New error code `recommendation_import_too_large` (422)**: `POST
+  /api/admin/v1/system/recommendations/import` refuses, before queueing anything, a run with more
+  per-profile lists than one Worker invocation can write (Cloudflare); `detail` names the importer
+  outside the Worker (`make cf-recs-import`). The admin route table does not list it in `errors`
+  yet (the admin area's file).
+
+## 2026-11-22 — identity fix round 2: removed identities stay removed, passwordless proofs
+
+- **An unlinked issuer identity never links itself again** (behaviour; finding M2-F5): after
+  `DELETE /account/identities/:provider` the same identity's next sign-in answers
+  `?oidc=link-required` even when both addresses are verified; only `intent=link` (an account
+  holder with a fresh proof) brings it back. The same holds for an identity a completed password
+  reset dropped. No schema change; a removed identity may still sign up a new account for an
+  address no account has.
+- **`password_required` for an account without a password** (behaviour): `POST /session/elevation`
+  and every route that takes `currentPassword` (account changes, creating, loosening, unlocking or
+  deleting a profile) answer `403 password_required` when the account has no password (created
+  through an issuer), whatever is sent; they had answered `current_password_invalid`. The proof
+  for such an account is a fresh sign-in (`intent=reauth`) or setting a password. Documentation:
+  `deleteProfile.errors` lists `password_required`; `elevate`'s description says so.
+- **Identity's part of a data export** (`DataExport.areas.identity`, the document behind
+  `GET /privacy/exports/:id`) adds `emailVerifiedAt`, `hasPassword`, the member-visible
+  `profiles` (name, avatar, kids flag, maturity ceiling, locked, settings, created; never the PIN)
+  and `devices` (the signed-in sessions: label, type, signed in, last seen, expires; never a
+  token). The events area reads them from here instead of from milestone 1's tables.
+- **`POST /system/recommendations/import`** (`importRecommendations`) lists
+  `recommendation_import_too_large` (422, the personalisation area's new code) in its `errors`: a
+  run larger than the runtime can write in one invocation is refused before anything is queued,
+  and the detail names the importer that runs outside the Worker. The staff audit entry of such
+  a refusal is `failed` (nothing changed).
+- **`GET /system/privacy/exports`** answers the events area's list as it is (`{ requests }`);
+  the audit entry of `POST /system/privacy/exports/results` keeps, as `after`, what became of each
+  request by id (`completed`, `erased`, `kept`, `ignored`), request ids only.

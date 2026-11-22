@@ -22,9 +22,10 @@ const sources = {
 
 /**
  * `.verify(` receivers that are token signatures, not secrets a person typed (`staff`: the staff
- * bearer token's `StaffVerifier`, milestone 2).
+ * bearer token's `StaffVerifier`, milestone 2; `keySet`: an issuer's published keys,
+ * `createJwksKeySet`).
  */
-const SIGNATURE_VERIFIERS = /\b(?:signer|deviceSigner|mediaTokens|subtle|staff)\.verify\(/;
+const SIGNATURE_VERIFIERS = /\b(?:signer|deviceSigner|mediaTokens|subtle|staff|keySet)\.verify\(/;
 
 /** The only places a password or PIN is compared, and why each is safe. */
 const ALLOWED: Record<string, { calls: number; why: string }> = {

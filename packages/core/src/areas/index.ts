@@ -31,6 +31,7 @@ export function createAreaServices(deps: ServiceDependencies): {
   // The seams call the services built below; nothing calls them during construction.
   const seams: AreaSeams = {
     emitServerEvent: (event) => events.emitServerEvent(event),
+    forgetProfileBehaviour: (input) => events.forgetProfileBehaviour(input),
     assignments: (unit, context) => experiments.assignments(unit, context),
     logExposure: (exposure) => experiments.logExposure(exposure),
     sendEmail: (request) => areas.identity.sendEmail(request),

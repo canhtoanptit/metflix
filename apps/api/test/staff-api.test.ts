@@ -14,7 +14,7 @@ import {
 import type { MemoryJobQueue } from "@webflix/core/memory";
 import { FIXTURE_CATALOG, FIXTURE_MANIFEST } from "@webflix/core/testing";
 import { migrateToLatest } from "@webflix/db";
-import type { DevIdp, DevIdpFaults } from "@webflix/dev-idp";
+import { type DevIdp, type DevIdpFaults, WEBFLIX_DEV_CLIENTS } from "@webflix/dev-idp";
 import type { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { developmentIssuerOf } from "../src/areas/identity.ts";
@@ -215,6 +215,37 @@ describe("staff tokens of the development issuer, validated by the Node runtime"
       const refunded = own.items.find((candidate) => candidate.id === invoice.id);
       expect(refunded?.amountRefunded.amountMinor).toBe(invoice.amountPaid.amountMinor);
     }
+  });
+
+  it("serves the pipeline's service account (client credentials) on the operator routes", async () => {
+    const { staffJobs } = WEBFLIX_DEV_CLIENTS;
+    // The grant the pipeline's jobs use, at the issuer's token endpoint (served in process).
+    const granted = await staffRealm.fetch(
+      new Request(`${staffRealm.issuer}${staffJobs.tokenPath}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: staffJobs.clientId,
+          client_secret: staffJobs.clientSecret,
+        }).toString(),
+      }),
+    );
+    expect(granted.status).toBe(200);
+    const { access_token: jobToken } = (await granted.json()) as { access_token: string };
+    const call = (path: string) =>
+      app.request(`${ADMIN_API_BASE_PATH}${path}`, {
+        headers: { Authorization: `Bearer ${jobToken}` },
+      });
+    const me = (await (await call("/me")).json()) as { roles: string[] };
+    expect(me.roles.sort()).toEqual(["admin", "experiments"]);
+    for (const path of ["/system/privacy/erasures?limit=10", "/system/privacy/exports?limit=10"]) {
+      const response = await call(path);
+      expect(response.status, path).toBe(200);
+    }
+    expect(await (await call("/system/privacy/exports?limit=10")).json()).toEqual({
+      requests: [],
+    });
   });
 
   it("audits a support action and a member read in SQLite, and lists them for an admin", async () => {

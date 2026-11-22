@@ -13,7 +13,7 @@ import { createFsBlobStore } from "@webflix/adapters-node";
 import { type ClientEventInput, createRouteClient, LakeEvent, routes } from "@webflix/contracts";
 import { makeClientEventInput } from "@webflix/contracts/fixtures";
 import { createBlobLakeEventSink, createUuidV7Generator, decodeLakeObject } from "@webflix/core";
-import type { MemoryJobQueue } from "@webflix/core/memory";
+import { MemoryBlobStore, type MemoryJobQueue } from "@webflix/core/memory";
 import {
   describeEventSinkContract,
   FIXTURE_CATALOG,
@@ -217,4 +217,84 @@ describe("the event lake in the dev composition", () => {
       expect(result.explore).toBe(4);
     },
   );
+});
+
+const COMPACTED = join(REPO, "services", "recs", "tests", "fixtures", "compacted");
+
+interface CompactedExpected {
+  accounts: Record<string, { eventIds: string[] }>;
+  hours: Record<
+    string,
+    {
+      compacted: boolean;
+      parquet?: string;
+      readRawObjects: string[];
+      skipRawObjects: string[];
+      rowGroupsAReaderOfThisAccountReads?: Record<string, number[]>;
+    }
+  >;
+}
+
+/** The fixture's store (blob keys as paths) in a memory blob store, with every read recorded. */
+async function compactedStore() {
+  const blobs = new MemoryBlobStore();
+  const root = join(COMPACTED, "store");
+  const walk = (directory: string): string[] =>
+    readdirSync(directory, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory()
+        ? walk(join(directory, entry.name))
+        : [join(directory, entry.name).slice(root.length + 1)],
+    );
+  for (const key of walk(root)) {
+    await blobs.put(key, new Uint8Array(readFileSync(join(root, key))));
+  }
+  const reads: { key: string; ranged: boolean }[] = [];
+  const get = blobs.get.bind(blobs);
+  blobs.get = async (key, options) => {
+    reads.push({ key, ranged: options?.range !== undefined });
+    return get(key, options);
+  };
+  return { blobs, reads };
+}
+
+describe("the inline export reads compacted hours by the pipeline's contract", () => {
+  it("returns each fixture account's events, reading only what the contract allows", async () => {
+    const expected = JSON.parse(
+      readFileSync(join(COMPACTED, "expected.json"), "utf8"),
+    ) as CompactedExpected;
+    const covered = Object.values(expected.hours).flatMap((hour) => hour.skipRawObjects);
+    const mustRead = Object.values(expected.hours).flatMap((hour) => hour.readRawObjects);
+    for (const [account, want] of Object.entries(expected.accounts)) {
+      const { blobs, reads } = await compactedStore();
+      const sink = createBlobLakeEventSink({ blobs, ids: createUuidV7Generator() });
+      const read = await sink.accountEvents({
+        accountKey: account,
+        fromMs: Date.parse("2026-11-22T00:00:00.000Z"),
+        toMs: Date.parse("2026-11-23T00:00:00.000Z"),
+      });
+      const ids = read.events.map((event) => (event as { eventId: string }).eventId);
+      expect(new Set(ids).size, account).toBe(ids.length); // each once
+      expect([...ids].sort(), account).toEqual(want.eventIds);
+      expect(read.read.objects.sort(), account).toEqual([...mustRead].sort());
+      for (const key of covered) {
+        expect(
+          reads.some((entry) => entry.key === key),
+          `${account} read ${key}`,
+        ).toBe(false);
+      }
+      for (const hour of Object.values(expected.hours)) {
+        if (!hour.parquet) continue;
+        expect(read.read.rowGroups[hour.parquet], account).toEqual(
+          hour.rowGroupsAReaderOfThisAccountReads?.[account] ?? [],
+        );
+        // The Parquet file is read in ranges (footer, column chunks), never whole.
+        const parquetReads = reads.filter((entry) => entry.key === hour.parquet);
+        expect(parquetReads.length).toBeGreaterThan(0);
+        expect(parquetReads.every((entry) => entry.ranged)).toBe(true);
+      }
+      // In receipt order.
+      const received = read.events.map((event) => (event as { receivedAt: string }).receivedAt);
+      expect(received).toEqual([...received].sort());
+    }
+  });
 });

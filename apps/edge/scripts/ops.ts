@@ -13,6 +13,8 @@
  *   node scripts/ops.ts recs push   --store <dir> [--run <r>]  pipeline artefacts → R2
  *   node scripts/ops.ts recs import [--run <r>] [--from <dir>] import a run from outside the Worker
  *   node scripts/ops.ts recs status | recs rollback
+ *   node scripts/ops.ts jobs export|erase|compact|run   the pipeline's privacy jobs against the
+ *                                                       running local Worker (lib/pipeline-jobs.ts)
  *
  * Every command is idempotent. See docs/CLOUDFLARE.md for how they fit together.
  */
@@ -25,12 +27,20 @@ import { stageAssets } from "./lib/assets.ts";
 import { publishMedia } from "./lib/generation.ts";
 import { mediaStore, mediaUpToDate, pickProfile, uploadMedia } from "./lib/media.ts";
 import {
+  compactRoundTrip,
+  DEFAULT_RECS_BIN,
+  dueRoundTrips,
+  eraseRoundTrip,
+  exportEventsRoundTrip,
+} from "./lib/pipeline-jobs.ts";
+import {
   DEFAULT_INSTANCE,
   EDGE_DIR,
   type LocalInstance,
   openPlatform,
   type Platform,
   parseTarget,
+  REPO_ROOT,
   type Target,
   WRANGLER_CONFIG,
 } from "./lib/platform.ts";
@@ -45,6 +55,11 @@ const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status|dev-
   recs import                 import the run R2's recs/current.json names (or --run, or --from a
                               pipeline store) into D1 and KV, from outside the Worker
   recs status | recs rollback the served model / serve the previous run again
+  jobs export                 pending data exports: webflix-recs export-events, results posted
+  jobs erase                  pending erasures: webflix-recs erase, written back to R2, confirmed
+  jobs compact                compact the local lake's closed hours, written back to R2
+  jobs run                    what is due: erase, then export (both no-ops when nothing is pending)
+                              (jobs run beside the dev server, through its Local Explorer API)
 
   --target local|production   bindings to use (default local: the wrangler dev state)
   --state <dir>               local: the instance's state directory (default .wrangler/state)
@@ -65,6 +80,10 @@ const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status|dev-
                               layout, e.g. .cache/recs/<preset>/store)
   --run <run>                 recs: a version (recs/v=<run>/) instead of the published pointer
   --from <dir>                recs import: read artefacts from a pipeline store, not R2
+  --grace-minutes <n>         jobs export / compact: the pipeline's grace (default 15)
+  --now <iso>                 jobs compact: compact as if it were then
+  --delete-sources            jobs compact: delete raw objects a manifest covers
+  --recs-bin <path>           jobs: the pipeline's CLI (default services/recs/.venv/bin/webflix-recs)
   --no-media                  seed: ignore packaged media (every title plays the external
                               HLS fallback); seed again without it to switch back
 `;
@@ -209,6 +228,59 @@ async function status(platform: Platform) {
   say(`KV: media cache generation ${generation ?? "unset"}`);
 }
 
+/** The pipeline's privacy jobs against the running local Worker (lib/pipeline-jobs.ts). */
+async function jobsCommand(
+  sub: string | undefined,
+  instance: LocalInstance,
+  values: {
+    store?: string | undefined;
+    force: boolean;
+    "grace-minutes"?: string | undefined;
+    now?: string | undefined;
+    "delete-sources": boolean;
+    "recs-bin"?: string | undefined;
+  },
+): Promise<number> {
+  const bucket =
+    unstable_readConfig({ config: WRANGLER_CONFIG }, { hideWarnings: true }).r2_buckets[0]
+      ?.bucket_name ?? "webflix-media";
+  const context = {
+    origin: `http://localhost:${instance.port}`,
+    bucket,
+    storeDir: resolve(values.store ?? join(REPO_ROOT, ".cache", "recs", "cf", "store")),
+    recsBin: values["recs-bin"] ? resolve(values["recs-bin"]) : DEFAULT_RECS_BIN,
+    log: say,
+  };
+  const graceMinutes = values["grace-minutes"] === undefined ? 15 : Number(values["grace-minutes"]);
+  const print = (label: string, result: unknown) => say(`${label}: ${JSON.stringify(result)}`);
+  switch (sub) {
+    case "export":
+      print("jobs export", await exportEventsRoundTrip(context, { graceMinutes }));
+      return 0;
+    case "erase":
+      print("jobs erase", await eraseRoundTrip(context, { force: values.force }));
+      return 0;
+    case "compact":
+      print(
+        "jobs compact",
+        await compactRoundTrip(context, {
+          graceMinutes,
+          ...(values.now ? { now: values.now } : {}),
+          deleteSources: values["delete-sources"],
+        }),
+      );
+      return 0;
+    case "run": {
+      const result = await dueRoundTrips(context, { graceMinutes });
+      // Quiet when there was nothing to do: the dev server's loop calls this every few seconds.
+      if (result.erase.pending > 0 || result.exports.pending > 0) print("jobs run", result);
+      return 0;
+    }
+    default:
+      return usage("jobs <export|erase|compact|run>");
+  }
+}
+
 function usage(detail: string): number {
   console.error(`Usage: node scripts/ops.ts ${detail}\n\n${USAGE}`);
   return 1;
@@ -281,6 +353,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       "no-media": { type: "boolean", default: false },
       store: { type: "string" },
       "payment-provider": { type: "string" },
+      "grace-minutes": { type: "string" },
+      now: { type: "string" },
+      "delete-sources": { type: "boolean", default: false },
+      "recs-bin": { type: "string" },
       run: { type: "string" },
       from: { type: "string" },
       help: { type: "boolean", default: false },
@@ -353,6 +429,8 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     case "recs":
       return recsCommand(positionals[1], target, instance, values);
+    case "jobs":
+      return jobsCommand(positionals[1], instance, values);
     default:
       console.error(`Unknown command "${command}"\n\n${USAGE}`);
       return 1;

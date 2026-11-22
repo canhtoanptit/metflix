@@ -156,6 +156,95 @@ export const ConfirmErasuresBody = z
   .meta({ id: "ConfirmErasuresBody" });
 export type ConfirmErasuresBody = z.input<typeof ConfirmErasuresBody>;
 
+/**
+ * The operator's side of a data export's events (services/recs/README.md, "Exports of members'
+ * events"): the pipeline's `export-events` job reads the lake, the product folds the result in.
+ */
+const ExportRequestId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+const EXPORT_EVENTS_PREFIX = "privacy/export-events/";
+
+export const PendingExportsQuery = z.object({
+  limit: z.coerce.number<number>().int().min(1).max(500).optional(),
+});
+export type PendingExportsQuery = z.input<typeof PendingExportsQuery>;
+
+/** Export requests whose events are not extracted yet, listed until a result is recorded. */
+export const PendingExports = z
+  .object({
+    requests: z.array(
+      z.object({
+        requestId: ExportRequestId,
+        /** The account's pseudonymous key, as the lake stores it. */
+        accountKey: SubjectKey,
+        /** The receipt window `[from, to)`. */
+        from: IsoDateTime,
+        to: IsoDateTime,
+      }),
+    ),
+  })
+  .meta({ id: "PendingExports" });
+export type PendingExports = z.output<typeof PendingExports>;
+
+/**
+ * One request's result, as the job reports it. `file` and `manifest` can only name that
+ * request's own documents under the job's private prefix: the product reads `file` and folds it
+ * into the member's export, so the job cannot point it at any other document.
+ */
+const ExportEventsResult = z
+  .object({
+    requestId: ExportRequestId,
+    status: z.enum(["complete", "erased", "deferred", "failed"]),
+    from: IsoDateTime,
+    to: IsoDateTime,
+    events: z.number().int().nonnegative().optional(),
+    file: z.string().max(200).optional(),
+    manifest: z.string().max(200).optional(),
+    bytes: z.number().int().nonnegative().optional(),
+    sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    generatedAt: IsoDateTime.optional(),
+    reused: z.boolean().optional(),
+    notBefore: IsoDateTime.optional(),
+    error: z.string().max(1000).optional(),
+  })
+  .superRefine((result, ctx) => {
+    const own = `${EXPORT_EVENTS_PREFIX}${result.requestId}/`;
+    if (result.file !== undefined && result.file !== `${own}events.ndjson.gz`) {
+      ctx.addIssue({ code: "custom", path: ["file"], message: `Must be ${own}events.ndjson.gz` });
+    }
+    if (result.manifest !== undefined && result.manifest !== `${own}manifest.json`) {
+      ctx.addIssue({ code: "custom", path: ["manifest"], message: `Must be ${own}manifest.json` });
+    }
+    if (
+      result.status === "complete" &&
+      (result.file === undefined || result.bytes === undefined || result.sha256 === undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "A complete result names its file, bytes and sha256",
+      });
+    }
+  });
+
+/**
+ * `export-events`'s results document (`webflix.export-events-results`, version 1) and the
+ * `reason` the audit log keeps. It carries request ids, statuses and the job's private document
+ * locations: never a download link.
+ */
+export const ExportResultsBody = z
+  .object({
+    format: z.literal("webflix.export-events-results"),
+    formatVersion: z.literal(1),
+    generatedAt: IsoDateTime,
+    results: z.array(ExportEventsResult).max(500),
+    reason: AuditReason,
+  })
+  .meta({ id: "ExportResultsBody" });
+export type ExportResultsBody = z.input<typeof ExportResultsBody>;
+
 // --- Billing actions --------------------------------------------------------------------------
 
 export const RefundBody = z

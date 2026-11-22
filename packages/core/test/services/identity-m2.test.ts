@@ -15,8 +15,9 @@ import type { AuthContext, IdentityProvider, PasswordHasher, Services } from "..
 import { createServices } from "../../src/index.ts";
 import { MemoryIdentityProvider } from "../../src/memory/index.ts";
 import { createAuthService } from "../../src/services/auth.ts";
+import { createProfileService } from "../../src/services/profiles.ts";
 import { createTestServices, type TestServices } from "../../src/testing/index.ts";
-import { openLogin, uncharged } from "./helpers.ts";
+import { MEMBER_PASSWORD, memberViewer, openLogin, uncharged } from "./helpers.ts";
 
 const client = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Chrome/130.0" };
 
@@ -97,7 +98,7 @@ describe("accounts without a password (stored as the empty string)", () => {
       profile: (await t.deps.repos.profiles.get(auth.session.accountId, profile.id)) ?? null,
     };
     await expect(hostile.identity.elevate(holder, "anything")).rejects.toMatchObject({
-      code: "current_password_invalid",
+      code: "password_required",
     });
     await expect(
       hostile.account.updateAccount(
@@ -105,7 +106,7 @@ describe("accounts without a password (stored as the empty string)", () => {
         { currentPassword: "anything", newPassword: "a new passphrase" },
         uncharged,
       ),
-    ).rejects.toMatchObject({ code: "current_password_invalid" });
+    ).rejects.toMatchObject({ code: "password_required" });
     await expect(
       hostile.profiles.update(
         holder,
@@ -113,7 +114,7 @@ describe("accounts without a password (stored as the empty string)", () => {
         { pin: "1234", currentPassword: "anything" },
         uncharged,
       ),
-    ).rejects.toMatchObject({ code: "current_password_invalid" });
+    ).rejects.toMatchObject({ code: "password_required" });
     await hostile.profiles.create(
       holder,
       { name: "Kid", avatarId: "av-fox", isKids: true },
@@ -125,7 +126,7 @@ describe("accounts without a password (stored as the empty string)", () => {
         { name: "Third", avatarId: "av-fox", currentPassword: "anything" },
         uncharged,
       ),
-    ).rejects.toMatchObject({ code: "current_password_invalid" });
+    ).rejects.toMatchObject({ code: "password_required" });
     expect((await hostile.identity.getElevation(holder)).elevatedUntil).toBeNull();
     // Nothing was written: still no password.
     expect(
@@ -621,19 +622,49 @@ describe("what identity offers the events area's privacy jobs", () => {
     const google = offerGoogle(t);
     const { auth } = await federatedSignUp(t, google, "rights@example.com");
     const accountId = auth.session.accountId;
-    expect(await t.services.identity.exportAccountData?.(accountId)).toEqual({
+    const profile = await t.services.profiles.create(
+      auth,
+      { name: "Main", avatarId: "av-fox" },
+      uncharged,
+    );
+    const at = new Date(t.clock.now()).toISOString();
+    const exported = (await t.services.identity.exportAccountData?.(accountId)) as Record<
+      string,
+      unknown
+    >;
+    expect(exported).toEqual({
       emailVerified: true,
-      emailVerifiedAt: new Date(t.clock.now()).toISOString(),
+      emailVerifiedAt: at,
       hasPassword: false,
       linkedIdentities: [
+        { provider: "google", emailAtLink: "rights@example.com", linkedAt: at, lastUsedAt: at },
+      ],
+      profiles: [
         {
-          provider: "google",
-          emailAtLink: "rights@example.com",
-          linkedAt: new Date(t.clock.now()).toISOString(),
-          lastUsedAt: new Date(t.clock.now()).toISOString(),
+          id: profile.id,
+          name: "Main",
+          avatarId: "av-fox",
+          avatar: expect.objectContaining({ id: "av-fox", name: "Fox" }),
+          kids: false,
+          maturityCeiling: "18+",
+          locked: false,
+          settings: expect.objectContaining({ autoplayNextEpisode: expect.any(Boolean) }),
+          createdAt: at,
+        },
+      ],
+      devices: [
+        {
+          id: auth.session.id,
+          label: "Chrome on macOS",
+          type: "desktop",
+          signedInAt: at,
+          lastSeenAt: at,
+          expiresAt: new Date(auth.session.expiresAt).toISOString(),
         },
       ],
     });
+    // Never a credential: no hash, PIN or token anywhere in it.
+    expect(JSON.stringify(exported)).not.toMatch(/hash|pin"|token/i);
     expect(await t.services.identity.exportAccountData?.("missing")).toBeNull();
 
     await t.deps.repos.identity.suppress({
@@ -659,5 +690,53 @@ describe("what identity offers the events area's privacy jobs", () => {
     await t.services.identity.eraseAccountData?.(accountId);
     expect(await t.deps.repos.identity.isSuppressed("rights@example.com")).toBe(false);
     expect(await t.deps.repos.identity.listMailbox("rights@example.com", 0, 10)).toEqual([]);
+  });
+});
+
+describe("a profile that becomes restricted", () => {
+  it("queues its behaviour for erasure once, when it becomes restricted, and not otherwise", async () => {
+    const t = await createTestServices();
+    const forgotten: Array<{ accountId: string; profileId: string }> = [];
+    const profiles = createProfileService(t.deps, {
+      forgetProfileBehaviour: async (input) => {
+        forgotten.push(input);
+      },
+    });
+    const viewer = await memberViewer(t, { email: "family@example.com" });
+    const accountId = viewer.session.accountId;
+    const auth = { session: viewer.session, profile: viewer.profile };
+    const teen = await profiles.create(auth, { name: "Teen", avatarId: "av-fox" }, uncharged);
+
+    await profiles.update(auth, teen.id, { name: "Teenager" }, uncharged);
+    expect(forgotten).toEqual([]);
+    await profiles.update(auth, teen.id, { maturityCeiling: "13+" }, uncharged);
+    expect(forgotten).toEqual([{ accountId, profileId: teen.id }]);
+    // Already restricted: lowering further, or loosening again, queues nothing more.
+    await profiles.update(auth, teen.id, { maturityCeiling: "7+" }, uncharged);
+    await profiles.update(
+      auth,
+      teen.id,
+      { maturityCeiling: "18+", currentPassword: MEMBER_PASSWORD },
+      uncharged,
+    );
+    expect(forgotten).toHaveLength(1);
+
+    const other = await profiles.create(
+      auth,
+      { name: "Other", avatarId: "av-fox", currentPassword: MEMBER_PASSWORD },
+      uncharged,
+    );
+    await profiles.update(auth, other.id, { isKids: true }, uncharged);
+    expect(forgotten).toEqual([
+      { accountId, profileId: teen.id },
+      { accountId, profileId: other.id },
+    ]);
+    // A profile created restricted has no history to forget.
+    await profiles.create(
+      auth,
+      { name: "Little", avatarId: "av-fox", isKids: true, currentPassword: MEMBER_PASSWORD },
+      uncharged,
+    );
+    expect(forgotten).toHaveLength(2);
   });
 });

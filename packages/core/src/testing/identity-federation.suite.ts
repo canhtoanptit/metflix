@@ -544,6 +544,52 @@ export function describeFederatedSignIn(
         expect(await identities(b)).toEqual([]);
       });
 
+      it("an unlinked identity does not come back by itself (M2-F5): only the deliberate link", async () => {
+        const email = unique("unlink-sticks");
+        const owner = await passwordAccount(email);
+        await becomeHolder(owner);
+        await elevate(owner);
+        // Linked under the account's own address, then used once (which verifies the address).
+        expect(
+          (
+            await flow(
+              owner,
+              "google",
+              { email: { address: email, verified: true } },
+              { intent: "link" },
+            )
+          ).outcome,
+        ).toBe("linked");
+        expect(
+          (await flow(browser(), "google", { email: { address: email, verified: true } })).outcome,
+        ).toBe("signed-in");
+        expect((await owner.json("DELETE", "/account/identities/google")).status).toBe(204);
+
+        // Both addresses verified, yet the removed identity is not linked again automatically.
+        const lost = browser();
+        expect(
+          (await flow(lost, "google", { email: { address: email, verified: true } })).outcome,
+        ).toBe("link-required");
+        expect((await session(lost)).authenticated).toBe(false);
+        expect(await identities(owner)).toEqual([]);
+
+        // The deliberate, proven path links it again, and then it signs in.
+        await elevate(owner);
+        expect(
+          (
+            await flow(
+              owner,
+              "google",
+              { email: { address: email, verified: true } },
+              { intent: "link" },
+            )
+          ).outcome,
+        ).toBe("linked");
+        expect(
+          (await flow(browser(), "google", { email: { address: email, verified: true } })).outcome,
+        ).toBe("signed-in");
+      });
+
       it("unlinks with a fresh proof while another way to sign in remains", async () => {
         const b = browser();
         const email = unique("passwordless");
@@ -597,9 +643,11 @@ export function describeFederatedSignIn(
         };
         expect(before).toEqual({ elevatedUntil: null, methods: ["google"] });
         // There is no password: none, of any value, is accepted (the stored hash is empty).
-        for (const password of ["", " ", "x", PASSWORD]) {
+        expect((await b.json("POST", "/session/elevation", { password: "" })).status).toBe(400);
+        for (const password of [" ", "x", PASSWORD]) {
           const attempt = await b.json("POST", "/session/elevation", { password });
-          expect(attempt.status, JSON.stringify(password)).not.toBe(200);
+          expect(attempt.status, JSON.stringify(password)).toBe(403);
+          expect(attempt.body?.code, JSON.stringify(password)).toBe("password_required");
         }
         const signIn = await browser().json("POST", "/auth/login", {
           email,

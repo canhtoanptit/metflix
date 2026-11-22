@@ -29,6 +29,12 @@ CF_DEV_FLAGS ?=
 # CF_CRON_EVERY=<seconds> fires it that often instead (conformance runs want a tick of 30 s or less).
 CF_CRON ?= on
 CF_CRON_EVERY ?=
+# CF_JOBS_EVERY=<seconds>: cf-dev also runs the pipeline's privacy jobs (erase, export-events)
+# against the server when something is pending (docs/CLOUDFLARE.md §10.4). Off by default.
+CF_JOBS_EVERY ?=
+# The export job's grace in minutes: production waits 15 for in-flight events; locally the
+# request is listed only after the product assembled it, so 0 is safe (docs/CLOUDFLARE.md §10.4).
+CF_JOBS_GRACE ?= 0
 # Seed the demo account in production too (it is always seeded locally).
 CF_DEMO ?=
 # The deployed release (`app.version` of server events); empty = the commit.
@@ -38,7 +44,7 @@ CF_RELEASE_FLAG := $(if $(CF_RELEASE),--release $(CF_RELEASE),)
 cf_say = printf '\033[36m[cf]\033[0m %s\n' "$(1)"
 
 .PHONY: cf-dev cf-prepare cf-install cf-secrets cf-web cf-assets cf-migrate cf-data cf-seed \
-	cf-lake-pull cf-recs-push cf-recs-import cf-recs-status \
+	cf-lake-pull cf-recs-push cf-recs-import cf-recs-status cf-export-events cf-erase cf-compact \
 	cf-media cf-status cf-stop cf-reset cf-cron cf-test cf-check cf-bundle cf-startup \
 	cf-provision cf-deploy cf-deploy-dry-run cf-tail
 
@@ -46,7 +52,9 @@ cf-dev: cf-prepare ## Cloudflare mode on http://localhost:8787: build, migrate, 
 	@$(call cf_say,starting wrangler dev on http://localhost:$(CF_PORT) (Ctrl-C to stop; make cf-cron runs the Cron Trigger))
 	@exec $(CF_DEV) start $(CF_INSTANCE) --inspector-port $(CF_INSPECTOR_PORT) \
 		--assets $(abspath $(CF_ASSETS)) $(if $(filter off,$(CF_CRON)),--no-cron,) \
-		$(if $(CF_CRON_EVERY),--cron-every $(CF_CRON_EVERY),) -- $(CF_DEV_FLAGS)
+		$(if $(CF_CRON_EVERY),--cron-every $(CF_CRON_EVERY),) \
+		$(if $(CF_JOBS_EVERY),--jobs-every $(CF_JOBS_EVERY) --jobs-store $(abspath $(CF_RECS_STORE)) --jobs-grace-minutes $(CF_JOBS_GRACE),) \
+		-- $(CF_DEV_FLAGS)
 
 cf-prepare: cf-install cf-secrets cf-assets cf-migrate cf-data ## Everything cf-dev does before starting the server
 	@$(call cf_say,local Cloudflare state ready)
@@ -120,6 +128,17 @@ cf-recs-import: ## Import the run R2 publishes (or CF_RECS_RUN) into D1 and KV f
 
 cf-recs-status: ## The recommendation model the Worker serves and the last import
 	@$(CF_OPS) recs status --target $(or $(ENV),local) $(CF_INSTANCE)
+
+# The pipeline's privacy jobs against the running local Worker (the dev server stays up: R2 is
+# reached through its Local Explorer API). Each is safe to rerun and a no-op with nothing pending.
+cf-export-events: ## (dev server up) pending data exports: export-events on the local lake, results posted
+	@$(CF_OPS) jobs export $(CF_INSTANCE) --store $(abspath $(CF_RECS_STORE)) --grace-minutes $(CF_JOBS_GRACE)
+
+cf-erase: ## (dev server up) pending erasures: erase on the local R2, written back, then confirmed (FORCE=1: run anyway)
+	@$(CF_OPS) jobs erase $(CF_INSTANCE) --store $(abspath $(CF_RECS_STORE)) $(if $(FORCE),--force,)
+
+cf-compact: ## (dev server up) compact the local lake's closed hours and write them back (CF_COMPACT_NOW=<iso>)
+	@$(CF_OPS) jobs compact $(CF_INSTANCE) --store $(abspath $(CF_RECS_STORE)) --grace-minutes $(CF_JOBS_GRACE) $(if $(CF_COMPACT_NOW),--now $(CF_COMPACT_NOW),)
 
 cf-test: ## Adapter contract suites and Worker tests, inside workerd
 	$(PNPM) --filter @webflix/adapters-cloudflare --filter @webflix/edge test

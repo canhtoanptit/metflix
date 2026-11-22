@@ -75,7 +75,7 @@ export function createServices(deps: ServiceDependencies): Services {
     seams,
     auth: createAuthService(deps, seams),
     account,
-    profiles: createProfileService(deps),
+    profiles: createProfileService(deps, seams),
     browse,
     search: createSearchService(deps, browse.personalizeAvailable),
     library: createLibraryService(deps, state, browse.personalize),

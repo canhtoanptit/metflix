@@ -39,6 +39,8 @@ Timeouts (milliseconds)
       --request-timeout <ms>  Per request (default 20000)
       --eventual-timeout <ms> Polling budget for eventually-visible effects (default 30000)
       --poll-interval <ms>    Polling interval (default 500)
+      --export-wait <ms>      Batch-mode data export: wait for a round of the deployment's export-events job (default 300000)
+      --export-wait-max <ms>  ... and at most this long, the job's deferral (its grace) included (default 1200000)
 
 Output
       --json <file>           Write the JSON summary ("-" for stdout)
@@ -116,6 +118,8 @@ export function parseCli(
       "request-timeout": { type: "string" },
       "eventual-timeout": { type: "string" },
       "poll-interval": { type: "string" },
+      "export-wait": { type: "string" },
+      "export-wait-max": { type: "string" },
       "rate-limits": { type: "string" },
       "no-ip-exhaustion": { type: "boolean", default: false },
       "expect-fail": { type: "string", multiple: true },
@@ -156,6 +160,8 @@ export function parseCli(
       requestTimeoutMs: integer(values["request-timeout"], 20_000, "request-timeout", 100),
       eventualTimeoutMs: integer(values["eventual-timeout"], 30_000, "eventual-timeout", 100),
       pollIntervalMs: integer(values["poll-interval"], 500, "poll-interval", 10),
+      exportWaitMs: integer(values["export-wait"], 300_000, "export-wait", 0),
+      exportWaitMaxMs: integer(values["export-wait-max"], 1_200_000, "export-wait-max", 0),
       parallelism: integer(values.parallelism, 8, "parallelism", 2),
       repeat: integer(values.repeat, 3, "repeat"),
       burst: integer(values.burst, 80, "burst", 2),

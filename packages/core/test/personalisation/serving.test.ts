@@ -5,11 +5,15 @@
 import type { BrowsePage, Row } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
 import type { Neighbour, ProfileListRow, RecommendationStore } from "../../src/index.ts";
-import { MemoryRecommendationStore } from "../../src/memory/index.ts";
+import { MemoryBlobStore, MemoryRecommendationStore } from "../../src/memory/index.ts";
 import { seededShuffle } from "../../src/recommendations/hash.ts";
 import { experimentDefinition } from "../../src/testing/experiments.contract.ts";
-import { createTestServices, type TestServices } from "../../src/testing/index.ts";
-import { demoViewer } from "../services/helpers.ts";
+import {
+  createTestServices,
+  type TestServices,
+  writeRecsVersion,
+} from "../../src/testing/index.ts";
+import { demoViewer, memberViewer } from "../services/helpers.ts";
 
 const DAY = 86_400_000;
 const RUN = "20260614-000000-0123abcd";
@@ -234,7 +238,7 @@ describe("hybrid serving", () => {
     }
   });
 
-  it("serves a profile the model has no lists for: the learned policy without personal rows", async () => {
+  it("serves a profile the model has no lists for with its neighbours, labelled so", async () => {
     const t = await createTestServices();
     const viewer = await demoViewer(t);
     await installModel(t, {
@@ -242,13 +246,29 @@ describe("hybrid serving", () => {
       lists: { "pr-locked": DEMO_LISTS },
     });
     const { first, rows } = await allRows(t, viewer);
-    expect(first.policy?.id).toBe(`learned:${RUN}`);
+    // Ranked by the rule engine with the model's neighbours: not counted as learned.
+    expect(first.policy).toEqual({ id: `neighbours:${RUN}`, explore: false });
     expect(rows.some((row) => row.kind === "top-picks")).toBe(false);
     expect(first.billboard).not.toBeNull();
     // Because You Watched Orbit leads with the model's neighbours (t-pebble first).
     const because = rows.find((row) => row.id === "home:because-you-watched:t-orbit");
     expect(rowIds(because).slice(0, 2)).toEqual(["t-pebble", "t-thaw"]);
     for (const row of rows) expect(row.items.length).toBeGreaterThan(0);
+  });
+
+  it("labels a page the model did not touch `rules`, and it is exactly the rule engine's", async () => {
+    const t = await createTestServices();
+    // A new member: no history, so neither a session boost nor a Because You Watched row.
+    const member = await memberViewer(t);
+    const before = await allRows(t, member);
+    await installModel(t, {
+      neighbours: neighbours("t-orbit", ["t-pebble", "t-thaw", "t-owl", "t-grin"]),
+      lists: { "pr-demo": DEMO_LISTS },
+    });
+    const after = await allRows(t, member);
+    expect(after.first.policy).toEqual({ id: "rules", explore: false });
+    expect(after.rows).toEqual(before.rows);
+    expect(after.first.billboard).toEqual(before.first.billboard);
   });
 
   it("gives a title the model has never seen its content neighbours", async () => {
@@ -323,7 +343,7 @@ describe("hybrid serving", () => {
       throw new Error("lists unavailable");
     };
     const { first, rows } = await allRows(t, viewer);
-    expect(first.policy?.id).toBe(`learned:${RUN}`);
+    expect(first.policy?.id).toBe(`neighbours:${RUN}`);
     expect(rows.some((row) => row.kind === "top-picks")).toBe(false);
     expect(rowIds(rows.find((row) => row.id === "home:because-you-watched:t-orbit"))[0]).toBe(
       "t-pebble",
@@ -388,6 +408,41 @@ describe("hybrid serving", () => {
         (row) => row.kind === "top-picks",
       ),
     ).toBe(false);
+  });
+
+  it("refuses a staff import request too large for this runtime, before queueing anything", async () => {
+    const t = await createTestServices();
+    const store = new MemoryRecommendationStore();
+    const blobs = new MemoryBlobStore({ clock: t.clock });
+    Object.assign(t.deps, {
+      recommendations: Object.assign(store, {
+        importCapacity: { maxProfileLists: 2, explanation: "import it from outside the Worker" },
+      }),
+      recommendationArtefacts: blobs,
+    });
+    const lists = (key: string) => ({
+      profileKey: key,
+      run: RUN,
+      generatedAt: t.clock.now(),
+      expiresAt: t.clock.now() + DAY,
+      rows: [],
+    });
+    await writeRecsVersion(blobs, {
+      run: RUN,
+      asOf: t.clock.now() - DAY,
+      expiresAt: t.clock.now() + DAY,
+      neighbours: neighbours("t-orbit", ["t-owl"]),
+      profiles: ["aaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccc"].map(
+        lists,
+      ),
+    });
+    const queued = t.queue.size;
+    await expect(t.services.personalisation.requestImport()).rejects.toMatchObject({
+      code: "recommendation_import_too_large",
+      detail: expect.stringContaining("import it from outside the Worker"),
+    });
+    expect(t.queue.size).toBe(queued);
+    expect(await store.models()).toEqual([]);
   });
 
   describe("exploration", () => {
@@ -497,10 +552,22 @@ describe("hybrid serving", () => {
 
     it("serves the control arm the rule engine and the treatment arm learned candidates", async () => {
       const control = await assigned("control");
-      await installModel(control.t, { lists: { "pr-demo": DEMO_LISTS } });
-      const a = await control.t.services.browse.getBrowse(control.viewer, "home", undefined);
-      expect(a.policy?.id).toBe("rules");
-      expect(a.rows.some((row) => row.kind === "top-picks")).toBe(false);
+      // The control arm's page before any model, to compare with: pure rules, no neighbours.
+      const plain = await allRows(control.t, control.viewer);
+      await installModel(control.t, {
+        neighbours: neighbours("t-orbit", ["t-pebble", "t-thaw", "t-owl", "t-grin"]),
+        lists: { "pr-demo": DEMO_LISTS },
+      });
+      const a = await allRows(control.t, control.viewer);
+      expect(a.first.policy?.id).toBe("rules");
+      expect(a.rows).toEqual(plain.rows);
+      // More Like This too: content similarity only, the model's neighbours of t-orbit unused.
+      const rules = await control.t.services.browse.personalize(control.viewer);
+      expect(
+        (await control.t.services.browse.listSimilar(control.viewer, "t-orbit")).items.map(
+          (card) => card.id,
+        ),
+      ).toEqual(rules.similar("t-orbit", 12));
 
       const treatment = await assigned("treatment");
       await installModel(treatment.t, { lists: { "pr-demo": DEMO_LISTS } });

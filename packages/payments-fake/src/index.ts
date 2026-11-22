@@ -7,8 +7,10 @@ export {
   cardFingerprint,
   FAKE_CARDS,
   FAKE_TEST_CARDS,
+  type FakeCardChoice,
   type FakeCardSpec,
   type FakeTestCard,
+  parseCardChoice,
   resolveTestCard,
 } from "./cards.ts";
 export { createFakePaymentForm, type FakePaymentFormOptions } from "./form.ts";
@@ -17,6 +19,7 @@ export {
   FAKE_PERIOD_MS,
   FakePaymentProvider,
   type FakePaymentProviderOptions,
+  type FakePromotionSeed,
   type FormOutcome,
   type RetriesExhausted,
   seededRandom,

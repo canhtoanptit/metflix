@@ -289,6 +289,26 @@ export class Personalization {
     );
   }
 
+  /**
+   * What the model contributes to this profile's pages (the ranking policy's label,
+   * areas/personalisation/serving.ts): `personal` when a fresh personal list ranks them,
+   * `neighbours` when only the model's neighbours help the rule engine (a session boost, or a
+   * Because You Watched row whose source the model knows), `none` when the pages are exactly the
+   * rule engine's.
+   */
+  modelUse(): "personal" | "neighbours" | "none" {
+    const learned = this.input.learned;
+    if (!learned) return "none";
+    if (learned.lists) return "personal";
+    if (this.sessionBoost.size > 0) return "neighbours";
+    const sources = this.becauseYouWatched(null).flatMap((row) =>
+      row.context.sourceTitle ? [row.context.sourceTitle.id] : [],
+    );
+    return sources.some((id) => (learned.neighbours.get(id)?.length ?? 0) > 0)
+      ? "neighbours"
+      : "none";
+  }
+
   /** Staff made the title unavailable now (it exists, but no surface may offer it). */
   isUnavailable(titleId: string): boolean {
     return this.input.editorial?.unavailable.has(titleId) ?? false;
@@ -1103,7 +1123,9 @@ export class Personalization {
    * not listed: order after listed ones by the engine's own score").
    */
   private rank(ids: string[]): string[] {
-    if (!this.input.learned) {
+    // Without a personal score or a session boost nothing learned orders the row: exactly the
+    // rule engine's order.
+    if (this.personal.size === 0 && this.sessionBoost.size === 0) {
       return ids
         .map((id) => ({
           id,

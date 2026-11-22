@@ -97,6 +97,15 @@ export const ERROR_CATALOG = {
    * outcome (the audit entry named in `detail` says which); or a dead letter already replayed.
    */
   staff_action_conflict: { status: 409, title: "This conflicts with an earlier staff action" },
+  /**
+   * A recommendation run with more per-profile lists than this runtime can write in one
+   * invocation (Cloudflare: 1,000 KV operations per Worker invocation, §9); `detail` names the
+   * importer that runs outside the Worker. Nothing was imported and the served run is untouched.
+   */
+  recommendation_import_too_large: {
+    status: 422,
+    title: "This run is too large to import here",
+  },
 } as const satisfies Record<string, ErrorSpec>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

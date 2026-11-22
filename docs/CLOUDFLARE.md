@@ -34,7 +34,7 @@ that date. Milestone 2 (§10) was wired and measured on 2026-11-22 with the same
 | `EventSink` (milestone 2) | **R2**: the event lake, gzip NDJSON objects under `events/dt=…/hh=…/`, written by the queue consumer | The canonical store of behaviour in every mode (blueprint M2 §6.2); R2 directly, never through the media edge cache. §10. |
 | `EmailSender` | **D1 outbox** locally (`email_outbox`, read back by the mailbox API from any isolate); **Resend over HTTP** in production | No SMTP client on Workers; the outbox keeps local mail visible across isolates and restarts. |
 | `PaymentProvider` | the **fake provider** locally (state in D1, form at `/_pay/*`); **Stripe** in production (fetch + Web Crypto) | Provider events are verified, recorded in D1, then processed by the queue consumer; reconciliation runs on the Cron Trigger. |
-| `RecommendationStore` | **KV** `RECS` for per-profile lists, **D1** for models and neighbours | A page reads its lists in one KV read, no D1 round trip; runs are imported from outside the Worker (§10.3). |
+| `RecommendationStore` | **KV** `RECS` for per-profile lists, **D1** for models and neighbours | A page reads its lists in one KV read, no D1 round trip; runs are imported from outside the Worker (§10.4). |
 | `IdentityProvider`, `StaffVerifier` | the **development issuer** mounted at `/dev-idp/*` locally (single use kept in D1); Google, Apple and a configured staff issuer in production | §10.1. |
 
 ### Durable Object design
@@ -352,6 +352,9 @@ make cf-lake-pull    # (dev server stopped) the event lake out of R2 into CF_REC
 make cf-recs-push    # (dev server stopped) a scored run from CF_RECS_STORE into R2, pointer last
 make cf-recs-import  # (dev server stopped) import the published run into D1 and KV, from Node
 make cf-recs-status  # the model the Worker serves and the last import
+make cf-export-events # (dev server up) pending exports: webflix-recs export-events, results posted
+make cf-erase        # (dev server up) pending erasures: webflix-recs erase, written back, confirmed
+make cf-compact      # (dev server up) compact the local lake's closed hours, written back
 ```
 
 `make cf-dev` from a fresh clone: install (if needed) → `.dev.vars` with every secret
@@ -376,6 +379,8 @@ wrangler.jsonc declares (`*/5`, at the same UTC minute boundaries as the platfor
 `wrangler dev` never fires Cron Triggers by itself (observed: no tick in 12 minutes across three
 boundaries), and without them the periodic jobs of milestone 2 (playback outbox drain, privacy
 sweep, billing reconciliation) would never run locally. `CF_CRON=off` leaves only `make cf-cron`.
+With `CF_JOBS_EVERY=<seconds>` it also runs the pipeline's privacy jobs when something is pending
+(§10.4).
 
 `make cf-stop` signals only that recorded runner while it is still alive, still `scripts/dev.ts` and still running in `apps/edge`; without a valid
 record (a server started some other way) only a wrangler process running in `apps/edge` behind
@@ -431,22 +436,24 @@ browse D1, KV, R2 and Durable Objects and query captured logs; the inspector lis
 
 ### Conformance (`make smoke TARGET=cf`)
 
-Latest run recorded here (2026-11-22, milestone 2 wiring), with the suite as it stood that
-evening while its milestone 2 checks were still being written (130 checks; source fingerprint
-`16399cc6` of `tools/smoke/src`), against `make cf-dev` from a fresh state directory on :8787
-(web build served, the fast media profile in its local R2, local rate-limit profile), run the
-way the suite asks a conformance deployment to be run:
+Latest run recorded here (2026-11-22, after the export job moved to the pipeline), with the
+suite as it stood that day (131 checks; source fingerprint `72f18f7b` of `tools/smoke/src`),
+against `make cf-dev` from a fresh state directory on :8787 (web build served, the fast media
+profile in its local R2, local rate-limit profile), run the way the suite asks a conformance
+deployment to be run, with the pipeline's privacy jobs on a loop (§10.4):
 
 ```sh
-make cf-dev CF_CRON_EVERY=30 CF_DEV_FLAGS="--var WEBFLIX_DELETION_COOLING_OFF_SEC:30"
+make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10 CF_DEV_FLAGS="--var WEBFLIX_DELETION_COOLING_OFF_SEC:30"
 make smoke TARGET=cf
 ```
 
-**130 checks: 123 passed, 0 failed, 5 skipped, 2 expected failures**, in 180 s. Every
-milestone 2 area it covers passed on the Worker: sign-in and linking through the development
-issuer, the fake provider's member journey, trials, dunning, provider events delivered twice,
-out of order and after an outage, privacy (consent, export, deletion and erasure), the staff
-API's roles and audited support actions. Skips and expected failures:
+**131 checks: 123 passed, 0 failed, 5 skipped, 3 known findings that now pass**, in 172 s.
+`privacy.export` passed in 5.7 s (its events extracted by `webflix-recs export-events` through
+the loop) and `privacy.deletion.erasure` in 59 s. Every milestone 2 area it covers passed on the
+Worker: sign-in and linking through the development issuer, the fake provider's member journey,
+trials, dunning, provider events delivered twice, out of order and after an outage, privacy
+(consent, export, deletion and erasure), the staff API's roles and audited support actions.
+Skips:
 
 - `media.external-fallback`: every title is packaged; it passes on an external-HLS seed
   (`seed --no-media`).
@@ -456,14 +463,14 @@ API's roles and audited support actions. Skips and expected failures:
 - `billing.promo-code.applied`: no route, seed or setting creates a promo code for the fake
   provider (the suite's finding M2-F1, billing).
 - `experiments.recommendation-status`: no run imported on a fresh state (`make cf-recs-import`
-  imports one). On an instance with an imported run it fails: a profile the run never saw is
-  served as `learned:<run>` (neighbours only), where the check and blueprint M2 §7.2 expect the
-  rule engine; that is serving's portable code, reported to its owner.
-- `billing.checkout-abandoned`, `billing.checkout-expired` (expected failures): the suite's
-  findings M2-F3 and M2-F4 (billing).
+  imports one). The home page's policy label is `learned:<run>` only when a fresh personal list
+  of the served run ranked the page, `neighbours:<run>` when only the run's neighbours helped
+  (a profile the run never saw), and `rules` otherwise.
 
-An earlier run the same day (116 checks, fingerprint `1a39870d`, before the privacy, staff and
-experiments checks landed): 111 passed, 0 failed, 4 skipped, 1 expected failure.
+The suite's known findings M2-F3, M2-F4 (billing) and M2-F5 (identity) passed: fixed since.
+Earlier runs the same day: 130 checks (`16399cc6`, export still inline): 123 passed, 0 failed,
+5 skipped, 2 expected failures; 116 checks (`1a39870d`): 111 passed, 0 failed, 4 skipped, 1
+expected failure.
 
 Under strict limits the suite needs `--timeout 300000`: its sign-ups share one client
 address's budget (5/min), checks queue on it while their default 120 s clock runs, and which
@@ -653,7 +660,7 @@ directory, and by the conformance suite (§7).
 | Consumer sign-in | the development issuer this Worker mounts at `/dev-idp/{google,apple}`, called in process by the relying party; codes are single use across isolates (D1 claims table), sealed with a secret derived from the media-token key every isolate has | Google and Apple once their clients are configured; `/dev-idp` answers 404 |
 | Email | D1 outbox (`WEBFLIX_EMAIL_SENDER=outbox`): `email_outbox`, read back by `GET /api/v1/diagnostics/mailbox` from any isolate | Resend's REST API (`http`), bounces on `POST /api/v1/webhooks/email/resend` |
 | Payments | the fake provider: state in D1, its form at `/_pay/*`; its webhooks are delivered in process to the receiver, which verifies them, records them in D1 (`provider_events`) and enqueues `billing.provider-event` | Stripe: the same receiver at `POST /api/v1/webhooks/payments/stripe` → D1 → Queues; the SPA's CSP gains Stripe.js's origins (and only then: `scripts/lib/security-headers.ts`) |
-| Event lake | R2 `events/dt=…/hh=…/{uuid}.ndjson.gz`, one object per accepted batch, written by the queue consumer; pseudonym key random per clone | the same; the pseudonym key is generated on the first deploy and never replaced |
+| Event lake | R2 `events/dt=…/hh=…/{uuid}.ndjson.gz`, one object per accepted batch, written by the queue consumer; pseudonym key random per clone; exports' events and erasure of lake rows by the pipeline's jobs (`make cf-export-events`, `cf-erase`, or `CF_JOBS_EVERY`) | the same; the jobs run outside Workers against R2's S3 API; the pseudonym key is generated on the first deploy and never replaced |
 | Recommendations | KV `RECS` (per-profile lists) over D1 (models, neighbours); runs imported from Node (§10.4) | the same; `webflix-recs` is provisioned, lists are written with the KV REST bulk API |
 | Experiments | definitions in D1 through the isolate memo and KV `CACHE` | the same |
 | Staff API | tokens from the development issuer's staff realm (`/dev-idp/staff`) | closed (`memory`) until `WEBFLIX_STAFF_VERIFIER=oidc` and `WEBFLIX_STAFF_ISSUER` are set: intended |
@@ -705,10 +712,11 @@ barely touch: the consumer writes them to R2). If behaviour volume grows, a burs
 batches can delay entitlement; the remedy is a second queue for `events.*` jobs (a routing
 `JobQueue` in `adapters-cloudflare`, a second consumer with higher concurrency), not built yet.
 
-### 10.4 Batch jobs and the importer, outside Workers
+### 10.4 Batch jobs, the importer and the privacy jobs, outside Workers
 
-Compaction, training, scoring and analysis run outside Workers against R2 (blueprint M2 §9).
-Locally (the dev server stopped, like every ops command: one runtime per state directory):
+Compaction, training, scoring and analysis run outside Workers against R2 (blueprint M2 §9), and
+so do the events part of a data export and the erasure of lake rows (below). Recommendation
+runs, locally (the dev server stopped, like every ops command: one runtime per state directory):
 
 ```sh
 make cf-stop
@@ -733,9 +741,10 @@ Why outside: inside a Worker every KV `put` is one of the invocation's 1,000 ope
 Cloudflare services (KV has no bulk write binding; the REST bulk write takes 10,000 pairs per
 request), a queue consumer has 128 MB of memory for the Parquet shards, and a run of the
 simulated pipeline has 89,000 profiles. The staff API's `POST /system/recommendations/import`
-still queues the in-Worker job: on Cloudflare it fits runs of at most a few hundred profiles,
-and a larger run fails as `failed` with the served run untouched (reported to the
-personalisation and admin owners).
+queues the in-Worker job only for a run the binding can write in one invocation; a larger one is
+refused up front with `recommendation_import_too_large`, whose detail names `make cf-recs-import
+(node apps/edge/scripts/ops.ts recs import)`, this importer (the outside importer passes the
+REST or binding writer itself, so no such limit applies to it).
 
 Measured: the lake of a journey (7 objects) pulled, a run for its two profiles written by a
 stand-in for the pipeline's `score`/`publish` (the pipeline itself was not run on this
@@ -747,6 +756,92 @@ generated from Cloudflare's OpenAPI document: 25,001 pairs went in three request
 writer throw with the API's message. (The emulator took 123 s for those writes: it measures the
 request shape, not the platform's speed.)
 
+**The privacy jobs: data exports and erasure.** A member's export reads every event of the
+account within 13 months, which no Worker invocation can do (subrequests, CPU), so on Cloudflare
+the export is split: the Worker assembles everything but the events and records the request
+(`WEBFLIX_EXPORT_EVENTS=batch`, the default here; `inline` is refused at startup), the
+pipeline's `webflix-recs export-events` reads the lake, and the operator route
+`POST /api/admin/v1/system/privacy/exports/results` folds its output in and finishes the export.
+Erasure of an erased member's rows from the lake (raw objects and compacted hours), the
+quarantine, datasets and artefacts is the pipeline's `webflix-recs erase`, confirmed with
+`POST /api/admin/v1/system/privacy/erasures/confirm`. Both jobs list their work from the staff
+API (`GET …/system/privacy/exports`, `GET …/system/privacy/erasures`) with a service token: the
+development issuer's `webflix-jobs` client (client-credentials grant at
+`{origin}/dev-idp/staff/token`, roles `admin` and `experiments`), as a Keycloak service account
+would be on a real deployment.
+
+Locally the pipeline cannot read miniflare's R2, so these targets carry each job's round trip,
+**with the dev server up** (R2 is reached through the dev server's own Local Explorer API,
+`scripts/lib/explorer-store.ts`, so the state still has one owner):
+
+```sh
+make cf-export-events   # GET …/exports → pull events/ → export-events → privacy/export-events/… into R2 → POST …/exports/results
+make cf-erase           # GET …/erasures → pull events/, events-quarantine/, privacy/export-events/, recs/
+                        #   → erase → rewritten and removed objects into R2 → POST …/erasures/confirm
+make cf-compact         # pull events/ → compact → Parquet files and _compaction.json into R2
+make cf-dev CF_JOBS_EVERY=10   # the dev server also runs `jobs run` (erase, then export) every 10 s
+```
+
+Each is safe to rerun and a no-op with nothing pending (one token request and the list calls).
+The pull is an exact mirror of what R2 holds for those prefixes (`recs/` is merged with the
+store's own runs) and incremental: a sync record (`<store>/cf-sync.json`, R2's and the store's
+etags per key) means an unchanged object is never downloaded twice. The push sends only what
+the job changed since the pull: uploads first, a manifest after its data (`_compaction.json`,
+`manifest.json`, `recs/current.json` last), deletions last, which is the order the lake's
+readers rely on; an object the Worker wrote after the pull is never touched. R2 owns what the
+product writes or reads (`events/`, `events-quarantine/`, `privacy/export-events/`, `recs/`);
+the store owns the pipeline's working data (`recs-work/`, the erasure plan included), as R2 owns
+it on a real account. Keys are confirmed only after the rewritten objects are back in R2 (the
+job writes its confirmation bodies to a file, `--confirm FILE`, and this sends them); a
+verification failure (exit 5) still writes back what was removed and confirms nothing. One
+round trip at a time per store (`<store>/cf-jobs.lock`), on top of the pipeline's own lake
+lease. `CF_JOBS_GRACE` (default 0) is the export job's grace: production keeps its 15 minutes
+for events still in flight; locally a request is listed only after the Worker's own export job
+(queued after any events the member sent before it) assembled it, so the member's events are in
+the lake by then.
+
+Why its own loop and not the Cron Trigger's: it runs outside the Worker (a Python process and
+the store per round), and must never delay or overlap a tick of `scheduled()`; it is off unless
+`CF_JOBS_EVERY` is set, and the next round starts only when the previous one has finished.
+
+Measured on the local Worker (2026-11-22, a fresh state, `CF_JOBS_EVERY=10`, `CF_CRON_EVERY=30`,
+cooling-off 30 s; `privacy-roundtrips.ts` in the work's scratch directory):
+
+- **Export**: a member signed up, consented, sent a `title.open` and requested an export; the
+  request was listed by the operator route 2.1 s later and completed 10.3 s after the request
+  (one loop period). The downloaded document held the account, its profiles and its three
+  events, the client event included, every one the member's; the pipeline's two documents were
+  deleted from R2 once folded in. The round: pull of 3 objects, the job 0.1 s, 2 uploads, 0.2 s.
+- **Erasure**: `make cf-compact` (as if two hours later, so the current hour counted as closed)
+  wrote the hour's Parquet file and manifest into R2; the member's key was then in 3 raw objects
+  and 1 compacted hour. After `POST /account/deletion` the key was listed 48.9 s later (30 s
+  cooling-off and the 30 s tick); the loop's round rewrote the Parquet file without its 3 rows,
+  deleted the 3 raw objects (only the member's events), verified, wrote back and confirmed the
+  account and profile keys (0.6 s), and the key was no longer listed 3.0 s after it appeared. A
+  scan of every object in local R2 (raw lines, Parquet `account` and `profile` columns, export
+  outputs) found the key nowhere.
+- **Cost per round**: nothing pending: a token and two list calls (tens of milliseconds). With
+  work at this lake size: 0.2–1.2 s for an export (most of it the incremental pull), 0.6–0.8 s
+  for an erasure; the pipeline itself took 0.1–0.5 s and up to 190 MB. The latency a member sees
+  is at most one loop period on top. Pulls grow with the lake: listing is one explorer call per
+  1,000 objects, downloads only new objects.
+
+**What this proves and what it does not.** It proves the product's side of both jobs on the
+Worker (the operator routes with a service token, the folding in of a verified events file,
+confirmation after the rewrite) and the pipeline's jobs on what the Worker wrote, end to end, so
+the conformance checks `privacy.export` and `privacy.deletion.erasure` pass on `make cf-dev`. It
+does not prove the production path: on a real account the jobs run outside Workers (a container
+or any scheduler) with `--store s3://webflix-media` against R2's S3 API (`WEBFLIX_S3_ENDPOINT`
+`https://<account>.r2.cloudflarestorage.com`, an R2 API token), call the staff API with a real
+issuer's service account, and none of the pulling and pushing exists. Still to show there: the
+jobs' reads and writes through R2's S3 API, and the lake lease, which is created with
+`PutObject` and `If-None-Match: *`: R2 documents conditional `PutObject` headers as evaluated
+atomically against the committed bucket state, with at most one of several create-only writes
+succeeding and the others answered `412 PreconditionFailed`
+(developers.cloudflare.com/r2/api/s3/api/, read 2026-11-22). The pipeline has verified that
+behaviour only against an emulator (moto); locally the lease is on the filesystem store (a hard
+link) and this tooling also serialises its rounds.
+
 ### 10.5 Verified locally, not shown by local emulation, still to prove on a real account
 
 | Item | Seen locally | Local emulation cannot show | A real deployment must prove |
@@ -755,7 +850,7 @@ request shape, not the platform's speed.)
 | Checkout, provider event → queue → entitlement | yes (2.2 s, `invoice.paid` processed by the consumer) | Stripe webhooks over the internet; Queues' own batching delay (5 s in production) | Stripe live keys, the webhook endpoint and its secret, Stripe's retries against the Worker |
 | Periodic jobs on the Cron Trigger | yes: `make cf-dev` fires it every 5 min (a tick at 11:15:00.033 published 11 jobs, run by the consumer); `wrangler dev` alone never does | the platform's scheduler and its propagation (up to 15 min after a deploy) | that ticks arrive every 5 min |
 | Events → R2 lake objects | yes (client and server events, gzip NDJSON by receipt hour) | R2's latency and Class A cost | Workers Logs volume, R2 cost at real batch rates |
-| Export, deletion, erasure | yes (export document in R2 under `privacy/`, account erased, the profile's KV lists deleted) | | the export link and the email through Resend |
+| Export, deletion, erasure | yes: the export's events extracted by `export-events` and folded in through the operator route; the erased member's raw objects and compacted rows gone from local R2, confirmed after the write-back; account erased, its KV lists deleted | the jobs against R2's S3 API (locally they go through the Local Explorer) | the jobs' S3 access to R2, the lake lease's `If-None-Match: *` on R2, a real issuer's service account, the email through Resend |
 | Email | yes (D1 outbox: welcome, receipt, reset-password) | Resend | Resend key, verified domain, bounce webhook |
 | Import from outside | yes (local bindings; REST writer against the emulated endpoint) | the real REST API's auth, rate limits and `unsuccessful_keys` | an import of a full-size run with a real token; KV propagation (up to 60 s) |
 | State across a restart | yes: session, membership, mailbox, lake, recommendations, stream slots (D1, KV, R2, Durable Objects) | **Queues durability.** miniflare keeps undelivered messages in memory: a batch acknowledged with 202 and followed by a stop 0.5 s later never reached the lake; one stopped after 4.3 s did. Retries waiting on their backoff are lost the same way | that Queues keeps messages across deploys (Cloudflare documents at-least-once delivery) |
@@ -809,4 +904,8 @@ interval.
 - Wrangler `secrets.required`: an allowlist for `.dev.vars` locally (missing names warn),
   checked by `wrangler deploy`; `--secrets-file` adds to the existing secrets.
   /workers/wrangler/configuration/, /workers/configuration/secrets/, `wrangler deploy --help`
+- R2's S3 API: `PutObject` honours `If-Match`, `If-None-Match`, `If-Modified-Since` and
+  `If-Unmodified-Since`, evaluated atomically against the committed bucket state; of concurrent
+  create-only writes at most one succeeds, the others get `412 PreconditionFailed` (the
+  pipeline's lake lease relies on it). /r2/api/s3/api/
 - Stripe.js CSP: docs.stripe.com/security/guide ("Stripe.js").

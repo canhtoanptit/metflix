@@ -131,6 +131,11 @@ export function createAdminHandlers(container: AppContainer): AdminHandlers {
     confirmErasures: async ({ body }, c) => {
       await admin.privacy.confirmErasures(await staff(c), body.subjectKeys, body.reason);
     },
+    listPendingExports: ({ query }) => admin.privacy.pendingExports(query.limit ?? 100),
+    recordExportResults: async ({ body }, c) => {
+      const { reason, ...document } = body;
+      await admin.privacy.recordExportResults(await staff(c), document, reason);
+    },
 
     listAuditLog: ({ query }) => admin.audit.list(query),
   };

@@ -63,6 +63,10 @@ export interface SmokeOptions {
   mediaTitleId: string | null;
   /** A promo code the deployment's payment provider honours for the Standard plan. */
   promoCode: string | null;
+  /** Batch-mode data export: how long to wait for a first round of the deployment's job. */
+  exportWaitMs: number;
+  /** Batch-mode data export: the longest wait, a deferral by the job included. */
+  exportWaitMaxMs: number;
   only: string[];
   skip: string[];
   tags: string[];

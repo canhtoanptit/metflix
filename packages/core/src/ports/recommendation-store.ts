@@ -26,6 +26,11 @@
  *   per statement on SQL; KV writes one key per list).
  */
 export interface RecommendationStore {
+  /**
+   * What one import can write here, when that is bounded (a Worker writing Workers KV through
+   * its binding); absent: unbounded. The importer refuses a larger run before writing anything.
+   */
+  readonly importCapacity?: ImportCapacity;
   /** The run being served, or null (nothing activated yet). */
   activeModel(): Promise<RecommendationModel | null>;
   /** Every registered run, most recently imported first. */
@@ -55,6 +60,13 @@ export interface RecommendationStore {
    * them is served or kept afterwards. At most `MAX_PROFILE_ERASURE` keys per call.
    */
   deleteProfileLists(profileKeys: readonly string[]): Promise<void>;
+}
+
+export interface ImportCapacity {
+  /** Per-profile lists one import may write. */
+  maxProfileLists: number;
+  /** Why, and what to use instead (named in the refusal). */
+  explanation: string;
 }
 
 export const RECOMMENDATION_MODEL_STATUSES = ["importing", "ready", "active", "failed"] as const;

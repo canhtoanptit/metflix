@@ -4,6 +4,7 @@
  */
 export * from "./email.ts";
 export * from "./jose.ts";
+export * from "./jwks.ts";
 export * from "./oidc.ts";
 export * from "./outbox.ts";
 export * from "./providers.ts";

@@ -14,7 +14,7 @@ import {
   FIXTURE_MANIFEST,
 } from "@webflix/core/testing";
 import { migrateToLatest } from "@webflix/db";
-import { FAULT_NAMES } from "@webflix/dev-idp";
+import { FAULT_NAMES, WEBFLIX_DEV_CLIENTS } from "@webflix/dev-idp";
 import { CookieJar, completeAuthorization } from "@webflix/dev-idp/testing";
 import { describe, expect, it } from "vitest";
 import { developmentIssuerOf } from "../src/areas/identity.ts";
@@ -74,4 +74,52 @@ describeFederatedSignIn("Node runtime (SQLite)", async () => {
     },
     cleanup: () => runtime.close(),
   };
+});
+
+describe("the batch jobs' service account (client credentials at the development staff issuer)", () => {
+  it("gets a staff token the staff API accepts, with its fixed roles", async () => {
+    const config = loadApiConfig({
+      WEBFLIX_DATABASE_URL: "sqlite::memory:",
+      WEBFLIX_BLOB_STORE: "memory",
+      WEBFLIX_MEDIA_DIR: "none",
+      WEBFLIX_LOG_LEVEL: "error",
+      WEBFLIX_PAYMENT_PROVIDER: "memory",
+    });
+    const runtime = createRuntime(config, "api");
+    try {
+      await migrateToLatest(runtime.infra.database);
+      const app = createHttpApp(runtime);
+      const { clientId, clientSecret, roles } = WEBFLIX_DEV_CLIENTS.staffJobs;
+      // What the pipeline sends (WEBFLIX_STAFF_TOKEN_URL, _CLIENT_ID, _CLIENT_SECRET).
+      const issued = await app.request(`${config.core.publicOrigin}/dev-idp/staff/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+      });
+      expect(issued.status).toBe(200);
+      const { access_token: token } = (await issued.json()) as { access_token: string };
+      const me = await app.request("/api/admin/v1/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(me.status).toBe(200);
+      expect(((await me.json()) as { roles: string[] }).roles.sort()).toEqual([...roles].sort());
+      // A wrong secret gets nothing; nor does a member's session cookie on the staff API.
+      const refused = await app.request(`${config.core.publicOrigin}/dev-idp/staff/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: "x".repeat(20),
+        }),
+      });
+      expect(refused.status).toBe(401);
+    } finally {
+      await runtime.close();
+    }
+  });
 });

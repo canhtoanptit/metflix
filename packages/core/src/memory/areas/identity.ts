@@ -3,6 +3,7 @@ import type {
   AccountTokenRecord,
   EmailSuppression,
   IdentityAccount,
+  IdentityRemoval,
   IdentityRepository,
   LinkedIdentityRecord,
   OutboxEntry,
@@ -22,6 +23,7 @@ interface IdentityState {
   outbox: Map<string, OutboxEntry>;
   suppressions: Map<string, EmailSuppression>;
   claims: Map<string, number>;
+  removals: Map<string, IdentityRemoval>;
 }
 
 const states = new WeakMap<object, IdentityState>();
@@ -37,6 +39,7 @@ function stateOf(owner: object): IdentityState {
       outbox: new Map(),
       suppressions: new Map(),
       claims: new Map(),
+      removals: new Map(),
     };
     states.set(owner, state);
   }
@@ -194,7 +197,7 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       if (identity) identity.lastUsedAt = now;
     },
 
-    async unlinkIdentity(accountId, provider: OidcProvider) {
+    async unlinkIdentity(accountId, provider: OidcProvider, now) {
       tick();
       const owned = identitiesOf(accountId);
       const target = owned.find((identity) => identity.provider === provider);
@@ -202,8 +205,17 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       const account = accounts.get(accountId);
       const hasPassword = account !== undefined && account.passwordHash !== "";
       if (!hasPassword && owned.length <= 1) return "last";
-      s.identities.delete(identityKey(target.provider, target.subject));
+      const key = identityKey(target.provider, target.subject);
+      s.removals.set(key, { accountId, reason: "unlinked", removedAt: now });
+      s.identities.delete(key);
       return "unlinked";
+    },
+
+    async findRemoval(provider, subject) {
+      tick();
+      const removal = s.removals.get(identityKey(provider, subject));
+      // Gone with its account (ON DELETE CASCADE in SQL).
+      return removal && accounts.has(removal.accountId) ? copy(removal) : null;
     },
 
     async getSession(sessionId, now) {
@@ -254,7 +266,9 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       const unlinked: OidcProvider[] = [];
       for (const identity of identitiesOf(account.id)) {
         if (identity.emailAtLink !== account.email) {
-          s.identities.delete(identityKey(identity.provider, identity.subject));
+          const key = identityKey(identity.provider, identity.subject);
+          s.removals.set(key, { accountId: account.id, reason: "password_reset", removedAt: now });
+          s.identities.delete(key);
           unlinked.push(identity.provider);
         }
       }
