@@ -14,12 +14,14 @@ import { qk } from "../../../app/query/keys.ts";
 import { isSafeRedirect } from "../../../app/router/search.ts";
 import { useApplySession, useAuthenticatedSession } from "../../../app/session/session.ts";
 import { discardPendingEvents } from "../../../app/telemetry/index.ts";
+import { parseProvider, providerName } from "../auth/oidc.ts";
 import { MemberHeader } from "../shared/Chrome.tsx";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { possessive } from "../shared/format.ts";
 import { standingOf, useIsDemoAccount } from "../shared/privileges.ts";
 import { RetryTimer } from "../shared/RetryTimer.tsx";
+import { useFocusAfterBusy } from "../shared/useFocusAfterBusy.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { MembershipNotice } from "./MembershipNotice.tsx";
 import { AddProfileTile, ProfileChoice, ProfileGrid } from "./ProfileTile.tsx";
@@ -38,6 +40,10 @@ export function ProfileGatePage() {
   const demo = useIsDemoAccount();
   const manages = standingOf(session.activeProfile) !== "kids";
   const { redirect } = route.useSearch();
+  // On the way to adding a provider (after `link-required`): say where choosing leads.
+  const linking = redirect?.startsWith("/account/security?")
+    ? parseProvider(new URLSearchParams(redirect.split("?")[1]).get("link"))
+    : undefined;
   const navigate = useNavigate();
   const applySession = useApplySession();
   const queryClient = useQueryClient();
@@ -125,6 +131,9 @@ export function ProfileGatePage() {
     },
   });
 
+  const removeRef = useRef<HTMLButtonElement>(null);
+  useFocusAfterBusy(unlock.isPending, removeRef);
+
   const choose = (profile: Profile) => {
     if (select.isPending) return;
     returnFocus.current = document.activeElement as HTMLElement | null;
@@ -160,7 +169,11 @@ export function ProfileGatePage() {
       >
         <div className="flex flex-col items-center gap-3 text-center">
           <h1 className="type-display-md text-fg">Who's watching?</h1>
-          {redirect?.startsWith("/account") ? (
+          {linking ? (
+            <p className="type-body-lg text-fg-muted">
+              Choose your profile, then add {providerName(linking)} to your account.
+            </p>
+          ) : redirect?.startsWith("/account") ? (
             <p className="type-body-lg text-fg-muted">
               Choose your profile to continue to your account.
             </p>
@@ -228,6 +241,7 @@ export function ProfileGatePage() {
                     Back
                   </Button>
                   <Button
+                    ref={removeRef}
                     variant="accent"
                     loading={unlock.isPending}
                     onClick={() => unlock.mutate(locked)}

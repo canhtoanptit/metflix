@@ -1,32 +1,42 @@
 /**
  * Your actions: the signed-in staff member's own audit entries (`GET /audit/mine`, any role),
- * newest first, so anyone can follow an action whose outcome was unclear to its entry. What was
- * asked and what changed stay with the audit log (admin role); here an entry shows what, on
- * what, why, how it ended, and the error code when it failed.
+ * newest first, in words, so anyone can follow an action to its entry (from its dialog, by
+ * request ID). What was asked and what changed stay with the audit log (admin role): here an
+ * entry shows what, on whom or what (a member's address only for roles that may see members),
+ * why, how it ended, and the error when it failed. Views of member data are left out unless
+ * asked for.
  */
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import {
   AUDIT_OUTCOMES,
   type AuditLogEntry,
   type AuditOutcome,
   type OwnAuditQuery,
 } from "@webflix/contracts";
-import { Button, Field, FilterIcon, Input, Select, SelectItem } from "@webflix/ui";
+import { Button, Field, FilterIcon, Input, RefreshIcon, Select, SelectItem } from "@webflix/ui";
 import { useEffect, useState } from "react";
 import { useStaff } from "../../access/staff.tsx";
 import { queries } from "../../api/queries.ts";
 import { type Column, DataTable } from "../../components/DataTable.tsx";
 import {
-  DateTime,
   Identifier,
   PageHeader,
   Section,
+  Stamp,
   StatusBadge,
 } from "../../components/primitives.tsx";
 import { Empty, ErrorPanel, LoadingRows } from "../../components/states.tsx";
 import { useDocumentTitle } from "../../lib/hooks.ts";
 import { AUDIT_OUTCOME } from "../../lib/status.ts";
+import { EntryError, EntryWhat } from "./AuditEntryParts.tsx";
+import { AUDIT_SHOW, type AuditShow, auditKind, auditShow } from "./audit-filter.ts";
+
+const SHOW_LABELS: Record<AuditShow, string> = {
+  actions: "Actions",
+  all: "Actions and views",
+  views: "Views only",
+};
 
 const route = getRouteApi("/activity");
 const ANY = "any";
@@ -38,13 +48,16 @@ export function MyActionsPage() {
   const search = route.useSearch();
   const navigate = useNavigate({ from: "/activity" });
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
-  const filterKey = `${search.outcome ?? ""}|${search.requestId ?? ""}`;
+  const show = auditShow(search);
+  const kind = auditKind(show);
+  const filterKey = `${search.outcome ?? ""}|${search.requestId ?? ""}|${show}`;
   useEffect(() => setCursors([null]), [filterKey]);
   const cursor = cursors.at(-1) ?? null;
   const query: OwnAuditQuery = {
     limit: PAGE_SIZE,
     ...(search.outcome ? { outcome: search.outcome } : {}),
     ...(search.requestId ? { requestId: search.requestId } : {}),
+    ...(kind ? { kind } : {}),
     ...(cursor ? { cursor } : {}),
   };
   const page = useQuery({ ...queries.ownAudit(query), placeholderData: keepPreviousData });
@@ -53,35 +66,16 @@ export function MyActionsPage() {
     {
       id: "when",
       header: "When",
-      cell: (entry) => (
-        <span className="whitespace-nowrap">
-          <DateTime value={entry.createdAt} seconds />
-        </span>
-      ),
+      cell: (entry) => <Stamp value={entry.createdAt} />,
     },
     {
-      id: "action",
-      header: "Action",
+      id: "what",
+      header: "What",
       cell: (entry) => (
-        <span className="flex flex-col gap-0.5">
-          <code className="font-mono text-xs text-fg">{entry.action}</code>
-          <span className="type-caption text-fg-subtle">
-            {entry.target.type === "member" && staff.has("support") ? (
-              <Link
-                to="/members/$accountId"
-                params={{ accountId: entry.target.id }}
-                className="focus-ring rounded-xs underline-offset-4 hover:text-fg hover:underline"
-              >
-                Member {entry.target.id.slice(0, 13)}…
-              </Link>
-            ) : entry.target.type === "member_search" ? (
-              "Member search"
-            ) : (
-              `${entry.target.type} ${entry.target.id}`
-            )}
-          </span>
-          {/* The request id is what an unclear change is followed by; reads carry no reason. */}
-          {entry.requestId && entry.reason !== null ? (
+        <span className="flex flex-col gap-1">
+          <EntryWhat entry={entry} linkMembers={staff.has("support")} />
+          {/* The request id is what an unclear change is followed by; views carry none worth it. */}
+          {entry.requestId && entry.kind === "action" ? (
             <span className="type-caption text-fg-subtle">
               Request <Identifier value={entry.requestId} label="request ID" truncate />
             </span>
@@ -104,22 +98,14 @@ export function MyActionsPage() {
     {
       id: "outcome",
       header: "Outcome",
-      cell: (entry) => {
-        const error =
-          entry.after && typeof entry.after === "object" && !Array.isArray(entry.after)
-            ? (entry.after as { error?: unknown }).error
-            : undefined;
-        return (
-          <span className="flex flex-col items-start gap-1">
-            <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
-              {AUDIT_OUTCOME[entry.outcome].label}
-            </StatusBadge>
-            {typeof error === "string" ? (
-              <code className="font-mono text-xs text-fg-subtle">{error}</code>
-            ) : null}
-          </span>
-        );
-      },
+      cell: (entry) => (
+        <span className="flex flex-col items-start gap-1">
+          <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
+            {AUDIT_OUTCOME[entry.outcome].label}
+          </StatusBadge>
+          <EntryError entry={entry} />
+        </span>
+      ),
     },
   ];
 
@@ -128,14 +114,28 @@ export function MyActionsPage() {
     <>
       <PageHeader
         title="Your actions"
-        description="Everything you did in the console, newest first. Unknown means it ended without saying whether it happened: check the member (or whatever it acted on) before doing it again."
+        description="What you did in the console, newest first. Your views of member data are recorded too, and listed when you ask for them. Unknown means an action ended without saying whether it happened: check the member (or whatever it acted on) before doing it again."
       />
       <OwnFilters
         key={filterKey}
         initial={search}
         onApply={(next) => void navigate({ search: next })}
       />
-      <Section title="Entries" className="mt-4">
+      <Section
+        title="Entries"
+        className="mt-4"
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            icon={RefreshIcon}
+            loading={page.isFetching}
+            onClick={() => void page.refetch()}
+          >
+            Refresh
+          </Button>
+        }
+      >
         {search.requestId && page.data && page.data.items.length === 0 ? (
           <p role="status" className="mb-3 type-body-sm text-fg-muted">
             No entry for request <code className="font-mono text-xs">{search.requestId}</code>.
@@ -162,7 +162,16 @@ export function MyActionsPage() {
             rows={page.data.items}
             rowKey={(entry) => entry.id}
             highlight={(entry) => Boolean(search.requestId) && entry.requestId === search.requestId}
-            empty={<Empty title="Nothing here" description="No action of yours matches." />}
+            empty={
+              <Empty
+                title="Nothing here"
+                description={
+                  show === "actions"
+                    ? "No action of yours matches. Your views of member data are left out: show them to look there too."
+                    : "Nothing of yours matches."
+                }
+              />
+            }
             pager={
               cursors.length > 1 || page.data.nextCursor
                 ? {
@@ -185,29 +194,49 @@ export function MyActionsPage() {
   );
 }
 
+interface OwnFilterValues {
+  outcome?: AuditOutcome;
+  requestId?: string;
+  show?: AuditShow;
+}
+
 function OwnFilters({
   initial,
   onApply,
 }: {
-  initial: { outcome?: AuditOutcome; requestId?: string };
-  onApply: (next: { outcome?: AuditOutcome; requestId?: string }) => void;
+  initial: OwnFilterValues;
+  onApply: (next: OwnFilterValues) => void;
 }) {
   const [outcome, setOutcome] = useState<string>(initial.outcome ?? ANY);
   const [requestId, setRequestId] = useState(initial.requestId ?? "");
+  const [show, setShow] = useState<AuditShow>(auditShow(initial));
   return (
     <form
       aria-label="Filter your actions"
-      className="grid gap-3 rounded-lg border border-line-subtle bg-surface-1 p-4 sm:grid-cols-[1fr_1fr_auto]"
+      className="grid gap-3 rounded-lg border border-line-subtle bg-surface-1 p-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto]"
       onSubmit={(event) => {
         event.preventDefault();
+        const request = /^[A-Za-z0-9._-]{1,64}$/.test(requestId.trim()) ? requestId.trim() : null;
         onApply({
           ...(outcome !== ANY ? { outcome: outcome as AuditOutcome } : {}),
-          ...(/^[A-Za-z0-9._-]{1,64}$/.test(requestId.trim())
-            ? { requestId: requestId.trim() }
-            : {}),
+          ...(request ? { requestId: request } : {}),
+          ...(show !== auditShow(request ? { requestId: request } : {}) ? { show } : {}),
         });
       }}
     >
+      <Field label="Show">
+        <Select
+          variant="compact"
+          value={show}
+          onValueChange={(value) => setShow(value as AuditShow)}
+        >
+          {AUDIT_SHOW.map((value) => (
+            <SelectItem key={value} value={value}>
+              {SHOW_LABELS[value]}
+            </SelectItem>
+          ))}
+        </Select>
+      </Field>
       <Field label="Outcome">
         <Select variant="compact" value={outcome} onValueChange={setOutcome}>
           <SelectItem value={ANY}>Any outcome</SelectItem>
@@ -239,6 +268,7 @@ function OwnFilters({
           onClick={() => {
             setOutcome(ANY);
             setRequestId("");
+            setShow("actions");
             onApply({});
           }}
         >

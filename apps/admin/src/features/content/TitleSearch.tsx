@@ -2,12 +2,14 @@
  * Find a title by name (the staff API's `GET /titles`: every maturity level, unavailable titles
  * included) and pick it. Results follow the typing after a short pause; with nothing typed the
  * catalogue is listed by name. A plain list of buttons rather than a combobox: every result is
- * reachable with Tab, says what it is, and the count is announced.
+ * reachable with Tab, says what it is, and the count is announced. A picked title's button stays
+ * where it is, focusable and marked unavailable (`aria-disabled`, not `disabled`), so focus stays
+ * on it after Add and the next Tab reaches the next result (UX review 2.7).
  */
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { StaffTitle } from "@webflix/contracts";
 import { Button, CheckIcon, Field, Input, PlusIcon, ResponsiveImage } from "@webflix/ui";
-import { useEffect, useState } from "react";
+import { type Ref, useEffect, useState } from "react";
 import { queries } from "../../api/queries.ts";
 import { ErrorPanel, LoadingRows } from "../../components/states.tsx";
 
@@ -32,6 +34,7 @@ export function TitleSearch({
   actionLabel = "Add",
   pickedLabel = "Added",
   full = false,
+  inputRef,
 }: {
   label?: string;
   /** Ids already chosen (shown as added, not offered again). */
@@ -42,6 +45,8 @@ export function TitleSearch({
   pickedLabel?: string;
   /** No more can be added (the list is full). */
   full?: boolean;
+  /** The search field, for a caller that moves focus back to it. */
+  inputRef?: Ref<HTMLInputElement>;
 }) {
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
@@ -56,6 +61,7 @@ export function TitleSearch({
     <div className="flex flex-col gap-2">
       <Field label={label} hint="By name, as members search. Unavailable titles are listed too.">
         <Input
+          ref={inputRef}
           size="sm"
           type="search"
           value={text}
@@ -93,6 +99,7 @@ export function TitleSearch({
         >
           {items.map((title) => {
             const added = picked.includes(title.id);
+            const unavailable = added || full;
             return (
               <li key={title.id} className="flex items-center gap-3 px-2 py-1.5">
                 <TitleThumb title={title} />
@@ -104,11 +111,13 @@ export function TitleSearch({
                   size="sm"
                   variant={added ? "ghost" : "outline"}
                   icon={added ? CheckIcon : PlusIcon}
-                  disabled={added || full}
+                  aria-disabled={unavailable || undefined}
                   aria-label={
                     added ? `${pickedLabel} ${title.name}` : `${actionLabel} ${title.name}`
                   }
-                  onClick={() => onPick(title)}
+                  onClick={() => {
+                    if (!unavailable) onPick(title);
+                  }}
                 >
                   {added ? pickedLabel : actionLabel}
                 </Button>

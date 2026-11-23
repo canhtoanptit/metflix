@@ -99,8 +99,8 @@ export function RegistrationStep() {
             </Button>
           }
         >
-          This Webflix isn't set up to take payments, so new memberships can't be started on it. If
-          you already have an account, you can still sign in.
+          Webflix can't take payments right now, so new memberships can't be started. If you already
+          have an account, you can still sign in.
         </NoProviderNotice>
       </StepBody>
     );

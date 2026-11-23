@@ -3,6 +3,7 @@ import { EventBatch, EventBatchAck, RecentEvents, RecentEventsQuery } from "../e
 import {
   ConsentState,
   DataExport,
+  DataExportDownloadBody,
   DataExportParams,
   DataExportQuery,
   PrivacyRequest,
@@ -100,11 +101,25 @@ export const eventsRoutes = {
     auth: "account-holder",
     summary: "Download a completed data export (the signed link from the email)",
     description:
-      "The link (`PrivacyRequest.downloadUrl`) carries a signed token bound to the request and the account, valid until `expiresAt`; the caller must also be signed in to that account as its holder. `not_found` for an unknown, foreign, unfinished or expired export, or a bad token. The export email does not link here: it opens the web app at `{public origin}/account/privacy/exports/{id}#token={token}` (the token in the fragment, never sent to a server by the page load), which asks the member to sign in and then calls this route with that token.",
+      "The link (`PrivacyRequest.downloadUrl`) carries a signed token bound to the request and the account, valid until `expiresAt`; the caller must also be signed in to that account as its holder, with a fresh account-holder proof (`reauthentication_required`, checked after the token: confirm it's you, then ask again). `not_found` for an unknown, foreign, unfinished or expired export, or a bad token. Prefer `POST /privacy/exports/:id/download` (the token in the body, never in a URL); this form stays for links already handed out. The export email does not link here: it opens the web app at `{public origin}/account/privacy/exports/{id}#token={token}` (the token in the fragment, never sent to a server by the page load), which asks the member to sign in and then calls this route with that token.",
     params: DataExportParams,
     query: DataExportQuery,
     response: DataExport,
-    errors: ["not_found"],
+    errors: ["not_found", "reauthentication_required"],
+  }),
+  fetchDataExport: defineRoute({
+    method: "POST",
+    path: "/privacy/exports/:id/download",
+    tag: "privacy",
+    area: "events",
+    auth: "account-holder",
+    summary: "Download a completed data export, the token in the body",
+    description:
+      "As `GET /privacy/exports/:id?token=`, with the token (from `downloadUrl`, or the email link's fragment) in the body so it never sits in a URL. Signed in to the export's account as its holder, with a fresh account-holder proof (`reauthentication_required`: confirm it's you, then send it again). `not_found` for an unknown, foreign, unfinished or expired export, or a bad token (checked before the proof).",
+    params: DataExportParams,
+    body: DataExportDownloadBody,
+    response: DataExport,
+    errors: ["not_found", "reauthentication_required"],
   }),
   listPrivacyRequests: defineRoute({
     method: "GET",

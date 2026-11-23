@@ -1,5 +1,10 @@
 import type { AppContainer } from "../container.ts";
-import { requireAccount, requireAccountHolder } from "../session.ts";
+import {
+  enforceRateLimit,
+  requireAccount,
+  requireAccountHolder,
+  tryRateLimit,
+} from "../session.ts";
 import type { AppContext, AreaHandlers } from "./types.ts";
 
 /**
@@ -48,13 +53,32 @@ export function createBillingHandlers(container: AppContainer): AreaHandlers<"bi
     // --- Milestone 2 (§5) ----------------------------------------------------------------------
     getBillingConfig: () => services.billing.config(),
 
-    startCheckout: async ({ body }, c) => services.billing.startCheckout(await account(c), body),
+    startCheckout: async ({ body }, c) => {
+      const auth = await account(c);
+      // A code sent with a checkout is looked up at the provider like a validation: one budget
+      // whichever route is used, so codes cannot be enumerated through checkout (review M1).
+      // The code the open checkout already carries is no guess (a page picking it up again).
+      const code = body.promotionCode;
+      if (code !== undefined) {
+        const open = await services.billing.getOpenCheckout(auth.session.accountId);
+        const carried = open.checkout?.promotion?.code;
+        if (carried?.toUpperCase() !== code.toUpperCase()) {
+          await enforceRateLimit(container, c, "promotion");
+        }
+      }
+      return services.billing.startCheckout(auth, body);
+    },
 
     getOpenCheckout: async (_input, c) =>
       services.billing.getOpenCheckout((await account(c)).session.accountId),
 
-    getCheckout: async ({ params }, c) =>
-      services.billing.getCheckout((await account(c)).session.accountId, params.id),
+    // Polls are never refused: the provider is read at most once per account every couple of
+    // seconds (`billing-refresh`), and a poll in between answers from stored state.
+    getCheckout: async ({ params }, c) => {
+      const accountId = (await account(c)).session.accountId;
+      const refresh = await tryRateLimit(container, c, "billing-refresh");
+      return services.billing.getCheckout(accountId, params.id, { refresh });
+    },
 
     confirmCheckout: async ({ params }, c) =>
       services.billing.confirmCheckout((await account(c)).session.accountId, params.id),
@@ -65,8 +89,11 @@ export function createBillingHandlers(container: AppContainer): AreaHandlers<"bi
     setupPaymentMethod: async (_request, c) =>
       services.billing.setupPaymentMethod((await holder(c)).session.accountId),
 
-    getPaymentMethodSetup: async ({ params }, c) =>
-      services.billing.getPaymentMethodSetup((await holder(c)).session.accountId, params.id),
+    getPaymentMethodSetup: async ({ params }, c) => {
+      const accountId = (await holder(c)).session.accountId;
+      const refresh = await tryRateLimit(container, c, "billing-refresh");
+      return services.billing.getPaymentMethodSetup(accountId, params.id, { refresh });
+    },
 
     listInvoices: async ({ query }, c) =>
       services.billing.listInvoices((await holder(c)).session.accountId, {

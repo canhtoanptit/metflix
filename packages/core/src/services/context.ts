@@ -43,6 +43,12 @@ export interface ServiceState {
 export interface AuthContext {
   session: SessionRecord;
   profile: ProfileRecord | null;
+  /**
+   * False only when the session lookup found that the account has no profile at all (then the
+   * session at the gate is the account holder: there are no parental controls to protect).
+   * Unknown (absent) counts as having profiles.
+   */
+  accountHasProfiles?: boolean;
 }
 
 /** An authenticated request with an active profile (`auth: "profile"` routes). */

@@ -41,6 +41,7 @@ pnpm dev                  # api (:4000) + web (:5173); PORT / WEB_PORT / WEBFLIX
 - Strict TS plus `noUncheckedIndexedAccess`, `noUnusedLocals/Parameters`, `verbatimModuleSyntax` (`import type`).
 - `!` (non-null assertion) is a lint error. If one is truly needed, use `// biome-ignore lint/style/noNonNullAssertion: <why>`. Biome requires the reason.
 - Tests live in `<package>/test/*.test.ts` and run with `vitest run`.
+- **No pending promise shared between requests** in code that runs on Workers (`core`, `http`, `db`, adapters, `payments-fake`, `apps/edge`): no in-memory lock, queue or promise chain, no map of in-flight loads, no memoised promise of a load. Share settled values only; concurrent cold misses each load; serialise through the store. workerd cancels a request that waits on another request's promise, and a lock it held is never released (docs/CLOUDFLARE.md §2, "One request never awaits another's promise").
 - **Type environment per package** (`tsconfig.json` `lib`/`types`):
   - `contracts`, `core`, `http`, `catalog`, `db`: `ES2024 + WebWorker`, no Node types. Biome also bans `node:` imports and `process.env` in `contracts`/`core`/`http`/`ui`/`player`/`apps/web/src`. **These packages are also typechecked by Node and Worker consumers, so don't use DOM-only type names** (`HeadersInit`, `RequestCredentials`, …). Derive them instead (`ConstructorParameters<typeof Headers>[0]`).
   - `apps/edge`, `adapters-cloudflare`: `@cloudflare/workers-types`.
@@ -302,7 +303,11 @@ describe the tree after the parallel build, when every route of the contract is 
   `emitServerEvent` (the events area's; drops events with a debug log until events implements
   it, so callers can call it now), `forgetProfileBehaviour({ accountId, profileId })` (the
   events area's: queues a profile that became restricted for the lake's erasure; identity calls
-  it) and `assignments` (the experiments area's). Billing owns
+  it), `accountDeletionScheduled(accountId)` (the events area's: a deletion scheduled or its
+  erasure in progress; billing refuses renewals and keeps its cancellation email silent),
+  `personalisationConsentChanged({ accountId, granted, at })` (the personalisation area's; the
+  events area calls it after every recorded answer about that purpose) and `assignments` (the
+  experiments area's). Billing owns
   `playbackEntitlement` (services/subscriptions.ts), the one entitlement decision playback asks.
 - **Database.** Each area has its migrations in `packages/db/src/migrations/<area>/`, its table
   types in `src/tables/<area>.ts` (composed into `DB` and `TABLES`) and its repository in
@@ -422,7 +427,16 @@ Each area builds its ports from configuration in `apps/api/src/areas/<area>.ts` 
   that others reference (a migration test fails on DROP TABLE or RENAME).
 - **D-M2-6 Billing records keep `account_id` without a foreign key** (customers, operations,
   provider events, invoices, refunds, trial fingerprints): deleting an account must not delete
-  what the law requires to be kept (§6.3). The projection, checkouts and setups cascade.
+  what the law requires to be kept (§6.3). The projection, checkouts and setups cascade. What
+  survives an erasure is only the financial record and the anti-abuse fingerprint (privacy
+  review M5; billing's `eraseAccountData` → `forgetAccount`): invoices (without the provider's
+  hosted page and PDF links) and refunds keep the account id; a card fingerprint that had a
+  trial stays with no account (`erased`) and no time; the account's own trial marker, customer
+  links, operations, provider events, checkouts, card changes and the projection are deleted.
+  The provider deletes the customer first (its subscriptions end, cards go); the fake provider
+  keeps only the invoices, refunds and subscriptions under a customer stub naming no one, and
+  forgets the customer's events, cards, setups, test clock and idempotency records. Events
+  about a customer that is no one's are acknowledged and not stored.
 - **D-M2-7 The fake provider's state** is three generic tables (versioned JSON documents,
   idempotency records, per-customer clocks: a clock per customer, as Stripe's test clocks, so
   parallel suites do not move each other's time). Billing may replace them with its own

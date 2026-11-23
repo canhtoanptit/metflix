@@ -64,7 +64,7 @@ test("Link Google after confirming with the password; unlink it, and it never re
   await other.goto("/login");
   await other.getByRole("link", { name: "Continue with Google" }).click();
   await answerIssuer(other, { email });
-  await expect(other.getByText("You already have a Webflix account")).toBeVisible();
+  await expect(other.getByText("An account already uses this address")).toBeVisible();
 });
 
 test("A Google-only member sets a first password, confirming with a fresh Google sign-in", async ({

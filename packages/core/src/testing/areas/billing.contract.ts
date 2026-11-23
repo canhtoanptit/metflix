@@ -67,12 +67,15 @@ export function makeCheckoutRecord(overrides: Partial<CheckoutRecord> = {}): Che
     trialDays: null,
     trialFingerprint: null,
     amountDueMinor: null,
+    creditAppliedMinor: null,
+    discountMinor: null,
     failureReason: null,
     operationId: "op-1",
     attempt: 1,
     createdAt: T0,
     expiresAt: T0 + DAY_MS,
     updatedAt: T0,
+    clientSecret: "seti_1_secret_x",
     ...overrides,
   };
 }
@@ -118,6 +121,8 @@ function makeInvoice(overrides: Partial<InvoiceRecord> = {}): InvoiceRecord {
     periodEnd: T0 + 30 * DAY_MS,
     hostedUrl: null,
     pdfUrl: null,
+    creditAppliedMinor: null,
+    discountMinor: null,
     issuedAt: T0,
     paidAt: T0,
     updatedAt: T0,
@@ -346,10 +351,20 @@ export function describeBillingRepositoryContract(
     it("upserts invoices by provider id, keeping their Webflix id, and pages newest first", async () => {
       const first = await billing().upsertInvoice(makeInvoice());
       const updated = await billing().upsertInvoice(
-        makeInvoice({ id: "inv-other", amountRefundedMinor: 300, updatedAt: T0 + 1 }),
+        makeInvoice({
+          id: "inv-other",
+          amountRefundedMinor: 300,
+          creditAppliedMinor: 498,
+          discountMinor: 650,
+          updatedAt: T0 + 1,
+        }),
       );
       expect(updated.id).toBe(first.id);
-      expect(updated.amountRefundedMinor).toBe(300);
+      expect(updated).toMatchObject({
+        amountRefundedMinor: 300,
+        creditAppliedMinor: 498,
+        discountMinor: 650,
+      });
       for (let i = 2; i <= 5; i += 1) {
         await billing().upsertInvoice(
           makeInvoice({ id: `inv-${i}`, providerInvoiceId: `in_${i}`, issuedAt: T0 + i * DAY_MS }),
@@ -454,7 +469,9 @@ export function describeBillingRepositoryContract(
         providerPaymentMethodId: "pm_1",
         trialDays: 7,
         trialFingerprint: "fp_1",
-        amountDueMinor: 0,
+        amountDueMinor: 301,
+        creditAppliedMinor: 498,
+        discountMinor: 0,
         promotionCode: "WELCOME",
         promotionId: "promo_1",
         promotion: {
@@ -485,6 +502,8 @@ export function describeBillingRepositoryContract(
         providerSetupId: "seti_1",
         providerPaymentMethodId: null,
         status: "requires_confirmation" as const,
+        clientSecret: "seti_1_secret_x" as string | null,
+        failureReason: null,
         attempt: 1,
         createdAt: T0,
         updatedAt: T0,
@@ -494,17 +513,155 @@ export function describeBillingRepositoryContract(
         ...setup,
         status: "succeeded",
         providerPaymentMethodId: "pm_1",
+        clientSecret: null,
         updatedAt: T0 + 1,
       });
       expect(await billing().getSetup("acc-1", "pms-1")).toEqual({
         ...setup,
         status: "succeeded",
         providerPaymentMethodId: "pm_1",
+        clientSecret: null,
         updatedAt: T0 + 1,
       });
       expect(await billing().getSetup("acc-2", "pms-1")).toBeNull();
       expect((await billing().findSetupByProviderId("fake", "seti_1"))?.id).toBe("pms-1");
       expect(await billing().findSetupByProviderId("stripe", "seti_1")).toBeNull();
+    });
+
+    it("tells whether an account had a trial, alone or with its open checkout, in one round trip", async () => {
+      for (const id of ["acc-1", "acc-2", "acc-3"]) await createAccount(h().repos, id);
+      expect(await billing().trialUsed("acc-1")).toBe(false);
+      expect(await billing().findOpenCheckoutAndTrial("acc-1", T0)).toEqual({
+        checkout: null,
+        trialUsed: false,
+      });
+      await billing().claimTrialFingerprint({
+        provider: "fake",
+        fingerprint: "account:acc-1",
+        accountId: "acc-1",
+        now: T0,
+      });
+      expect(await billing().trialUsed("acc-1")).toBe(true);
+      // A membership that redeemed a trial without a claim of its own (staff, milestone 1).
+      await billing().saveMembership(
+        makeMembershipRecord({ accountId: "acc-2", trialRedeemedAt: T0 }),
+        null,
+      );
+      expect(await billing().trialUsed("acc-2")).toBe(true);
+      await billing().saveMembership(makeMembershipRecord({ accountId: "acc-3" }), null);
+      const checkout = makeCheckoutRecord({ id: "chk-3", accountId: "acc-3" });
+      await billing().saveCheckout(checkout);
+      expect(await billing().findOpenCheckoutAndTrial("acc-3", T0 + 1)).toEqual({
+        checkout,
+        trialUsed: false,
+      });
+    });
+
+    it("forgets an erased account but its invoices, refunds and an unlinked trial fingerprint (M5)", async () => {
+      for (const id of ["acc-1", "acc-2"]) await createAccount(h().repos, id);
+      const customer = (accountId: string, customerId: string) =>
+        billing().saveCustomer({ accountId, provider: "fake", customerId, createdAt: T0 });
+      await customer("acc-1", "cus_gone");
+      await customer("acc-2", "cus_kept");
+      await billing().saveMembership(makeMembershipRecord({ accountId: "acc-1" }), null);
+      await billing().saveMembership(makeMembershipRecord({ accountId: "acc-2" }), null);
+      const claim = (accountId: string, fingerprint: string) =>
+        billing().claimTrialFingerprint({ provider: "fake", fingerprint, accountId, now: T0 });
+      await claim("acc-1", "account:acc-1");
+      await claim("acc-1", "fp_card");
+      await claim("acc-2", "account:acc-2");
+      const operation = (accountId: string, id: string) =>
+        billing().startOperation({
+          id: `${id}:1`,
+          accountId,
+          kind: "subscribe",
+          attempt: 1,
+          idempotencyKey: `webflix-${id}-1`,
+          status: "pending",
+          provider: "fake",
+          providerRef: null,
+          errorCode: null,
+          createdAt: T0,
+          updatedAt: T0,
+        });
+      await operation("acc-1", "customer-acc-1");
+      await operation("acc-2", "customer-acc-2");
+      await billing().recordProviderEvent(makeEvent({ eventId: "evt_a", accountId: "acc-1" }));
+      await billing().recordProviderEvent(
+        makeEvent({ eventId: "evt_b", accountId: null, customerId: "cus_gone" }),
+      );
+      await billing().recordProviderEvent(
+        makeEvent({ eventId: "evt_c", accountId: "acc-2", customerId: "cus_kept" }),
+      );
+      await billing().upsertInvoice(
+        makeInvoice({ hostedUrl: "https://pay.example/i/1", pdfUrl: "https://pay.example/p/1" }),
+      );
+      await billing().saveRefund({
+        id: "ref-1",
+        accountId: "acc-1",
+        invoiceId: "inv-1",
+        provider: "fake",
+        providerRefundId: "re_1",
+        amountMinor: 100,
+        currency: "USD",
+        status: "succeeded",
+        reason: "goodwill",
+        staffSubject: "staff-1",
+        createdAt: T0,
+        updatedAt: T0,
+      });
+      await billing().saveCheckout(makeCheckoutRecord({ id: "chk-gone", accountId: "acc-1" }));
+      await billing().saveCheckout(makeCheckoutRecord({ id: "chk-kept", accountId: "acc-2" }));
+      await billing().saveSetup({
+        id: "pms-gone",
+        accountId: "acc-1",
+        provider: "fake",
+        providerSetupId: "seti_gone",
+        providerPaymentMethodId: null,
+        status: "requires_confirmation",
+        clientSecret: null,
+        failureReason: null,
+        attempt: 1,
+        createdAt: T0,
+        updatedAt: T0,
+      });
+      expect((await billing().listCheckouts("acc-1", 10)).map((record) => record.id)).toEqual([
+        "chk-gone",
+      ]);
+      expect((await billing().listSetups("acc-1", 10)).map((record) => record.id)).toEqual([
+        "pms-gone",
+      ]);
+
+      await billing().forgetAccount({ accountId: "acc-1", customerIds: ["cus_gone"] });
+      await billing().forgetAccount({ accountId: "acc-1", customerIds: ["cus_gone"] });
+
+      expect(await billing().getCustomer("acc-1", "fake")).toBeNull();
+      expect(await billing().findCustomer("fake", "cus_gone")).toBeNull();
+      expect(await billing().getMembership("acc-1")).toBeNull();
+      expect(await billing().hasTrialFingerprint("acc-1")).toBe(false);
+      // The card still had its trial: another account claiming it is told so; the marker went.
+      expect(await claim("acc-2", "fp_card")).toBe("taken");
+      expect(await claim("acc-2", "account:acc-1")).toBe("claimed");
+      await billing().releaseTrialFingerprint("fake", "account:acc-1", "acc-2");
+      expect(await billing().findOperationByKey("webflix-customer-acc-1-1")).toBeNull();
+      expect(await billing().getProviderEvent("fake", "evt_a")).toBeNull();
+      expect(await billing().getProviderEvent("fake", "evt_b")).toBeNull();
+      expect(await billing().listCheckouts("acc-1", 10)).toEqual([]);
+      expect(await billing().listSetups("acc-1", 10)).toEqual([]);
+      // The financial record stays, without the provider's hosted pages.
+      expect(await billing().getInvoice("acc-1", "inv-1")).toMatchObject({
+        totalMinor: 1299,
+        hostedUrl: null,
+        pdfUrl: null,
+      });
+      expect(await billing().listRefunds("inv-1")).toHaveLength(1);
+      // Nothing of another account changes.
+      expect(await billing().getCustomer("acc-2", "fake")).not.toBeNull();
+      expect(await billing().getMembership("acc-2")).not.toBeNull();
+      expect(await billing().hasTrialFingerprint("acc-2")).toBe(true);
+      expect(await billing().findOperationByKey("webflix-customer-acc-2-1")).not.toBeNull();
+      expect(await billing().getProviderEvent("fake", "evt_c")).not.toBeNull();
+      expect(await billing().getCheckout("acc-2", "chk-kept")).not.toBeNull();
     });
   });
 }

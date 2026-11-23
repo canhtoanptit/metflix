@@ -31,8 +31,12 @@ export type CollectionPolicy =
   | { decision: "none"; reason: "restricted" | "off" | "not-granted" }
   | { decision: "collect"; purposes: Purposes };
 
-/** Answers the member gave themselves (GPC is a browser-wide signal, not an answer). */
-const EXPLICIT_SOURCES = new Set(["banner", "settings", "support"]);
+/**
+ * Answers the member gave themselves. GPC is a browser-wide signal, not an answer; and staff can
+ * only record a withdrawal, so a grant from support is never the member's (the server no longer
+ * counts one recorded before: privacy review M4).
+ */
+const EXPLICIT_SOURCES = new Set(["banner", "settings"]);
 
 /** A kids profile or a lowered maturity ceiling: never profiled (§6.3). */
 export function isRestrictedProfile(profile: Pick<Profile, "isKids" | "maturityCeiling">): boolean {

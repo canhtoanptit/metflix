@@ -553,3 +553,32 @@ def test_export_events_reads_and_records_through_the_staff_api(
     )
     assert code == 0 and summary["requests"] == 0 and "lakeLease" not in summary
     assert len(StaffApi.export_results) == 1
+
+
+def test_datasets_leave_out_what_the_staff_api_lists_as_pending(
+    tmp_path: Path,
+    staff_api: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With WEBFLIX_ADMIN_API_URL set, build-dataset asks the staff API which erasures are
+    pending when it starts (the account key; its profiles go with it) and refuses to build when
+    the answer may be cut off at one page."""
+    from helpers import put_catalog, synthetic_catalog_document
+    from webflix_recs.dataset import load_dataset
+
+    storage = build_store(tmp_path)
+    put_catalog(storage, synthetic_catalog_document(40))
+    monkeypatch.setenv("WEBFLIX_ADMIN_API_URL", f"{staff_api}/api/admin/v1")
+    monkeypatch.setenv("WEBFLIX_STAFF_TOKEN", "staff-token")
+    build = [
+        "--store", str(tmp_path), "--workers", "1", "build-dataset", "--dataset", "x",
+        "--as-of", iso_ms(H2 + HOUR_MS),
+    ]  # fmt: skip
+    code, summary = _run_cli(build, capsys)
+    assert code == 0 and summary["excludedSubjects"] == 1
+    profiles = set(load_dataset(storage, "x").tables["profiles"]["profile"].to_list())
+    assert ERASED_PROFILE not in profiles and KEEP_PROFILE in profiles
+    StaffApi.pending = [f"{i:022d}" for i in range(500)]
+    code, _ = _run_cli(build, capsys)
+    assert code == cli.EXIT_STAFF_API

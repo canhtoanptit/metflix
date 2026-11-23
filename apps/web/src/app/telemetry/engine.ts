@@ -86,6 +86,12 @@ const IDENTITY_CHANGES = [
  */
 const IDENTITY_SETTLE_MS = 1500;
 const GUARDED = Symbol("telemetry.identity-guard");
+/** Which account the stored device id was made under (`anonymous` for the signed-out device). */
+const DEVICE_OWNER_STORAGE_KEY = "webflix.deviceId.owner";
+
+function deviceOwnerOf(session: SessionState): string {
+  return session.authenticated ? `account:${session.account.id}` : "anonymous";
+}
 /** Events held while the consent is read; beyond this the oldest go. */
 const MAX_HELD = 100;
 /** A consent read that failed is tried again after this long (nothing is collected meanwhile). */
@@ -359,6 +365,9 @@ export class TelemetryRuntime implements TelemetryEngine {
     if (session) {
       const identity = identityOf(session);
       if (this.identity !== null && identity !== this.identity) this.forgetIdentity();
+      // The device id belongs to one account (or to the signed-out device): never carried
+      // into another, so two accounts that used this browser cannot be linked (review L4).
+      this.claimDeviceId(deviceOwnerOf(session));
       // The session an identity change was waiting for has arrived (or another did).
       if (this.changing === 0 && this.settling !== null) {
         clearTimeout(this.settling);
@@ -425,6 +434,29 @@ export class TelemetryRuntime implements TelemetryEngine {
       this.sdk.discard();
       this.sdk.shutdown({ flush: false });
       this.sdk = null;
+    }
+  }
+
+  /**
+   * Keep the stored device id only for the account it was made under: another account (or the
+   * signed-out device after an account, or the other way round) starts with a fresh one.
+   */
+  private claimDeviceId(owner: string): void {
+    try {
+      const previous = this.storage?.getItem(DEVICE_OWNER_STORAGE_KEY) ?? null;
+      if (previous === owner) return;
+      if (previous !== null || this.storage?.getItem(DEVICE_ID_STORAGE_KEY) !== null) {
+        if (this.sdk) {
+          this.detachAll();
+          this.sdk.discard();
+          this.sdk.shutdown({ flush: false });
+          this.sdk = null;
+        }
+        this.storage?.removeItem(DEVICE_ID_STORAGE_KEY);
+      }
+      this.storage?.setItem(DEVICE_OWNER_STORAGE_KEY, owner);
+    } catch {
+      // storage blocked: the SDK keeps an id for this page only, which no other account sees
     }
   }
 

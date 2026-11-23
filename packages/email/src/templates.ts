@@ -40,6 +40,10 @@ export interface EmailTemplateData {
     manageUrl: string;
   };
   "data-export-ready": { link: string; expiresAt: string };
+  /** A deletion was asked for: when it happens and where to keep the account meanwhile. */
+  "account-deletion-scheduled": { scheduledFor: string; keepUrl: string };
+  /** The deletion was cancelled (by the member, or by support at their request). */
+  "account-deletion-canceled": { manageUrl: string };
 }
 
 export interface RenderedEmail {
@@ -240,6 +244,24 @@ const RENDERERS: Renderers = {
       ],
       action: { label: "Download your data", href: data.link },
       footnote: `The link works until ${formatInstant(data.expiresAt)}. If you did not ask for this, change your password.`,
+    }),
+  "account-deletion-scheduled": (data) =>
+    layout("Your Webflix account will be deleted", "Your account will be deleted", {
+      paragraphs: [
+        `You asked us to delete your Webflix account. It will be deleted on ${formatInstant(data.scheduledFor)}, and after that it can't be undone.`,
+        "Until then everything works as usual and your membership will not renew. To keep your account, open Account › Privacy and choose Keep my account.",
+      ],
+      action: { label: "Keep my account", href: data.keepUrl },
+      footnote: "If you did not ask for this, keep your account now and change your password.",
+    }),
+  "account-deletion-canceled": (data) =>
+    layout("Your Webflix account will not be deleted", "Your account will not be deleted", {
+      paragraphs: [
+        "The deletion of your Webflix account was cancelled, so nothing will be deleted.",
+        "If your membership was set to end when you asked, it still is: you can resume it from your account page.",
+      ],
+      action: { label: "Go to your account", href: data.manageUrl },
+      footnote: "If you did not cancel it, or ask Webflix support to, change your password.",
     }),
 };
 

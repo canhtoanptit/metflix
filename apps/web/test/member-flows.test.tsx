@@ -321,9 +321,12 @@ describe("account", () => {
     const { router } = renderMember("/account/cancel", "profile");
     await user.click(await screen.findByRole("button", { name: "Finish cancellation" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/account/membership"));
-    expect(await screen.findByText(/Your membership ends on/)).toBeVisible();
+    // The page's notice and its toast say the same thing (UX review 2.4).
+    await waitFor(() => expect(screen.getAllByText(/Your membership ends on/)).toHaveLength(2));
     await user.click(screen.getByRole("button", { name: "Keep my membership" }));
-    await waitFor(() => expect(screen.queryByText(/Your membership ends on/)).toBeNull());
+    // The toast is replaced, not stacked: nothing says "ends on" any more.
+    await waitFor(() => expect(screen.queryAllByText(/Your membership ends on/)).toHaveLength(0));
+    expect(await screen.findByText("Your membership will continue")).toBeVisible();
   });
 
   it("signs out another device after confirming", async () => {

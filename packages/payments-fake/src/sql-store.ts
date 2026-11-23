@@ -268,6 +268,22 @@ export function createSqlFakeStore(database: Database): FakeStore {
       return row ? { nowMs: Number(row.now_ms), updatedAt: Number(row.updated_at) } : null;
     },
 
+    async forget(customerId, fragments) {
+      await db.deleteFrom("payments_fake_clocks").where("customer_id", "=", customerId).execute();
+      for (const fragment of fragments.filter((value) => value.length >= 8)) {
+        // LIKE with its wildcards escaped: ids contain `_`.
+        const pattern = `%${fragment.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+        const like = (column: string) =>
+          sql<SqlBool>`${sql.ref(column)} like ${pattern} escape '\\'`;
+        await db
+          .deleteFrom("payments_fake_idempotency")
+          .where((eb) =>
+            eb.or([like("idempotency_key"), like("fingerprint"), like("outcome_json")]),
+          )
+          .execute();
+      }
+    },
+
     async setClock(customerId, clock) {
       await db
         .insertInto("payments_fake_clocks")

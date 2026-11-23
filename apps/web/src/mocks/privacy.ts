@@ -178,7 +178,8 @@ function restricted(state: MockState): boolean {
 
 function requireAccountHolder(state: MockState): void {
   if (!state.signedIn) throw new MockProblem("unauthenticated");
-  if (!activeProfile(state)) throw new MockProblem("profile_required");
+  // At the gate, an account with no profiles yet (sign-up not finished) is the account holder.
+  if (!activeProfile(state) && state.profiles.length > 0) throw new MockProblem("profile_required");
   if (restricted(state)) throw new MockProblem("unrestricted_profile_required");
 }
 
@@ -262,6 +263,7 @@ function requestsOf(state: MockState): PrivacyRequest[] {
       request.completedAt = iso(done);
       request.expiresAt = iso(done + LINK_TTL_MS);
       request.downloadUrl = `/api/v1/privacy/exports/${request.id}?token=mock-${request.id}`;
+      if (request.email === "pending") request.email = "sent";
       changed = true;
     }
     if (
@@ -320,6 +322,69 @@ function followMembership(state: MockState, request: PrivacyRequest): boolean {
 
 function newId(kind: string): string {
   return `${kind}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** The mock's export document, for either download form. */
+function exportDocument(state: MockState, requestId: string, token: string): DataExport {
+  requireAccountHolder(state);
+  const request = requestsOf(state).find((item) => item.id === requestId);
+  if (!request?.downloadUrl || token !== `mock-${request.id}`) {
+    throw new MockProblem("not_found");
+  }
+  const answers = privacy().consents[state.account.id] ?? {};
+  return {
+    format: "webflix.data-export",
+    formatVersion: 1,
+    requestId: request.id,
+    generatedAt: request.completedAt ?? iso(),
+    account: {
+      id: state.account.id,
+      email: state.account.email,
+      createdAt: state.account.createdAt,
+    },
+    profiles: state.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      avatarId: profile.avatarId,
+      kids: profile.isKids,
+      maturityCeiling: profile.maturityCeiling,
+      locked: profile.pin !== null,
+      settings: { ...profile.settings },
+      createdAt: profile.createdAt,
+    })),
+    devices: [],
+    library: state.profiles.map((profile) => ({
+      profileId: profile.id,
+      myList: profile.myList.map((titleId) => ({ titleId, addedAt: profile.createdAt })),
+      ratings: Object.entries(profile.ratings).map(([titleId, value]) => ({
+        titleId,
+        value,
+        ratedAt: profile.createdAt,
+      })),
+      progress: [],
+      history: profile.history.map((entry) => ({
+        titleId: entry.titleId,
+        episodeId: entry.episodeId,
+        watchedAt: entry.watchedAt,
+      })),
+    })),
+    consents: PURPOSES.flatMap((purpose) => {
+      const record = answers[purpose];
+      return record
+        ? [{ purpose, granted: record.granted, source: record.source, at: record.at }]
+        : [];
+    }),
+    privacyRequests: requestsOf(state).map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      requestedAt: item.requestedAt,
+      completedAt: item.completedAt,
+    })),
+    events: [],
+    areas: {},
+    notes: ["Mock mode: a sample of what a real export holds."],
+  };
 }
 
 export const privacyHandlers: MockHandlers = {
@@ -381,71 +446,19 @@ export const privacyHandlers: MockHandlers = {
       downloadUrl: null,
       expiresAt: null,
       membership: null,
+      email: "pending",
     };
     list.unshift(request);
     save(privacy());
     return request;
   },
 
-  downloadDataExport: ({ params }, state): DataExport => {
-    requireAccountHolder(state);
-    const request = requestsOf(state).find((item) => item.id === params.id);
-    if (!request?.downloadUrl) throw new MockProblem("not_found");
-    const answers = privacy().consents[state.account.id] ?? {};
-    return {
-      format: "webflix.data-export",
-      formatVersion: 1,
-      requestId: request.id,
-      generatedAt: request.completedAt ?? iso(),
-      account: {
-        id: state.account.id,
-        email: state.account.email,
-        createdAt: state.account.createdAt,
-      },
-      profiles: state.profiles.map((profile) => ({
-        id: profile.id,
-        name: profile.name,
-        avatarId: profile.avatarId,
-        kids: profile.isKids,
-        maturityCeiling: profile.maturityCeiling,
-        locked: profile.pin !== null,
-        settings: { ...profile.settings },
-        createdAt: profile.createdAt,
-      })),
-      devices: [],
-      library: state.profiles.map((profile) => ({
-        profileId: profile.id,
-        myList: profile.myList.map((titleId) => ({ titleId, addedAt: profile.createdAt })),
-        ratings: Object.entries(profile.ratings).map(([titleId, value]) => ({
-          titleId,
-          value,
-          ratedAt: profile.createdAt,
-        })),
-        progress: [],
-        history: profile.history.map((entry) => ({
-          titleId: entry.titleId,
-          episodeId: entry.episodeId,
-          watchedAt: entry.watchedAt,
-        })),
-      })),
-      consents: PURPOSES.flatMap((purpose) => {
-        const record = answers[purpose];
-        return record
-          ? [{ purpose, granted: record.granted, source: record.source, at: record.at }]
-          : [];
-      }),
-      privacyRequests: requestsOf(state).map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        status: item.status,
-        requestedAt: item.requestedAt,
-        completedAt: item.completedAt,
-      })),
-      events: [],
-      areas: {},
-      notes: ["Mock mode: a sample of what a real export holds."],
-    };
-  },
+  downloadDataExport: ({ params, query }, state): DataExport =>
+    exportDocument(state, params.id, query.token),
+
+  // The token in the body (privacy review L3); the mock asks for no fresh proof.
+  fetchDataExport: ({ params, body }, state): DataExport =>
+    exportDocument(state, params.id, body.token),
 
   requestAccountDeletion: (_input, state) => {
     requireAccountHolder(state);
@@ -466,6 +479,7 @@ export const privacyHandlers: MockHandlers = {
       downloadUrl: null,
       expiresAt: null,
       membership: stopRenewals(state, scheduledFor),
+      email: "sent",
     };
     list.unshift(request);
     save(privacy());

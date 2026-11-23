@@ -32,6 +32,8 @@ describe("the next bill (GET /account → membership.nextInvoice)", () => {
     expect(trialing?.nextInvoice).toEqual({
       at: trialing?.trialEndsAt,
       amount: { amountMinor: 1899, currency: "USD" },
+      creditApplied: null,
+      discount: null,
     });
 
     // Converted and paid, then downgraded at once: the renewal is the new price less the credit.
@@ -49,8 +51,15 @@ describe("the next bill (GET /account → membership.nextInvoice)", () => {
     expect(downgraded?.nextInvoice).toEqual({
       at: preview.nextRenewal?.at,
       amount: preview.nextRenewal?.amount,
+      creditApplied: preview.nextRenewal?.creditApplied,
+      discount: null,
     });
     expect(downgraded?.nextInvoice?.amount.amountMinor).toBeLessThan(799);
+    // The reason, as numbers: the plan's price less the credit the downgrade left.
+    expect(
+      (downgraded?.nextInvoice?.amount.amountMinor ?? 0) +
+        (downgraded?.nextInvoice?.creditApplied?.amountMinor ?? 0),
+    ).toBe(799);
 
     await h.services.billing.cancel(accountId);
     expect((await h.services.account.getAccount(accountId)).membership?.nextInvoice).toBeNull();
@@ -67,7 +76,10 @@ describe("the open checkout (GET /billing/checkout)", () => {
     await h.fake.definePromotion({ code: "WEBFLIX50", percentOff: 50 });
     const auth = await h.account();
     const accountId = auth.session.accountId;
-    expect(await h.services.billing.getOpenCheckout(accountId)).toEqual({ checkout: null });
+    expect(await h.services.billing.getOpenCheckout(accountId)).toEqual({
+      checkout: null,
+      trialEligible: true,
+    });
 
     const started = await h.services.billing.startCheckout(auth, {
       planId: "standard",
@@ -91,7 +103,10 @@ describe("the open checkout (GET /billing/checkout)", () => {
     await h.confirm(started.clientSecret, "visa");
     await h.services.billing.confirmCheckout(accountId, started.id);
     await h.drain();
-    expect(await h.services.billing.getOpenCheckout(accountId)).toEqual({ checkout: null });
+    expect(await h.services.billing.getOpenCheckout(accountId)).toEqual({
+      checkout: null,
+      trialEligible: false,
+    });
   });
 
   it("is none once a checkout expires", async () => {
@@ -101,6 +116,7 @@ describe("the open checkout (GET /billing/checkout)", () => {
     h.clock.advance(25 * 3_600_000);
     expect(await h.services.billing.getOpenCheckout(auth.session.accountId)).toEqual({
       checkout: null,
+      trialEligible: true,
     });
   });
 });

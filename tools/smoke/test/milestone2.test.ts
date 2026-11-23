@@ -4,6 +4,7 @@ import type { MailboxMessage } from "@webflix/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CheckFailure, fail } from "../src/expect.ts";
 import { Agent } from "../src/http.ts";
+import { profileIndependentSpec } from "../src/limits.ts";
 import { linkToken } from "../src/mail.ts";
 import { outcomeOf, parseIssuerForm } from "../src/oidc.ts";
 import { parseCli } from "../src/options.ts";
@@ -229,5 +230,28 @@ describe("rate-limit waits and the check's deadline", () => {
     const report = await runChecks([check], options);
     expect(report.results[0]?.outcome).toBe("pass");
     expect(report.results[0]?.notes.some((note) => note.includes("throttled"))).toBe(true);
+  });
+});
+
+describe("per-account budgets documented alike in both profiles", () => {
+  const envWith = (argv: string[]) =>
+    ({
+      options: parseCli(["-u", "http://127.0.0.1:9", ...argv], {}).options,
+    }) as unknown as Parameters<typeof profileIndependentSpec>[0];
+
+  it("reads promotion and billing without measuring the target's profile", () => {
+    expect(profileIndependentSpec(envWith([]), "promotion")).toEqual({ limit: 10, windowSec: 600 });
+    expect(profileIndependentSpec(envWith([]), "billing")).toEqual({ limit: 30, windowSec: 600 });
+  });
+
+  it("takes a pinned custom limit", () => {
+    expect(profileIndependentSpec(envWith(["--rate-limits", "billing=12/60"]), "billing")).toEqual({
+      limit: 12,
+      windowSec: 60,
+    });
+  });
+
+  it("refuses a policy the profiles document differently", () => {
+    expect(() => profileIndependentSpec(envWith([]), "signup")).toThrow(/measure it/);
   });
 });

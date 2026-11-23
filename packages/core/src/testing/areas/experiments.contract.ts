@@ -127,5 +127,28 @@ export function describeExperimentsRepositoryContract(
         lift: 0.087,
       });
     });
+
+    it("prunes reports older than a cutoff, oldest first, a bounded number at a time", async () => {
+      const repo = h().repos.experiments;
+      // 60 old reports over two experiments (more than one delete statement takes), 2 recent.
+      for (let index = 0; index < 60; index += 1) {
+        await repo.saveResults(index % 2 ? "exp.a" : "exp.b", {
+          computedAt: 1_000 + index,
+          report: { index },
+        });
+      }
+      await repo.saveResults("exp.a", { computedAt: 5_000, report: { recent: true } });
+      await repo.saveResults("exp.b", { computedAt: 5_001, report: { recent: true } });
+      expect(await repo.pruneResults(2_000, 50)).toBe(50);
+      expect(await repo.pruneResults(2_000, 50)).toBe(10);
+      expect(await repo.pruneResults(2_000, 50)).toBe(0);
+      expect(await repo.latestResults("exp.a")).toEqual({
+        computedAt: 5_000,
+        report: { recent: true },
+      });
+      // A cutoff after everything: the newest goes too (nothing older than the period is kept).
+      expect(await repo.pruneResults(9_000, 50)).toBe(2);
+      expect(await repo.latestResults("exp.b")).toBeNull();
+    });
   });
 }

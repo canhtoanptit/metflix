@@ -15,6 +15,7 @@ export const AREAS = [
   "pipeline",
   "billing",
   "privacy",
+  "personalisation",
   "experiments",
   "staff",
 ] as const;

@@ -2,7 +2,8 @@
  * Every change a staff member makes goes through this dialog: what it will do, the form, a
  * required reason (audited under their name), then one of four ends, each designed:
  *
- * - **Done**: what changed, in words.
+ * - **Done**: what changed, in words, and a way straight to its audit entry (the audit log for an
+ *   admin, your actions for anyone else).
  * - **Refused**: the server said no before acting; the form stays, with what to fix. A billing
  *   action gets a new idempotency key for the corrected form (the refused key is spent).
  * - **No answer**: the answer never arrived. Said plainly; a billing action may be checked
@@ -73,6 +74,8 @@ export interface ActionDialogProps<T> {
   title: string;
   description?: ReactNode;
   confirmLabel: string;
+  /** The button that leaves without sending ("Cancel"); "Back" where the action is a cancel. */
+  dismissLabel?: string;
   tone?: "danger" | "accent";
   /** Billing actions: the server deduplicates by key, so "check again" is safe. */
   idempotent?: boolean;
@@ -127,6 +130,7 @@ function ActionDialogBody<T>({
   title,
   description,
   confirmLabel,
+  dismissLabel = "Cancel",
   tone = "accent",
   idempotent = false,
   multiStep = false,
@@ -194,7 +198,9 @@ function ActionDialogBody<T>({
     const current = updateAttempt(scope, {
       phase: "sending",
       requestId,
-      firstRequestId: before?.firstRequestId ?? requestId,
+      // A billing action's key is kept through its sends, and only its first send writes an
+      // entry. Any other action writes an entry per send: its own send is the one to follow.
+      firstRequestId: idempotent ? (before?.firstRequestId ?? requestId) : requestId,
       failure: null,
       startedAt: Date.now(),
     });
@@ -271,6 +277,31 @@ function ActionDialogBody<T>({
           label: entryRequest ? "Open it in your actions" : "Open your actions",
         };
 
+  // A success's entry carries the request id of the send that wrote it: the only send, when
+  // there was one. After "check again" the first send may or may not have reached the server,
+  // so the link lists the target's entries (newest first) instead of guessing.
+  const singleSend = attempt.requestId !== null && attempt.requestId === attempt.firstRequestId;
+  const doneLink =
+    phase !== "succeeded"
+      ? null
+      : admin
+        ? {
+            to: "/operations/audit" as const,
+            search:
+              singleSend && attempt.firstRequestId
+                ? { requestId: attempt.firstRequestId }
+                : audit
+                  ? { targetType: audit.targetType, targetId: audit.targetId }
+                  : {},
+            label: "See it in the audit log",
+          }
+        : {
+            to: "/activity" as const,
+            search:
+              singleSend && attempt.firstRequestId ? { requestId: attempt.firstRequestId } : {},
+            label: "See it in your actions",
+          };
+
   return (
     <DialogContent
       title={title}
@@ -301,6 +332,14 @@ function ActionDialogBody<T>({
         >
           <div className="type-body-sm text-fg">{success(attempt.result as T)}</div>
           <DialogFooter>
+            {doneLink ? (
+              <Button asChild variant="outline" size="sm">
+                {/* Closing first forgets the settled attempt, as Close does. */}
+                <Link to={doneLink.to} search={doneLink.search} onClick={close}>
+                  {doneLink.label}
+                </Link>
+              </Button>
+            ) : null}
             <Button variant="accent" size="sm" onClick={close}>
               Close
             </Button>
@@ -423,7 +462,7 @@ function ActionDialogBody<T>({
           </p>
           <DialogFooter className="mt-2">
             <Button variant="outline" size="sm" disabled={sending} onClick={close}>
-              Cancel
+              {dismissLabel}
             </Button>
             <Button
               type="submit"

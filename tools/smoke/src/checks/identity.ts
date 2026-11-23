@@ -81,7 +81,7 @@ export const identityChecks: CheckDefinition[] = [
     id: "identity.signup",
     area: "identity",
     title:
-      "Sign-up creates an account without a membership (no subscription, no plan, no card) and sets the session cookie",
+      "Sign-up creates an account without a membership (no subscription, no plan, no card) and sets the session cookie; with no profile yet it manages itself, once one exists the gate asks for it",
     async run(ctx: CheckContext) {
       const agent = ctx.agent("signup");
       const email = ctx.env.email("signup");
@@ -116,23 +116,30 @@ export const identityChecks: CheckDefinition[] = [
           observed: JSON.stringify(session).slice(0, 300),
         },
       );
-      // Account management needs an active profile without parental controls.
-      await rejects(
+      // An account with no profile yet is its own account holder at the gate.
+      const account = await succeeds(
         () => agent.api.getAccount(),
-        "profile_required",
-        "GET /account before choosing a profile",
+        "GET /account before any profile exists",
       );
-      await ctx.env.holder({
+      equal(account.subscription, null, "GET /account subscription without a membership");
+      equal(account.plan, null, "GET /account plan without a membership");
+      equal(account.paymentMethod, null, "GET /account payment method without a membership");
+      // Once a profile exists, account management needs it chosen (without parental controls).
+      const created = {
         tag: "signup",
         email,
         password: ctx.env.password,
         agent,
         session: state,
-      });
-      const account = await succeeds(() => agent.api.getAccount(), "GET /account");
-      equal(account.subscription, null, "GET /account subscription without a membership");
-      equal(account.plan, null, "GET /account plan without a membership");
-      equal(account.paymentMethod, null, "GET /account payment method without a membership");
+      };
+      await ctx.env.holder(created);
+      await succeeds(() => agent.api.getAccount(), "GET /account as the holder");
+      const gate = await ctx.env.login(created, "signup-gate");
+      await rejects(
+        () => gate.api.getAccount(),
+        "profile_required",
+        "GET /account at the gate once a profile exists",
+      );
       const again = ctx.agent("signup-duplicate");
       await rejects(
         () => again.api.signup({ body: { email, password: ctx.env.password } }),
@@ -471,7 +478,7 @@ export const identityChecks: CheckDefinition[] = [
     area: "identity",
     title: "Mutations without X-Webflix-Client are refused and change nothing",
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("csrf");
+      const viewer = await ctx.env.isolatedViewer("csrf", { member: false });
       const card = (await ctx.env.catalog()).cards[0];
       check(card, "no title to test with");
       const path = `${API}/my-list/${card.id}`;

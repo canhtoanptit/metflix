@@ -173,32 +173,36 @@ export function createJwksKeySet(options: JwksKeySetOptions): JwksKeySet {
         })()
       : options.jwksUri;
 
+  // Only settled values are shared between verifications: the last set fetched and when the last
+  // fetch started. Never an in-flight fetch: on Workers one request may not await a promise
+  // another request settles (docs/CLOUDFLARE.md §2). So on a cold cache concurrent verifications
+  // each fetch; on a stale one the first refreshes while the others keep the trusted set; and an
+  // unknown key id refetches at most once per cooldown, whoever asks.
   let jwks: CachedJwks | null = null;
-  // One fetch at a time: concurrent verifications on a cold or stale cache share it.
-  let inflight: Promise<CachedJwks> | null = null;
+  let fetchStartedAt = Number.NEGATIVE_INFINITY;
 
-  function fetchJwks(): Promise<CachedJwks> {
-    inflight ??= (async () => {
-      const uri = await resolveUri();
-      const { ok, status, body } = await fetchIssuerJson(fetcher, uri, "jwks", timeoutMs);
-      if (!ok) throw new JwksError("unavailable", `jwks_status_${status}`);
-      if (!isRecord(body) || !Array.isArray(body.keys)) {
-        throw new JwksError("unavailable", "jwks_invalid");
-      }
-      const keys = body.keys.filter(
-        (key): key is PublicJwk => isRecord(key) && typeof key.kty === "string",
-      );
-      jwks = { keys, fetchedAt: clock.now(), imported: new Map() };
-      return jwks;
-    })().finally(() => {
-      inflight = null;
-    });
-    return inflight;
+  async function fetchJwks(): Promise<CachedJwks> {
+    fetchStartedAt = clock.now();
+    const uri = await resolveUri();
+    const { ok, status, body } = await fetchIssuerJson(fetcher, uri, "jwks", timeoutMs);
+    if (!ok) throw new JwksError("unavailable", `jwks_status_${status}`);
+    if (!isRecord(body) || !Array.isArray(body.keys)) {
+      throw new JwksError("unavailable", "jwks_invalid");
+    }
+    const keys = body.keys.filter(
+      (key): key is PublicJwk => isRecord(key) && typeof key.kty === "string",
+    );
+    const fetched: CachedJwks = { keys, fetchedAt: clock.now(), imported: new Map() };
+    jwks = fetched;
+    return fetched;
   }
 
   /** The current set: cached, refreshed when stale; a failed refresh keeps the trusted keys. */
   async function currentJwks(): Promise<CachedJwks> {
-    if (jwks && clock.now() - jwks.fetchedAt < cacheTtlMs) return jwks;
+    const now = clock.now();
+    if (jwks && now - jwks.fetchedAt < cacheTtlMs) return jwks;
+    // Stale, and a refresh started within the cooldown (running, or failed): keep the trusted set.
+    if (jwks && now - fetchStartedAt < cooldownMs) return jwks;
     try {
       return await fetchJwks();
     } catch (error) {
@@ -230,7 +234,7 @@ export function createJwksKeySet(options: JwksKeySetOptions): JwksKeySet {
       }
       let cache = await currentJwks();
       let key = await keyFor(cache, kid, alg as IdTokenAlgorithm);
-      if (!key && clock.now() - cache.fetchedAt >= cooldownMs) {
+      if (!key && clock.now() - Math.max(cache.fetchedAt, fetchStartedAt) >= cooldownMs) {
         // A key the cached set lacks: the issuer may have rotated. Refetch once, then decide.
         cache = await fetchJwks();
         key = await keyFor(cache, kid, alg as IdTokenAlgorithm);

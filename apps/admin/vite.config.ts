@@ -3,6 +3,11 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+// The console's production Content-Security-Policy, as the Cloudflare Worker sets it (a file
+// with no imports, shared with the Worker's asset staging): the preview serves the bundle under
+// it too, so a preview run shows what a deployment would block. Build tooling only: nothing of
+// apps/edge reaches the bundle.
+import { consoleContentSecurityPolicy } from "../edge/src/console-policy.ts";
 import { consoleBase, consoleConfig } from "./server/console-config.ts";
 
 /**
@@ -22,6 +27,9 @@ import { consoleBase, consoleConfig } from "./server/console-config.ts";
  *
  * The proxy below serves that standalone case: the staff API, the development issuer and the
  * title artwork, at WEBFLIX_API_ORIGIN (default http://localhost:4000).
+ *
+ * The preview sends the console's production Content-Security-Policy with every response (the
+ * dev server can't: its hot reload is inline script).
  */
 export default defineConfig(({ isPreview }) => {
   const env = process.env;
@@ -44,6 +52,7 @@ export default defineConfig(({ isPreview }) => {
       tailwindcss(),
       consoleConfigFile(base, JSON.stringify(config)),
       onePublicOrigin(base, publicOrigin, port),
+      productionPolicy(consoleContentSecurityPolicy(config.issuer)),
     ],
     server: { port, strictPort: true, proxy },
     preview: { port, strictPort: true, proxy },
@@ -101,5 +110,17 @@ function onePublicOrigin(base: string, publicOrigin: string, port: number): Plug
     name: "webflix-admin-public-origin",
     configureServer: (server) => void server.middlewares.use(redirect),
     configurePreviewServer: (server) => void server.middlewares.use(redirect),
+  };
+}
+
+/** The console's Content-Security-Policy on everything the preview serves, as in production. */
+function productionPolicy(policy: string): Plugin {
+  const header: Middleware = (_request, response, next) => {
+    response.setHeader("Content-Security-Policy", policy);
+    next();
+  };
+  return {
+    name: "webflix-admin-production-policy",
+    configurePreviewServer: (server) => void server.middlewares.use(header),
   };
 }

@@ -11,6 +11,7 @@ import { BrowseView } from "./browse.ts";
 import { Cursor, Id, IsoDateTime, JsonValue, page } from "./common.ts";
 import {
   AUDIT_ACTOR_TYPES,
+  AUDIT_ENTRY_KINDS,
   AUDIT_OUTCOMES,
   EXPERIMENT_STATUSES,
   IDEMPOTENCY_KEY_PATTERN,
@@ -505,6 +506,27 @@ export const SystemHealth = z
       depth: z.number().int().nonnegative().nullable(),
       deadLetters: z.number().int().nonnegative(),
     }),
+    /**
+     * Whether privacy work is being done: erasures the lake's compaction has not confirmed and
+     * data exports waiting for the pipeline's events, each counted (up to 500) with the age of
+     * the oldest. An age that keeps growing means the pipeline's jobs are not running.
+     */
+    privacy: z.object({
+      pendingErasures: z.number().int().nonnegative(),
+      oldestPendingErasureAt: IsoDateTime.nullable(),
+      oldestPendingErasureAgeSec: z.number().int().nonnegative().nullable(),
+      waitingExports: z.number().int().nonnegative(),
+      oldestWaitingExportAt: IsoDateTime.nullable(),
+      oldestWaitingExportAgeSec: z.number().int().nonnegative().nullable(),
+      /**
+       * Account erasures started and not finished (deletions `processing`): the product retries
+       * them with backoff until they finish, so one that stays here, its age growing, is stuck
+       * (the events area's `staff.erasuresInProgress` says why: attempts, last error).
+       */
+      erasuresInProgress: z.number().int().nonnegative(),
+      oldestErasureInProgressAt: IsoDateTime.nullable(),
+      oldestErasureInProgressAgeSec: z.number().int().nonnegative().nullable(),
+    }),
     checkedAt: IsoDateTime,
   })
   .meta({ id: "SystemHealth" });
@@ -584,6 +606,8 @@ export const AuditQuery = z.object({
   targetId: z.string().min(1).max(255).optional(),
   /** E.g. `unknown` or `pending`: the actions someone must follow up. */
   outcome: AuditOutcomeSchema.optional(),
+  /** `action`: changes only; `read`: the record of staff reading something (`AUDIT_READ_ACTIONS`). */
+  kind: z.enum(AUDIT_ENTRY_KINDS).optional(),
   /** The `X-Request-Id` the action was sent with: finds the entry of an unanswered request. */
   requestId: z
     .string()
@@ -624,9 +648,49 @@ export type AuditEntry = z.output<typeof AuditEntry>;
  * Reading a member's record is audited too (`member.viewed`, `member.searched`,
  * `member.privacy_viewed`: no reason, `succeeded`).
  */
+/**
+ * The headline facts of an entry, derived from what it keeps when the log is read (never stored
+ * as such): only the ones that apply are present. Withheld, but `error`, where `before` and
+ * `after` are (`GET /audit/mine`, an erased member's entries).
+ */
+export const AuditFacts = z
+  .object({
+    /** A refund (or a cancellation's refund of the unused time), a price set. */
+    amount: Money.optional(),
+    planId: PlanId.optional(),
+    /** A trial extension or a complimentary period. */
+    days: z.number().int().optional(),
+    /** A cancellation: now, or at the period end. */
+    when: z.enum(["now", "period_end"]).optional(),
+    /** The status an action led to (a membership, an experiment). */
+    status: z.string().optional(),
+    purpose: ConsentPurpose.optional(),
+    granted: z.boolean().optional(),
+    available: z.boolean().optional(),
+    titleCount: z.number().int().nonnegative().optional(),
+    /** What a recommendation import found (`RecommendationImportAnswer.outcome`). */
+    outcome: z.string().optional(),
+    run: z.string().optional(),
+    /** How many: results of a read, keys confirmed. */
+    count: z.number().int().nonnegative().optional(),
+    /** The error code an action ended with. */
+    error: z.string().optional(),
+  })
+  .meta({ id: "AuditFacts" });
+export type AuditFacts = z.output<typeof AuditFacts>;
+
 export const AuditLogEntry = AuditEntry.extend({
   outcome: AuditOutcomeSchema,
   completedAt: IsoDateTime.nullable(),
+  /** `read`: a staff member read something (`AUDIT_READ_ACTIONS`); `action`: a change. */
+  kind: z.enum(AUDIT_ENTRY_KINDS),
+  /**
+   * The target in words, resolved when the log is read, never stored: a member's current
+   * address (`Erased member` once erased), a title's or a collection's name; null where
+   * `target.id` already reads well (a view, an experiment key, a plan price).
+   */
+  targetLabel: z.string().nullable(),
+  facts: AuditFacts,
 }).meta({ id: "AuditLogEntry" });
 export type AuditLogEntry = z.output<typeof AuditLogEntry>;
 

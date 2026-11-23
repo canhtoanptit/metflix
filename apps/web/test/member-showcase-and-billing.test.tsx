@@ -82,8 +82,8 @@ describe("account: membership and billing", () => {
       setup = vi.fn(base.setupPaymentMethod);
       return { changePlan, setupPaymentMethod: setup };
     });
+    // One click: the provider's page is where the new card goes (UX review 3.14).
     await user.click(await screen.findByRole("button", { name: "Replace card" }));
-    await user.click(await screen.findByRole("button", { name: "Continue to add your card" }));
     await waitFor(() => expect(leaveFor).toHaveBeenCalled());
     const href = new URL(vi.mocked(leaveFor).mock.calls.at(-1)?.[0] ?? "", "http://app.local");
     expect(href.pathname).toBe("/mock-pay");

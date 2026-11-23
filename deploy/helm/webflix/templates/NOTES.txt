@@ -8,7 +8,7 @@ Webflix {{ .Chart.AppVersion }} is deployed as release "{{ .Release.Name }}" in 
   Object storage  {{ if .Values.objectStore.enabled }}in-chart Garage ({{ include "webflix.component" (list . "objectstore") }}, bucket {{ .Values.objectStore.bucket }}){{ else }}external S3 (bucket {{ .Values.externalS3.bucket }}){{ end }}
   Environment     {{ .Values.config.environment }}; payments {{ include "webflix.paymentProvider" . }}; email {{ include "webflix.email.sender" . | default "memory" }}
   Staff issuer    {{ include "webflix.staff.issuer" . | default (ternary "none (the staff API admits nobody)" "the development issuer (/dev-idp/staff)" (eq .Values.config.environment "production")) }}
-  Pipeline        {{ if .Values.pipeline.enabled }}CronJobs webflix-recs-* against {{ include "webflix.pipeline.store" . }}{{ else }}disabled (batch exports stay processing){{ end }}
+  Events          {{ if eq (include "webflix.events.sink" .) "lake" }}collected into the lake ({{ include "webflix.pipeline.store" . }}, events/); {{ if .Values.pipeline.external }}erased, exported and expired by your external runner (pipeline.external: make sure it runs all three){{ else }}erased, exported and expired by age (retain, daily) by the pipeline's CronJobs (webflix-recs-*){{ end }}{{ else }}not stored (memory: no pipeline to erase or expire a lake); data exports {{ include "webflix.events.exportEvents" . }}{{ end }}
 
 Migrations and seed ran as Jobs of revision {{ .Release.Revision }}:
   kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/instance={{ .Release.Name }}

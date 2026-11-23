@@ -37,6 +37,9 @@ config:
     paymentProvider: fake
   events:
     deletionCoolingOffSec: 10
+    # What the privacy page tells a member to expect: the lake round every minute and its
+    # 1-minute grace, about three minutes.
+    exportTypicalSec: 180
   staff:
     # The development issuer's staff realm (in process), which the suite mints tokens from.
     verifier: oidc

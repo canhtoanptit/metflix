@@ -138,7 +138,7 @@ describe("the served model's age bound", () => {
     expect((await t.services.browse.getBrowse(viewer, "home", undefined)).policy?.id).toBe("rules");
     t.clock.set(NOW + MODEL_MAX_AGE_MS);
     expect((await t.services.browse.getBrowse(viewer, "home", undefined)).policy?.id).toBe(
-      `learned:${written.run}`,
+      `demo:${written.run}`,
     );
   });
 });

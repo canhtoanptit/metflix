@@ -42,7 +42,14 @@
 
 {{/* The email sender in effect (empty: the application's default). */}}
 {{- define "webflix.email.sender" -}}
-{{- .Values.config.email.sender | default (ternary "smtp" "" .Values.mailcatcher.enabled) -}}
+{{- $sender := .Values.config.email.sender | default (ternary "smtp" "" .Values.mailcatcher.enabled) -}}
+{{- /* The API refuses to start with the outbox in production (it keeps every message's body,
+live reset and verification links included, and delivers nothing): refuse it here, at render,
+instead of a crash loop. Also when it comes through config.extraEnv. */}}
+{{- if and (eq .Values.config.environment "production") (or (eq $sender "outbox") (eq (toString (.Values.config.extraEnv.WEBFLIX_EMAIL_SENDER | default "")) "outbox")) -}}
+{{- fail "webflix: config.email.sender=outbox is refused in production: the outbox stores every message's body in the database, live reset and verification links included, and delivers nothing, so the API refuses to start with it. Use smtp (config.email.smtp, or mailcatcher.enabled on a test cluster) or http (config.email.http and its key through secrets.envFrom); the outbox is for config.environment=development (the conformance variant)." -}}
+{{- end -}}
+{{- $sender -}}
 {{- end -}}
 
 {{/* WEBFLIX_RELEASE: the configured release, else the API image's tag (or digest prefix). */}}
@@ -89,14 +96,15 @@
 {{- include "webflix.setting" (list "WEBFLIX_PAYMENTS_FAKE_PROMOTIONS" $c.billing.fake.promotions) }}
 {{- include "webflix.setting" (list "WEBFLIX_PAYMENTS_FAKE_RETRIES_EXHAUSTED" $c.billing.fake.retriesExhausted) }}
 {{- /* events */}}
-{{- include "webflix.setting" (list "WEBFLIX_EVENT_SINK" $c.events.sink) }}
+{{- include "webflix.setting" (list "WEBFLIX_EVENT_SINK" (include "webflix.events.sink" .)) }}
 {{- include "webflix.setting" (list "WEBFLIX_CONSENT_MODE" $c.events.consentMode) }}
-{{- include "webflix.setting" (list "WEBFLIX_EXPORT_EVENTS" $c.events.exportEvents) }}
+{{- include "webflix.setting" (list "WEBFLIX_EXPORT_EVENTS" (include "webflix.events.exportEvents" .)) }}
 {{- include "webflix.setting" (list "WEBFLIX_DELETION_COOLING_OFF_SEC" $c.events.deletionCoolingOffSec) }}
 {{- include "webflix.setting" (list "WEBFLIX_EVENTS_RETENTION_DAYS" $c.events.retentionDays) }}
 {{- include "webflix.setting" (list "WEBFLIX_AGGREGATES_RETENTION_DAYS" $c.events.aggregatesRetentionDays) }}
 {{- include "webflix.setting" (list "WEBFLIX_EXPORT_LINK_TTL_SEC" $c.events.exportLinkTtlSec) }}
 {{- include "webflix.setting" (list "WEBFLIX_RELEASE" (include "webflix.release" .)) }}
+{{- include "webflix.setting" (list "WEBFLIX_EXPORT_TYPICAL_SEC" $c.events.exportTypicalSec) }}
 {{- /* personalisation */}}
 {{- /* experiments */}}
 {{- include "webflix.setting" (list "WEBFLIX_EXPERIMENTS_PROPAGATION_SEC" $c.experiments.propagationSec) }}
@@ -401,4 +409,54 @@ spec:
               configMap:
                 name: {{ include "webflix.component" (list $ctx "pipeline") }}
             {{- include "webflix.appVolumes" $ctx | nindent 12 }}
+{{- end -}}
+
+{{/* ------------------------------------------------------------- staff console ----- */}}
+
+{{/* The issuer the console signs staff in with: the staff API's, else outside production the
+development issuer on this origin (a path); empty in production without one. */}}
+{{- define "webflix.console.issuer" -}}
+{{- $issuer := include "webflix.staff.issuer" . -}}
+{{- if $issuer -}}
+{{- $issuer -}}
+{{- else if ne .Values.config.environment "production" -}}
+/dev-idp/staff
+{{- end -}}
+{{- end -}}
+
+{{/* The console's CSP: web.admin.contentSecurityPolicy, plus the issuer's origin in connect-src
+when it is another origin (discovery, the token endpoint). */}}
+{{- define "webflix.console.csp" -}}
+{{- $csp := .Values.web.admin.contentSecurityPolicy | replace "\n" " " | trim -}}
+{{- $issuer := include "webflix.console.issuer" . -}}
+{{- $origin := regexFind "^https?://[^/]+" $issuer -}}
+{{- if and $origin (ne $origin (include "webflix.publicOrigin" .)) -}}
+{{- $csp = replace "connect-src 'self'" (printf "connect-src 'self' %s" $origin) $csp -}}
+{{- end -}}
+{{- $csp -}}
+{{- end -}}
+
+{{/* ------------------------------------------------- the lake and who looks after it --- */}}
+
+{{/* "true" when something erases, exports and expires the lake: the chart's pipeline, or an
+external runner the operator declared (pipeline.external). */}}
+{{- define "webflix.lake.lookedAfter" -}}
+{{- $j := .Values.pipeline.jobs -}}
+{{- if or .Values.pipeline.external (and .Values.pipeline.enabled $j.erase.enabled $j.exportEvents.enabled $j.retain.enabled) -}}true{{- end -}}
+{{- end -}}
+
+{{- define "webflix.events.sink" -}}
+{{- $sink := .Values.config.events.sink | default (ternary "lake" "memory" (eq (include "webflix.lake.lookedAfter" .) "true")) -}}
+{{- if and (eq $sink "lake") (ne (include "webflix.lake.lookedAfter" .) "true") -}}
+{{- fail "webflix: config.events.sink=lake collects behaviour events into the bucket, but nothing would ever erase deleted members' events, finish data exports or expire the lake: enable pipeline.enabled with its erase, exportEvents and retain jobs (the chart's CronJobs), or set pipeline.external=true if your own scheduler runs erase, export-events and retain, or leave config.events.sink empty (memory without them)." -}}
+{{- end -}}
+{{- $sink -}}
+{{- end -}}
+
+{{- define "webflix.events.exportEvents" -}}
+{{- $mode := .Values.config.events.exportEvents | default (ternary "batch" "inline" (eq (include "webflix.lake.lookedAfter" .) "true")) -}}
+{{- if and (eq $mode "batch") (ne (include "webflix.lake.lookedAfter" .) "true") -}}
+{{- fail "webflix: config.events.exportEvents=batch waits for the pipeline's export-events job, and nothing would run it: every data export would stay processing. Enable pipeline.enabled with its erase, exportEvents and retain jobs, set pipeline.external=true, or leave it empty (inline without them)." -}}
+{{- end -}}
+{{- $mode -}}
 {{- end -}}

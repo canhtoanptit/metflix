@@ -31,6 +31,27 @@ export interface PersonalisationRepository {
   getAvailability(titleId: string): Promise<TitleAvailabilityRecord | null>;
   /** Sets a title's availability override, with its audit row. */
   setAvailability(record: TitleAvailabilityRecord, audit: AuditRecord): Promise<void>;
+
+  // --- Withdrawn personalisation (privacy review L1) -------------------------------------------
+  /**
+   * The member withdrew consent to personalisation: the account's key (serving reads it with the
+   * editorial data) and its profiles' keys (the importer withholds them), in one batch. Again
+   * for an account already recorded: its profile keys are added, the first time kept.
+   */
+  recordWithdrawal(withdrawal: WithdrawalRecord): Promise<void>;
+  /** Granted again, or the account erased: every row of the account goes (one statement). */
+  clearWithdrawal(accountKey: string): Promise<void>;
+  /** The account's withdrawal, or null (data export). */
+  getWithdrawal(accountKey: string): Promise<WithdrawalRecord | null>;
+  /** Profile keys of withdrawn accounts, in key order after `after`, at most `limit`. */
+  withdrawnProfileKeys(after: string | null, limit: number): Promise<string[]>;
+}
+
+export interface WithdrawalRecord {
+  accountKey: string;
+  profileKeys: string[];
+  /** Epoch ms. */
+  withdrawnAt: number;
 }
 
 export interface EditorialBillboardRecord {
@@ -68,6 +89,11 @@ export interface EditorialData {
   /** Published collections only, by view then position. */
   collections: EditorialCollectionRecord[];
   availability: TitleAvailabilityRecord[];
+  /**
+   * Keys of the accounts that withdrew consent to personalisation: their profiles' pages are the
+   * rule engine's. Read in the same batch, so serving knows without a read of its own.
+   */
+  withdrawnAccounts: string[];
 }
 
 /** Whether staff made a title unavailable at `now` (no override: available). */

@@ -103,6 +103,11 @@ browser ── GET / , /assets/*.js, /favicon.svg (files that exist) ─► stat
    │
    ├─ /api/docs ─► Worker (HTML with per-response CSP nonce)
    ├─ /api/docs/scalar.js ─► static assets (excluded from run_worker_first)
+   ├─ /admin/, /admin/assets/* (files) ─► static assets: the staff console (apps/admin), under
+   │                               its own CSP (`_headers`), its index never cached
+   ├─ /admin/<client route> (no file) ─► Worker: the console's index, its own CSP, no-store;
+   │                               a missing /admin/assets/* → 404, no-store
+   ├─ /admin/config.json ─► Worker: {issuer, clientId, scope} from the staff configuration
    ├─ /dev-idp/*  ─► Worker: the development OpenID issuer (never in production: 404)
    └─ /_pay/*     ─► Worker: the fake provider's payment form (never in production: 404)
 
@@ -144,6 +149,47 @@ memo (30–60 s), the UUIDv7 generator and the media-generation memo (60 s) are 
 isolate (`getRuntime`, keyed by the `env` object) and reused by every request; construction
 does no I/O, so a cold start costs only module evaluation. Per request: the Hono context,
 the session lookup (memoised within the request), and nothing else.
+
+### One request never awaits another's promise
+
+**The rule: what an isolate shares between requests is settled values, never a pending
+promise.** No lock, queue or promise chain in memory, no map of in-flight loads, no memoised
+promise of a load. Concurrent cold misses each do their own load; serialisation goes through the
+store (a compare-and-set, a unique key, a Durable Object).
+
+Why: every request runs in its own context. A continuation is run in its own request's context
+while that is alive and dropped with a warning once it ended (`handle_cross_request_promise_resolution`,
+on by default since 2024-10-14), and a request that only waits on a promise another request
+will settle has nothing in flight of its own, so workerd cancels it ("The Workers runtime
+canceled this request because it detected that your Worker's code had hung"). A cancelled request
+never reaches its `finally`: a lock it held is never released, and every request after it waits.
+
+What may be shared: the configuration, the service graph, data caches (the catalog memo
+`CatalogCache.get`, the readiness outcome `memoised` in `src/runtime.ts`), keys once imported.
+On 2026-11-23 this rule was broken in two places, both found by the conformance suite:
+
+- **Kysely's connection lock in front of D1.** SQLite's adapter declares a single connection,
+  so Kysely's `RuntimeDriver` put one promise lock per isolate in front of every D1 query. Under
+  concurrency a waiting request was cancelled as hung, the lock stayed held, and from then on
+  every query of that isolate timed out (`/readyz`: `database timed out after 2000 ms`) while D1
+  itself answered. The D1 dialect (`packages/db/src/d1.ts`) declares concurrent connections: the
+  D1 binding holds no per-connection state and D1 has no interactive transactions.
+- **The fake payment provider's in-process queues** (per customer, and its webhook pump). On
+  Workers it runs with `inProcessQueues: false` (`src/areas/billing.ts`): its compare-and-set on
+  D1 already keeps concurrent operations correct; a writer that keeps losing gets `unavailable`
+  (503), as from a real provider.
+
+An audit of everything the Worker runs found three more, fixed the same way: billing's catalogue
+sync before the first checkout (a settled flag; concurrent first checkouts each sync, and one
+that meets the provider's "in flight" answer is a retryable 503), the JWKS fetch of
+`createJwksKeySet` (a cold cache fetches per verification; on a stale one the first refreshes
+while the others keep the trusted set; an unknown key id still refetches at most once per
+cooldown) and the sealing and Apple signing keys (the key is cached, not the promise).
+
+`test/cross-request.test.ts` (200 concurrent requests, two D1 queries each, 20 waves) and
+`test/cross-request-fake.test.ts` (20 concurrent clock advances on one customer, 20 waves) go
+through `SELF`, so each request has its own context; both failed every run before the fixes
+(142 and 19 requests cancelled as hung).
 
 ---
 
@@ -246,6 +292,13 @@ every binding in a counter and asserts these):
 | `GET …/seg_N.m4s` | 0 | 0 | 1 (edge-cache miss only); 2 for the first segment of an asset in an isolate (the plan-cap rendition map reads the master playlist, memoised 10 min) | 0 | 0 |
 | `GET /api/v1/session` (milestone 2: experiment assignments) | 3 | 0 | 0 | 0 | 0 |
 | `POST /api/v1/events` (a batch, with consent) | 4 | 2 (device and account limits) | 0 | 0 | 1 |
+| `GET /api/v1/billing/checkout` (the open checkout) | 2 | 0 | 0 | 0 | 0 |
+| `GET /api/v1/billing/checkout/:id` (polled while a checkout settles) | 2 | 1 (rate limit) | 0 | 0 | 0 |
+| `POST /api/v1/billing/checkout` (with the fake provider, whose state is in D1; with Stripe these are subrequests) | 48; 56 for an isolate's first, which syncs the catalogue | 1 (rate limit) | 0 | 0 | 1 |
+| `GET /api/v1/account` (with the next invoice: stored in the membership, never read from the provider) | 3 | 0 | 0 | 0 | 0 |
+| `GET /api/v1/privacy/requests` (with the terms, from configuration) | 2 | 0 | 0 | 0 | 0 |
+| `GET /api/admin/v1/members?q=` (staff search) | 4 | 0 | 0 | 0 | 0 |
+| `GET /api/admin/v1/members/:id` (a member's record: the audit entry written first, every area's part read) | 8 | 0 | 0 | 0 | 0 |
 
 Milestone 2's wiring (§10) moved no row: the table was measured before and after it on the
 same commit. Two rows differ from the milestone 1 table because the areas changed them before
@@ -436,7 +489,28 @@ browse D1, KV, R2 and Durable Objects and query captured logs; the inspector lis
 
 ### Conformance (`make smoke TARGET=cf`)
 
-Latest run recorded here (2026-11-22, after the export job moved to the pipeline), with the
+**2026-11-23, first look at commit e7e07c8 (143 checks), not a result.** With the web app and
+the console staged, the same configuration as below: the local Worker's isolate stops answering
+partway through a full run. One request is cancelled by workerd as "hung" (a different one each
+time: a payment confirmation, a profile update, a checkout confirmation), and from then on every
+database query from that isolate times out (`/readyz`: `database timed out after 2000 ms`)
+while the same D1 answers other callers (the Local Explorer) at once; only a restart recovers.
+It happens with the Cron Trigger and the pipeline loop both off, and never with one area at a
+time (billing, privacy, identity each pass alone; 20 to 120 concurrent sign-ups and 16
+concurrent checkouts do not trigger it). Runs: 97/44/2, 63/78/2, 85/56/2, 96/45/2, 113/27/3
+(passed/failed/skipped).
+
+Cause, found the same day: promises shared between requests (§2, "One request never awaits
+another's promise"), mainly Kysely's connection lock in front of D1; the request that never
+let go of it was a session lookup whose D1 query started and never ended. Smallest reproduction:
+a Worker running two sequential `select 1` through the D1 dialect, 20 waves of 200 concurrent
+requests: 51 requests of one wave failed (52 cancelled as hung), and every request afterwards
+answered 500 (one query per request never triggers it). With the dialect declaring concurrent
+connections: 0 failures in 16,000 requests over four rounds. On a copy of e7e07c8,
+two full suite runs: 86/41 and 84/43 passed/failed with 34 and 42 requests cancelled as hung
+before; 122/3 twice with one left (in the fake provider's queues, the second fix) after.
+
+Run on 2026-11-22 (before the fix rounds and the card removal) (2026-11-22, after the export job moved to the pipeline), with the
 suite as it stood that day (131 checks; source fingerprint `72f18f7b` of `tools/smoke/src`),
 against `make cf-dev` from a fresh state directory on :8787 (web build served, the fast media
 profile in its local R2, local rate-limit profile), run the way the suite asks a conformance
@@ -502,7 +576,10 @@ The deploy reads `wrangler secret list` before it changes anything, and stops wi
 credentials that are neither set nor in the environment. It also runs the Worker's own config
 validation on the production vars first: a deploy whose Worker would answer every request with
 503 (`config.invalid`) stops there. The staff API stays closed until you set
-`WEBFLIX_STAFF_VERIFIER=oidc` and `WEBFLIX_STAFF_ISSUER` (your Keycloak realm, https). Google
+`WEBFLIX_STAFF_VERIFIER=oidc` and `WEBFLIX_STAFF_ISSUER` (your Keycloak realm, https). **With the
+event lake on (the default), a deploy also stops until a runner of the lake's jobs is declared**
+(`WEBFLIX_LAKE_JOBS=scheduled`) and the staff API is open to it; §10.4 lists what the runner
+needs and runs, and every deploy prints it. Google
 and Apple sign-in are offered once their clients are configured: the client ids as vars, the
 client secret / private key with `wrangler secret put` (they are not in `secrets.required`,
 which would make them mandatory; see §10.2).
@@ -515,10 +592,13 @@ make cf-deploy           # the real thing
 `make cf-deploy` (`scripts/deploy.ts deploy`), every step idempotent:
 
 0. **Check**: the release name (`--release`, `make cf-deploy CF_RELEASE=…`; default the commit,
-   `-dirty` for a changed tree) and the Worker's config validation on the production vars.
+   `-dirty` for a changed tree), the Worker's config validation on the production vars, and the
+   lake gate (a lake needs a declared runner and an open staff API; the runner's checklist).
 1. **Provision**: check the public origin first (see Routing below; the placeholder stops the
    deploy here), then find or create D1 `webflix`, KV `webflix-cache` and `webflix-recs`, R2
-   `webflix-media`, queues `webflix-jobs` and `webflix-jobs-dlq` (14-day retention); write the
+   `webflix-media` with its two lifecycle rules behind retention (`events/` and
+   `events-quarantine/`, the events period plus 7 days; §10.4), queues `webflix-jobs` and
+   `webflix-jobs-dlq` (14-day retention); write the
    D1 and KV ids,
    `workers_dev` and `routes` into `env.production` of wrangler.jsonc (comment-preserving
    edit; commit them). Until then the ids are zero
@@ -585,16 +665,43 @@ production seed without it leaves an existing demo account in place; delete it f
 was seeded before.
 
 Operations: Workers Logs persists the Worker's own JSON lines: one `http.request` per request
-with the media token replaced by `:token` (on every path, including errors). The platform's
-invocation logs and traces are off: both record the full request URL, and media tokens live in
-the URL path (HLS-relative URIs need them there), which neither can redact. `make cf-tail`
-(`wrangler tail`) streams events live with the **raw URL, tokens included**: operators only,
-nothing is stored, and the tokens expire within 6 h; prefer Workers Logs for anything shared.
+with the path and never the query string (no search words, staff search terms, export tokens or
+OAuth codes), the media token replaced by `:token` (on every path, including errors). The
+platform's invocation logs and traces are off: both record the full request URL, query included,
+and media tokens live in the URL path (HLS-relative URIs need them there), which neither can
+redact. There is no Logpush and no Tail Worker (`logpush`, `tail_consumers` unset in both
+sections; `test/node/config.test.ts` keeps all of this true, and `test/worker.test.ts` checks
+that a search's words reach no log line). `make cf-tail` (`wrangler tail`) streams events live
+with the **raw URL, query and tokens included**: operators only, nothing is stored, and the
+tokens expire within 6 h; prefer Workers Logs for anything shared.
 `/readyz` is public: its database check is shared per isolate for 5 s, so probes cost at most one
 D1 query per isolate per 5 s. Rollback:
 `wrangler rollback --env production` (migrations are additive, so the previous version runs
 on the new schema). Dead letters: dashboard → Queues → `webflix-jobs-dlq`. Media cache: purge
 by tag `webflix-media`, or simply re-seed to roll the generation.
+
+**Point-in-time restores and erasure (D1 Time Travel)** (privacy review L11). D1 keeps every
+database restorable to any minute of the last 30 days on Workers Paid (7 on Free); it is always
+on and the plan sets the window. So an erased member's rows (account, sessions, profiles,
+history, ratings, the membership record) stay restorable for 30 days after the erasure, as in
+any backup, and the privacy notice should say so. A restore (`wrangler d1 time-travel restore DB
+--env production --timestamp <T>`) rewrites the database in place and brings back every row
+erased after T, while what lives elsewhere stays erased: lake rows and export documents in R2,
+recommendation lists in KV, the customer at the payment provider. After one, before reopening:
+
+1. *Before* restoring, note the current bookmark (`wrangler d1 time-travel info DB --env
+   production`: restoring to it undoes the restore) and list from the current database the
+   deletions the restore would undo: `SELECT id, account_id, status, requested_at, completed_at
+   FROM privacy_requests WHERE kind = 'deletion' AND (requested_at >= <T> OR completed_at >= <T>)`
+   (`wrangler d1 execute DB --remote --env production --command …`; times in ms). The list is
+   personal data: keep it only until step 3 is done.
+2. A deletion requested before T comes back as it was at T: a `scheduled` one runs again on the
+   sweep's next tick (5 min), and so does a `processing` one whose retry time (`retry_at`) has
+   passed, which after a restore it usually has. Check that each one ends `completed`. Keys whose lake erasure was
+   confirmed after T are pending again and the next `erase` redoes them (idempotent).
+3. A deletion requested after T is gone, and its account is back and can sign in: it must be
+   filed again. No staff action does that yet (reported for the admin API); until one exists, a
+   restore across such deletions waits until they are re-filed.
 
 **What was exercised and what was not.** Exercised: the dry run end to end (config
 validation, production asset staging with Stripe's CSP sources, the exact minified bundle, the
@@ -680,10 +787,32 @@ Vars (both sections; a test compares the names):
 | --- | --- | --- |
 | `WEBFLIX_RELEASE` | `local` | empty in the file; `make cf-deploy` passes the commit (`--var WEBFLIX_RELEASE:…`) |
 | `WEBFLIX_EVENT_SINK` | `lake` | `lake` |
+| `WEBFLIX_LAKE_JOBS` | empty (the `make cf-*` jobs and the `CF_JOBS_EVERY` loop) | empty: **a deploy stops** until it is `scheduled` (a runner of the lake's jobs is set up, §10.4) or the sink is `memory` |
 | `WEBFLIX_EMAIL_SENDER`, `WEBFLIX_EMAIL_FROM` | `outbox`, default | `http`, set it to an address on your verified domain |
 | `WEBFLIX_PAYMENT_PROVIDER` | `fake` | `stripe` |
 | `WEBFLIX_STAFF_VERIFIER`, `WEBFLIX_STAFF_ISSUER` | `oidc`, empty (the development issuer) | empty (= `memory`, closed), empty |
 | `WEBFLIX_RECOMMENDATION_STORE` | `kv` | `kv` |
+| `WEBFLIX_ENV` | `development` | `production` |
+
+**`WEBFLIX_ENV` is required on Cloudflare.** The portable loader reads an absent one as
+`development`, which on a deployed Worker would mount the development issuer (staff tokens
+anyone can mint), default to the fake payment provider and open the mailbox. The Worker's own
+loader (`src/env.ts`) refuses to compose without it: every request answers `503
+config.invalid` and the log names `WEBFLIX_ENV` (seen with `--var WEBFLIX_ENV:` on the dev
+server; `test/production-config.test.ts`, `test/node/config.test.ts`). wrangler.jsonc sets it in
+both sections.
+
+**The staff console** (`apps/admin`, built by `cf-web` beside the member app) is staged under
+`/admin/` in the static assets without its build's `config.json`: the Worker answers
+`/admin/config.json` from the same settings the staff API verifies tokens with (the issuer is
+`WEBFLIX_STAFF_ISSUER`, else, outside production, the development issuer on this origin; the
+client is `WEBFLIX_STAFF_CLIENT_ID`; production without an issuer answers 503 saying so). Its
+policy is not the member app's: `connect-src 'self'` plus the staff issuer's origin when it is
+another one, no `https:` wildcard, no Stripe or Google Maps origins, no frames, workers or media
+(`src/console-policy.ts`, used both by the asset staging, as an `/admin/*` rule in `_headers`
+that detaches the member app's policy, and by the Worker for the console's client-side routes,
+since Cloudflare does not promise `_headers` on what a Worker returns). The Kubernetes chart
+does not serve the console yet; it would carry the same policy.
 
 Secrets: the same seven names in `secrets.required` in both sections (§8 lists them). Wrangler
 loads **only** the names listed there from `.dev.vars` (an allowlist; missing ones produce a
@@ -723,16 +852,35 @@ runs, locally (the dev server stopped, like every ops command: one runtime per s
 ```sh
 make cf-stop
 make cf-lake-pull            # R2 events/ → CF_RECS_STORE (default .cache/recs/cf/store), incremental
-#   run the pipeline on that store: services/recs `webflix-recs --store .cache/recs/cf/store …`
+make cf-dev                  # (another terminal) the staff API answers the pending erasures
+#   the pipeline on that store, leaving out every key pending erasure:
+WEBFLIX_ADMIN_API_URL=http://localhost:8787/api/admin/v1 \
+WEBFLIX_STAFF_TOKEN_URL=http://localhost:8787/dev-idp/staff/token \
+WEBFLIX_STAFF_CLIENT_ID=webflix-jobs WEBFLIX_STAFF_CLIENT_SECRET=dev-only-jobs-client-secret \
+  services/recs/.venv/bin/webflix-recs --store .cache/recs/cf/store train-and-score …   # then publish
+make cf-stop
 make cf-recs-push            # its published run → R2: recs/v={run}/… then recs/current.json last
 make cf-recs-import          # publish it into D1 (model, neighbours) and KV (lists), from Node
 make cf-dev
 ```
 
+Every run that is built or scored for import leaves out the keys pending erasure (erased accounts,
+newly restricted profiles): `--erasures api` on `build-dataset`, `score` and `train-and-score` is
+the pipeline's default once `WEBFLIX_ADMIN_API_URL` is set, and it fails closed (exit 6) when the
+staff API cannot be reached or 500 or more erasures are pending: run `make cf-erase` first. The
+importer withholds erased, pending and withdrawn subjects too, and decides "unchanged" by the
+manifest digest, so a rewritten run is imported again. `publish` answers exit 3 when the gate
+refuses the run (it needs the scored run's own decision over `WEBFLIX_RECS_GATE_CUTOFFS` rolling
+weekly cutoffs, default 3; a version scored by older code is refused until rescored): then
+`recs/current.json` does not move and `make cf-recs-push` has nothing new to send.
+
 For a demo with no fresh pipeline run, `make cf-recs-import CF_RECS_DEMO=1` (dev server stopped)
 publishes a demo run for the demo account's profiles into the local R2 and imports it the same
 way: lists filed under the keys the Worker derives with its `.dev.vars` pseudonym key, labelled
-as demo data (run id `*-de00de00`; docs/RECOMMENDATIONS.md, "A demo run"). Local only.
+as demo data (run id `*-de00de00`; docs/RECOMMENDATIONS.md, "A demo run"): the home page's
+policy label for those profiles is `demo:<run>`, never `learned:`. Local only. Without a served
+run the page is ranked by the default policy: `learned` locally (the development default), the
+rule engine (`rules`) in production unless `WEBFLIX_RECS_DEFAULT_POLICY` says otherwise.
 
 The store directory is the dev mode's filesystem `BlobStore` layout, which the pipeline reads
 and writes. In production the pipeline reads and writes R2 itself (its S3 store, R2's S3 API),
@@ -786,17 +934,36 @@ make cf-export-events   # GET …/exports → pull events/ → export-events →
 make cf-erase           # GET …/erasures → pull events/, events-quarantine/, privacy/export-events/, recs/
                         #   → erase → rewritten and removed objects into R2 → POST …/erasures/confirm
 make cf-compact         # pull events/ → compact → Parquet files and _compaction.json into R2
-make cf-dev CF_JOBS_EVERY=10   # the dev server also runs `jobs run` (erase, then export) every 10 s
+make cf-retain          # pull events/, events-quarantine/, recs/, experiments/results/ → retain
+                        #   → what it deleted, deleted from R2 (CF_RETAIN_DRY_RUN=1: the plan only)
+make cf-dev CF_JOBS_EVERY=10   # the dev server also runs `jobs run` every 10 s: erase, then
+                        #   export, then retain once a day
 ```
 
+**Retention** is the pipeline's `webflix-recs retain`: activity older than the events period
+(raw hours, compacted Parquet and manifests, quarantine, dataset rows, unpublished artefact
+versions) and totals older than the aggregates period leave the store, under the lake lease,
+plan first, safe to rerun. The two periods are the product's own settings, and the job must get
+the values the Worker has: the tooling reads them the way the Worker is composed (wrangler.jsonc,
+`.dev.vars` for the names it lists, the dev server's own `--var` overrides, which `scripts/dev.ts`
+records in the state directory) with the Worker's own rule (`loadEventsConfig`), and passes them
+to the job explicitly (`scripts/lib/lake-jobs.ts`). Exit codes it names: 2 a bad setting, 10 the
+store ignores conditional writes, 75 the lake is busy (the loop tries again on its next round).
+Measured on the local Worker (2026-11-23, `--var WEBFLIX_EVENTS_RETENTION_DAYS:30`): the job ran
+with 30 days; three raw objects of one hour stayed through a dry run and through a run as if 20
+days later, and a run as if 43 days later deleted the hour from the store and its three objects
+from R2.
+
 Each is safe to rerun and a no-op with nothing pending (one token request and the list calls).
-The pull is an exact mirror of what R2 holds for those prefixes (`recs/` is merged with the
-store's own runs) and incremental: a sync record (`<store>/cf-sync.json`, R2's and the store's
+The pull is an exact mirror of what R2 holds for those prefixes (`recs/` and
+`experiments/results/` are merged with the store's own runs) and incremental: a sync record (`<store>/cf-sync.json`, R2's and the store's
 etags per key) means an unchanged object is never downloaded twice. The push sends only what
 the job changed since the pull: uploads first, a manifest after its data (`_compaction.json`,
-`manifest.json`, `recs/current.json` last), deletions last, which is the order the lake's
-readers rely on; an object the Worker wrote after the pull is never touched. R2 owns what the
-product writes or reads (`events/`, `events-quarantine/`, `privacy/export-events/`, `recs/`);
+`manifest.json`, `recs/current.json` last), deletions last (whatever the job deleted of what R2
+held at the pull, merged prefixes included; the store's own unpushed runs never reach R2), which
+is the order the lake's readers rely on; an object the Worker wrote after the pull is never
+touched. R2 owns what the product writes or reads (`events/`, `events-quarantine/`,
+`privacy/export-events/`, `recs/`, `experiments/results/`);
 the store owns the pipeline's working data (`recs-work/`, the erasure plan included), as R2 owns
 it on a real account. Keys are confirmed only after the rewritten objects are back in R2 (the
 job writes its confirmation bodies to a file, `--confirm FILE`, and this sends them); a
@@ -832,6 +999,45 @@ cooling-off 30 s; `privacy-roundtrips.ts` in the work's scratch directory):
   for an erasure; the pipeline itself took 0.1–0.5 s and up to 190 MB. The latency a member sees
   is at most one loop period on top. Pulls grow with the lake: listing is one explorer call per
   1,000 objects, downloads only new objects.
+
+**A production runner: a deploy stops without one** (privacy review M2). With the lake on, only
+the pipeline's jobs erase deleted members and newly restricted profiles from R2, finish batch
+exports and enforce retention; a deployment that collects with nobody running them breaks all
+three promises silently. The option chosen: production keeps `WEBFLIX_EVENT_SINK=lake`, and
+`make cf-deploy` refuses to deploy (`scripts/lib/lake-jobs.ts`, from `checkProductionConfig`;
+the dry run prints it as a warning) unless `WEBFLIX_LAKE_JOBS` is `scheduled`, declaring that a
+runner is set up, and the staff API admits that runner (`WEBFLIX_STAFF_VERIFIER=oidc` with an
+https `WEBFLIX_STAFF_ISSUER`). The other way through the gate is `WEBFLIX_EVENT_SINK=memory`:
+nothing is stored, so there is nothing to erase, export or expire (and nothing to learn from).
+The check belongs to the deploy, not the Worker: only the operator knows whether a runner exists.
+What the runner needs, and runs (printed by every deploy, dry or real):
+
+- **R2 through its S3 API**: `--store s3://webflix-media`, `WEBFLIX_S3_ENDPOINT`
+  `https://<account id>.r2.cloudflarestorage.com`, `WEBFLIX_S3_REGION=auto`, and an R2 API
+  token's `WEBFLIX_S3_ACCESS_KEY_ID` / `WEBFLIX_S3_SECRET_ACCESS_KEY` with Object Read & Write
+  on that bucket only.
+- **The staff API**: `WEBFLIX_ADMIN_API_URL=<origin>/api/admin/v1` and a service account of the
+  staff issuer (client credentials: `WEBFLIX_STAFF_TOKEN_URL`, `WEBFLIX_STAFF_CLIENT_ID`,
+  `WEBFLIX_STAFF_CLIENT_SECRET`) with the roles `admin` and `experiments`.
+- **The Worker's retention periods**: `WEBFLIX_EVENTS_RETENTION_DAYS` and
+  `WEBFLIX_AGGREGATES_RETENTION_DAYS` with the production values (the deploy prints them).
+- **The schedule**, the chart's (docs/KUBERNETES.md): `export-events --requests api` every 5
+  minutes (grace 15), `compact` hourly at :20 (grace 15), `erase --keys api` daily at 03:40,
+  `retain` daily at 03:50, `train-and-score` (`--erasures api`; exit 6: run erase first) then
+  `publish` (exit 3: refused, nothing changes) then `make cf-recs-import ENV=production` daily at
+  04:00, `analyse-experiments` daily at 04:30. Any scheduler works (a container on a timer, CI on
+  a cron); R2 honours the lake lease's `If-None-Match: *` (below), so the jobs need not be
+  serialised.
+
+**R2 lifecycle rules, the second line of defence** (privacy review H1). `deploy.ts provision`
+(part of every deploy) replaces two rules on the bucket: `events/` and `events-quarantine/`
+expire 7 days after the events period (403 days by default), so a runner that stopped does not
+leave activity in R2 for ever. They do not replace `retain`: R2 ages an object from its last
+write, so an hour rewritten by an erasure or a compaction is kept longer by the rule than by the
+job, and R2 removes expired objects within about a day, not at once. Nothing under those two
+prefixes needs to outlive 13 months: totals live in D1, `recs-work/`, `recs/` and
+`experiments/`, which `retain` expires by the aggregates period. The bucket's other rules (the
+default abort of incomplete multipart uploads after 7 days) are left alone.
 
 **What this proves and what it does not.** It proves the product's side of both jobs on the
 Worker (the operator routes with a service token, the folding in of a verified events file,

@@ -66,6 +66,9 @@ test("sign-up end to end: account, plan, the provider's form, a trial, profiles,
   await expect(plan).toContainText("Premium");
   await expect(plan).toContainText("Due today");
   await expect(plan).toContainText("$0.00");
+  // A new account is told its trial for certain (the server decided it: UX review 2.6).
+  await expect(plan).toContainText("Your 7-day free trial starts today (one per card)");
+  await expect(page.getByText(/if you haven't had a Webflix trial/)).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: /card number/i })).toHaveCount(0);
   await expectAccessible(page);
   await page.getByRole("button", { name: "Continue to payment" }).click();
@@ -186,6 +189,10 @@ test("a declined card at the provider: the form brings the member back, told why
   expect((await membershipOf(page.context().request)).status).toBe("none");
 
   await page.getByRole("link", { name: "Use another card" }).click();
+  // The payment step still says what happened (UX review 2.13), focused for screen readers.
+  const notice = page.getByRole("alert").filter({ hasText: "Your card was declined" });
+  await expect(notice).toBeFocused();
+  await expect(notice).toContainText("Nothing was charged.");
   await page.getByRole("button", { name: "Continue to payment" }).click();
   await payAtProvider(page, freshCard("mastercard"));
   await expect(page.getByRole("heading", { name: "Your free trial has started" })).toBeVisible({
@@ -271,7 +278,11 @@ test("promo codes: an unknown one is refused with its reason; a valid one is quo
   await expect(code).toBeFocused();
   await code.fill("WEBFLIX50");
   await page.getByRole("button", { name: "Apply" }).click();
-  await expect(page.getByText(/WEBFLIX50.*applied/)).toContainText("$6.49 instead of $12.99");
+  // A new account gets a trial (the card's own history is the only exception): one true
+  // sentence, in the info tone, not a green "applied" beside $0.00 (UX review 2.5).
+  await expect(page.getByText(/WEBFLIX50 stays yours/)).toContainText(
+    "the code applies only if this card has had a trial before",
+  );
   await expectAccessible(page);
 
   await page.getByRole("button", { name: "Continue to payment" }).click();
@@ -279,11 +290,13 @@ test("promo codes: an unknown one is refused with its reason; a valid one is quo
   await expect(page.getByRole("heading", { name: "Confirm your first payment" })).toBeVisible({
     timeout: 20_000,
   });
+  // This card had its trial: the code takes its share off the first payment, said with why.
+  await expect(page.getByText("$12.99 less your $6.50 WEBFLIX50 discount")).toBeVisible();
   await page.getByRole("button", { name: "Pay $6.49" }).click();
   await payAtProvider(page, card, "Pay");
-  await expect(page.getByText("You paid $6.49 today, with your code WEBFLIX50.")).toBeVisible({
-    timeout: 20_000,
-  });
+  await expect(
+    page.getByText("You paid $6.49 today ($12.99 less your $6.50 WEBFLIX50 discount)."),
+  ).toBeVisible({ timeout: 20_000 });
   // The provider charged exactly the quoted price (the account's invoices need a profile).
   const request = page.context().request;
   await addProfile(request);
@@ -346,7 +359,7 @@ test("a promo code is never spent on a trial: the welcome says it wasn't used an
   await page.getByRole("button", { name: "Have a promo code?" }).click();
   await page.getByRole("textbox", { name: "Promo code" }).fill("WEBFLIX50");
   await page.getByRole("button", { name: "Apply" }).click();
-  await expect(page.getByText(/WEBFLIX50.*applied/)).toContainText("stays yours");
+  await expect(page.getByText(/WEBFLIX50 stays yours/)).toBeVisible();
   await page.getByRole("button", { name: "Continue to payment" }).click();
   await payAtProvider(page, freshCard("visa"));
   await expect(page.getByRole("heading", { name: "Your free trial has started" })).toBeVisible({
@@ -370,7 +383,7 @@ test("a checkout started on one device, with its promo code, continues on anothe
   await page.getByRole("button", { name: "Have a promo code?" }).click();
   await page.getByRole("textbox", { name: "Promo code" }).fill("WEBFLIX50");
   await page.getByRole("button", { name: "Apply" }).click();
-  await expect(page.getByText(/WEBFLIX50.*applied/)).toBeVisible();
+  await expect(page.getByText(/WEBFLIX50 stays yours/)).toBeVisible();
 
   // Another device signs in to the same account: the funnel's entry finds the open checkout.
   const other = await newDevice();
@@ -379,7 +392,7 @@ test("a checkout started on one device, with its promo code, continues on anothe
   await tablet.getByLabel("Password", { exact: true }).fill(PASSWORD);
   await tablet.getByRole("button", { name: "Sign in" }).click();
   await expect(tablet).toHaveURL(/\/signup\/payment\?plan=standard/);
-  await expect(tablet.getByText(/WEBFLIX50.*applied/)).toContainText("$6.49 instead of $12.99");
+  await expect(tablet.getByText(/WEBFLIX50 stays yours/)).toBeVisible();
 });
 
 test("an account whose deletion is scheduled is told so at the payment step, not offered a checkout", async ({

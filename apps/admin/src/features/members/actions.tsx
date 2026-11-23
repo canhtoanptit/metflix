@@ -13,7 +13,7 @@ import type {
   PrivacyRequest,
   Refund,
 } from "@webflix/contracts";
-import { Checkbox, Field, Input, RadioGroup, RadioItem, Select, SelectItem } from "@webflix/ui";
+import { Checkbox, Field, InfoIcon, Input, RadioGroup, RadioItem } from "@webflix/ui";
 import { type ReactNode, useId, useState } from "react";
 import { staffApi } from "../../api/client.ts";
 import { qk } from "../../api/queries.ts";
@@ -130,35 +130,33 @@ export function RemovePinDialog({
   );
 }
 
+/**
+ * Staff record a withdrawal only (privacy review M4): turning a purpose on is the member's own
+ * answer, in Account › Privacy, where it outranks Global Privacy Control and the opt-in prompt.
+ * Offered for the purposes in force now; the server refuses a grant
+ * (`consent_grant_member_only`) whatever the console sends.
+ */
 export function ConsentDialog({
   accountId,
   consent,
   ...dialog
 }: DialogState & { accountId: string; consent: ConsentState }) {
   const queryClient = useQueryClient();
-  const [purpose, setPurpose] = useState<ConsentPurpose>("analytics");
-  const [granted, setGranted] = useState<"granted" | "withdrawn">(
-    consent.purposes.analytics.granted ? "withdrawn" : "granted",
-  );
-  const answerId = useId();
-  const PURPOSES: Record<ConsentPurpose, string> = {
-    analytics: "Analytics",
-    personalisation: "Personalisation",
-  };
+  const withdrawable = withdrawablePurposes(consent);
+  const [purpose, setPurpose] = useState<ConsentPurpose>(withdrawable[0] ?? "analytics");
+  const purposeId = useId();
   return (
     <ActionDialog
       {...dialog}
       scope={`consent:${accountId}`}
-      title="Record a consent answer"
-      description="Record the answer the member gave you. It takes effect at once and is marked as given to support."
-      confirmLabel="Record answer"
+      title="Record a consent withdrawal"
+      description="When the member asks you to stop using their activity for a purpose, record it here. It takes effect at once and is marked as recorded by support."
+      confirmLabel={`Withdraw ${CONSENT_PURPOSES_LABEL[purpose].toLowerCase()}`}
+      tone="danger"
       audit={memberAudit(accountId)}
       run={({ reason, signal, headers }) =>
         staffApi().setMemberConsent(
-          {
-            params: { accountId },
-            body: { purpose, granted: granted === "granted", reason },
-          },
+          { params: { accountId }, body: { purpose, granted: false, reason } },
           { signal, headers },
         )
       }
@@ -170,51 +168,62 @@ export function ConsentDialog({
         )
       }
       success={(state) =>
-        `${PURPOSES[purpose]}: ${state.purposes[purpose].granted ? "granted" : "withdrawn"}, recorded as given to support.`
+        state.purposes[purpose].granted
+          ? `${CONSENT_PURPOSES_LABEL[purpose]} is still on: another answer outranks the withdrawal. Look at the member's privacy details.`
+          : `${CONSENT_PURPOSES_LABEL[purpose]} is off, recorded as asked through support. Webflix stops using the member's activity for it.`
       }
     >
-      <Field label="Purpose">
-        <Select
-          variant="compact"
-          value={purpose}
-          onValueChange={(value) => {
-            const next = value as ConsentPurpose;
-            setPurpose(next);
-            setGranted(consent.purposes[next].granted ? "withdrawn" : "granted");
-          }}
-        >
-          <SelectItem value="analytics">Analytics</SelectItem>
-          <SelectItem value="personalisation">Personalisation</SelectItem>
-        </Select>
-      </Field>
-      <fieldset>
-        <Legend id={answerId}>The member's answer</Legend>
-        <RadioGroup
-          aria-labelledby={answerId}
-          value={granted}
-          onValueChange={(value) => setGranted(value as "granted" | "withdrawn")}
-          className="flex flex-col gap-2"
-        >
-          <RadioItem
-            value="granted"
-            label="Granted"
-            description="Webflix may use their activity for this purpose."
-          />
-          <RadioItem
-            value="withdrawn"
-            label="Withdrawn"
-            description="Webflix stops using their activity for this purpose."
-          />
-        </RadioGroup>
-      </fieldset>
-      <p className="type-caption text-fg-subtle">
-        Now: {consent.purposes[purpose].granted ? "granted" : "not granted"}
-        {consent.purposes[purpose].source
-          ? ` (${consent.purposes[purpose].source})`
-          : " (the default)"}
-        .
+      {withdrawable.length > 1 ? (
+        <fieldset>
+          <Legend id={purposeId}>Purpose to withdraw</Legend>
+          <RadioGroup
+            aria-labelledby={purposeId}
+            value={purpose}
+            onValueChange={(value) => setPurpose(value as ConsentPurpose)}
+            className="flex flex-col gap-2"
+          >
+            {withdrawable.map((value) => (
+              <RadioItem
+                key={value}
+                value={value}
+                label={CONSENT_PURPOSES_LABEL[value]}
+                description={CONSENT_PURPOSE_USE[value]}
+              />
+            ))}
+          </RadioGroup>
+        </fieldset>
+      ) : (
+        <div className="flex flex-col gap-0.5 type-body-sm">
+          <p className="font-semibold text-fg">{CONSENT_PURPOSES_LABEL[purpose]}</p>
+          <p className="text-fg-muted">{CONSENT_PURPOSE_USE[purpose]}</p>
+        </div>
+      )}
+      <p className="flex items-start gap-1.5 rounded-md bg-surface-3 p-3 type-caption text-fg-muted">
+        <InfoIcon size="xs" className="mt-0.5 shrink-0" />
+        {MEMBER_TURNS_ON}
       </p>
     </ActionDialog>
+  );
+}
+
+export const CONSENT_PURPOSES_LABEL: Record<ConsentPurpose, string> = {
+  analytics: "Analytics",
+  personalisation: "Personalisation",
+};
+
+const CONSENT_PURPOSE_USE: Record<ConsentPurpose, string> = {
+  analytics: "Their activity counts in Webflix's measurements.",
+  personalisation: "Their activity shapes their recommendations.",
+};
+
+/** Why staff can't turn a purpose on: said wherever consent is recorded. */
+export const MEMBER_TURNS_ON =
+  "Only the member can turn a purpose on, in Account › Privacy: it is their own choice, and it outranks Global Privacy Control and the ask-first prompt. Staff can record a withdrawal only.";
+
+/** The purposes in force now, which staff may record as withdrawn. */
+export function withdrawablePurposes(consent: ConsentState): ConsentPurpose[] {
+  return (["analytics", "personalisation"] as const).filter(
+    (purpose) => consent.purposes[purpose].granted,
   );
 }
 
@@ -233,10 +242,15 @@ export function CancelDeletionDialog({
         <>
           The account is due to be erased on{" "}
           {request.scheduledFor ? <DateTime value={request.scheduledFor} /> : "a date not set yet"}.
-          Cancelling keeps the account exactly as it is. The member can ask again later.
+          Cancelling keeps the account exactly as it is
+          {request.email === "suppressed"
+            ? ". Their address bounced or complained before, so no email can tell them: let them know another way."
+            : ", and the member gets an email saying so."}{" "}
+          They can ask again later.
         </>
       }
       confirmLabel="Cancel deletion"
+      dismissLabel="Back"
       audit={memberAudit(accountId)}
       run={({ reason, signal, headers }) =>
         staffApi().cancelMemberDeletion(
@@ -247,7 +261,11 @@ export function CancelDeletionDialog({
       onSuccess={() =>
         void queryClient.invalidateQueries({ queryKey: qk.memberPrivacy(accountId), exact: true })
       }
-      success={() => "The deletion is cancelled. The account stays."}
+      success={() =>
+        request.email === "suppressed"
+          ? "The deletion is cancelled: the account stays. No email goes to the member (their address bounced or complained before): tell them another way."
+          : "The deletion is cancelled: the account stays, and an email tells the member so."
+      }
     />
   );
 }
@@ -416,6 +434,7 @@ export function CancelMembershipDialog({
       title="Cancel the membership"
       description={`Now: ${membershipLine(state)}`}
       confirmLabel={when === "now" ? "Cancel now" : "Cancel at period end"}
+      dismissLabel="Back"
       tone="danger"
       idempotent
       multiStep={when === "now" && refundUnused}

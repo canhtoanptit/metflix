@@ -14,7 +14,7 @@ export {
 } from "./audit.ts";
 export { type DeadLetters, JOB_MAX_ATTEMPTS, presentDeadLetter } from "./dead-letters.ts";
 export type { StaffOperations } from "./operations.ts";
-export type * from "./repository.ts";
+export * from "./repository.ts";
 export { type AdminServiceOptions, auditSweepJob } from "./service.ts";
 export {
   createOidcStaffVerifier,

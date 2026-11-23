@@ -17,10 +17,20 @@
  * reads it: billboard, then the first six cards of every row in page order, then the next six),
  * both in the external rankings format (services/recs/README.md, "External rankings").
  *
+ * Learned home: when the header carries a run's neighbours (`learned`) and the profile lines
+ * their lists (`lists`, the rows `score` writes for that profile), a third file,
+ * `learned-home.ndjson`, holds the home page the product serves under the learned policy: the
+ * same engine, given that run as `learned` (the model proposes, the rules dispose), read in the
+ * same order. That is what members see; the gate compares it with `rule-engine-home`.
+ *
+ * Sections: an input may hold several sections, each starting with its own header line (one per
+ * backtest cutoff of the gate). A header with `section: NAME` sends that section's output to
+ * `<out-dir>/NAME/`; without one, to `<out-dir>` itself.
+ *
  * Packages are imported read-only through their source paths: services/recs is not a workspace
  * package.
  */
-import { createReadStream, createWriteStream, mkdirSync } from "node:fs";
+import { createReadStream, createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
@@ -34,8 +44,10 @@ import {
   type CatalogSnapshotData,
   computePopularity,
   type DailyViews,
+  type LearnedInput,
   Personalization,
   Popularity,
+  type ProfileLists,
   type ProfileSignals,
   utcDay,
 } from "../../../packages/core/src/index.ts";
@@ -50,6 +62,16 @@ interface InputHeader {
   /** Playback views (a profile credited with at least 60 s of a title that day), per UTC day. */
   views: DailyViews[];
   limit: number;
+  /** Output subdirectory of this section (absent: the output directory itself). */
+  section?: string;
+  /** A scored run's neighbours, to rank the learned home page with (absent: no such page). */
+  learned?: {
+    run: string;
+    generatedAt: string;
+    expiresAt: string;
+    /** [source title, [[neighbour, score], ...] best first]. */
+    neighbours: [string, [string, number][]][];
+  };
 }
 
 interface InputProfile {
@@ -66,6 +88,8 @@ interface InputProfile {
     completed: boolean;
     updatedAt: number;
   }[];
+  /** The run's lists for this profile (the rows of its artefact payload), or null. */
+  lists?: { type: string; param: string | null; items: [string, number][] }[] | null;
 }
 
 const SCREEN_CARDS = 6;
@@ -151,6 +175,143 @@ function homeOrder(engine: Personalization): string[] {
   return out;
 }
 
+interface Section {
+  header: InputHeader;
+  snapshot: CatalogSnapshot;
+  popularity: Popularity;
+  nowMs: number;
+  learned: LearnedInput | null;
+  files: { score: WriteStream; home: WriteStream; learned: WriteStream | null };
+  profiles: number;
+}
+
+function openSection(header: InputHeader, outDir: string): Section {
+  if (header.format !== "webflix.rule-engine-input" || header.formatVersion !== 1) {
+    fail(`unsupported input format: ${header.format}/${header.formatVersion}`);
+  }
+  const dir = header.section ? join(outDir, header.section) : outDir;
+  mkdirSync(dir, { recursive: true });
+  const nowMs = Date.parse(header.asOf);
+  const snapshot = buildSnapshot(Date.parse(header.catalogAnchor), header);
+  const popularity = buildPopularity(snapshot, header, nowMs);
+  const files = {
+    score: createWriteStream(join(dir, "rule-engine.ndjson")),
+    home: createWriteStream(join(dir, "rule-engine-home.ndjson")),
+    learned: header.learned ? createWriteStream(join(dir, "learned-home.ndjson")) : null,
+  };
+  const generatedAt = new Date().toISOString();
+  const outputs: [WriteStream | null, string, string][] = [
+    [files.score, "rule-engine", "Personalization.score() order, finished titles sink"],
+    [
+      files.home,
+      "rule-engine-home",
+      "home page reading order: billboard, then rows six cards at a time",
+    ],
+    [
+      files.learned,
+      "learned-home",
+      `home page reading order with run ${header.learned?.run ?? ""} as the learned candidates`,
+    ],
+  ];
+  for (const [file, system, description] of outputs) {
+    file?.write(
+      `${JSON.stringify({
+        format: "webflix.rankings",
+        formatVersion: 1,
+        system,
+        description,
+        asOf: header.asOf,
+        generatedAt,
+        catalogVersion: header.catalogVersion,
+      })}\n`,
+    );
+  }
+  const learned: LearnedInput | null = header.learned
+    ? {
+        run: header.learned.run,
+        neighbours: new Map(
+          header.learned.neighbours.map(([titleId, rows]) => [
+            titleId,
+            rows.map(([neighbourId, score]) => ({ neighbourId, score })),
+          ]),
+        ),
+        lists: null,
+      }
+    : null;
+  return { header, snapshot, popularity, nowMs, learned, files, profiles: 0 };
+}
+
+async function closeSection(section: Section): Promise<void> {
+  const files = [section.files.score, section.files.home, section.files.learned];
+  await Promise.all(
+    files.map((file) =>
+      file ? new Promise<void>((resolve) => file.end(() => resolve())) : Promise.resolve(),
+    ),
+  );
+}
+
+function rankProfile(section: Section, profile: InputProfile): void {
+  const { header, snapshot, popularity, nowMs } = section;
+  const signals: ProfileSignals = {
+    myList: profile.myList,
+    ratings: profile.ratings,
+    progress: profile.progress.map((entry) => ({
+      profileId: profile.profileKey,
+      hidden: false,
+      ...entry,
+    })),
+  };
+  const member = {
+    id: profile.profileKey,
+    name: "Member",
+    maturityCeiling: profile.maturityCeiling,
+  };
+  const engine = new Personalization({
+    snapshot,
+    popularity,
+    signals,
+    profile: member,
+    now: nowMs,
+  });
+  const scored = scoreOrder(engine);
+  const limit = header.limit;
+  section.files.score.write(
+    `${JSON.stringify({
+      profileKey: profile.profileKey,
+      titleIds: scored.ids.slice(0, limit),
+      scores: scored.scores.slice(0, limit),
+    })}\n`,
+  );
+  section.files.home.write(
+    `${JSON.stringify({ profileKey: profile.profileKey, titleIds: homeOrder(engine).slice(0, limit), scores: null })}\n`,
+  );
+  if (section.files.learned && section.learned && header.learned) {
+    // What serving hands the engine for this profile (areas/personalisation/serving.ts): the
+    // run's neighbours, and its lists when it scored the profile.
+    const lists: ProfileLists | null = profile.lists
+      ? {
+          profileKey: profile.profileKey,
+          run: header.learned.run,
+          generatedAt: Date.parse(header.learned.generatedAt),
+          expiresAt: Date.parse(header.learned.expiresAt),
+          rows: profile.lists,
+        }
+      : null;
+    const withModel = new Personalization({
+      snapshot,
+      popularity,
+      signals,
+      profile: member,
+      now: nowMs,
+      learned: { ...section.learned, lists },
+    });
+    section.files.learned.write(
+      `${JSON.stringify({ profileKey: profile.profileKey, titleIds: homeOrder(withModel).slice(0, limit), scores: null })}\n`,
+    );
+  }
+  section.profiles += 1;
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs({
     options: { input: { type: "string" }, "out-dir": { type: "string" } },
@@ -163,83 +324,29 @@ async function main(): Promise<void> {
     input: createReadStream(input),
     crlfDelay: Number.POSITIVE_INFINITY,
   });
-  let header: InputHeader | null = null;
-  let snapshot: CatalogSnapshot | null = null;
-  let popularity: Popularity | null = null;
-  let nowMs = 0;
   mkdirSync(outDir, { recursive: true });
-  const scoreFile = createWriteStream(join(outDir, "rule-engine.ndjson"));
-  const homeFile = createWriteStream(join(outDir, "rule-engine-home.ndjson"));
-  let profiles = 0;
+  let section: Section | null = null;
+  const done: { section: string | null; profiles: number }[] = [];
   for await (const line of lines) {
     if (!line.trim()) continue;
-    if (header === null) {
-      header = JSON.parse(line) as InputHeader;
-      if (header.format !== "webflix.rule-engine-input" || header.formatVersion !== 1) {
-        fail(`unsupported input format: ${header.format}/${header.formatVersion}`);
+    const value = JSON.parse(line) as InputHeader | InputProfile;
+    if ("format" in value) {
+      if (section) {
+        await closeSection(section);
+        done.push({ section: section.header.section ?? null, profiles: section.profiles });
       }
-      nowMs = Date.parse(header.asOf);
-      snapshot = buildSnapshot(Date.parse(header.catalogAnchor), header);
-      popularity = buildPopularity(snapshot, header, nowMs);
-      const generatedAt = new Date().toISOString();
-      for (const [file, system, description] of [
-        [scoreFile, "rule-engine", "Personalization.score() order, finished titles sink"],
-        [
-          homeFile,
-          "rule-engine-home",
-          "home page reading order: billboard, then rows six cards at a time",
-        ],
-      ] as const) {
-        file.write(
-          `${JSON.stringify({
-            format: "webflix.rankings",
-            formatVersion: 1,
-            system,
-            description,
-            asOf: header.asOf,
-            generatedAt,
-            catalogVersion: header.catalogVersion,
-          })}\n`,
-        );
-      }
+      section = openSection(value, outDir);
       continue;
     }
-    if (!snapshot || !popularity) fail("input header missing");
-    const profile = JSON.parse(line) as InputProfile;
-    const signals: ProfileSignals = {
-      myList: profile.myList,
-      ratings: profile.ratings,
-      progress: profile.progress.map((entry) => ({
-        profileId: profile.profileKey,
-        hidden: false,
-        ...entry,
-      })),
-    };
-    const engine = new Personalization({
-      snapshot,
-      popularity,
-      signals,
-      profile: { id: profile.profileKey, name: "Member", maturityCeiling: profile.maturityCeiling },
-      now: nowMs,
-    });
-    const scored = scoreOrder(engine);
-    const limit = header.limit;
-    scoreFile.write(
-      `${JSON.stringify({
-        profileKey: profile.profileKey,
-        titleIds: scored.ids.slice(0, limit),
-        scores: scored.scores.slice(0, limit),
-      })}\n`,
-    );
-    homeFile.write(
-      `${JSON.stringify({ profileKey: profile.profileKey, titleIds: homeOrder(engine).slice(0, limit), scores: null })}\n`,
-    );
-    profiles += 1;
+    if (!section) fail("input header missing");
+    rankProfile(section, value);
   }
-  await Promise.all(
-    [scoreFile, homeFile].map((file) => new Promise<void>((resolve) => file.end(() => resolve()))),
-  );
-  console.log(JSON.stringify({ event: "rule-engine.ranked", profiles }));
+  if (section) {
+    await closeSection(section);
+    done.push({ section: section.header.section ?? null, profiles: section.profiles });
+  }
+  const profiles = done.reduce((sum, entry) => sum + entry.profiles, 0);
+  console.log(JSON.stringify({ event: "rule-engine.ranked", profiles, sections: done }));
 }
 
 await main();

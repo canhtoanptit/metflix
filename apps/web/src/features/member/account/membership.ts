@@ -73,17 +73,44 @@ export function isLegacyMembership(view: MembershipView): boolean {
   return view.membership.provider === null && view.membership.status !== "none";
 }
 
+/**
+ * The membership as the server now has it, after a change (the change's own answer is milestone
+ * 1's view: no projection, no next invoice). Null when it cannot be read just now.
+ */
+export async function freshMembershipView(
+  queryClient: ReturnType<typeof useQueryClient>,
+): Promise<{ view: MembershipView; details: AccountDetails } | null> {
+  try {
+    const details = await queryClient.fetchQuery({ ...queries.account(), staleTime: 0 });
+    return { view: membershipOfDetails(details), details };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keep a membership that is set to end. `onSuccess` gets the change's answer and the membership
+ * as the server now has it (for words that match the page: `describeOutcome`).
+ */
 export function useResumeMembership(
-  options: { onSuccess?: (membership: Membership) => void } = {},
+  options: {
+    onSuccess?: (
+      membership: Membership,
+      fresh: { view: MembershipView; details: AccountDetails } | null,
+    ) => void;
+    /** The refusal (the page shows `error` too). */
+    onError?: (error: unknown) => void;
+  } = {},
 ) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => api().resumeMembership(),
     meta: { silent: true },
-    onSuccess: (membership) => {
+    onSuccess: async (membership) => {
       applyMembership(queryClient, membership);
-      options.onSuccess?.(membership);
+      options.onSuccess?.(membership, await freshMembershipView(queryClient));
     },
+    onError: (error) => options.onError?.(error),
   });
 }
 

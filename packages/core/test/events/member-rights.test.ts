@@ -325,9 +325,12 @@ describe("account deletion", () => {
     expect(await t.deps.repos.events.getPrivacyRequest(request.id)).toMatchObject({
       status: "processing",
       lastError: "provider unreachable",
+      attempts: 1,
     });
-    expect(await t.deps.repos.accounts.get(member.accountId)).not.toBeNull();
+    // The provider is the last step: the account was already locked and its row deleted.
+    expect(await t.deps.repos.accounts.get(member.accountId)).toBeNull();
     t.clock.advance(60_000); // the retry's backoff
+    await t.services.scheduler.tick();
     await settle(t);
     expect(await t.deps.repos.events.getPrivacyRequest(request.id)).toMatchObject({
       status: "completed",

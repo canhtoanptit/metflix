@@ -107,6 +107,34 @@ for path in /api/v1/plans /media/x/vod/a/master.m3u8 /cdn/img/x.webp /metrics /r
   expect "$path: 404 problem (the gateway routes it elsewhere)" \
     eval 'is "$STATUS" 404 && contains "$TYPE" application/problem+json && contains "$CACHE" no-store'
 done
+# e. the staff console under /admin/: its own index, policy and caching
+fetch /admin "${NAV[@]}"
+expect "e. /admin: a redirect to /admin/" eval 'is "$STATUS" 301'
+fetch /admin/ "${NAV[@]}" -H "Accept-Encoding: gzip"
+expect "e. /admin/: the console's index, never cached, compressed, its own CSP (no https: wildcard, no Stripe)" \
+  eval 'is "$STATUS" 200 && contains "$TYPE" text/html && contains "$CACHE" no-store && is "$ENCODING" gzip && contains "$CSP" "connect-src '"'"'self'"'"'" && lacks "$CSP" "https:" && lacks "$CSP" stripe'
+fetch /admin/ "${NAV[@]}" # uncompressed, to read the body
+grep -q '/admin/assets/' "$BODY" && ADMIN_INDEX=yes || ADMIN_INDEX=no
+expect "e. the console's index loads its own bundle (/admin/assets/…)" is "$ADMIN_INDEX" yes
+ADMIN_SCRIPT="$(curl -sS "$BASE/admin/" | grep -oE 'src="/admin/assets/[^"]+\.js"' | grep -oE '/admin/assets/[^"]+' | head -n 1)"
+fetch "$ADMIN_SCRIPT" -H "Sec-Fetch-Dest: script" -H "Sec-Fetch-Mode: cors"
+expect "e. $ADMIN_SCRIPT: 200 JavaScript, immutable" eval 'is "$STATUS" 200 && contains "$TYPE" javascript && contains "$CACHE" immutable'
+fetch "/admin/members/smoke-$RANDOM_ID" "${NAV[@]}"
+expect "e. /admin/members/… as a navigation: the console's index, not the member app's" \
+  eval 'is "$STATUS" 200 && contains "$TYPE" text/html && contains "$CACHE" no-store && lacks "$CSP" "https:"'
+grep -q '/admin/assets/' "$BODY" && ADMIN_DEEP=yes || ADMIN_DEEP=no
+expect "e. … and it is the console's HTML" is "$ADMIN_DEEP" yes
+fetch "/admin/assets/smoke-$RANDOM_ID.js" -H "Sec-Fetch-Dest: script" -H "Sec-Fetch-Mode: cors"
+expect "e. a missing /admin/assets/….js: 404 problem, no-store" \
+  eval 'is "$STATUS" 404 && lacks "$TYPE" text/html && contains "$CACHE" no-store'
+fetch "/admin/assets/smoke-$RANDOM_ID.js" "${NAV[@]}"
+expect "e. … also as a navigation" eval 'is "$STATUS" 404 && contains "$CACHE" no-store'
+fetch /admin/config.json
+expect "e. /admin/config.json: JSON with issuer, clientId and scope, never cached" \
+  eval 'is "$STATUS" 200 && contains "$TYPE" application/json && contains "$CACHE" no-store && grep -q "\"issuer\"" "$BODY" && grep -q "\"clientId\"" "$BODY" && grep -q "\"scope\"" "$BODY"'
+fetch /admin/index.html "${NAV[@]}"
+expect "e. /admin/index.html: never cached" eval 'is "$STATUS" 200 && contains "$CACHE" no-store'
+
 fetch /favicon.svg -H "Sec-Fetch-Dest: image"
 expect "/favicon.svg: an hour of caching" eval 'is "$STATUS" 200 && is "$CACHE" "public, max-age=3600"'
 STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$STATUS_PORT/healthz")"

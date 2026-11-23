@@ -1,10 +1,13 @@
 """`export-events`: the events part of members' data exports, as a batch job against the store.
 
-"Download your data" includes every lake event of the member's account within the raw retention
-window (13 months). Read inside one request of the product that is roughly 9,500 hour partitions
-before a single row, far beyond a Cloudflare Worker's subrequest and CPU limits, so in a
-deployed mode the product records the request and this job does the reading, on the pattern of
-`erase` (services/recs/README.md, "Exports of members' events"):
+"Download your data" includes every lake event of the member's account still held: the
+product asks from 1970-01-01, and what bounds an export is retention (`retain`: 13 months of
+activity by default), not the request. Read inside one request of the product that is roughly
+9,500 hour partitions at the default period before a single row, far beyond a Cloudflare
+Worker's subrequest and CPU limits, so in a deployed mode the product records the request and
+this job does the reading, on the pattern of `erase` (services/recs/README.md, "Exports of
+members' events"). Nothing here assumes a bounded window: the lake is listed once and only the
+hours that exist are read.
 
 1. **Requests**: a file holding `{"requests": [{"requestId", "accountKey", "from", "to"}]}` (the
    answer the product's operator route is expected to give, see the README), one per pending

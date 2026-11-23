@@ -16,7 +16,9 @@ import { describeEmailSenderContract } from "@webflix/core/testing";
 import { createIdentityRepository } from "@webflix/db";
 import { createD1Database } from "@webflix/db/d1";
 import { createHttpEmailSender } from "@webflix/email";
-import { beforeAll } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import type { Env } from "../src/index.ts";
+import { getRuntime } from "../src/runtime.ts";
 
 const FROM = "Webflix <no-reply@webflix.dev>";
 
@@ -71,4 +73,23 @@ describeEmailSenderContract("outbox (D1)", () => {
     from: FROM,
   });
   return { sender, delivered: (to) => sender.listDelivered(to) };
+});
+
+describe("the outbox sender in production (security review L4)", () => {
+  it("is refused when the Worker composes: it stores live reset and verification links", () => {
+    expect(() =>
+      getRuntime({
+        ...env,
+        WEBFLIX_ENV: "production",
+        WEBFLIX_PUBLIC_ORIGIN: "https://webflix.example.com",
+        WEBFLIX_EMAIL_SENDER: "outbox",
+      } as Env),
+    ).toThrow(/WEBFLIX_EMAIL_SENDER=outbox: refused in production/);
+  });
+
+  it("stays available outside production (local Cloudflare's mailbox)", () => {
+    const runtime = getRuntime({ ...env, WEBFLIX_EMAIL_SENDER: "outbox" } as Env);
+    expect(runtime.config.core.environment).not.toBe("production");
+    expect(runtime.config.core.identity.emailSender).toBe("outbox");
+  });
 });

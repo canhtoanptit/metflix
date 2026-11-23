@@ -214,10 +214,14 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
         const profile = session.activeProfileId
           ? s.profiles.get(session.activeProfileId)
           : undefined;
+        const bound =
+          profile && profile.accountId === session.accountId ? s.withAvatar(profile) : null;
         return {
           session: copy(session),
-          profile:
-            profile && profile.accountId === session.accountId ? s.withAvatar(profile) : null,
+          profile: bound,
+          accountHasProfiles:
+            bound !== null ||
+            [...s.profiles.values()].some((candidate) => candidate.accountId === session.accountId),
         };
       },
       async touch(sessionId, now) {

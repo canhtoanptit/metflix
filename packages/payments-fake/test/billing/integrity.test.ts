@@ -37,7 +37,11 @@ describe("webhooks: the security boundary", () => {
     const auth = await h.account();
     await h.subscribe(auth);
     const record = await h.repos.billing.getMembership(auth.session.accountId);
-    const [event] = await h.fake.listEvents({ createdAfter: 0, limit: 1 });
+    // An event about the membership (the customer's own creation is announced before Webflix
+    // has stored the customer, so it is acknowledged and not kept: it names no one yet).
+    const event = (await h.fake.listEvents({ createdAfter: 0, limit: 100 })).find(
+      (candidate) => candidate.type === "customer.subscription.created",
+    );
     if (!event || !record) throw new Error("no member");
     return { h, auth, record, event };
   }

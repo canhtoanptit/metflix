@@ -11,6 +11,9 @@
  *                  back into R2 → `POST /system/privacy/erasures/confirm` (only after they are)
  *   compact        the lake into the store → `webflix-recs compact` → Parquet files and
  *                  manifests into R2
+ *   retain         the lake, its quarantine, `recs/` and `experiments/results/` into the store
+ *                  → `webflix-recs retain` with the Worker's own retention periods → what it
+ *                  deleted, deleted from R2 (daily in the loop; lib/lake-jobs.ts)
  *
  * The staff API is called with a `webflix-jobs` token (client credentials at the development
  * issuer's staff realm, as a Keycloak service account would be). R2 is reached through the
@@ -30,6 +33,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BlobStore } from "@webflix/core";
 import { createExplorerBlobStore } from "./explorer-store.ts";
+import { type RetentionPeriods, retentionEnvironment } from "./lake-jobs.ts";
 import { REPO_ROOT } from "./platform.ts";
 
 /** The development issuer's service client for jobs (`WEBFLIX_DEV_CLIENTS.staffJobs`). */
@@ -56,6 +60,15 @@ const COMPACT_SYNC: SyncSpec[] = [
   { prefix: "events/", mode: "mirror" },
   { prefix: "events-quarantine/", mode: "mirror" },
 ];
+/** Everything R2 holds that `retain` expires (the store owns `recs-work/`, as R2 does in production). */
+const RETAIN_SYNC: SyncSpec[] = [
+  { prefix: "events/", mode: "mirror" },
+  { prefix: "events-quarantine/", mode: "mirror" },
+  { prefix: "recs/", mode: "overlay" },
+  { prefix: "experiments/results/", mode: "overlay" },
+];
+/** How often the loop runs `retain` (it deletes by day; the chart runs it daily too). */
+export const RETAIN_EVERY_MS = 24 * 60 * 60 * 1000;
 
 export interface PipelineContext {
   /** The dev server, e.g. `http://localhost:8787`. */
@@ -228,10 +241,10 @@ export class Mirror {
         if (mode === "overlay" && !this.inR2.has(key)) continue;
         uploads.push(key);
       }
-      if (mode === "mirror") {
-        for (const key of this.snapshot.keys()) {
-          if (key.startsWith(prefix) && !after.has(key) && this.inR2.has(key)) deletions.push(key);
-        }
+      // Deleted by the job from what R2 held at the pull: deleted from R2 too, in either mode
+      // (an overlay's own unpushed runs were never in R2, so they are never deleted there).
+      for (const key of this.snapshot.keys()) {
+        if (key.startsWith(prefix) && !after.has(key) && this.inR2.has(key)) deletions.push(key);
       }
     }
     for (const key of manifestsLast(uploads)) {
@@ -262,7 +275,11 @@ interface JobRun {
   seconds: number;
 }
 
-async function runPipeline(context: PipelineContext, args: string[]): Promise<JobRun> {
+async function runPipeline(
+  context: PipelineContext,
+  args: string[],
+  env: Readonly<Record<string, string>> = {},
+): Promise<JobRun> {
   if (!existsSync(context.recsBin)) {
     throw new Error(
       `${context.recsBin} is missing: run \`make recs-setup\` (the pipeline's Python environment)`,
@@ -271,7 +288,7 @@ async function runPipeline(context: PipelineContext, args: string[]): Promise<Jo
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(context.recsBin, ["--store", context.storeDir, "--workers", "2", ...args], {
-      env: { ...process.env, WEBFLIX_RECS_THREADS: "2" },
+      env: { ...process.env, WEBFLIX_RECS_THREADS: "2", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -539,9 +556,111 @@ export async function compactRoundTrip(
   });
 }
 
-/** What a scheduler would run now: erasures first (an export of an erased member yields nothing), then exports. */
-export async function dueRoundTrips(context: PipelineContext, options: { graceMinutes: number }) {
+export interface RetainRoundTrip {
+  /** 75: another job holds the lake lease; the next round tries again. */
+  busy: boolean;
+  dryRun: boolean;
+  periods: RetentionPeriods;
+  summary?: Record<string, unknown> | null;
+  pull?: Awaited<ReturnType<Mirror["pull"]>>;
+  push?: Awaited<ReturnType<Mirror["push"]>>;
+  jobSeconds?: number;
+  seconds: number;
+}
+
+/** Exit codes of `webflix-recs retain` this tooling names (services/recs README). */
+const RETAIN_EXIT: Record<number, string> = {
+  2: "a retention setting is not a positive integer",
+  10: "the store ignores conditional writes (the lake lease would not hold)",
+};
+
+/**
+ * Retention: everything older than the Worker's own periods leaves the store, and what the job
+ * deleted from what R2 held is deleted from R2 (with `dryRun`, only the plan: nothing deleted
+ * anywhere). The periods are passed explicitly, so the job never falls back to its defaults
+ * while the Worker runs with other values.
+ */
+export async function retainRoundTrip(
+  context: PipelineContext,
+  options: { periods: RetentionPeriods; now?: string; dryRun: boolean },
+): Promise<RetainRoundTrip> {
+  const started = Date.now();
+  return withLock(context, async () => {
+    const mirror = await openStores(context);
+    const pull = await mirror.pull(RETAIN_SYNC);
+    const run = await runPipeline(
+      context,
+      [
+        "retain",
+        ...(options.now ? ["--now", options.now] : []),
+        ...(options.dryRun ? ["--dry-run"] : []),
+      ],
+      retentionEnvironment(options.periods),
+    );
+    const base = { dryRun: options.dryRun, periods: options.periods, pull };
+    if (run.code === 75) {
+      context.log("retain: the lake lease is held by another job; next round");
+      return { ...base, busy: true, seconds: seconds(started) };
+    }
+    if (run.code !== 0) {
+      const reason = RETAIN_EXIT[run.code];
+      throw reason
+        ? new Error(`webflix-recs retain exited ${run.code}: ${reason}`)
+        : jobFailure("retain", run);
+    }
+    const push = options.dryRun ? undefined : await mirror.push(RETAIN_SYNC);
+    // The loop's daily schedule counts real runs only.
+    if (!options.dryRun) {
+      await writeFile(
+        join(context.storeDir, RETAIN_RECORD),
+        `${JSON.stringify({ at: new Date().toISOString(), periods: options.periods })}\n`,
+      );
+    }
+    context.log(
+      `retain: ${JSON.stringify(run.summary?.removed ?? {})}${options.dryRun ? " (dry run)" : ""} in ${run.seconds} s`,
+    );
+    return {
+      ...base,
+      busy: false,
+      summary: run.summary,
+      ...(push ? { push } : {}),
+      jobSeconds: run.seconds,
+      seconds: seconds(started),
+    };
+  });
+}
+
+const RETAIN_RECORD = "cf-retain.json";
+
+/** When the last real (not dry) `retain` round finished in this store, if ever. */
+async function lastRetain(context: PipelineContext): Promise<number | null> {
+  try {
+    const record = JSON.parse(await readFile(join(context.storeDir, RETAIN_RECORD), "utf8")) as {
+      at?: string;
+    };
+    if (!record.at) return null;
+    const at = Date.parse(record.at);
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a scheduler would run now: erasures first (an export of an erased member yields nothing),
+ * then exports, then retention once a day.
+ */
+export async function dueRoundTrips(
+  context: PipelineContext,
+  options: { graceMinutes: number; periods: RetentionPeriods; now?: number },
+) {
   const erase = await eraseRoundTrip(context, { force: false });
   const exports = await exportEventsRoundTrip(context, options);
-  return { erase, exports };
+  const last = await lastRetain(context);
+  const now = options.now ?? Date.now();
+  const retain =
+    last === null || now - last >= RETAIN_EVERY_MS
+      ? await retainRoundTrip(context, { periods: options.periods, dryRun: false })
+      : null;
+  return { erase, exports, retain };
 }

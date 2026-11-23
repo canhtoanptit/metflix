@@ -125,9 +125,64 @@ test("a curated collection is drafted, published and deleted, each with an audit
     "staff-admin",
     `operations/audit?targetType=collection&targetId=${id}`,
   );
-  for (const action of ["editorial.collection_update", "editorial.collection_delete"]) {
+  // In words: what was done, with the count and the state it left.
+  for (const action of ["Edited a collection: 3 titles, published", "Deleted a collection"]) {
     await expect(page.getByRole("row").filter({ hasText: action }).first()).toBeVisible();
   }
+});
+
+test("a keyboard user adds, reorders and removes titles without losing their place", async ({
+  page,
+}) => {
+  const titles = await showcaseTitles(5);
+  const [first, second, third, fourth, fifth] = titles;
+  if (!first || !second || !third || !fourth || !fifth) throw new Error("five showcase titles");
+  await signInToConsole(page, "staff-content", "content/collections/new");
+  await expect(page.getByRole("heading", { level: 1, name: "New collection" })).toBeVisible();
+  const search = page.getByRole("searchbox", { name: "Find a title" });
+  const focusedName = () =>
+    page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+
+  // Add: focus stays on the result's button, now "Added …", so the next Tab goes on.
+  for (const title of titles) {
+    await search.fill(title.name);
+    const add = page.getByRole("button", { name: `Add ${title.name}`, exact: true });
+    await add.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      page.getByRole("button", { name: `Added ${title.name}`, exact: true }),
+    ).toBeFocused();
+  }
+  const chosen = page.getByRole("list", { name: /Titles, in order/ });
+  await expect(chosen.getByRole("listitem")).toHaveCount(5);
+
+  // Move the first title to the end: four presses of Enter, focus riding along with it.
+  await page.getByRole("button", { name: `Move ${first.name} down` }).focus();
+  for (let press = 1; press <= 4; press += 1) {
+    await page.keyboard.press("Enter");
+    await expect(chosen.getByRole("listitem").nth(press)).toContainText(first.name);
+    // At the bottom its "down" is unavailable: focus is on its "up", still on the same title.
+    expect(await focusedName()).toBe(
+      press < 4 ? `Move ${first.name} down` : `Move ${first.name} up`,
+    );
+  }
+  await expect(chosen.getByRole("listitem").last()).toContainText(first.name);
+  await expect(page.getByText(`${first.name} moved to position 5 of 5.`)).toBeAttached();
+
+  // Remove: focus goes to the Remove of the title that took its place, or the one before it.
+  await page.getByRole("button", { name: `Remove ${third.name}` }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: `Remove ${fourth.name}` })).toBeFocused();
+  await page.getByRole("button", { name: `Remove ${first.name}` }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: `Remove ${fifth.name}` })).toBeFocused();
+  for (const title of [fifth, fourth, second]) {
+    await expect(page.getByRole("button", { name: `Remove ${title.name}` })).toBeFocused();
+    await page.keyboard.press("Enter");
+  }
+  // The list is empty: focus is back in the search field, ready for the next title.
+  await expect(chosen).toHaveCount(0);
+  await expect(search).toBeFocused();
 });
 
 test("a billboard is pinned in order, shown by name, and released to the engine", async ({

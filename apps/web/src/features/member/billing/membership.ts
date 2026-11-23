@@ -2,6 +2,7 @@ import type { Checkout, SessionState } from "@webflix/contracts";
 import type { BadgeTone } from "@webflix/ui";
 import { type MembershipView, membershipOf } from "../../../app/session/session.ts";
 import { formatLongDate } from "../shared/format.ts";
+import { membershipOutcome } from "./outcome.ts";
 
 /**
  * Where a signed-in account stands in sign-up (docs/BLUEPRINT-M2.md §5.1): the account exists
@@ -23,6 +24,16 @@ export function signupStage(session: SessionState): SignupStage {
   if (membership.status === "none") return "plan";
   if (membership.status === "incomplete") return "payment";
   return session.profiles.length === 0 ? "profiles" : "complete";
+}
+
+/**
+ * An account that has not finished sign-up (no profile yet), signed in at the gate. The server
+ * treats it as the account holder (UX review 1.1): Account, Security, Devices, Privacy and
+ * Membership open for it, and finishing sign-up is offered there, never forced. Once one profile
+ * exists, account management happens from a profile again.
+ */
+export function isUnfinishedSignup(session: SessionState): boolean {
+  return session.authenticated && session.activeProfile === null && session.profiles.length === 0;
 }
 
 /**
@@ -49,6 +60,23 @@ export async function resumeHref(
     case "complete":
       return session.activeProfile ? "/browse" : "/profiles";
   }
+}
+
+/**
+ * A membership set to end (cancelled, not yet over): when, and what that means, in the words the
+ * Membership page, its toasts and the profile gate all use. Null when it is not ending.
+ */
+export function endingNotice(view: MembershipView): { title: string; body: string } | null {
+  const outcome = membershipOutcome(view);
+  if (outcome.noChargeBecause !== "cancelled") return null;
+  const ends = outcome.watchingEnds;
+  const trial = ends?.because === "trial_ends";
+  return {
+    title: ends
+      ? `Your ${trial ? "free trial" : "membership"} ends on ${formatLongDate(ends.at)}`
+      : "Your membership is ending",
+    body: "You can watch until then, and nothing more is charged.",
+  };
 }
 
 export type MembershipAction =
@@ -98,31 +126,25 @@ export function describeStanding({ membership, entitlement }: MembershipView): M
           },
         },
       };
-    case "trialing": {
-      const ends = until(membership.trialEndsAt);
-      return {
-        badge: { label: "Free trial", tone: "positive" },
-        notice: membership.cancelAtPeriodEnd
-          ? {
-              tone: "info",
-              title: ends ? `Your free trial ends on ${ends}` : "Your free trial is ending",
-              body: "You won't be charged, and you can watch until then. Changed your mind? Keep your membership and it continues after the trial.",
-              action: { kind: "resume", label: "Keep my membership" },
-            }
-          : null,
-      };
-    }
+    case "trialing":
     case "active": {
-      const ends = until(entitlement.until ?? membership.currentPeriodEnd);
+      const ending = endingNotice({ membership, entitlement });
+      const trial = membership.status === "trialing";
       return {
-        badge: membership.cancelAtPeriodEnd
-          ? { label: ends ? `Ends ${ends}` : "Ending", tone: "neutral" }
-          : { label: "Active", tone: "positive" },
-        notice: membership.cancelAtPeriodEnd
+        badge: trial
+          ? { label: "Free trial", tone: "positive" }
+          : ending
+            ? { label: "Ending", tone: "neutral" }
+            : { label: "Active", tone: "positive" },
+        notice: ending
           ? {
               tone: "info",
-              title: ends ? `Your membership ends on ${ends}` : "Your membership is ending",
-              body: "You won't be charged again, and you can watch until then. Changed your mind? Keep it in one click.",
+              title: ending.title,
+              body: `${ending.body} Changed your mind? ${
+                trial
+                  ? "Keep your membership and it continues after the trial."
+                  : "Keep it in one click."
+              }`,
               action: { kind: "resume", label: "Keep my membership" },
             }
           : null,

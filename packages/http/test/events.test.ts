@@ -246,6 +246,30 @@ describe("member rights over HTTP", () => {
     expect((await stranger.request(url)).status).toBe(404);
     // Signed out: unauthenticated.
     expect((await t.request(url)).status).toBe(401);
+    // The token in the body (never a URL): the same document.
+    const token = new URL(`http://x${url}`).searchParams.get("token") ?? "";
+    const id = items[0]?.id ?? "";
+    const posted = await device.api.fetchDataExport({ params: { id }, body: { token } });
+    expect(posted.requestId).toBe(id);
+    // Once the account-holder proof lapses, either form asks to confirm it's you.
+    t.clock.advance(10 * 60_000);
+    const lapsed = await device.request(`${API_BASE_PATH}/privacy/exports/${id}/download`, {
+      method: "POST",
+      headers: { ...CLIENT, "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    expect(lapsed.status).toBe(403);
+    expect((await lapsed.json()).code).toBe("reauthentication_required");
+    expect((await (await device.request(url)).json()).code).toBe("reauthentication_required");
+    // A bad token is still not found, whatever the proof.
+    const bad = await device.request(`${API_BASE_PATH}/privacy/exports/${id}/download`, {
+      method: "POST",
+      headers: { ...CLIENT, "Content-Type": "application/json" },
+      body: JSON.stringify({ token: `${token.slice(0, -2)}AA` }),
+    });
+    expect(bad.status).toBe(404);
+    expect(started.email).toBe("pending");
+    expect(items[0]?.email).toBe("sent");
   });
 
   it("deletes: a fresh proof, a scheduled request, cancellable; refused on the demo account", async () => {

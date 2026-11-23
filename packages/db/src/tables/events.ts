@@ -25,6 +25,14 @@ export interface PrivacyRequestsTable {
   membership_step: string | null;
   /** Deletion, `ending`: when the membership ends (the period's close, as billing reported). */
   membership_ends_at: number | null;
+  /** Deletion: when its erasure first started (0024). */
+  started_at: number | null;
+  /** Deletion: erasure attempts so far (0024). */
+  attempts: number | null;
+  /** Deletion in progress: when the sweep runs its erasure again (also a run's lease) (0024). */
+  retry_at: number | null;
+  /** `pending` | `sent` | `suppressed`: what the request's email did (0024). */
+  email_status: string | null;
 }
 
 export interface PrivacyErasuresTable {

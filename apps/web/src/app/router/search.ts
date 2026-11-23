@@ -36,6 +36,25 @@ export const searchParam = {
   },
 };
 
+/**
+ * The server's own rule for a path to return to (`ReturnPath` in `@webflix/contracts`, kept here
+ * as a pattern so the app bundle needs no zod): one leading slash not followed by another slash
+ * or a backslash, then no whitespace (tab, newline, carriage return: a browser strips them, so
+ * `/<TAB>/evil.example` would become `//evil.example`) and no backslash anywhere, at most 512
+ * characters. `test/redirect.test.ts` holds the two to the same answers.
+ */
+const RETURN_PATH = /^\/(?![/\\])[^\s\\]*$/;
+const RETURN_PATH_MAX = 512;
+const PROBE_ORIGIN = "https://webflix.invalid";
+
 export function isSafeRedirect(path: string): boolean {
-  return path.startsWith("/") && !path.startsWith("//") && !path.startsWith("/\\");
+  if (typeof path !== "string" || path.length > RETURN_PATH_MAX || !RETURN_PATH.test(path)) {
+    return false;
+  }
+  // And, whatever a browser makes of it, it stays on this origin.
+  try {
+    return new URL(path, PROBE_ORIGIN).origin === PROBE_ORIGIN;
+  } catch {
+    return false;
+  }
 }

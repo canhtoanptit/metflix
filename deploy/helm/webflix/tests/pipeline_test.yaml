@@ -55,7 +55,7 @@ tests:
       externalS3.bucket: acme-media
     asserts:
       - hasDocuments:
-          count: 6
+          count: 7
       - documentIndex: 1
         equal:
           path: metadata.name
@@ -131,6 +131,28 @@ tests:
           path: spec.jobTemplate.spec.template.spec.initContainers[3].name
           value: rule-engine
       - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[3].command
+          value:
+            [
+              node,
+              services/recs/scripts/rule-engine-rankings.ts,
+              --input,
+              /work/train/engine-input.ndjson,
+              --out-dir,
+              /work/train,
+            ]
+      # prepare and finish read the erasure list from the staff API with the service account.
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.initContainers[2].env
+          content:
+            name: WEBFLIX_ADMIN_API_URL
+            value: http://webflix-api/api/admin/v1
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.initContainers[4].env
+          content:
+            name: WEBFLIX_STAFF_CLIENT_ID
+            value: webflix-jobs
+      - equal:
           path: spec.jobTemplate.spec.template.spec.initContainers[4].name
           value: finish
       - equal:
@@ -190,3 +212,41 @@ tests:
         equal:
           path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
           value: true
+  - it: runs retention last in the lake round, daily, by default
+    template: pipeline/cronjobs.yaml
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: LAKE_RETAIN
+            value: "true"
+  - it: runs retention as its own CronJob on a store that honours conditional writes
+    template: pipeline/cronjobs.yaml
+    set:
+      objectStore.enabled: false
+      externalS3.bucket: acme-media
+    asserts:
+      - hasDocuments:
+          count: 7
+      - documentIndex: 4
+        equal:
+          path: metadata.name
+          value: webflix-recs-retain
+      - documentIndex: 4
+        equal:
+          path: spec.schedule
+          value: "50 3 * * *"
+      - documentIndex: 4
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].args
+          value: [--store, s3://acme-media, retain]
+  - it: gives retention the API's retention settings through the same ConfigMap
+    template: pipeline/cronjobs.yaml
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: webflix-config

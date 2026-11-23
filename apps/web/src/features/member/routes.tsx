@@ -14,6 +14,7 @@ import {
   OIDC_INTENTS,
   OIDC_OUTCOMES,
   OIDC_PROVIDERS,
+  PAYMENT_DECLINE_REASONS,
   PLAN_IDS,
   type SessionState,
 } from "@webflix/contracts";
@@ -26,7 +27,12 @@ import {
   publicLayout,
 } from "../../app/router/layouts.tsx";
 import { optionalSearch, searchParam } from "../../app/router/search.ts";
-import { resumeHref, type SignupStage, signupStage } from "./billing/membership.ts";
+import {
+  isUnfinishedSignup,
+  resumeHref,
+  type SignupStage,
+  signupStage,
+} from "./billing/membership.ts";
 import { showcaseQuery } from "./shared/artwork.ts";
 import { readDraft } from "./signup/draft.ts";
 
@@ -132,9 +138,14 @@ async function loadSession(context: RouterContext): Promise<SessionState> {
   return context.queryClient.ensureQueryData(queries.session());
 }
 
-/** Where this signed-in account's sign-up resumes (asks the server for an open checkout). */
+/**
+ * Where this signed-in account's sign-up resumes (asks the server for an open checkout, unless
+ * this deployment takes no payments: then there can be none).
+ */
 function resumeFor(context: RouterContext, session: SessionState): Promise<string> {
   return resumeHref(session, async () => {
+    const config = await context.queryClient.ensureQueryData(queries.billingConfig());
+    if (config.provider === "none") return null;
     const answer = await context.queryClient.fetchQuery(queries.openCheckout());
     return answer.checkout;
   });
@@ -204,12 +215,21 @@ const signupPlanRoute = createRoute({
   component: lazyRouteComponent(() => import("./signup/PlanStep.tsx"), "PlanStep"),
 });
 
+/**
+ * `declined`: a card was just declined at the confirming state ("Use another card"): the payment
+ * step says so, instead of looking as if nothing happened (UX review 2.13).
+ */
+const DECLINED_AGAIN = [...PAYMENT_DECLINE_REASONS, "unknown"] as const;
+
 const signupPaymentRoute = createRoute({
   getParentRoute: () => signupRoute,
   path: "/payment",
   staticData: { title: "Payment" },
   validateSearch: (search: Record<string, unknown>) =>
-    optionalSearch({ plan: searchParam.oneOf(PLAN_IDS, search.plan) }),
+    optionalSearch({
+      plan: searchParam.oneOf(PLAN_IDS, search.plan),
+      declined: searchParam.oneOf(DECLINED_AGAIN, search.declined),
+    }),
   beforeLoad: async (args) => {
     await requireSignupStage(args, ["plan", "payment"]);
     if (!args.search.plan && !readDraft().planId) {
@@ -346,9 +366,11 @@ const accountRoute = createRoute({
   path: "/account",
   staticData: { title: "Account" },
   // Account management happens from a profile: at the gate, choose one first, then come back.
+  // An account that never finished sign-up has no profile to choose: the server treats it as the
+  // account holder, so its account pages open (with finishing sign-up offered, not forced).
   beforeLoad: async ({ context, location }) => {
     const session = await loadSession(context);
-    if (session.authenticated && !session.activeProfile) {
+    if (session.authenticated && !session.activeProfile && !isUnfinishedSignup(session)) {
       throw redirect({ to: "/profiles", search: { redirect: location.href }, replace: true });
     }
   },
@@ -421,7 +443,10 @@ const accountCheckoutRoute = createRoute({
   path: "/membership/checkout",
   staticData: { title: "Restart your membership" },
   validateSearch: (search: Record<string, unknown>) =>
-    optionalSearch({ plan: searchParam.oneOf(PLAN_IDS, search.plan) }),
+    optionalSearch({
+      plan: searchParam.oneOf(PLAN_IDS, search.plan),
+      declined: searchParam.oneOf(DECLINED_AGAIN, search.declined),
+    }),
   beforeLoad: ({ search }) => {
     if (!search.plan) throw redirect({ to: "/account/membership/plan", replace: true });
   },

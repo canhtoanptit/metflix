@@ -37,7 +37,7 @@ import numpy.typing as npt
 from webflix_recs import schemas as ev
 from webflix_recs.catalog import Catalog
 from webflix_recs.ids import DAY_MS, HOUR_MS, pseudonym
-from webflix_recs.simulate.config import SimConfig
+from webflix_recs.simulate.config import ExperimentSpec, SimConfig
 from webflix_recs.simulate.emit import AppSession, Device, Emitter, Subject, context
 from webflix_recs.simulate.policy import Library, Module, Policy, Progress
 from webflix_recs.simulate.world import (
@@ -158,8 +158,11 @@ class World:
         policy: Policy,
         emitter: Emitter,
         people: tuple[tuple[str, ...], npt.NDArray[np.float64]],
+        learned: Any = None,
     ) -> None:
         self.config = config
+        #: The scored run a `served=learned` experiment's treatment arm is served (learned.py).
+        self.learned = learned
         self.catalog = catalog
         self.titles = titles
         self.policy = policy
@@ -300,7 +303,7 @@ class World:
                 * profile.truth.activity
                 * weekend
                 * engagement
-                * self._treatment_effect(profile)
+                * self._treatment_effect(profile, day_ms)
             )
             for _ in range(int(rng.poisson(rate))):
                 hour = int(rng.choice(24, p=HOUR_P))
@@ -319,14 +322,33 @@ class World:
             self._billing(household, day_end - 1, household.state, "canceled")
             self.stats.churned += 1
 
-    def _treatment_effect(self, profile: ProfileSim) -> float:
+    def _treatment_effect(self, profile: ProfileSim, day_ms: int) -> float:
         """A planted experiment effect: treatment profiles come back `1 + effect` times as often
         (so qualified plays per member, the registered primary metric, move by about that)."""
         factor = 1.0
         for spec in self.config.experiments:
-            if profile.assignments.get(spec.key) == spec.treatment:
+            if self._started(spec, day_ms) and profile.assignments.get(spec.key) == spec.treatment:
                 factor *= 1.0 + spec.effect
         return factor
+
+    def _started(self, spec: ExperimentSpec, at_ms: int) -> bool:
+        return at_ms >= self.config.start_ms + spec.start_day * DAY_MS
+
+    def _active_assignments(self, profile: ProfileSim, at_ms: int) -> dict[str, str]:
+        """The profile's assignments to experiments that have started (all of them, for the
+        experiments that start on day 0)."""
+        started = {spec.key for spec in self.config.experiments if self._started(spec, at_ms)}
+        return {key: value for key, value in profile.assignments.items() if key in started}
+
+    def _learned_page(self, profile: ProfileSim, experiments: dict[str, str]) -> Any:
+        """The run's lists for this profile when it is in the treatment arm of a started
+        `served=learned` experiment and a run is configured; otherwise None (rule pages)."""
+        if self.learned is None:
+            return None
+        for spec in self.config.experiments:
+            if spec.served == "learned" and experiments.get(spec.key) == spec.treatment:
+                return self.learned.profile(profile.key)
+        return None
 
     def _signup(self, household: Household, at_ms: int) -> None:
         owner = household.profiles[0]
@@ -422,8 +444,12 @@ class World:
             household.analytics or household.personalisation_at(start_ms)
         )
         explore = rng.random() < config.explore_rate
-        policy_ctx = {"id": config.policy_id, "explore": explore}
-        experiments = profile.assignments
+        experiments = self._active_assignments(profile, start_ms)
+        learned = self._learned_page(profile, experiments)
+        policy_ctx = {
+            "id": f"learned-sim:{self.learned.run}" if learned is not None else config.policy_id,
+            "explore": explore,
+        }
         t = start_ms
         subject = self.subject(household, profile, t)
         self._decay_fatigue(profile, start_ms)
@@ -440,6 +466,8 @@ class World:
             now_ms=t,
             explore=explore,
             rng=rng,
+            learned=learned,
+            neighbours=self.learned.neighbours if learned is not None else None,
         )
         for key, variant in experiments.items():
             # As the product logs it (personalisation's serving plan): the unit's assignments and

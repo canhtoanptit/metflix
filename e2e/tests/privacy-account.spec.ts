@@ -18,6 +18,33 @@ import { expect, test } from "./fixtures.ts";
 import { answerIssuer, giveProfile, requireDevIssuer } from "./identity-support.ts";
 import { createAccount, expectAccessible, PASSWORD, uniqueEmail } from "./member-support.ts";
 
+/** Confirm it's you when the page asks (a proof younger than five minutes means it doesn't). */
+async function confirmIfAsked(page: Page): Promise<void> {
+  const dialog = page.getByRole("dialog", { name: "Confirm it's you" });
+  const asked = await dialog
+    .waitFor({ timeout: 1500 })
+    .then(() => true)
+    .catch(() => false);
+  if (asked) await confirmItsMe(page);
+}
+
+/**
+ * Every request for the export file: it must be a POST to `/privacy/exports/:id/download` with
+ * the token in its body, never a URL that carries the token (privacy review L3).
+ */
+function watchExportFetches(page: Page): string[] {
+  const seen: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (!/\/api\/v1\/privacy\/exports\/[^/]+(\/download)?$/.test(url.pathname)) return;
+    const body = request.postData() ?? "";
+    seen.push(
+      `${request.method()} ${url.pathname.endsWith("/download") ? "download" : "file"}${url.search}${body.includes('"token"') ? " token-in-body" : ""}`,
+    );
+  });
+  return seen;
+}
+
 async function confirmItsMe(page: Page): Promise<void> {
   const dialog = page.getByRole("dialog", { name: "Confirm it's you" });
   await expect(dialog).toBeVisible();
@@ -66,8 +93,13 @@ test("download your data: confirm it's you, wait (or leave and come back), then 
     );
   }
   await expectAccessible(page);
+  // A button: the token goes in a POST's body, never in a URL. The proof given a moment ago to
+  // ask for the copy still holds, so no second "Confirm it's you" (it would be asked otherwise).
+  await expect(section.getByRole("link", { name: "Download your data" })).toHaveCount(0);
+  const fetches = watchExportFetches(page);
   const download = page.waitForEvent("download");
-  await section.getByRole("link", { name: "Download your data" }).click();
+  await section.getByRole("button", { name: "Download your data" }).click();
+  await confirmIfAsked(page);
   const file = await download;
   const document = JSON.parse(await readFile(await file.path(), "utf8")) as {
     format: string;
@@ -75,6 +107,8 @@ test("download your data: confirm it's you, wait (or leave and come back), then 
   };
   expect(document.format).toBe("webflix.data-export");
   expect(document.account.email).toBe(account.email);
+  expect(fetches.length).toBeGreaterThan(0);
+  for (const fetch of fetches) expect(fetch).toBe("POST download token-in-body");
 
   // The email links to the app, the token in the fragment (where the deployment has a mailbox
   // to read back): opened on another device, signed out, it asks to sign in, comes back to the
@@ -107,13 +141,19 @@ test("download your data: confirm it's you, wait (or leave and come back), then 
   await tab.getByRole("link", { name: "Choose a profile" }).click();
   await tab.getByRole("button", { name: /^Sam/ }).click();
   await expect(tab.getByRole("heading", { name: "Your data is ready" })).toBeVisible();
+  const secondFetches = watchExportFetches(tab);
   const second = tab.waitForEvent("download");
   await tab.getByRole("button", { name: "Download your data" }).click();
+  // A new session holds no proof: the server asks, and the page asks the member (review L2).
+  await confirmItsMe(tab);
   const secondFile = await second;
   const secondDocument = JSON.parse(await readFile(await secondFile.path(), "utf8")) as {
     requestId: string;
   };
   expect(secondDocument.requestId).toBe(decodeURIComponent(link.pathname.split("/").at(-1) ?? ""));
+  // Refused for want of a proof, then fetched once confirmed: both POSTs, the token in the body.
+  expect(secondFetches.length).toBeGreaterThan(1);
+  for (const fetch of secondFetches) expect(fetch).toBe("POST download token-in-body");
   await expect(tab.getByRole("heading", { name: "Your download has started" })).toBeVisible();
 });
 
@@ -128,7 +168,11 @@ test("delete your account: said plainly first, scheduled after a cooling-off per
   for (const term of ["When you ask", "What we keep", "Your membership"]) {
     await expect(section.getByText(term, { exact: true })).toBeVisible();
   }
+  // What is kept after erasure, every item of it (the list the server keeps).
   await expect(section).toContainText("invoices, payments and refunds");
+  await expect(section).toContainText("A record that you asked us to delete your account");
+  await expect(section).toContainText("a fingerprint of that card with nothing linking it to you");
+  await expect(section).toContainText('showing you as "Erased member", with no email address');
 
   await section.getByRole("button", { name: "Delete my account" }).click();
   const confirm = page.getByRole("alertdialog", { name: "Delete your account?" });
@@ -298,34 +342,57 @@ test("a deletion stops the renewals, said before and while scheduled; a kept acc
   await addProfile(request, "Sam");
   await page.goto("/account/privacy");
   const section = page.getByRole("region", { name: "Delete your account" });
-  // Before committing: the membership ends, and nothing more is charged.
+  // Before committing, as a condition (the shared outcome): what deleting today would do.
   await expect(
-    section.getByText(/Your membership will end on .+, and you won't be charged again\./),
+    section.getByText(
+      /If you delete your account today: You can watch until .+\. Nothing more is charged\./,
+    ),
   ).toBeVisible();
   await section.getByRole("button", { name: "Delete my account" }).click();
   const confirm = page.getByRole("alertdialog", { name: "Delete your account?" });
-  await expect(confirm).toContainText("you won't be charged again");
+  await expect(confirm).toContainText("Nothing more is charged.");
   await confirm.getByRole("button", { name: "Delete my account" }).click();
   await confirmItsMe(page);
-  // While scheduled: what the deletion did to the membership, and no way to resume it yet.
-  await expect(
-    page.getByText(/^Your membership ends on .+\. You won't be charged again\.$/),
-  ).toBeVisible();
+  // While scheduled: what the deletion does to the membership, no way to resume it yet, and
+  // focus on the notice that says so.
+  const notice = page.locator("#privacy-deletion-scheduled");
+  await expect(notice).toContainText("Nothing more is charged.");
+  await expect(notice).toBeFocused();
   await expect(page.getByRole("button", { name: "Resume membership" })).toHaveCount(0);
+  // Membership says the same as Privacy (UX review 2.1): the deletion date ends it.
+  const scheduledFor = (
+    (await (await request.get("/api/v1/privacy/requests")).json()) as {
+      items: { kind: string; scheduledFor: string }[];
+    }
+  ).items.find((item) => item.kind === "deletion")?.scheduledFor;
+  expect(scheduledFor).toBeTruthy();
+  const title = (await notice.locator("p").first().textContent()) ?? "";
+  const date = title.replace(/^Your account will be deleted on /, "");
+  expect(date).not.toBe(title);
+  await page.goto("/account/membership");
+  await expect(page.getByRole("main")).toContainText(date);
+  await expect(page.getByRole("main")).toContainText("nothing more is charged");
+  await page.goto("/account/privacy");
   const session = (await (await request.get("/api/v1/session")).json()) as {
     membership: { cancelAtPeriodEnd: boolean };
   };
   expect(session.membership.cancelAtPeriodEnd).toBe(true);
 
-  // Kept: the membership stays set to end, and one action resumes it, saying the next bill.
+  // Kept: the membership stays set to end, and one action resumes it, saying the next bill; focus
+  // moves to that notice, then to the section's heading once resumed (UX review 2.7).
   await page.getByRole("button", { name: "Keep my account" }).click();
   const resume = page.getByRole("button", { name: "Resume membership" });
   await expect(resume).toBeVisible();
-  await expect(page.getByText(/it renews on .+ at .+ a month, as before\./)).toBeVisible();
+  await expect(page.locator("#privacy-membership-resume")).toBeFocused();
+  // In billing's own words (a trial's first payment, or the next renewal).
+  await expect(
+    page.getByText(/If you resume it: Your (first payment, .+, is on|next payment is .+ on) .+\./),
+  ).toBeVisible();
   await expectAccessible(page);
   await resume.click();
   await expect(page.getByText("Your membership will continue").first()).toBeVisible();
   await expect(resume).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Delete your account" })).toBeFocused();
   const after = (await (await request.get("/api/v1/session")).json()) as {
     membership: { cancelAtPeriodEnd: boolean };
   };

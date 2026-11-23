@@ -18,6 +18,7 @@ import { createSqliteDatabase } from "@webflix/db/sqlite";
 import { createHttpEmailSender } from "@webflix/email";
 import { createSmtpEmailSender, SmtpError } from "@webflix/email/smtp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { loadApiConfig } from "../src/config.ts";
 
 // --- A local SMTP server (RFC 5321's happy path, and a refusal on demand) ----------------------
 
@@ -273,4 +274,25 @@ describeEmailSenderContract("outbox (SQLite)", async () => {
     from: FROM,
   });
   return { sender, delivered: (to) => sender.listDelivered(to), cleanup: () => database.close() };
+});
+
+describe("the outbox sender in production (security review L4)", () => {
+  it("is refused at startup: it stores live reset and verification links", () => {
+    expect(() =>
+      loadApiConfig({
+        WEBFLIX_ENV: "production",
+        WEBFLIX_DATABASE_URL: "sqlite::memory:",
+        WEBFLIX_EMAIL_SENDER: "outbox",
+      }),
+    ).toThrow(/WEBFLIX_EMAIL_SENDER=outbox: refused in production/);
+  });
+
+  it("stays available outside production (the Kubernetes conformance variant's mailbox)", () => {
+    const config = loadApiConfig({
+      WEBFLIX_ENV: "development",
+      WEBFLIX_DATABASE_URL: "sqlite::memory:",
+      WEBFLIX_EMAIL_SENDER: "outbox",
+    });
+    expect(config.core.identity.emailSender).toBe("outbox");
+  });
 });

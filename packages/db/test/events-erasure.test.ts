@@ -116,3 +116,64 @@ describe("erasure and retention (SQLite schema)", () => {
     }
   });
 });
+
+describe("the erasure's lock (SQL: identity's tables too)", () => {
+  it("removes every way in: sessions, linked identities, pending tokens, password and address", async () => {
+    const { database, cleanup } = await createSqliteHarness();
+    try {
+      const repos = createRepositories(database);
+      await database.db
+        .insertInto("accounts")
+        .values({
+          id: "acc",
+          email: "leaving@example.com",
+          password_hash: "$argon2id$x",
+          created_at: NOW,
+          updated_at: NOW,
+          email_verified_at: NOW,
+        })
+        .execute();
+      await repos.identity.linkIdentity({
+        provider: "google",
+        subject: "g-1",
+        accountId: "acc",
+        issuer: "https://accounts.google.com",
+        emailAtLink: "leaving@example.com",
+        createdAt: NOW,
+        lastUsedAt: NOW,
+      });
+      await repos.identity.createToken({
+        tokenHash: "f".repeat(64),
+        accountId: "acc",
+        purpose: "reset_password",
+        email: "leaving@example.com",
+        expiresAt: NOW + 3_600_000,
+        usedAt: null,
+        createdAt: NOW,
+      });
+      expect(await repos.events.lockAccountForErasure("acc", NOW + 1)).toBe(true);
+      expect(await repos.identity.findIdentity("google", "g-1")).toBeNull();
+      expect(await repos.identity.listIdentities("acc")).toEqual([]);
+      const tokens = await database.db
+        .selectFrom("account_tokens")
+        .selectAll()
+        .where("account_id", "=", "acc")
+        .execute();
+      expect(tokens).toEqual([]);
+      expect(await repos.identity.findAccountByEmail("leaving@example.com")).toBeNull();
+      const row = await database.db
+        .selectFrom("accounts")
+        .selectAll()
+        .where("id", "=", "acc")
+        .executeTakeFirstOrThrow();
+      expect(row).toMatchObject({
+        email: "erased-acc@erasure.invalid",
+        password_hash: "",
+        email_verified_at: null,
+        access_proven_at: null,
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+});

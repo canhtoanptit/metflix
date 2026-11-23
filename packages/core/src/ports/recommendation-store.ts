@@ -60,6 +60,19 @@ export interface RecommendationStore {
    * them is served or kept afterwards. At most `MAX_PROFILE_ERASURE` keys per call.
    */
   deleteProfileLists(profileKeys: readonly string[]): Promise<void>;
+  /**
+   * The profile keys holding lists in `run`, one page at a time: `cursor` is the previous
+   * page's (null for the first), and a null `cursor` back means the last page. For applying a
+   * rewritten version of the served run (the pipeline's erasure removes rows from a published
+   * version and re-points `recs/current.json` at the new manifest): what is stored and no
+   * longer in the version is dropped.
+   */
+  profileKeys(
+    run: string,
+    cursor: string | null,
+  ): Promise<{ keys: string[]; cursor: string | null }>;
+  /** Records the manifest digest of what `run` now holds (a rewrite applied in place). */
+  recordManifest(run: string, manifestSha256: string): Promise<void>;
 }
 
 export interface ImportCapacity {

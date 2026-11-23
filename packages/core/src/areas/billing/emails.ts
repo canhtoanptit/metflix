@@ -36,6 +36,24 @@ async function send(
   }
 }
 
+/**
+ * Whether the account's deletion is scheduled, asked when a cancellation email is decided
+ * (privacy review M7). A deletion stops the renewals through `cancel`, but "keep watching until
+ * the period ends, restart at any time" is false then: access ends with the erasure and a
+ * restart is refused; the events area sends the deletion's own email. The request is recorded
+ * before any cancel it causes (the member's request, the sweep's retry), so the answer is
+ * already true on every such path, and on a staff cancel while the deletion is scheduled.
+ * Unknown (the read failed): no email, rather than one that may be false.
+ */
+async function deletionScheduled(context: BillingContext, accountId: string): Promise<boolean> {
+  try {
+    return await context.seams.accountDeletionScheduled(accountId);
+  } catch (error) {
+    context.deps.logger.warn("billing.deletion_unknown", { error: serializeError(error) });
+    return true;
+  }
+}
+
 function link(context: BillingContext, path: string): string {
   return `${context.deps.config.publicOrigin}${path}`;
 }
@@ -69,7 +87,12 @@ export async function emailsForChange(
     });
   }
   const periodEnd = next.status === "trialing" ? next.trialEndsAt : next.currentPeriodEnd;
-  if (next.cancelAtPeriodEnd && !(previous?.cancelAtPeriodEnd ?? false) && periodEnd !== null) {
+  if (
+    next.cancelAtPeriodEnd &&
+    !(previous?.cancelAtPeriodEnd ?? false) &&
+    periodEnd !== null &&
+    !(await deletionScheduled(context, next.accountId))
+  ) {
     await send(context, next.accountId, {
       template: "cancellation",
       data: {

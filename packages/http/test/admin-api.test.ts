@@ -123,7 +123,8 @@ describe("member support", () => {
     expect(detail.activeDevices).toBe(1);
     const reads = auditRows(t).map((row) => [row.action, row.target, row.outcome, row.reason]);
     expect(reads).toEqual([
-      ["member.searched", { type: "member_search", id: "found@" }, "succeeded", null],
+      // The query's shape only, never the address typed (privacy review M5).
+      ["member.searched", { type: "member_search", id: "f***@" }, "succeeded", null],
       ["member.viewed", { type: "member", id: accountId }, "succeeded", null],
     ]);
     // No data leaves when its read cannot be audited.
@@ -645,11 +646,13 @@ describe("member privacy", () => {
     await staff.confirmErasures({
       body: { subjectKeys: ["k3Jx9QvT0bYzA1c2D3e4F5"], reason: "Compaction 2026-11-22" },
     });
-    expect(auditRows(t)[0]).toMatchObject({
-      action: "privacy.erasures_confirmed",
-      outcome: "succeeded",
-      before: { request: { subjectKeys: ["k3Jx9QvT0bYzA1c2D3e4F5"] } },
-    });
+    // Reading the list is audited (count only), and the confirmation keeps how many keys, never
+    // which (privacy review L9, M5).
+    expect(auditRows(t).map((row) => [row.action, row.before, row.after])).toEqual([
+      ["privacy.erasures_listed", null, { count: 0 }],
+      ["privacy.erasures_confirmed", { request: { keys: 1 } }, { confirmed: 1 }],
+    ]);
+    expect(JSON.stringify(auditRows(t))).not.toContain("k3Jx9QvT0bYzA1c2D3e4F5");
   });
 
   it("lists a batch-mode export for the pipeline and finishes it from the job's results; an unknown request changes nothing", async () => {
@@ -1027,6 +1030,42 @@ describe("system", () => {
     ]);
   });
 
+  it("queues a rewrite of the served run: served means the same content, not the same name", async () => {
+    const t = await createTestApp();
+    const staff = staffClient(t, ["admin"]);
+    const blobs = new MemoryBlobStore({ clock: t.clock });
+    t.deps.recommendationArtefacts = blobs;
+    const ask = () => staff.importRecommendations({ body: { reason: "Erasure rewrite" } });
+    const run = "20260614-000000-aaaaaaaa";
+    const version = (profiles: string[]) =>
+      writeRecsVersion(blobs, {
+        run,
+        asOf: t.clock.now() - 86_400_000,
+        expiresAt: t.clock.now() + 2 * 86_400_000,
+        neighbours: [],
+        profiles: profiles.map((profileKey) => ({
+          profileKey,
+          run,
+          generatedAt: t.clock.now() - 86_400_000,
+          expiresAt: t.clock.now() + 2 * 86_400_000,
+          rows: [{ type: "personal", param: null, items: [["t-orbit", 0.5]] }],
+        })),
+      });
+    await version(["kept00000000000000000a", "erased0000000000000000"]);
+    expect(await ask()).toMatchObject({ outcome: "queued", run });
+    await t.queue.drain();
+    expect(await ask()).toMatchObject({ outcome: "already_served", run });
+    // The pipeline's erase rewrote the published version (same run, another manifest).
+    await version(["kept00000000000000000a"]);
+    expect(await ask()).toMatchObject({ outcome: "queued", run });
+    await t.queue.drain();
+    expect(await t.deps.recommendations.profileLists(run, "erased0000000000000000", 0)).toBeNull();
+    expect(
+      await t.deps.recommendations.profileLists(run, "kept00000000000000000a", 0),
+    ).not.toBeNull();
+    expect(await ask()).toMatchObject({ outcome: "already_served", run });
+  });
+
   it("pages the audit log newest first and filters it", async () => {
     const t = await createTestApp();
     const staff = staffClient(t, ["admin"]);
@@ -1044,8 +1083,9 @@ describe("system", () => {
     expect(next.nextCursor).toBeNull();
     const bad = await rawStaff(t, ["admin"], "GET", "/audit?cursor=nonsense");
     expect(bad.status).toBe(400);
-    // The personalisation area wrote these entries in its own batches; the staff API none.
-    expect(auditRows(t)).toEqual([]);
+    // The personalisation area wrote the changes in its own batches; the staff API wrote only
+    // the record of each reading of the log (privacy review L9).
+    expect(auditRows(t).map((row) => row.action)).toEqual(["audit.read", "audit.read"]);
   });
 });
 

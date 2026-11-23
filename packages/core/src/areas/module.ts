@@ -85,11 +85,37 @@ export interface AreaSeams {
    */
   forgetProfileBehaviour(input: { accountId: string; profileId: string }): Promise<void>;
   /**
-   * Events area: whether the account's deletion is scheduled (its cooling-off period is
-   * running). Billing refuses whatever would make the membership renew again meanwhile
-   * (`account_deletion_scheduled`). One read of the account's privacy requests.
+   * Events area: the pseudonymous keys (accounts, their profiles, profiles erased alone because
+   * they became restricted) whose erasure is still unsettled for data known at `asOf` (epoch
+   * ms): pending, or completed by the pipeline's erase job at or after `asOf`. A recommendation
+   * run with data up to `asOf` may still carry them; the importer stores no list for them
+   * (privacy review M3). Keyset-paged reads of the erasure records, independent of run size.
+   */
+  withheldSubjects(asOf: number): Promise<string[]>;
+  /**
+   * Events area: whether the account is being deleted: its deletion is scheduled (the
+   * cooling-off period is running) or its erasure is in progress. Billing refuses whatever would
+   * make the membership renew again meanwhile (`account_deletion_scheduled`) and keeps its
+   * cancellation email silent. Already true when the deletion's own call to billing's `cancel`
+   * runs (the request is recorded first, on every path). One read of the account's privacy
+   * requests.
    */
   accountDeletionScheduled(accountId: string): Promise<boolean>;
+  /**
+   * Personalisation area (implements it; the events area calls it): the member withdrew the
+   * personalisation purpose (`granted: false`, from Account › Privacy, the banner, Global
+   * Privacy Control or support) or granted it again (`granted: true`, the member only). Called
+   * after each recorded answer for that purpose, in order, possibly more than once for the same
+   * state: handle it idempotently. From a withdrawal on, the account's profiles get no learned
+   * recommendations (the page promises they "rely only on what you watch, rate and add to My
+   * List"). The events area logs a failure and records the answer either way.
+   */
+  personalisationConsentChanged(input: {
+    accountId: string;
+    granted: boolean;
+    /** When the answer was recorded (epoch ms). */
+    at: number;
+  }): Promise<void>;
   /**
    * Experiments area: a unit's assignments (key → variant), e.g. the ranking policy a profile's
    * browse page uses. Logging the exposure is the caller's, when the treatment is experienced.

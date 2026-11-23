@@ -15,8 +15,8 @@ function restartConfirmPath(checkoutId: string): string {
 
 /**
  * Restarting an ended membership: the same checkout as sign-up (the provider's form, a promo
- * code quoted first), inside Account. The account has had its trial, so the first payment is
- * asked for before anything is charged.
+ * code quoted first), inside Account. The account has had its trial, so what is due today, and
+ * why (the account's credit, a code), is stated before anything is charged.
  */
 export function AccountRestartPaymentPage() {
   const search = paymentRoute.useSearch();
@@ -57,6 +57,7 @@ export function AccountRestartPaymentPage() {
         onConfirming={onConfirming}
         onConflict={onConflict}
         context="restart"
+        declinedBefore={search.declined ?? null}
       />
     </>
   );
@@ -75,6 +76,7 @@ export function AccountRestartConfirmPage() {
       selfPath={restartConfirmPath(checkoutId)}
       paymentHref={(planId) => `/account/membership/checkout?plan=${planId}`}
       planHref="/account/membership/plan"
+      context="restart"
       next={{
         label: "Start watching",
         onContinue: () => void navigate({ to: "/browse", replace: true }),

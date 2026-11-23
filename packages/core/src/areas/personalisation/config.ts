@@ -10,7 +10,12 @@ export const RANKING_POLICIES = ["learned", "rules"] as const;
 /** Portable recommendation-serving settings (milestone 2 §7.2). Owned by personalisation. */
 export interface PersonalisationAreaConfig {
   recommendationStore: (typeof RECOMMENDATION_STORE_ADAPTERS)[number];
-  /** The policy of profiles no experiment assigns: learned candidates where they exist. */
+  /**
+   * The policy of profiles no experiment assigns. `rules` in production unless set: the learned
+   * model is turned on deliberately, after an experiment showed it beats the rule engine (the
+   * offline gate alone does not, reliably). `learned` elsewhere, so the demo run, the specs and
+   * the conformance checks exercise the learned path. An experiment's arms are unaffected.
+   */
   defaultPolicy: (typeof RANKING_POLICIES)[number];
   /** The experiment whose control variant is the rule engine and other variants learned. */
   experimentKey: string;
@@ -26,7 +31,8 @@ export interface PersonalisationAreaConfig {
 
 /**
  * Variables: WEBFLIX_RECOMMENDATION_STORE (default database), WEBFLIX_RECS_DEFAULT_POLICY
- * (default learned), WEBFLIX_RECS_EXPERIMENT (default recs.learned-vs-rules),
+ * (default rules in production, else learned), WEBFLIX_RECS_EXPERIMENT (default
+ * recs.learned-vs-rules),
  * WEBFLIX_RECS_EXPLORE_SHARE (default 0.05 in production, else 0), WEBFLIX_RECS_READ_TIMEOUT_MS
  * (default 250).
  */
@@ -57,7 +63,7 @@ export function loadPersonalisationConfig(
         input,
         "WEBFLIX_RECS_DEFAULT_POLICY",
         RANKING_POLICIES,
-        "learned",
+        input.environment === "production" ? "rules" : "learned",
         issues,
       ),
       experimentKey,

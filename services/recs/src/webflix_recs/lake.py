@@ -20,7 +20,12 @@ straggler written after compaction: a late outbox drain, a retried batch), dedup
 re-compaction, an erasure) write a new Parquet file, flip the manifest, and only then delete
 what the new manifest no longer needs; a reader that finds an object gone starts the hour again
 and sees the newer state. Re-running compaction over an unchanged hour is a no-op. Invalid
-events never reach Parquet: they are counted and kept under `events-quarantine/`.
+events never reach Parquet: they are counted and kept under `events-quarantine/`. Every
+compaction first re-validates the quarantine against the current schema: a line that now passes
+(an event of a newer version this code has learned to read, after an upgrade) goes back into
+its hour as a raw object (`requeued-{digest}.ndjson.gz`, written before the quarantine object is
+rewritten without it, so a crash in between only repeats the same write), and the hour is
+compacted again with it.
 """
 
 from __future__ import annotations
@@ -458,6 +463,7 @@ class CompactionResult:
     events_written: int = 0
     duplicates_dropped: int = 0
     invalid_quarantined: int = 0
+    quarantine_requeued: int = 0
     sources_deleted: int = 0
 
     def to_dict(self) -> dict[str, int]:
@@ -469,6 +475,33 @@ def _quarantine(storage: Storage, hour: HourObjects, rejected: list[bytes]) -> N
     digest = hashlib.sha256(body).hexdigest()[:16]
     partition = hour.prefix.removeprefix(EVENTS_PREFIX)
     storage.put(f"{QUARANTINE_PREFIX}{partition}{digest}.ndjson.gz", gzip.compress(body, mtime=0))
+
+
+def requeue_quarantine(storage: Storage) -> int:
+    """Lines of the quarantine that the current schema accepts, back into their hours (module
+    docstring). Returns how many lines went back."""
+    requeued = 0
+    for info in list(storage.list(QUARANTINE_PREFIX)):
+        body = storage.get(info.key)
+        if body is None:
+            continue
+        rejected: list[bytes] = []
+        valid = list(_validated_lines(ndjson_lines(body), info.key, ReadStats(), rejected))
+        if not valid:
+            continue
+        partition = info.key[len(QUARANTINE_PREFIX) :].rsplit("/", 1)[0]
+        payload = b"\n".join(valid) + b"\n"
+        digest = hashlib.sha256(payload).hexdigest()[:16]
+        storage.put(
+            f"{EVENTS_PREFIX}{partition}/requeued-{digest}.ndjson.gz",
+            gzip.compress(payload, mtime=0),
+        )
+        if rejected:
+            storage.put(info.key, gzip.compress(b"\n".join(rejected) + b"\n", mtime=0))
+        else:
+            storage.delete([info.key])
+        requeued += len(valid)
+    return requeued
 
 
 def compact_hour(
@@ -588,6 +621,7 @@ def compact(
                 take_lease=False,
             )
     total = CompactionResult()
+    total.quarantine_requeued = requeue_quarantine(storage)
     jobs = []
     for hour in list_hours(storage):
         total.hours_seen += 1

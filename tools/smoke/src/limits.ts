@@ -38,6 +38,9 @@ export const DOCUMENTED_LIMITS: Record<
     "email-send-recipient": { limit: 5, windowSec: 900 },
     events: { limit: 120, windowSec: 60 },
     promotion: { limit: 10, windowSec: 600 },
+    // Per account, member routes that call the payment provider (review M1).
+    billing: { limit: 30, windowSec: 600 },
+    "billing-refresh": { limit: 1, windowSec: 2 },
   },
   // Dev relaxes what e2e suites sharing one address and the demo account would trip; budgets
   // per account or per email (cards, sign-ins to one account, playback starts) stay strict.
@@ -54,6 +57,8 @@ export const DOCUMENTED_LIMITS: Record<
     "email-send-recipient": { limit: 5, windowSec: 900 },
     events: { limit: 600, windowSec: 60 },
     promotion: { limit: 10, windowSec: 600 },
+    billing: { limit: 30, windowSec: 600 },
+    "billing-refresh": { limit: 1, windowSec: 2 },
   },
 };
 
@@ -94,6 +99,25 @@ export function admissible(spec: RateLimitSpec, durationMs: number): { min: numb
   // GCRA/sliding windows admit one more request per elapsed interval (window / limit).
   const refill = Math.floor((durationMs / 1000) * (spec.limit / spec.windowSec));
   return { min: spec.limit, max: spec.limit + refill };
+}
+
+/**
+ * A policy documented the same in both profiles (per account, e.g. `promotion`, `billing`): its
+ * limit under the run's `--rate-limits` setting, without measuring which profile the target runs.
+ */
+export function profileIndependentSpec(
+  env: Environment,
+  policy: RateLimitPolicyName,
+): RateLimitSpec {
+  const expectation = env.options.rateLimits;
+  if (expectation.mode === "custom" && expectation.limits[policy])
+    return expectation.limits[policy];
+  const strict = DOCUMENTED_LIMITS.strict[policy];
+  const relaxed = DOCUMENTED_LIMITS.relaxed[policy];
+  if (strict.limit !== relaxed.limit || strict.windowSec !== relaxed.windowSec) {
+    throw new Error(`${policy} differs between the documented profiles: measure it instead`);
+  }
+  return strict;
 }
 
 /** The limit a policy is expected to have under the run's `--rate-limits` setting. */

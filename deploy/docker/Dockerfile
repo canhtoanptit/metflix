@@ -68,8 +68,12 @@ WORKDIR /app
 COPY --from=api-build --chown=0:0 --chmod=0444 \
      /src/apps/api/dist/main.mjs /src/apps/api/dist/main.mjs.map \
      /src/apps/api/dist/main.mjs.LEGAL.txt /src/apps/api/dist/scalar.js /app/
+# WEBFLIX_ENV fails closed: a container started without the chart's configuration is production
+# (no development issuer, no fake payments, no public mailbox, real keys required) unless it says
+# otherwise; the chart always sets it, the conformance variant to development explicitly.
 ENV NODE_ENV=production \
     NODE_OPTIONS="--enable-source-maps" \
+    WEBFLIX_ENV=production \
     PORT=4000
 USER 10001:10001
 EXPOSE 4000
@@ -77,18 +81,22 @@ EXPOSE 4000
 ENTRYPOINT ["node", "/app/main.mjs"]
 CMD ["serve"]
 
-# --- web ---------------------------------------------------------------------------------------
+# --- web: the member app and, under /admin/, the staff console ----------------------------------
 FROM workspace AS web-deps
 RUN --mount=type=cache,id=webflix-pnpm-store,target=/pnpm/store,sharing=locked \
     pnpm install --frozen-lockfile --ignore-scripts --store-dir /pnpm/store \
-      --filter "@webflix/web..."
+      --filter "@webflix/web..." --filter "@webflix/admin..."
 
 FROM web-deps AS web-build
-COPY --parents apps/web packages ./
+COPY --parents apps/web apps/admin packages ./
+# The console is built for its base path (/admin/); its config.json (the staff issuer, the client)
+# is the platform's to replace, and the chart does (deploy/helm/webflix/templates/web/admin.yaml).
 RUN pnpm --filter @webflix/web build \
  && test -f apps/web/dist/index.html \
+ && pnpm --filter @webflix/admin build \
+ && test -f apps/admin/dist/index.html \
  # Pre-compressed copies, served by nginx's gzip_static without spending CPU per request.
- && find apps/web/dist -type f -size +1k \
+ && find apps/web/dist apps/admin/dist -type f -size +1k \
       \( -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.html' -o -name '*.svg' \
          -o -name '*.json' -o -name '*.webmanifest' -o -name '*.txt' -o -name '*.wasm' \) \
       -exec gzip -9 --keep --no-name {} +
@@ -101,9 +109,13 @@ LABEL org.opencontainers.image.title="webflix-web" \
       org.opencontainers.image.licenses="UNLICENSED"
 COPY --chown=0:0 --chmod=0444 deploy/docker/web/nginx.conf /etc/nginx/nginx.conf
 COPY --chown=0:0 --chmod=0444 deploy/docker/web/security-headers.conf /etc/nginx/security-headers.conf
-# Source maps and Vite's build manifest stay out of the image: nothing public should need them.
+COPY --chown=0:0 --chmod=0444 deploy/docker/web/admin-security-headers.conf /etc/nginx/admin-security-headers.conf
+COPY --chown=0:0 --chmod=0444 deploy/docker/web/admin-config.conf /etc/nginx/admin-config.conf
+# Source maps and Vite's build manifests stay out of the image: nothing public should need them.
 COPY --from=web-build --chown=0:0 --exclude=**/*.map --exclude=.vite \
      /src/apps/web/dist /usr/share/nginx/html
+COPY --from=web-build --chown=0:0 --exclude=**/*.map --exclude=.vite \
+     /src/apps/admin/dist /usr/share/nginx/html/admin
 USER 101:101
 EXPOSE 8080 8081
 STOPSIGNAL SIGQUIT
@@ -138,7 +150,9 @@ LABEL org.opencontainers.image.title="webflix-tools" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="UNLICENSED"
 COPY --parents apps/api packages services/recs/scripts ./
-ENV NODE_ENV=production
+# As the API image: production unless the chart's configuration says otherwise.
+ENV NODE_ENV=production \
+    WEBFLIX_ENV=production
 USER 10001:10001
 ENTRYPOINT []
 CMD ["node", "--version"]

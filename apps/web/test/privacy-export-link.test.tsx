@@ -54,6 +54,7 @@ function exportRequest(overrides: Partial<PrivacyRequest> = {}): PrivacyRequest 
     downloadUrl: "/api/v1/privacy/exports/export-ready?token=mock-export-ready",
     expiresAt: iso(6 * DAY),
     membership: null,
+    email: "sent",
     ...overrides,
   };
 }
@@ -90,16 +91,16 @@ describe("the export email's link", () => {
     setMockPrivacyRequests(state.account.id, [exportRequest()]);
     const downloads: unknown[] = [];
     renderAt("/account/privacy/exports/export-ready#token=mock-export-ready", state, (base) => ({
-      downloadDataExport: (input, options) => {
+      fetchDataExport: (input, options) => {
         downloads.push(input);
-        return base.downloadDataExport(input, options);
+        return base.fetchDataExport(input, options);
       },
     }));
     await screen.findByRole("heading", { name: "Your data is ready" });
     await userEvent.click(screen.getByRole("button", { name: "Download your data" }));
     await screen.findByRole("heading", { name: "Your download has started" });
     expect(downloads).toEqual([
-      { params: { id: "export-ready" }, query: { token: "mock-export-ready" } },
+      { params: { id: "export-ready" }, body: { token: "mock-export-ready" } },
     ]);
   });
 
@@ -140,9 +141,11 @@ describe("the terms, from the server, before asking", () => {
   it("says how long the export takes and how long the deletion waits", async () => {
     renderAt("/account/privacy", signedInAs("profile-mara"));
     await screen.findByText(/It usually takes about a minute/);
-    expect(screen.getByText(/the download will be here too, for 7 days/)).toBeInTheDocument();
+    expect(screen.getByText(/the download will be here for\s+7 days/)).toBeInTheDocument();
     expect(screen.getByText(/Your account keeps working for\s+14 days/)).toBeInTheDocument();
-    expect(screen.getByText(/kept for 13 months, and totals made from it/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/deleted after 13 months, and totals made from it after 37 months/),
+    ).toBeInTheDocument();
   });
 
   it("a batch export says it can take up to half an hour", async () => {
@@ -156,14 +159,19 @@ describe("a deletion and the membership", () => {
   it("says before, and while scheduled, that the membership ends and nothing more is charged", async () => {
     renderAt("/account/privacy", signedInAs("profile-mara"));
     const section = await screen.findByRole("region", { name: "Delete your account" });
+    // Conditional, from the shared outcome: what deleting today would do.
     await within(section).findByText(
-      /Your membership will end on .+, and you won't be charged again\./,
+      /If you delete your account today: You can watch until .+\. Nothing more is charged\./,
     );
     await userEvent.click(within(section).getByRole("button", { name: "Delete my account" }));
     const dialog = await screen.findByRole("alertdialog", { name: "Delete your account?" });
-    expect(dialog).toHaveTextContent(/you won't be charged again/);
+    expect(dialog).toHaveTextContent(/Nothing more is charged\./);
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete my account" }));
-    await screen.findByText(/^Your membership ends on .+\. You won't be charged again\.$/);
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent(/Your account will be deleted on/);
+    expect(notice).toHaveTextContent(/Nothing more is charged\./);
+    // Focus lands on what happened.
+    await waitFor(() => expect(notice).toHaveFocus());
   });
 
   it("a kept account offers to resume the membership, saying what the next bill is", async () => {
@@ -185,11 +193,18 @@ describe("a deletion and the membership", () => {
     expect(screen.queryByRole("button", { name: "Resume membership" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Keep my account" }));
     const resume = await screen.findByRole("button", { name: "Resume membership" });
-    expect(screen.getByText(/it renews on .+ at .+ a month, as before\./)).toBeInTheDocument();
+    // The resume notice takes focus after keeping (UX review 2.7).
+    await waitFor(() => expect(resume.closest('[role="status"]')).toHaveFocus());
+    expect(
+      screen.getByText(/If you resume it: Your next payment is .+ on .+\./),
+    ).toBeInTheDocument();
     await userEvent.click(resume);
     await waitFor(() => expect(resumed).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Resume membership" })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Delete your account" })).toHaveFocus(),
     );
   });
 
@@ -209,5 +224,50 @@ describe("a deletion and the membership", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Your account is scheduled for deletion, so the membership can't be resumed",
     );
+  });
+
+  it("while the erasure runs, says so plainly and offers nothing that cannot work", async () => {
+    const state = signedInAs("profile-mara");
+    setMockPrivacyRequests(state.account.id, [
+      {
+        ...exportRequest({ id: "deletion-running", kind: "deletion", status: "processing" }),
+        scheduledFor: iso(-60_000),
+        completedAt: null,
+        downloadUrl: null,
+        expiresAt: null,
+        email: "sent",
+      },
+    ]);
+    renderAt("/account/privacy", state);
+    await screen.findByText("We're deleting your account");
+    expect(screen.getByText(/can't be stopped now/)).toBeInTheDocument();
+    const main = screen.getByRole("main");
+    expect(within(main).queryByRole("button")).toBeNull();
+    expect(within(main).queryByRole("switch")).toBeNull();
+  });
+});
+
+describe("the export's email", () => {
+  it("is promised only when one will come", async () => {
+    setMockExportMode("batch");
+    const state = signedInAs("profile-mara");
+    setMockPrivacyRequests(state.account.id, [
+      exportRequest({
+        status: "processing",
+        completedAt: null,
+        downloadUrl: null,
+        expiresAt: null,
+        email: "suppressed",
+        requestedAt: iso(-10_000),
+      }),
+    ]);
+    renderAt("/account/privacy", state);
+    await screen.findByText("Preparing your data");
+    expect(
+      screen.getByText(
+        /We can't email .+ \(earlier emails to it didn't arrive\), so check back here\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/We'll email/)).toBeNull();
   });
 });

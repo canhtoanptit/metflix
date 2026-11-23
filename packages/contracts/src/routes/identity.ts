@@ -425,6 +425,8 @@ export const identityRoutes = {
     area: "identity",
     auth: "public",
     summary: "Verify the email address with the link's token",
+    description:
+      "Public: the emailed link works in any browser, signed in or not, and verifies the address. Sent with a live session of the token's own account (the page's own request carries the cookie), it also proves that the account's ways in were set up by the address's owner, which automatic linking requires (a Google or Apple sign-in with this address then links itself, §4.1). From anywhere else (signed out, another device, another account's session) it proves nothing more: such a sign-in answers `link-required` until the member links deliberately or resets the password.",
     body: ConfirmEmailVerificationBody,
     response: null,
     errors: ["verification_token_invalid"],
@@ -450,11 +452,11 @@ export const identityRoutes = {
     tag: "auth",
     area: "identity",
     auth: "public",
-    summary: "Set a new password with the link's token",
+    summary: "Set a new password with the link's token, and sign in",
     description:
-      "Signs out every device and sends a security alert. The token is single-use and lives 30 minutes.",
+      "Signs out every device, then signs in this one: answers the session and sets its cookies, as sign-in does (the link proved the address and the new password is this browser's). Marks the address verified, drops issuer identities linked under another address, and sends a security alert. The token is single-use and lives 30 minutes.",
     body: ConfirmPasswordResetBody,
-    response: null,
+    response: AuthenticatedSession,
     errors: ["verification_token_invalid", "demo_account_protected"],
     examples: {
       request: {

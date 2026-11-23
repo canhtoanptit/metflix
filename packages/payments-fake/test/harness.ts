@@ -16,6 +16,7 @@ export function forwardStore(inner: FakeStore): FakeStore {
     releaseKey: (key) => inner.releaseKey(key),
     clock: (customerId) => inner.clock(customerId),
     setClock: (customerId, clock) => inner.setClock(customerId, clock),
+    forget: (customerId, fragments) => inner.forget(customerId, fragments),
     guardVersions: (keys) => inner.guardVersions(keys),
     commit: (input) => inner.commit(input),
   };

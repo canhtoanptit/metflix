@@ -1,16 +1,17 @@
-import type {
-  BillingCustomerRecord,
-  BillingOperationRecord,
-  BillingRepository,
-  CheckoutRecord,
-  InvoiceRecord,
-  MembershipRecord,
-  PaymentMethodSetupRecord,
-  PlanPriceRecord,
-  ProviderEventRecord,
-  ProviderPriceRecord,
-  RefundRecord,
-  StoredCard,
+import {
+  type BillingCustomerRecord,
+  type BillingOperationRecord,
+  type BillingRepository,
+  type CheckoutRecord,
+  ERASED_TRIAL_OWNER,
+  type InvoiceRecord,
+  type MembershipRecord,
+  type PaymentMethodSetupRecord,
+  type PlanPriceRecord,
+  type ProviderEventRecord,
+  type ProviderPriceRecord,
+  type RefundRecord,
+  type StoredCard,
 } from "@webflix/core";
 import type { Database } from "../../database.ts";
 import type {
@@ -132,6 +133,8 @@ function toInvoice(row: InvoicesTable): InvoiceRecord {
     periodEnd: numOrNull(row.period_end),
     hostedUrl: row.hosted_url,
     pdfUrl: row.pdf_url,
+    creditAppliedMinor: numOrNull(row.credit_applied_minor ?? null),
+    discountMinor: numOrNull(row.discount_minor ?? null),
     issuedAt: num(row.issued_at),
     paidAt: numOrNull(row.paid_at),
     updatedAt: num(row.updated_at),
@@ -157,6 +160,8 @@ function fromInvoice(record: InvoiceRecord): InvoicesTable {
     period_end: record.periodEnd,
     hosted_url: record.hostedUrl,
     pdf_url: record.pdfUrl,
+    credit_applied_minor: record.creditAppliedMinor,
+    discount_minor: record.discountMinor,
     issued_at: record.issuedAt,
     paid_at: record.paidAt,
     updated_at: record.updatedAt,
@@ -201,7 +206,10 @@ function toCheckout(row: CheckoutsTable): CheckoutRecord {
     trialDays: numOrNull(row.trial_days),
     trialFingerprint: row.trial_fingerprint,
     amountDueMinor: numOrNull(row.amount_due_minor),
+    creditAppliedMinor: numOrNull(row.credit_applied_minor ?? null),
+    discountMinor: numOrNull(row.discount_minor ?? null),
     failureReason: row.failure_reason as CheckoutRecord["failureReason"],
+    clientSecret: row.client_secret ?? null,
     operationId: row.operation_id ?? row.id,
     attempt: num(row.attempt ?? 1),
     createdAt: num(row.created_at),
@@ -228,7 +236,10 @@ function fromCheckout(record: CheckoutRecord): CheckoutsTable {
     trial_days: record.trialDays,
     trial_fingerprint: record.trialFingerprint,
     amount_due_minor: record.amountDueMinor,
+    credit_applied_minor: record.creditAppliedMinor,
+    discount_minor: record.discountMinor,
     failure_reason: record.failureReason,
+    client_secret: record.clientSecret,
     operation_id: record.operationId,
     attempt: record.attempt,
     created_at: record.createdAt,
@@ -245,6 +256,8 @@ function toSetup(row: PaymentMethodSetupsTable): PaymentMethodSetupRecord {
     providerSetupId: row.provider_setup_id,
     providerPaymentMethodId: row.provider_payment_method_id,
     status: row.status as PaymentMethodSetupRecord["status"],
+    clientSecret: row.client_secret ?? null,
+    failureReason: (row.failure_reason ?? null) as PaymentMethodSetupRecord["failureReason"],
     attempt: num(row.attempt ?? 1),
     createdAt: num(row.created_at),
     updatedAt: num(row.updated_at),
@@ -258,6 +271,41 @@ function toSetup(row: PaymentMethodSetupsTable): PaymentMethodSetupRecord {
  * first-writer-wins inserts are `ON CONFLICT DO NOTHING` followed by a read.
  */
 export function createBillingRepository(database: Database): BillingRepository {
+  const openCheckoutQuery = (accountId: string, now: number) =>
+    database.db
+      .selectFrom("checkouts")
+      .selectAll()
+      .where("account_id", "=", accountId)
+      .where("status", "in", OPEN_CHECKOUT)
+      .where("expires_at", ">", now)
+      .orderBy("created_at", "desc")
+      .orderBy("id", "desc")
+      .limit(1);
+  // A trial claim of the account's own, or a membership that redeemed one: one statement.
+  const trialUsedQuery = (accountId: string) =>
+    database.db.selectNoFrom((eb) => [
+      eb
+        .exists(
+          eb
+            .selectFrom("trial_fingerprints")
+            .select("fingerprint")
+            .where("account_id", "=", accountId),
+        )
+        .as("claimed"),
+      eb
+        .exists(
+          eb
+            .selectFrom("memberships")
+            .select("account_id")
+            .where("account_id", "=", accountId)
+            .where("trial_redeemed_at", "is not", null),
+        )
+        .as("redeemed"),
+    ]);
+  const truthy = (value: unknown) => value === true || Number(value) === 1;
+  const trialUsedOf = (row: { claimed: unknown; redeemed: unknown } | undefined) =>
+    row !== undefined && (truthy(row.claimed) || truthy(row.redeemed));
+
   const { db } = database;
 
   const repository: BillingRepository = {
@@ -511,6 +559,64 @@ export function createBillingRepository(database: Database): BillingRepository {
       return row !== undefined;
     },
 
+    async trialUsed(accountId) {
+      return trialUsedOf(await trialUsedQuery(accountId).executeTakeFirst());
+    },
+
+    async forgetAccount({ accountId, customerIds }) {
+      // Each statement is idempotent and the customer links go last: a run cut short anywhere
+      // is finished by the erasure job's next run.
+      await db
+        .deleteFrom("trial_fingerprints")
+        .where("account_id", "=", accountId)
+        .where("fingerprint", "=", `account:${accountId}`)
+        .execute();
+      await db
+        .updateTable("trial_fingerprints")
+        .set({ account_id: ERASED_TRIAL_OWNER, created_at: 0 })
+        .where("account_id", "=", accountId)
+        .execute();
+      await db.deleteFrom("billing_operations").where("account_id", "=", accountId).execute();
+      await db.deleteFrom("provider_events").where("account_id", "=", accountId).execute();
+      for (const customerId of customerIds) {
+        await db
+          .deleteFrom("provider_events")
+          .where("provider_customer_id", "=", customerId)
+          .execute();
+      }
+      await db
+        .updateTable("invoices")
+        .set({ hosted_url: null, pdf_url: null })
+        .where("account_id", "=", accountId)
+        .execute();
+      await db.deleteFrom("checkouts").where("account_id", "=", accountId).execute();
+      await db.deleteFrom("payment_method_setups").where("account_id", "=", accountId).execute();
+      await db.deleteFrom("memberships").where("account_id", "=", accountId).execute();
+      await db.deleteFrom("billing_customers").where("account_id", "=", accountId).execute();
+    },
+    async listCheckouts(accountId, limit) {
+      const rows = await db
+        .selectFrom("checkouts")
+        .selectAll()
+        .where("account_id", "=", accountId)
+        .orderBy("created_at", "desc")
+        .orderBy("id", "desc")
+        .limit(limit)
+        .execute();
+      return rows.map(toCheckout);
+    },
+    async listSetups(accountId, limit) {
+      const rows = await db
+        .selectFrom("payment_method_setups")
+        .selectAll()
+        .where("account_id", "=", accountId)
+        .orderBy("created_at", "desc")
+        .orderBy("id", "desc")
+        .limit(limit)
+        .execute();
+      return rows.map(toSetup);
+    },
+
     async upsertInvoice(record) {
       // An invoice keeps its Webflix id and never moves between accounts.
       const { id: _id, account_id: _account, ...changes } = fromInvoice(record);
@@ -685,17 +791,16 @@ export function createBillingRepository(database: Database): BillingRepository {
       return row ? toCheckout(row) : null;
     },
     async findOpenCheckout(accountId, now) {
-      const row = await db
-        .selectFrom("checkouts")
-        .selectAll()
-        .where("account_id", "=", accountId)
-        .where("status", "in", OPEN_CHECKOUT)
-        .where("expires_at", ">", now)
-        .orderBy("created_at", "desc")
-        .orderBy("id", "desc")
-        .limit(1)
-        .executeTakeFirst();
+      const row = await openCheckoutQuery(accountId, now).executeTakeFirst();
       return row ? toCheckout(row) : null;
+    },
+    async findOpenCheckoutAndTrial(accountId, now) {
+      const [open, trial] = await database.batch([
+        openCheckoutQuery(accountId, now),
+        trialUsedQuery(accountId),
+      ]);
+      const row = open.rows[0];
+      return { checkout: row ? toCheckout(row) : null, trialUsed: trialUsedOf(trial.rows[0]) };
     },
     async listCheckoutsForSubscription(provider, subscriptionId) {
       const rows = await db
@@ -714,6 +819,8 @@ export function createBillingRepository(database: Database): BillingRepository {
         provider_setup_id: record.providerSetupId,
         provider_payment_method_id: record.providerPaymentMethodId,
         status: record.status,
+        client_secret: record.clientSecret,
+        failure_reason: record.failureReason,
         attempt: record.attempt,
         created_at: record.createdAt,
         updated_at: record.updatedAt,
@@ -726,6 +833,8 @@ export function createBillingRepository(database: Database): BillingRepository {
             provider_setup_id: values.provider_setup_id,
             provider_payment_method_id: values.provider_payment_method_id,
             status: values.status,
+            client_secret: values.client_secret,
+            failure_reason: values.failure_reason,
             attempt: values.attempt,
             updated_at: values.updated_at,
           }),

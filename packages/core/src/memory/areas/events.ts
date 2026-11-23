@@ -1,6 +1,7 @@
 import {
   type ConsentRecord,
   type EventsRepository,
+  erasedAddress,
   OPEN_PRIVACY_STATUSES,
   PARTIAL_EXPORT_SUFFIX,
   type PrivacyErasureRecord,
@@ -10,6 +11,8 @@ import {
 import type { MemoryStore } from "../repositories.ts";
 
 const copy = <T>(value: T): T => structuredClone(value);
+/** When an erasure started (one left in progress before that was recorded: its due time). */
+const erasureStart = (record: PrivacyRequestRecord) => record.startedAt ?? record.scheduledFor ?? 0;
 const byTimeThenId = (a: ConsentRecord, b: ConsentRecord) =>
   a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -39,7 +42,9 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
       tick();
       const latest = new Map<string, ConsentRecord>();
       for (const record of [...consents].sort(byTimeThenId)) {
-        if (record.accountId === accountId && record.createdAt <= at) {
+        // Only the member can grant: a support grant is never the answer in force.
+        const supportGrant = record.source === "support" && record.granted;
+        if (record.accountId === accountId && record.createdAt <= at && !supportGrant) {
           latest.set(record.purpose, record);
         }
       }
@@ -140,10 +145,48 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
           (record) =>
             record.kind === "export" &&
             (record.status === "pending" || record.status === "processing") &&
-            record.exportBlobKey === null &&
+            (record.exportBlobKey === null ||
+              !record.exportBlobKey.endsWith(PARTIAL_EXPORT_SUFFIX)) &&
             record.updatedAt < before,
         )
         .sort((a, b) => a.updatedAt - b.updatedAt || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
+    async overdueExports(before, limit) {
+      tick();
+      return [...requests.values()]
+        .filter(
+          (record) =>
+            record.kind === "export" &&
+            (record.status === "pending" || record.status === "processing") &&
+            record.requestedAt < before,
+        )
+        .sort((a, b) => a.requestedAt - b.requestedAt || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
+    async dueErasureRetries(now, limit) {
+      tick();
+      return [...requests.values()]
+        .filter(
+          (record) =>
+            record.kind === "deletion" &&
+            record.status === "processing" &&
+            (record.retryAt === null || record.retryAt <= now),
+        )
+        .sort((a, b) => erasureStart(a) - erasureStart(b) || (a.id < b.id ? -1 : 1))
+        .slice(0, limit)
+        .map(copy);
+    },
+
+    async erasuresInProgress(limit) {
+      tick();
+      return [...requests.values()]
+        .filter((record) => record.kind === "deletion" && record.status === "processing")
+        .sort((a, b) => erasureStart(a) - erasureStart(b) || (a.id < b.id ? -1 : 1))
         .slice(0, limit)
         .map(copy);
     },
@@ -205,6 +248,24 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
       }
     },
 
+    async erasuresOf(subjectKeys) {
+      tick();
+      return [...new Set(subjectKeys)]
+        .map((key) => erasures.get(key))
+        .filter((record): record is PrivacyErasureRecord => record !== undefined)
+        .map(copy);
+    },
+
+    async erasuresUnsettledAt(asOf, after, limit) {
+      tick();
+      return [...erasures.values()]
+        .filter((record) => record.compactedAt === null || record.compactedAt >= asOf)
+        .filter((record) => after === null || record.subjectKey > after)
+        .sort((a, b) => (a.subjectKey < b.subjectKey ? -1 : a.subjectKey > b.subjectKey ? 1 : 0))
+        .slice(0, limit)
+        .map(copy);
+    },
+
     async openPlaybackBefore(cutoff, limit) {
       tick();
       return [...(store?.playback.values() ?? [])]
@@ -239,6 +300,53 @@ export function createMemoryEventsRepository(store?: MemoryStore): EventsReposit
         if (consents[index]?.accountId === accountId) consents.splice(index, 1);
       }
       return true;
+    },
+
+    async lockAccountForErasure(accountId, at) {
+      tick();
+      const account = store?.accounts.get(accountId);
+      if (!store || !account) return false;
+      for (const [id, session] of store.sessions) {
+        if (session.accountId === accountId) store.sessions.delete(id);
+      }
+      store.accounts.set(accountId, {
+        ...account,
+        email: erasedAddress(accountId),
+        passwordHash: "",
+        updatedAt: at,
+      });
+      store.eventOutbox = store.eventOutbox.filter((event) => event.accountId !== accountId);
+      return true;
+    },
+
+    async pruneFinishedExports(before) {
+      tick();
+      let pruned = 0;
+      for (const [id, record] of requests) {
+        const finished = ["completed", "failed", "canceled"].includes(record.status);
+        if (record.kind === "export" && finished && record.requestedAt < before) {
+          requests.delete(id);
+          pruned += 1;
+        }
+      }
+      return pruned;
+    },
+
+    async pruneSettledErasures(before) {
+      tick();
+      let pruned = 0;
+      for (const [key, record] of erasures) {
+        if (record.compactedAt !== null && record.compactedAt < before) {
+          erasures.delete(key);
+          pruned += 1;
+        }
+      }
+      return pruned;
+    },
+
+    async pruneAggregates() {
+      tick();
+      return 0; // no daily aggregates are kept in memory
     },
   };
 }

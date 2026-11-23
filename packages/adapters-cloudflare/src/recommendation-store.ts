@@ -103,6 +103,18 @@ export function createKvRecommendationStore(
     failImport: (run, error) => base.failImport(run, error),
     activate: (run, now) => base.activate(run, now),
     deleteRun: (run) => base.deleteRun(run),
+    recordManifest: (run, manifestSha256) => base.recordManifest(run, manifestSha256),
+
+    async profileKeys(run, cursor) {
+      // One KV list operation per page of up to 1,000 keys. Listings are eventually consistent
+      // (a key written within the last minute or so may be missing): the rewrite this serves
+      // compares against lists written when the run was imported, long before.
+      const page = await namespace.list({ prefix: keyOf(run, ""), ...(cursor ? { cursor } : {}) });
+      return {
+        keys: page.keys.map((key) => key.name.slice(keyOf(run, "").length)),
+        cursor: page.list_complete ? null : page.cursor,
+      };
+    },
 
     async deleteProfileLists(profileKeys) {
       if (profileKeys.length > MAX_PROFILE_ERASURE) throw new RangeError("Too many profile keys");

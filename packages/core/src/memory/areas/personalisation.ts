@@ -4,6 +4,7 @@ import type {
   EditorialCollectionRecord,
   PersonalisationRepository,
   TitleAvailabilityRecord,
+  WithdrawalRecord,
 } from "../../areas/personalisation/repository.ts";
 
 /** In-memory `PersonalisationRepository`; `audit` holds the audit rows it was given (tests). */
@@ -16,6 +17,7 @@ export function createMemoryPersonalisationRepository(): MemoryPersonalisationRe
   const collections = new Map<string, EditorialCollectionRecord>();
   const availability = new Map<string, TitleAvailabilityRecord>();
   const audit: AuditRecord[] = [];
+  const withdrawals = new Map<string, WithdrawalRecord>();
   const copy = <T>(value: T): T => structuredClone(value);
 
   return {
@@ -31,7 +33,32 @@ export function createMemoryPersonalisationRepository(): MemoryPersonalisationRe
           )
           .map(copy),
         availability: [...availability.values()].map(copy),
+        withdrawnAccounts: [...withdrawals.keys()].sort(),
       };
+    },
+    async recordWithdrawal(withdrawal) {
+      const known = withdrawals.get(withdrawal.accountKey);
+      withdrawals.set(withdrawal.accountKey, {
+        accountKey: withdrawal.accountKey,
+        profileKeys: [
+          ...new Set([...(known?.profileKeys ?? []), ...withdrawal.profileKeys]),
+        ].sort(),
+        withdrawnAt: known?.withdrawnAt ?? withdrawal.withdrawnAt,
+      });
+    },
+    async clearWithdrawal(accountKey) {
+      withdrawals.delete(accountKey);
+    },
+    async getWithdrawal(accountKey) {
+      const found = withdrawals.get(accountKey);
+      return found ? copy(found) : null;
+    },
+    async withdrawnProfileKeys(after, limit) {
+      return [...withdrawals.values()]
+        .flatMap((withdrawal) => withdrawal.profileKeys)
+        .filter((key) => after === null || key > after)
+        .sort()
+        .slice(0, limit);
     },
     async getBillboard(view) {
       const found = billboards.get(view);

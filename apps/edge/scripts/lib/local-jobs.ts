@@ -1,5 +1,5 @@
 /**
- * The pipeline's privacy jobs on a timer, for a local deployment under test (`make cf-dev
+ * The pipeline's lake jobs on a timer, for a local deployment under test (`make cf-dev
  * CF_JOBS_EVERY=<seconds>`): what a scheduler runs beside a real account, here every few seconds
  * so that the conformance suite can request an export and see it complete. Its own loop, not the
  * Cron Trigger's: it runs outside the Worker (Python, the pipeline store), costs a process per
@@ -29,7 +29,7 @@ export function startJobsLoop(options: JobsLoopOptions): () => void {
   };
   schedule();
   options.log(
-    `pipeline jobs: erase and export-events every ${options.everySec} s when something is pending (CF_JOBS_EVERY)`,
+    `pipeline jobs: erase and export-events every ${options.everySec} s when something is pending, retain once a day (CF_JOBS_EVERY)`,
   );
   return () => {
     stopped = true;

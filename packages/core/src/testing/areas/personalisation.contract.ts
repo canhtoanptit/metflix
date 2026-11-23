@@ -65,6 +65,7 @@ export function describePersonalisationRepositoryContract(
         billboards: [],
         collections: [],
         availability: [],
+        withdrawnAccounts: [],
       });
       expect(await repo.getBillboard("home")).toBeNull();
       expect(await repo.listCollections()).toEqual([]);
@@ -159,6 +160,39 @@ export function describePersonalisationRepositoryContract(
       expect((await repo.loadEditorial()).availability).toEqual([
         { ...record, available: false, availableFrom: null, availableUntil: null },
       ]);
+    });
+
+    it("records withdrawn personalisation per account until it is cleared", async () => {
+      const repo = h().repos.personalisation;
+      const key = (index: number) => `w${index.toString().padStart(21, "0")}`;
+      // 40 profiles: more rows than one INSERT takes under the 100-parameter limit.
+      const many = Array.from({ length: 40 }, (_, index) => key(100 + index));
+      await repo.recordWithdrawal({ accountKey: key(1), profileKeys: many, withdrawnAt: NOW });
+      await repo.recordWithdrawal({
+        accountKey: key(2),
+        profileKeys: [key(3)],
+        withdrawnAt: NOW + 1,
+      });
+      // Withdrawn again with a new profile: added, the first time kept.
+      await repo.recordWithdrawal({
+        accountKey: key(2),
+        profileKeys: [key(3), key(4)],
+        withdrawnAt: NOW + 9,
+      });
+      expect((await repo.loadEditorial()).withdrawnAccounts).toEqual([key(1), key(2)]);
+      expect(await repo.getWithdrawal(key(2))).toEqual({
+        accountKey: key(2),
+        profileKeys: [key(3), key(4)],
+        withdrawnAt: NOW + 1,
+      });
+      expect(await repo.getWithdrawal(key(9))).toBeNull();
+      expect(await repo.withdrawnProfileKeys(null, 3)).toEqual([key(3), key(4), key(100)]);
+      expect(await repo.withdrawnProfileKeys(key(138), 10)).toEqual([key(139)]);
+      expect(await repo.withdrawnProfileKeys(null, 100)).toHaveLength(42);
+      await repo.clearWithdrawal(key(1));
+      expect((await repo.loadEditorial()).withdrawnAccounts).toEqual([key(2)]);
+      expect(await repo.withdrawnProfileKeys(null, 100)).toEqual([key(3), key(4)]);
+      expect(await repo.getWithdrawal(key(1))).toBeNull();
     });
   });
 }

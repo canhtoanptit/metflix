@@ -1,12 +1,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Profile } from "@webflix/contracts";
 import { Button, Dialog, DialogContent, DialogFooter, PinInput, toast } from "@webflix/ui";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { IdentityNotConfirmed } from "../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { describeMemberError } from "../shared/privileges.ts";
 import { upsertSessionProfile } from "../shared/sessionProfiles.ts";
+import { useFocusAfterBusy } from "../shared/useFocusAfterBusy.ts";
 
 /** Runs a request and, when the server asks for the account-holder proof, asks for it first. */
 type RunWithProof = <T>(action: () => Promise<T>) => Promise<T>;
@@ -57,6 +58,8 @@ export function PinLockDialog({
     },
   });
 
+  const saveRef = useRef<HTMLButtonElement>(null);
+  useFocusAfterBusy(update.isPending, saveRef);
   const open = mode !== null;
   const title =
     mode === "remove"
@@ -122,6 +125,7 @@ export function PinLockDialog({
                 Cancel
               </Button>
               <Button
+                ref={saveRef}
                 type="submit"
                 variant={mode === "remove" ? "danger" : "accent"}
                 loading={update.isPending}

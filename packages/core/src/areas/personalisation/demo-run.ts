@@ -13,6 +13,9 @@ import { buildCatalogWrite } from "../../services/seed.ts";
 import { writeRecsVersion } from "./artefact-writer.ts";
 import type { RecommendationImportResult } from "./importer.ts";
 import type { PersonalisationService } from "./service.ts";
+import { DEMO_RUN_RECIPE, isDemoRun } from "./serving.ts";
+
+export { DEMO_RUN_RECIPE, isDemoRun };
 
 /**
  * A demo recommendation run (docs/RECOMMENDATIONS.md, "A demo run"): for showing learned serving
@@ -25,8 +28,6 @@ import type { PersonalisationService } from "./service.ts";
  * pipeline. Fresh for three days.
  */
 
-/** The run ids of demo runs end with this (a hex recipe, as the format requires). */
-export const DEMO_RUN_RECIPE = "de00de00";
 const DEMO_LIFETIME_MS = 3 * DAY_MS;
 const PERSONAL = 60;
 const TOP_PICKS = 30;
@@ -48,10 +49,6 @@ export interface DemoRunResult {
 export function demoRunId(now: number): string {
   const iso = new Date(now).toISOString();
   return `${iso.slice(0, 10).replaceAll("-", "")}-${iso.slice(11, 19).replaceAll(":", "")}-${DEMO_RUN_RECIPE}`;
-}
-
-export function isDemoRun(run: string): boolean {
-  return run.endsWith(`-${DEMO_RUN_RECIPE}`);
 }
 
 /**

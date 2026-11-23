@@ -99,13 +99,24 @@ describe("the consent prompt", () => {
     const analytics = within(prompt).getByRole("switch", { name: "Improving Webflix" });
     expect(personalisation).toHaveAttribute("aria-checked", "false");
     expect(analytics).toHaveAttribute("aria-checked", "false");
-    await userEvent.click(personalisation);
+    // Focus follows (UX review 2.7): into the choices, back to the button, into them again.
+    await waitFor(() => expect(personalisation).toHaveFocus());
+    await userEvent.click(within(prompt).getByRole("button", { name: "Back" }));
+    await waitFor(() =>
+      expect(within(prompt).getByRole("button", { name: "Choose for each use" })).toHaveFocus(),
+    );
+    await userEvent.click(within(prompt).getByRole("button", { name: "Choose for each use" }));
+    await userEvent.click(
+      within(prompt).getByRole("switch", { name: "Personalised recommendations" }),
+    );
     await userEvent.click(within(prompt).getByRole("button", { name: "Save choices" }));
     await waitFor(() => expect(updates).toHaveLength(2));
     expect(updates).toEqual([
       { purpose: "personalisation", granted: true, source: "banner" },
       { purpose: "analytics", granted: false, source: "banner" },
     ]);
+    // The prompt is gone: focus is on the page it stood in front of.
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("MAIN"));
   });
 
   it("can wait: 'Decide later' puts it off for this visit and records nothing", async () => {
@@ -202,7 +213,9 @@ describe("Account › Privacy", () => {
     expect(screen.getAllByText("On by default. Turn it off any time.")).toHaveLength(2);
     await userEvent.click(personalisation);
     await waitFor(() => expect(personalisation).toHaveAttribute("aria-checked", "false"));
-    await screen.findByText(/You turned this off on/);
+    await screen.findByText(/^Turned off by you on /);
+    // The switch keeps focus through the save (UX review 2.7).
+    expect(personalisation).toHaveFocus();
     await expectNoA11yViolations(container);
   });
 
@@ -212,10 +225,9 @@ describe("Account › Privacy", () => {
     await screen.findByText("Preparing your data");
     expect(screen.getByText(/You don't need to stay on this page/)).toBeInTheDocument();
     await screen.findByText("Your data is ready", {}, { timeout: 10_000 });
-    expect(screen.getByRole("link", { name: "Download your data" })).toHaveAttribute(
-      "href",
-      expect.stringMatching(/^\/api\/v1\/privacy\/exports\/.+\?token=/),
-    );
+    // A button now: the token goes in a POST's body, never in a URL (privacy review L3).
+    expect(screen.getByRole("button", { name: "Download your data" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Download your data" })).toBeNull();
   }, 15_000);
 
   it("explains deletion before it is asked for, schedules it, and keeping the account is one click", async () => {

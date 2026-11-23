@@ -1,34 +1,49 @@
 /**
  * Account › Privacy, "Delete your account". Everything the member needs to decide is on the page
- * before the button: when it happens, what goes, what the law makes Webflix keep, what happens
- * to the membership (its renewals stop, so nothing is charged during the cooling-off period),
- * all in this deployment's terms. Asking schedules the deletion after the cooling-off period (a
- * confirmation, then "Confirm it's you"); until then the account works as usual and keeping it
- * is one button, with no proof asked: the way back is always easier than the way out. A kept
- * account's membership stays set to end, and the section offers to resume it.
+ * before the button: when it happens, what goes, what Webflix keeps, and what deleting today
+ * would mean for the membership, all in this deployment's terms. Asking schedules the deletion
+ * after the cooling-off period (a confirmation, then "Confirm it's you"); until then the account
+ * works as usual and keeping it is one button, with no proof asked: the way back is always easier
+ * than the way out. A kept account's membership stays set to end; the section offers to resume it.
+ * Once the erasure has started (`processing`) nothing can stop it, and the section says only that.
+ *
+ * Every sentence about the membership comes from `membershipOutcome` (billing/outcome.ts), the
+ * one source Membership reads too (UX review 2.1): the explainer says what deleting *today* would
+ * do, the scheduled notice what the scheduled deletion does, and neither can disagree with the
+ * Membership page.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ApiError, type PrivacyRequest, type PrivacyRequestList } from "@webflix/contracts";
+import {
+  ApiError,
+  type MembershipState,
+  type PrivacyRequest,
+  type PrivacyRequestList,
+} from "@webflix/contracts";
 import { Button, ConfirmDialog, ErrorState, Skeleton, toast } from "@webflix/ui";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../../../../app/api.ts";
 import { describeError } from "../../../../app/query/errors.ts";
 import { qk } from "../../../../app/query/keys.ts";
-import { useAuthenticatedSession, useMembership } from "../../../../app/session/session.ts";
+import {
+  type MembershipView,
+  useAuthenticatedSession,
+  useMembership,
+} from "../../../../app/session/session.ts";
+import { BusyButton } from "../../../../app/telemetry/BusyButton.tsx";
+import { isDeletionScheduled } from "../../billing/deletion.tsx";
+import { endingNotice } from "../../billing/membership.ts";
+import { describeOutcome, membershipOutcome, type OutcomeContext } from "../../billing/outcome.ts";
+import { membershipToast } from "../../billing/toasts.ts";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../../shared/FormAlert.tsx";
-import { formatDateTime, formatLongDate, formatMoney } from "../../shared/format.ts";
+import { formatDateTime, formatLongDate } from "../../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../../shared/privileges.ts";
 import { AccountSection } from "../AccountLayout.tsx";
 import { useResumeMembership } from "../membership.ts";
+import { byId, focusAfterDialogs } from "./focus.ts";
 import {
-  isDeletionScheduledRefusal,
-  membershipBeforeDeletion,
-  membershipWhileScheduled,
-  periodEnd,
-} from "./deletionMembership.ts";
-import {
+  deletionInProgress,
   formatPeriod,
   privacyRequestsKey,
   privacyRequestsQuery,
@@ -36,16 +51,45 @@ import {
   scheduledDeletion,
 } from "./requests.ts";
 
-/**
- * Set when a deletion was just scheduled: the page moves this section to the top (a new
- * instance), whose scheduled notice then takes focus so a screen reader hears what happened.
- */
-let focusScheduledNotice = false;
+/** The section's heading id (`AccountSection` derives it from the title). */
+const HEADING_ID = "account-delete-your-account";
+
+/** Ids of what takes focus after scheduling and keeping (UX review 2.7). */
+const SCHEDULED_ID = "privacy-deletion-scheduled";
+const RESUME_ID = "privacy-membership-resume";
+
+/** The membership's facts, in the shared words, with what is said when it has none. */
+function membershipSentences(
+  view: MembershipView,
+  context: OutcomeContext,
+  options: { skipAccountDeleted?: boolean } = {},
+): string {
+  const outcome = membershipOutcome(view, context);
+  const { watching, charge } = describeOutcome(outcome);
+  const parts: string[] = [];
+  if (
+    watching &&
+    !(options.skipAccountDeleted && outcome.watchingEnds?.because === "account_deleted")
+  ) {
+    parts.push(watching);
+  }
+  if (charge) parts.push(charge);
+  if (parts.length === 0) {
+    return view.membership.status === "canceled"
+      ? "Your membership has already ended, so nothing is charged."
+      : view.membership.status === "none"
+        ? "You have no membership, so nothing is charged."
+        : "";
+  }
+  return parts.join(" ");
+}
 
 export function DeletionSection() {
   const demo = useIsDemoAccount();
+  const session = useAuthenticatedSession();
   const queryClient = useQueryClient();
-  const { membership } = useMembership();
+  const view = useMembership();
+  const price: OutcomeContext = { monthlyPrice: session.plan?.monthlyPrice ?? null };
   const requests = useQuery(privacyRequestsQuery());
   const [confirming, setConfirming] = useState(false);
   const identity = useConfirmIdentity({
@@ -64,15 +108,25 @@ export function DeletionSection() {
     mutationFn: () => identity.run(() => api().requestAccountDeletion()),
     meta: { silent: true },
     onSuccess: (created) => {
-      focusScheduledNotice = true;
       store((items) => [created, ...items.filter((item) => item.id !== created.id)]);
+      const membership = created.scheduledFor
+        ? membershipSentences(
+            view,
+            {
+              ...price,
+              deletion: { scheduledFor: created.scheduledFor, membership: created.membership },
+            },
+            { skipAccountDeleted: true },
+          )
+        : "";
       toast.success("Your account deletion is scheduled", {
         description: created.scheduledFor
-          ? `It happens on ${formatLongDate(created.scheduledFor)}. You can keep your account until then.`
+          ? `It happens on ${formatLongDate(created.scheduledFor)}. ${membership}`.trim()
           : undefined,
       });
       // Its renewals stopped: the session's membership changed too.
       void queryClient.invalidateQueries({ queryKey: qk.session() });
+      focusAfterDialogs(byId(SCHEDULED_ID));
     },
     onError: (error) => {
       if (error instanceof IdentityNotConfirmed) return;
@@ -87,8 +141,7 @@ export function DeletionSection() {
   const keep = useMutation({
     mutationFn: () => api().cancelAccountDeletion(),
     meta: { silent: true },
-    onSuccess: () => {
-      const ending = scheduled?.membership?.status === "ending";
+    onSuccess: async () => {
       store((items) =>
         items.map((item) =>
           item.kind === "deletion" && item.status === "scheduled"
@@ -96,43 +149,45 @@ export function DeletionSection() {
             : item,
         ),
       );
+      // The membership as it now stands (still set to end, when the deletion stopped it).
       toast.success("Your account is staying", {
-        description: ending
-          ? "Nothing will be deleted. Your membership is still set to end: you can resume it here."
-          : "Nothing will be deleted.",
+        description: `Nothing will be deleted. ${membershipSentences(view, price)}`.trim(),
       });
+      void queryClient.invalidateQueries({ queryKey: qk.session() });
+      // Only the list says whether the membership can be resumed (the answer is empty): read it
+      // first, so focus lands on the resume notice when there is one, else the section's heading.
+      await queryClient.invalidateQueries({ queryKey: privacyRequestsKey() });
+      const list = queryClient.getQueryData<PrivacyRequestList>(privacyRequestsKey());
+      focusAfterDialogs(byId(list && resumableAfterDeletion(list.items) ? RESUME_ID : HEADING_ID));
     },
     onError: (error) => {
+      void queryClient.invalidateQueries({ queryKey: privacyRequestsKey() });
       // Already cancelled (another tab): the list shows the truth once refetched.
       if (ApiError.is(error, "not_found")) return;
       toast.error("We couldn't cancel the deletion", {
         description: describeMemberError(error).description,
       });
     },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: privacyRequestsKey() }),
   });
 
   const terms = requests.data?.terms;
+  const inProgress = requests.data ? deletionInProgress(requests.data.items) : undefined;
   const scheduled = requests.data ? scheduledDeletion(requests.data.items) : undefined;
   const resumable = requests.data ? resumableAfterDeletion(requests.data.items) : undefined;
-  const scheduledRef = useCallback((element: HTMLDivElement | null) => {
-    if (element && focusScheduledNotice) {
-      focusScheduledNotice = false;
-      element.focus();
-    }
-  }, []);
   const deleteOn = terms
     ? new Date(Date.now() + terms.deletionCoolingOffSec * 1000).toISOString()
     : null;
-  const membershipLine = deleteOn ? membershipBeforeDeletion(membership, deleteOn) : null;
-  // Only a membership that still renews can be stopped without deleting anything.
-  const offerCancelInstead =
-    ["trialing", "active", "past_due"].includes(membership.status) && !membership.cancelAtPeriodEnd;
+  // "If you delete today": what a deletion scheduled now would mean (conditional, never a fact).
+  const ifToday = deleteOn
+    ? membershipSentences(view, { ...price, deletion: { scheduledFor: deleteOn } })
+    : "";
+  // Only a membership that is still going to charge can be stopped without deleting anything.
+  const offerCancelInstead = membershipOutcome(view, price).nextCharge !== null;
 
   return (
     <AccountSection
       title="Delete your account"
-      description="Permanently delete your Webflix account and everything in it."
+      description="Permanently delete your Webflix account and your personal data, apart from the few records listed under What we keep."
     >
       {requests.isPending ? (
         <div className="flex flex-col gap-3" aria-busy="true">
@@ -151,26 +206,44 @@ export function DeletionSection() {
             </Button>
           }
         />
+      ) : inProgress ? (
+        <DeletionUnderway request={inProgress} />
       ) : scheduled ? (
         <FormAlert
-          ref={scheduledRef}
+          id={SCHEDULED_ID}
           title={`Your account will be deleted on ${formatLongDate(scheduled.scheduledFor)}`}
           action={
-            <Button variant="primary" loading={keep.isPending} onClick={() => keep.mutate()}>
+            <BusyButton variant="primary" busy={keep.isPending} onClick={() => keep.mutate()}>
               Keep my account
-            </Button>
+            </BusyButton>
           }
         >
           You asked on {formatDateTime(scheduled.requestedAt)}. Until{" "}
           {formatDateTime(scheduled.scheduledFor)} everything works as usual and you can change your
           mind here. After that, it can't be undone.
-          {membershipWhileScheduled(scheduled.membership) ? (
-            <span className="mt-2 block">{membershipWhileScheduled(scheduled.membership)}</span>
+          <span className="mt-2 block">
+            {membershipSentences(
+              view,
+              {
+                ...price,
+                deletion: {
+                  scheduledFor: scheduled.scheduledFor,
+                  membership: scheduled.membership,
+                },
+              },
+              { skipAccountDeleted: true },
+            )}
+          </span>
+          {scheduled.email === "sent" || scheduled.email === "pending" ? (
+            <span className="mt-2 block">
+              {scheduled.email === "sent" ? "We emailed" : "We'll email"} {session.account.email}{" "}
+              the date and how to keep your account.
+            </span>
           ) : null}
         </FormAlert>
       ) : !terms ? null : (
         <div className="flex flex-col gap-5">
-          {resumable ? <ResumeMembership endsAt={resumable.membership.endsAt} /> : null}
+          {resumable ? <ResumeMembership view={view} price={price} /> : null}
           <dl className="flex flex-col gap-4 type-body-sm text-fg-muted">
             <div className="flex flex-col gap-1 sm:grid sm:grid-cols-[10rem_1fr] sm:gap-x-6">
               <dt className="type-label text-fg">When you ask</dt>
@@ -185,22 +258,34 @@ export function DeletionSection() {
                 After {formatPeriod(terms.deletionCoolingOffSec)}
               </dt>
               <dd>
-                We delete your account and sign-in details, every profile with its My List, ratings,
-                viewing history and Continue Watching, your devices, your privacy choices and the
-                activity Webflix recorded. This can't be undone.
+                You're signed out everywhere, and we delete your account and sign-in details, every
+                profile with its My List, ratings, viewing history, Continue Watching and the
+                recommendations made for it, your devices, your privacy choices and the activity
+                Webflix recorded. This can't be undone: signing in with your email address won't
+                work any more, and the address can be used for a new account.
               </dd>
             </div>
             <div className="flex flex-col gap-1 sm:grid sm:grid-cols-[10rem_1fr] sm:gap-x-6">
               <dt className="type-label text-fg">What we keep</dt>
               <dd>
-                Only what the law requires: your invoices, payments and refunds, and a record that
-                you asked us to delete your account.
+                <ul className="flex list-disc flex-col gap-1 ps-4">
+                  <li>Your invoices, payments and refunds, which the law requires us to keep.</li>
+                  <li>A record that you asked us to delete your account.</li>
+                  <li>
+                    If a card was used for a free trial, a fingerprint of that card with nothing
+                    linking it to you, so it can't start another free trial.
+                  </li>
+                  <li>
+                    The record of what our staff did on your account, showing you as "Erased
+                    member", with no email address.
+                  </li>
+                </ul>
               </dd>
             </div>
             <div className="flex flex-col gap-1 sm:grid sm:grid-cols-[10rem_1fr] sm:gap-x-6">
               <dt className="type-label text-fg">Your membership</dt>
               <dd>
-                {membershipLine}
+                {ifToday ? `If you delete your account today: ${ifToday}` : null}
                 {offerCancelInstead ? (
                   <>
                     {" "}
@@ -227,14 +312,14 @@ export function DeletionSection() {
             </p>
           )}
           <div>
-            <Button
+            <BusyButton
               variant="outline"
               disabled={demo}
-              loading={schedule.isPending}
+              busy={schedule.isPending}
               onClick={() => setConfirming(true)}
             >
               Delete my account
-            </Button>
+            </BusyButton>
           </div>
         </div>
       )}
@@ -244,7 +329,11 @@ export function DeletionSection() {
         title="Delete your account?"
         description={
           deleteOn
-            ? `It will be deleted on ${formatLongDate(deleteOn)}. ${membershipLine ?? ""} Until then it works as usual and you can keep it from Account › Privacy. You'll be asked to confirm it's you.`
+            ? `It will be deleted on ${formatLongDate(deleteOn)}. ${membershipSentences(
+                view,
+                { ...price, deletion: { scheduledFor: deleteOn } },
+                { skipAccountDeleted: true },
+              )} Until then it works as usual and you can keep it from Account › Privacy. You'll be asked to confirm it's you.`
             : undefined
         }
         confirmLabel="Delete my account"
@@ -261,49 +350,74 @@ export function DeletionSection() {
 }
 
 /**
- * The account was kept after its deletion stopped the membership's renewals: the membership is
- * still set to end. One clear action resumes it, saying what that means for the next bill.
+ * The erasure has started: the account is locked (every session ended, no sign-in), it cannot be
+ * kept any more, and the server retries it until it is done. Nothing here can change that, so
+ * nothing is offered.
  */
-function ResumeMembership({ endsAt }: { endsAt: string | null }) {
-  const session = useAuthenticatedSession();
-  const { membership } = useMembership();
+function DeletionUnderway({ request }: { request: PrivacyRequest }) {
+  return (
+    <FormAlert tone="info" title="We're deleting your account">
+      {request.scheduledFor
+        ? `It started on ${formatDateTime(request.scheduledFor)} and can't be stopped now. `
+        : "It can't be stopped now. "}
+      You're signed out everywhere, and you won't be able to sign in again. Once it's done, your
+      email address can be used for a new account.
+    </FormAlert>
+  );
+}
+
+/**
+ * The account was kept after its deletion stopped the membership's renewals: the membership is
+ * still set to end. One clear action resumes it, saying what that means for the next bill, in the
+ * Membership page's own words (`endingNotice`, `describeOutcome`).
+ */
+function ResumeMembership({ view, price }: { view: MembershipView; price: OutcomeContext }) {
   const queryClient = useQueryClient();
   const resume = useResumeMembership({
-    onSuccess: () => {
+    onSuccess: (_membership, fresh) => {
       void queryClient.invalidateQueries({ queryKey: privacyRequestsKey() });
-      toast.success("Your membership will continue", {
-        description: "It renews as before. Nothing else changes.",
-      });
+      const charge = fresh
+        ? describeOutcome(
+            membershipOutcome(fresh.view, {
+              monthlyPrice: fresh.details.plan?.monthlyPrice ?? null,
+            }),
+          ).charge
+        : null;
+      membershipToast("Your membership will continue", charge ?? undefined);
+      // The notice that held the button is gone: focus the section's heading.
+      focusAfterDialogs(byId(HEADING_ID));
     },
   });
-  const refused = isDeletionScheduledRefusal(resume.error);
+  const refused = isDeletionScheduled(resume.error);
   useEffect(() => {
     // The deletion was scheduled again elsewhere: the page shows that state once it refetches.
     if (refused) void queryClient.invalidateQueries({ queryKey: privacyRequestsKey() });
   }, [refused, queryClient]);
-  const renewsOn = periodEnd(membership) ?? endsAt;
-  const ends = endsAt ?? renewsOn;
+  const notice = endingNotice(view);
+  // What resuming would mean: the same membership, renewing again.
+  const resumed: MembershipView = {
+    ...view,
+    membership: { ...view.membership, cancelAtPeriodEnd: false } satisfies MembershipState,
+  };
+  const next = describeOutcome(membershipOutcome(resumed, price)).charge;
   return (
     <FormAlert
+      id={RESUME_ID}
       tone="info"
-      title={
-        ends ? `Your membership ends on ${formatLongDate(ends)}` : "Your membership is set to end"
-      }
+      title={notice?.title ?? "Your membership is set to end"}
       action={
-        <Button
+        <BusyButton
           variant="primary"
           size="sm"
-          loading={resume.isPending}
+          busy={resume.isPending}
           onClick={() => resume.mutate()}
         >
           Resume membership
-        </Button>
+        </BusyButton>
       }
     >
-      Deleting your account stopped its renewals, and keeping your account doesn't restart them.
-      {renewsOn && session.plan
-        ? ` Resume it to keep watching: it renews on ${formatLongDate(renewsOn)} at ${formatMoney(session.plan.monthlyPrice)} a month, as before.`
-        : " Resume it to keep watching: it renews as before."}
+      {notice?.body ?? ""} Deleting your account stopped its renewals, and keeping your account
+      doesn't restart them.{next ? ` If you resume it: ${next}` : ""}
       {resume.isError ? (
         <span role="alert" className="mt-2 block text-danger">
           {refused

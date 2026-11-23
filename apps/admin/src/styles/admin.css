@@ -1,3 +1,17 @@
 /* The design system (Tailwind preflight + utilities, tokens, fonts, component CSS). Console code
    styles with token utilities only. */
 @import "@webflix/ui/styles.css";
+
+/* The boot message in index.html, until the console renders. Here rather than inline in the
+   document, which carries no inline style (its Content-Security-Policy needs 'unsafe-inline'
+   only for the style elements Radix inserts at run time). The built stylesheet is linked in the
+   document's head, so it applies before the first paint. */
+.boot {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  font:
+    500 0.875rem / 1.4 system-ui,
+    sans-serif;
+  color: var(--color-fg-muted);
+}

@@ -12,6 +12,14 @@ if (!existsSync(`${assets}/index.html`)) {
   mkdirSync(assets, { recursive: true });
   writeFileSync(`${assets}/index.html`, '<!doctype html><div id="root"></div>\n');
 }
+// And the staff console, staged under /admin/ (scripts/lib/assets.ts).
+if (!existsSync(`${assets}/admin/index.html`)) {
+  mkdirSync(`${assets}/admin`, { recursive: true });
+  writeFileSync(
+    `${assets}/admin/index.html`,
+    '<!doctype html><title>Webflix Staff</title><div id="root"></div>\n',
+  );
+}
 
 /**
  * Two runtimes:

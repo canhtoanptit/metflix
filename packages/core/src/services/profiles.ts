@@ -219,6 +219,14 @@ export function createProfileService(
       if (proofForProfileDeletion(auth, profile) === "unlock") {
         await credentials.requireUnlock(auth, profile, input, charge);
       }
+      // A deleted profile's behaviour leaves the lake and the training data, and its stored
+      // recommendation lists go (privacy review): the same seam as a profile becoming
+      // restricted, its key derived from the id, queued before the row goes (a lost erasure
+      // would be invisible, an extra one only forgets more). Never for the last profile, which
+      // is not deleted.
+      if ((await repos.profiles.list(accountId)).length > 1) {
+        await seams?.forgetProfileBehaviour({ accountId, profileId });
+      }
       const outcome = await repos.profiles.deleteUnlessLast(accountId, profileId);
       if (outcome === "not_found") throw new AppError("not_found", { detail: "No such profile" });
       if (outcome === "last") throw new AppError("profile_last_remaining");

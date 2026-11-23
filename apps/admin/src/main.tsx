@@ -1,3 +1,5 @@
+// First: before any module that may load zod (zod-jitless.ts says why).
+import "./zod-jitless.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Boot } from "./app/Boot.tsx";

@@ -56,7 +56,7 @@ def steps_table(reports: Path) -> str:
             "publish": lambda s: f"pointer to {s.get('run')}",
             "validate": lambda s: f"valid: {s.get('valid')}",
             "analyse-experiments": lambda s: f"{s.get('experiments')}",
-        }.get(path.stem, lambda s: "")(step)
+        }.get(path.stem.rstrip("0123456789").rstrip("-"), lambda s: "")(step)
         lines.append(
             f"| {path.stem} | {step.get('wallSeconds')} | {step.get('maxRssMb')} | {what} |"
         )
@@ -69,6 +69,24 @@ def main(reports_dir: str) -> None:
     experiments = _load(reports / "experiments.json")
     out = ["# Recommendation pipeline: local run summary", ""]
     out += ["## Steps", "", steps_table(reports), ""]
+    gate_rows = sorted(reports.glob("evaluation-*.json"), key=lambda p: int(p.stem.split("-")[1]))
+    if gate_rows:
+        out += [
+            "## Gate across rolling cutoffs",
+            "",
+            "| Cutoff | Profiles | learned-home - rule-engine-home | learned - rule-engine | Passed |",
+            "|---|---|---|---|---|",
+        ]
+        for path in gate_rows:
+            report = orjson.loads(path.read_bytes())
+            component = report.get("differencesVsRuleEngine", {}).get("learned", {})
+            out.append(
+                f"| {report['cutoff']} | {report['profiles']} | "
+                f"{_interval(report['gate'].get('difference'))} | "
+                f"{_interval(component.get(report['gate']['metric']))} | "
+                f"{'yes' if report['gate'].get('passed') else 'no'} |"
+            )
+        out.append("")
     if evaluation:
         out += [
             f"## Offline evaluation (cutoff {evaluation['cutoff']}, test window to {evaluation['testWindowEnd']})",
@@ -81,18 +99,24 @@ def main(reports_dir: str) -> None:
             "",
             markdown_table(evaluation),
             "",
-            "### Paired differences against the rule engine",
-            "",
-            "| System | Utility@10 | NDCG@10 | Search NDCG@10 | Recall@20 |",
-            "|---|---|---|---|---|",
         ]
-        for system, values in evaluation["differencesVsRuleEngine"].items():
-            out.append(
-                f"| {system} | {_interval(values.get('utility@10'))} | {_interval(values.get('ndcg@10'))} "
-                f"| {_interval(values.get('search:ndcg@10'))} | {_interval(values.get('recall@20'))} |"
-            )
+        for title, key in (
+            ("the rule engine's home page (the gate's baseline)", "differencesVsRuleEngineHome"),
+            ("the rule engine's score order", "differencesVsRuleEngine"),
+        ):
+            out += [
+                f"### Paired differences against {title}",
+                "",
+                "| System | Utility@10 | NDCG@10 | Search NDCG@10 | Recall@20 |",
+                "|---|---|---|---|---|",
+            ]
+            for system, values in evaluation.get(key, {}).items():
+                out.append(
+                    f"| {system} | {_interval(values.get('utility@10'))} | {_interval(values.get('ndcg@10'))} "
+                    f"| {_interval(values.get('search:ndcg@10'))} | {_interval(values.get('recall@20'))} |"
+                )
+            out.append("")
         out += [
-            "",
             "### Ablations (paired)",
             "",
             "| Change | Utility@10 | NDCG@10 | Search NDCG@10 | Diversity@10 | Novelty@10 |",

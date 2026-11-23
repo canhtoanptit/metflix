@@ -97,6 +97,9 @@ export interface InvoicesTable {
   period_end: number | null;
   hosted_url: string | null;
   pdf_url: string | null;
+  /** 0026. */
+  credit_applied_minor: number | null;
+  discount_minor: number | null;
   issued_at: number;
   paid_at: number | null;
   updated_at: number;
@@ -158,6 +161,11 @@ export interface CheckoutsTable {
   provider_payment_method_id: string | null;
   trial_fingerprint: string | null;
   attempt: number | null;
+  /** 0021: the client secret while the browser has something to confirm. */
+  client_secret: string | null;
+  /** 0026: why the amount due is below the price. */
+  credit_applied_minor: number | null;
+  discount_minor: number | null;
 }
 
 export interface PaymentMethodSetupsTable {
@@ -171,6 +179,9 @@ export interface PaymentMethodSetupsTable {
   /** 0008. */
   provider_payment_method_id: string | null;
   attempt: number | null;
+  /** 0021: the setup's client secret, and why it failed. */
+  client_secret: string | null;
+  failure_reason: string | null;
 }
 
 export interface PaymentsFakeObjectsTable {

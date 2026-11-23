@@ -4,8 +4,29 @@
  * a staff member without a role, the API being down, and where tokens are (memory only).
  */
 import AxeBuilder from "@axe-core/playwright";
-import { addLockedProfile, adminPath, createMember, signInToConsole } from "./admin-helpers.ts";
+import type { Page } from "@playwright/test";
+import {
+  addLockedProfile,
+  adminPath,
+  createMember,
+  signInToConsole,
+  startTrial,
+} from "./admin-helpers.ts";
+import { CLIENT_HEADERS } from "./api.ts";
 import { expect, test } from "./fixtures.ts";
+
+const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+
+async function axeViolations(page: Page, label: string): Promise<string[]> {
+  // Measured at rest: a dialog fading in has every colour at part opacity.
+  await page.waitForFunction(() =>
+    document.getAnimations().every((animation) => animation.playState !== "running"),
+  );
+  const results = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+  return results.violations.map(
+    (violation) => `${label}: ${violation.id} (${violation.nodes.length})`,
+  );
+}
 
 const STAFF_API = "/api/admin/v1/";
 
@@ -161,17 +182,56 @@ test("console screens pass automated accessibility checks", async ({ page }) => 
     "experiments/new",
     "operations/health",
     "operations/audit",
+    "operations/audit?show=all",
+    "activity",
   ]) {
     await page.goto(adminPath(path));
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await page.waitForLoadState("networkidle");
-    const results = await new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
-      .analyze();
-    expect(
-      results.violations.map((violation) => `${path}: ${violation.id} (${violation.nodes.length})`),
-    ).toEqual([]);
+    expect(await axeViolations(page, path)).toEqual([]);
   }
+  // An entry opened, in words, with its details.
+  await page.goto(adminPath("operations/audit?show=all"));
+  await page
+    .getByRole("button", { name: /^Details of / })
+    .first()
+    .click();
+  expect(await axeViolations(page, "audit entry opened")).toEqual([]);
+});
+
+test("a support agent's screens, with the actions they can't use, pass automated accessibility checks", async ({
+  page,
+}) => {
+  const member = await createMember("a11y-support");
+  await startTrial(member);
+  const answered = await member.api.put("/api/v1/privacy/consent", {
+    headers: CLIENT_HEADERS,
+    data: { purpose: "analytics", granted: true, source: "settings" },
+  });
+  expect(answered.status()).toBe(200);
+  await signInToConsole(page, "staff-support");
+  // The overview names the areas of other roles, quietly.
+  await expect(page.getByRole("list", { name: "Areas for other roles" })).toContainText(
+    "Operations: needs the Admin role",
+  );
+  expect(await axeViolations(page, "overview")).toEqual([]);
+  await page.goto(adminPath(`members/${member.accountId}`));
+  await expect(page.getByRole("button", { name: "Extend trial" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  await page.getByRole("button", { name: "Show privacy details" }).click();
+  await expect(page.getByRole("button", { name: "Record a withdrawal" })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(await axeViolations(page, "member, billing locked")).toEqual([]);
+  await page.getByRole("button", { name: "Record a withdrawal" }).click();
+  await expect(page.getByRole("dialog", { name: "Record a consent withdrawal" })).toBeVisible();
+  expect(await axeViolations(page, "consent withdrawal dialog")).toEqual([]);
+  await page.keyboard.press("Escape");
+  await page.goto(adminPath("activity?show=all"));
+  await expect(page.getByRole("heading", { level: 1, name: "Your actions" })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(await axeViolations(page, "your actions")).toEqual([]);
 });
 
 test("fits a phone: no console screen scrolls sideways at 360px", async ({ page }) => {
@@ -195,6 +255,8 @@ test("fits a phone: no console screen scrolls sideways at 360px", async ({ page 
     "operations/recommendations",
     "operations/privacy",
     "operations/audit",
+    "operations/audit?show=all",
+    "activity",
   ]) {
     await page.goto(adminPath(path));
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();

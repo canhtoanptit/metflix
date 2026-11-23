@@ -14,11 +14,12 @@
  *   node scripts/ops.ts recs import [--run <r>] [--from <dir>] import a run from outside the Worker
  *   node scripts/ops.ts recs import --demo [--replace]       publish and import a demo run (local)
  *   node scripts/ops.ts recs status | recs rollback
- *   node scripts/ops.ts jobs export|erase|compact|run   the pipeline's privacy jobs against the
- *                                                       running local Worker (lib/pipeline-jobs.ts)
+ *   node scripts/ops.ts jobs export|erase|compact|retain|run   the pipeline's lake jobs against
+ *                                                       the running local Worker (lib/pipeline-jobs.ts)
  *
  * Every command is idempotent. See docs/CLOUDFLARE.md for how they fit together.
  */
+import { readFileSync } from "node:fs";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -26,6 +27,7 @@ import { unstable_readConfig } from "wrangler";
 import { GENERATION_PROPAGATION_MS, MEDIA_GENERATION_KEY } from "../src/media-generation.ts";
 import { stageAssets } from "./lib/assets.ts";
 import { publishMedia } from "./lib/generation.ts";
+import { localWorkerVars, workerRetention } from "./lib/lake-jobs.ts";
 import { mediaStore, mediaUpToDate, pickProfile, uploadMedia } from "./lib/media.ts";
 import {
   compactRoundTrip,
@@ -33,6 +35,7 @@ import {
   dueRoundTrips,
   eraseRoundTrip,
   exportEventsRoundTrip,
+  retainRoundTrip,
 } from "./lib/pipeline-jobs.ts";
 import {
   DEFAULT_INSTANCE,
@@ -45,6 +48,7 @@ import {
   type Target,
   WRANGLER_CONFIG,
 } from "./lib/platform.ts";
+import type { DevServerRecord } from "./lib/processes.ts";
 import {
   importDemoRun,
   importRun,
@@ -65,7 +69,10 @@ const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status|dev-
   jobs export                 pending data exports: webflix-recs export-events, results posted
   jobs erase                  pending erasures: webflix-recs erase, written back to R2, confirmed
   jobs compact                compact the local lake's closed hours, written back to R2
-  jobs run                    what is due: erase, then export (both no-ops when nothing is pending)
+  jobs retain                 delete what the Worker's retention periods no longer cover, in the
+                              store and in R2 (--dry-run: the plan only; --now: as if then)
+  jobs run                    what is due: erase, then export (both no-ops when nothing is pending),
+                              then retain once a day
                               (jobs run beside the dev server, through its Local Explorer API)
 
   --target local|production   bindings to use (default local: the wrangler dev state)
@@ -91,7 +98,8 @@ const USAGE = `Usage: node scripts/ops.ts <assets|media|seed|prepare|status|dev-
   --run <run>                 recs: a version (recs/v=<run>/) instead of the published pointer
   --from <dir>                recs import: read artefacts from a pipeline store, not R2
   --grace-minutes <n>         jobs export / compact: the pipeline's grace (default 15)
-  --now <iso>                 jobs compact: compact as if it were then
+  --now <iso>                 jobs compact / retain: as if it were then
+  --dry-run                   jobs retain: report what would go, delete nothing
   --delete-sources            jobs compact: delete raw objects a manifest covers
   --recs-bin <path>           jobs: the pipeline's CLI (default services/recs/.venv/bin/webflix-recs)
   --no-media                  seed: ignore packaged media (every title plays the external
@@ -248,6 +256,7 @@ async function jobsCommand(
     "grace-minutes"?: string | undefined;
     now?: string | undefined;
     "delete-sources": boolean;
+    "dry-run": boolean;
     "recs-bin"?: string | undefined;
   },
 ): Promise<number> {
@@ -263,6 +272,25 @@ async function jobsCommand(
   };
   const graceMinutes = values["grace-minutes"] === undefined ? 15 : Number(values["grace-minutes"]);
   const print = (label: string, result: unknown) => say(`${label}: ${JSON.stringify(result)}`);
+  // The retention periods the running Worker has: its vars, .dev.vars, and the dev server's own
+  // --var overrides (recorded in the state directory by scripts/dev.ts).
+  const periods = () => {
+    let record: DevServerRecord | null = null;
+    try {
+      record = JSON.parse(
+        readFileSync(join(instance.state, "dev-server.json"), "utf8"),
+      ) as DevServerRecord;
+    } catch {
+      record = null;
+    }
+    return workerRetention(
+      localWorkerVars({
+        configPath: WRANGLER_CONFIG,
+        devVarsPath: join(EDGE_DIR, ".dev.vars"),
+        overrides: record?.vars,
+      }),
+    );
+  };
   switch (sub) {
     case "export":
       print("jobs export", await exportEventsRoundTrip(context, { graceMinutes }));
@@ -280,14 +308,26 @@ async function jobsCommand(
         }),
       );
       return 0;
+    case "retain":
+      print(
+        "jobs retain",
+        await retainRoundTrip(context, {
+          periods: periods(),
+          dryRun: values["dry-run"],
+          ...(values.now ? { now: values.now } : {}),
+        }),
+      );
+      return 0;
     case "run": {
-      const result = await dueRoundTrips(context, { graceMinutes });
+      const result = await dueRoundTrips(context, { graceMinutes, periods: periods() });
       // Quiet when there was nothing to do: the dev server's loop calls this every few seconds.
-      if (result.erase.pending > 0 || result.exports.pending > 0) print("jobs run", result);
+      if (result.erase.pending > 0 || result.exports.pending > 0 || result.retain) {
+        print("jobs run", result);
+      }
       return 0;
     }
     default:
-      return usage("jobs <export|erase|compact|run>");
+      return usage("jobs <export|erase|compact|retain|run>");
   }
 }
 
@@ -320,17 +360,21 @@ async function recsCommand(
       });
       return 0;
     }
-    case "import":
+    case "import": {
+      // Imported, but the shared cache (KV) was never told after retries: exit 3, as the Node
+      // importer does (every isolate serves the new model within its 30 s age bound).
+      let told = true;
       if (values.demo) {
         await withPlatform(target, instance, async (platform) => {
           const { demo, imported } = await importDemoRun(platform, {
             replace: values.replace === true,
           });
+          told = imported.cacheInvalidated !== false;
           say(
             `recs demo run ${demo.run} (lists for ${demo.profiles.map((p) => p.profileId).join(", ")}; none for ${demo.skipped.join(", ") || "-"}): ${JSON.stringify(imported)}`,
           );
         });
-        return 0;
+        return told ? 0 : 3;
       }
       await withPlatform(target, instance, async (platform) => {
         const started = Date.now();
@@ -338,11 +382,13 @@ async function recsCommand(
           ...(values.run ? { run: values.run } : {}),
           ...(values.from ? { from: resolve(values.from) } : {}),
         });
+        told = result.cacheInvalidated !== false;
         say(
           `recs import (${platform.target}, ${Date.now() - started} ms): ${JSON.stringify(result)}`,
         );
       });
-      return 0;
+      return told ? 0 : 3;
+    }
     case "status":
       await withPlatform(target, instance, async (platform) => {
         say(
@@ -383,6 +429,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       "grace-minutes": { type: "string" },
       now: { type: "string" },
       "delete-sources": { type: "boolean", default: false },
+      "dry-run": { type: "boolean", default: false },
       "recs-bin": { type: "string" },
       run: { type: "string" },
       from: { type: "string" },

@@ -5,6 +5,7 @@ import {
   requireAccountHolder as assertAccountHolder,
   type ChargeCredentialCheck,
   type StaffIdentity,
+  serializeError,
   staffHasRole,
   type Viewer,
 } from "@webflix/core";
@@ -121,8 +122,11 @@ const ACCOUNT_KEYED_POLICIES: ReadonlySet<RateLimitPolicyName> = new Set([
   "profile-pin",
   "payment",
   "playback-start",
-  // Milestone 2 (billing): promo-code lookups per account (docs/BACKEND.md §3).
+  // Milestone 2 (billing): promo-code lookups, provider-calling requests and polls' provider
+  // reads, per account (docs/BACKEND.md §3).
   "promotion",
+  "billing",
+  "billing-refresh",
 ]);
 
 /**
@@ -159,6 +163,26 @@ export async function enforceRateLimit(
   );
   if (!decision.allowed) {
     throw new AppError("rate_limited", { retryAfterSec: decision.retryAfterSec });
+  }
+}
+
+/**
+ * Consume one unit of `policy` if there is one, without refusing: true when the request may do
+ * what the policy meters (a poll reading the provider), false when it should answer without it,
+ * also when the limiter cannot be asked (a poll then answers from stored state, never an error).
+ */
+export async function tryRateLimit(
+  container: AppContainer,
+  c: AppContext,
+  policy: RateLimitPolicyName,
+): Promise<boolean> {
+  const key = await rateLimitKey(container, c, policy);
+  try {
+    const decision = await container.rateLimiter.consume(container.config.rateLimits[policy], key);
+    return decision.allowed;
+  } catch (error) {
+    container.logger.warn("rate_limit.unavailable", { policy, error: serializeError(error) });
+    return false;
   }
 }
 

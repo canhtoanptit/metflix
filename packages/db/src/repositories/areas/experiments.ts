@@ -216,5 +216,37 @@ export function createExperimentsRepository(database: Database): ExperimentsRepo
         )
         .execute();
     },
+
+    async pruneResults(before, limit) {
+      // The oldest first, then deleted by key: 2 bound parameters a row, 45 rows a statement.
+      const rows = await db
+        .selectFrom("experiment_results")
+        .select(["experiment_key", "computed_at"])
+        .where("computed_at", "<", before)
+        .orderBy("computed_at")
+        .orderBy("experiment_key")
+        .limit(limit)
+        .execute();
+      for (let index = 0; index < rows.length; index += PRUNE_CHUNK) {
+        const chunk = rows.slice(index, index + PRUNE_CHUNK);
+        await db
+          .deleteFrom("experiment_results")
+          .where((eb) =>
+            eb.or(
+              chunk.map((row) =>
+                eb.and([
+                  eb("experiment_key", "=", row.experiment_key),
+                  eb("computed_at", "=", row.computed_at),
+                ]),
+              ),
+            ),
+          )
+          .execute();
+      }
+      return rows.length;
+    },
   };
 }
+
+/** Reports deleted per statement (2 bound parameters each, under D1's 100). */
+const PRUNE_CHUNK = 45;

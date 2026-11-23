@@ -133,7 +133,9 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
   }
 
   let discovery: { value: Discovery; fetchedAt: number } | null = null;
-  let appleKey: Promise<CryptoKey> | null = null;
+  // The imported key, not a promise of it (docs/CLOUDFLARE.md §2: no promise shared between
+  // requests); two first uses may both import.
+  let appleKey: CryptoKey | null = null;
 
   /** One JSON document from the issuer (deadline, size cap); `provider_unavailable` otherwise. */
   async function issuerJson(
@@ -309,7 +311,7 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
       case "client_secret_post":
         return { headers: {}, body: { client_id: options.clientId, client_secret: auth.secret } };
       case "apple_client_secret": {
-        appleKey ??= importEs256SigningKey(auth.privateKey);
+        appleKey ??= await importEs256SigningKey(auth.privateKey);
         const nowSec = Math.floor(clock.now() / 1000);
         const secret = await signEs256(
           { kid: auth.keyId },
@@ -320,7 +322,7 @@ export function createOidcIdentityProvider(options: OidcProviderOptions): Identi
             iat: nowSec,
             exp: nowSec + 300,
           },
-          await appleKey,
+          appleKey,
         );
         return { headers: {}, body: { client_id: options.clientId, client_secret: secret } };
       }

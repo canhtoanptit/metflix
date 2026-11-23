@@ -33,7 +33,10 @@
       // Milestone 2: the development issuer (answers 404 in production) and the fake
       // provider's payment form (billing area).
       "/dev-idp/*",
-      "/_pay/*"
+      "/_pay/*",
+      // The staff console's settings (src/admin-console.ts); its files are static assets under
+      // /admin/, and its client-side routes reach the Worker as misses (src/spa.ts).
+      "/admin/config.json"
     ]
   },
 
@@ -98,6 +101,10 @@
     "WEBFLIX_RELEASE": "local",
     // Behaviour events: gzip NDJSON objects in R2 under events/ (written by the queue consumer).
     "WEBFLIX_EVENT_SINK": "lake",
+    // Who runs the lake's jobs (erase, export-events, retain, compact) outside Workers. Read by
+    // the production deploy only (scripts/lib/lake-jobs.ts); locally they are the make cf-*
+    // targets and the CF_JOBS_EVERY loop.
+    "WEBFLIX_LAKE_JOBS": "",
     // Email: recorded in D1 (`email_outbox`), read back by /diagnostics/mailbox from any isolate.
     "WEBFLIX_EMAIL_SENDER": "outbox",
     "WEBFLIX_EMAIL_FROM": "",
@@ -188,7 +195,8 @@
           "/healthz",
           "/readyz",
           "/dev-idp/*",
-          "/_pay/*"
+          "/_pay/*",
+          "/admin/config.json"
         ]
       },
       // Guard rail against runaway CPU. The heaviest legitimate request is a sign-in for an
@@ -215,6 +223,11 @@
         // Empty here: `make cf-deploy` passes the deployed commit (--var WEBFLIX_RELEASE:…).
         "WEBFLIX_RELEASE": "",
         "WEBFLIX_EVENT_SINK": "lake",
+        // `scheduled` once a runner of the lake's jobs is set up as docs/CLOUDFLARE.md §10.4
+        // describes. Empty: a deploy stops while WEBFLIX_EVENT_SINK is lake (deleted members
+        // would stay in R2, batch exports would never finish, nothing would enforce retention).
+        // The runner also needs the staff API open to its service account (below).
+        "WEBFLIX_LAKE_JOBS": "",
         // Resend's REST API with WEBFLIX_EMAIL_HTTP_API_KEY; bounces arrive on its webhook.
         "WEBFLIX_EMAIL_SENDER": "http",
         // Set to an address on a domain verified with the email provider (empty: the default

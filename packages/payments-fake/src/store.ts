@@ -98,6 +98,13 @@ export interface FakeStore {
   releaseKey(key: string): Promise<void>;
   clock(customerId: string): Promise<FakeClockRecord | null>;
   setClock(customerId: string, clock: FakeClockRecord): Promise<void>;
+  /**
+   * A deleted customer's traces outside its documents (privacy review M5): its test clock, and
+   * every idempotency record whose key, request or outcome contains one of `fragments` (the
+   * customer's id, the account id its keys were derived from). Fragments shorter than 8
+   * characters are ignored (they could match anyone's).
+   */
+  forget(customerId: string, fragments: readonly string[]): Promise<void>;
 }
 
 /** In-process `FakeStore` (tests, and the provider's own unit suite). */
@@ -179,6 +186,15 @@ export class MemoryFakeStore implements FakeStore {
   async clock(customerId: string): Promise<FakeClockRecord | null> {
     const clock = this.clocks.get(customerId);
     return clock ? { ...clock } : null;
+  }
+
+  async forget(customerId: string, fragments: readonly string[]): Promise<void> {
+    this.clocks.delete(customerId);
+    const usable = fragments.filter((fragment) => fragment.length >= 8);
+    for (const [key, record] of this.keys) {
+      const text = `${key}\n${record.fingerprint}\n${record.outcome ?? ""}`;
+      if (usable.some((fragment) => text.includes(fragment))) this.keys.delete(key);
+    }
   }
 
   async setClock(customerId: string, clock: FakeClockRecord): Promise<void> {

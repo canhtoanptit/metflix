@@ -25,33 +25,28 @@ const MAX_SEALED_LENGTH = 4096;
 export function createSealer(secrets: readonly SealingSecret[], purpose: string): Sealer {
   const first = secrets[0];
   if (!first) throw new TypeError("At least one sealing secret is required");
-  const keys = new Map<string, Promise<CryptoKey>>();
-  const keyFor = (entry: SealingSecret): Promise<CryptoKey> => {
-    let key = keys.get(entry.id);
-    if (!key) {
-      key = (async () => {
-        const material = await crypto.subtle.importKey(
-          "raw",
-          utf8Encode(entry.secret),
-          "HKDF",
-          false,
-          ["deriveKey"],
-        );
-        return crypto.subtle.deriveKey(
-          {
-            name: "HKDF",
-            hash: "SHA-256",
-            salt: utf8Encode("webflix-seal"),
-            info: utf8Encode(`webflix:${purpose}`),
-          },
-          material,
-          { name: "AES-GCM", length: 256 },
-          false,
-          ["encrypt", "decrypt"],
-        );
-      })();
-      keys.set(entry.id, key);
-    }
+  // Derived keys, not promises of them: on Workers one request may not await a promise another
+  // request settles (docs/CLOUDFLARE.md §2). Two first uses may both derive; same key either way.
+  const keys = new Map<string, CryptoKey>();
+  const keyFor = async (entry: SealingSecret): Promise<CryptoKey> => {
+    const cached = keys.get(entry.id);
+    if (cached) return cached;
+    const material = await crypto.subtle.importKey("raw", utf8Encode(entry.secret), "HKDF", false, [
+      "deriveKey",
+    ]);
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: utf8Encode("webflix-seal"),
+        info: utf8Encode(`webflix:${purpose}`),
+      },
+      material,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+    keys.set(entry.id, key);
     return key;
   };
 

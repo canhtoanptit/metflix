@@ -91,6 +91,13 @@ export type DeletionMembership = z.output<typeof DeletionMembership>;
 /**
  * An export ("Download your data": asynchronous, a signed link by email) or a deletion
  * (cooling-off period, then erasure; billing records retained as the law requires).
+ *
+ * `status`, for an export: `pending` and `processing` (being prepared; given up after a day,
+ * then `failed`), `completed`, `failed` (ask again), `canceled` (the account's erasure ended
+ * it). For a deletion: `scheduled` (the cooling-off period; the member can keep the account),
+ * `processing` (the erasure has started: the account is locked, every session ended, and it can
+ * no longer be kept; it is retried until it finishes: "we're deleting your account"),
+ * `completed`, `canceled` (kept).
  */
 export const PrivacyRequest = z
   .object({
@@ -109,6 +116,14 @@ export const PrivacyRequest = z
      * before deletions stopped renewals.
      */
     membership: DeletionMembership.nullable(),
+    /**
+     * The request's email: an export's "your data is ready", a deletion's "your account will be
+     * deleted". `pending`: it will be sent (an export, when it is ready; a deletion's, queued
+     * after a delivery error). `sent`. `suppressed`: this address bounced or complained before,
+     * so none is or will be sent (say so instead of "we'll email you"). Null: no email for it
+     * (a request recorded before this was kept, or one whose email could not even be queued).
+     */
+    email: z.enum(["pending", "sent", "suppressed"]).nullable(),
   })
   .meta({ id: "PrivacyRequest" });
 export type PrivacyRequest = z.output<typeof PrivacyRequest>;
@@ -151,6 +166,15 @@ export type PrivacyRequestList = z.output<typeof PrivacyRequestList>;
 export const DataExportParams = z.object({ id: Id });
 export const DataExportQuery = z.object({ token: z.string().min(1).max(4096) });
 export type DataExportQuery = z.input<typeof DataExportQuery>;
+
+/**
+ * `POST /privacy/exports/:id/download`: the same signed token, in the body, so it never sits in
+ * a URL (an access log, a browser history).
+ */
+export const DataExportDownloadBody = z
+  .object({ token: z.string().min(1).max(4096) })
+  .meta({ id: "DataExportDownloadBody" });
+export type DataExportDownloadBody = z.input<typeof DataExportDownloadBody>;
 
 const ExportTime = IsoDateTime.nullable();
 

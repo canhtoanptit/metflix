@@ -196,6 +196,29 @@ export function describeRepositoryContract(
         });
       });
 
+      it("says whether the account has any profile, for a session at the gate", async () => {
+        await signUp();
+        await signUp({ accountId: "acc-2", email: "two@example.com" });
+        // No profile anywhere on acc-1 (acc-2's does not count).
+        await repos().profiles.createWithinLimit(
+          makeProfileRow({ id: "pro-2", accountId: "acc-2" }),
+          5,
+        );
+        expect((await repos().sessions.findActive("hash-acc-1", T0))?.accountHasProfiles).toBe(
+          false,
+        );
+        // One profile, not chosen: the gate must choose it.
+        await repos().profiles.createWithinLimit(makeProfileRow(), 5);
+        const gate = await repos().sessions.findActive("hash-acc-1", T0);
+        expect(gate?.profile).toBeNull();
+        expect(gate?.accountHasProfiles).toBe(true);
+        // Chosen.
+        await repos().sessions.setActiveProfile("ses-acc-1", "acc-1", "pro-1");
+        expect((await repos().sessions.findActive("hash-acc-1", T0))?.accountHasProfiles).toBe(
+          true,
+        );
+      });
+
       it("only binds profiles of the same account", async () => {
         await signUp();
         await signUp({ accountId: "acc-2", email: "two@example.com" });

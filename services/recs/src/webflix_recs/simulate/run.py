@@ -59,6 +59,11 @@ def _build_world(config: SimConfig, catalog: Catalog, sink: Sink, shard: int) ->
     titles = make_titles(catalog, config.seed)
     popularity = PopularitySeries(catalog, config.start_ms, config.days, config.seed)
     policy = Policy(catalog, popularity, config.policy_id)
+    learned = None
+    if config.learned_store and config.learned_run:
+        from webflix_recs.simulate.learned import LearnedRun  # noqa: PLC0415
+
+        learned = LearnedRun(config.learned_store, config.learned_run, catalog)
     emitter = Emitter(
         sink=sink,
         rng=np.random.default_rng([config.seed, 4, shard]),
@@ -66,7 +71,9 @@ def _build_world(config: SimConfig, catalog: Catalog, sink: Sink, shard: int) ->
         duplicate_rate=config.duplicate_rate,
         collect_like_the_product=config.collect_like_the_product,
     )
-    return World(config, catalog, titles, policy, emitter, people_pool(catalog, titles))
+    return World(
+        config, catalog, titles, policy, emitter, people_pool(catalog, titles), learned=learned
+    )
 
 
 def simulate_shard(
@@ -236,8 +243,8 @@ def experiment_definitions(config: SimConfig) -> dict[str, Any]:
                 "alpha": 0.05,
                 "power": 0.8,
                 "minimumDetectableEffect": 0.05,
-                "registeredAt": iso_ms(config.start_ms - DAY_MS),
-                "startsAt": iso_ms(config.start_ms),
+                "registeredAt": iso_ms(config.start_ms + (spec.start_day - 1) * DAY_MS),
+                "startsAt": iso_ms(config.start_ms + spec.start_day * DAY_MS),
                 "endsAt": iso_ms(config.end_ms),
                 "analysis": {"method": "msprt", "looks": "daily"},
                 "srmThreshold": 0.001,

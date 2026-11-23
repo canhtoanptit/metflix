@@ -353,25 +353,41 @@ export class Environment {
     );
   }
 
-  private pool: { account: TestAccount; profiles: number } | undefined;
+  private pools: Record<
+    "member" | "account",
+    { account: TestAccount; profiles: number } | undefined
+  > = { member: undefined, account: undefined };
   private poolLock: Promise<unknown> = Promise.resolve();
 
   /**
    * A fresh profile of its own, on its own device: per-profile state (My List, ratings,
    * progress, history, taste) is isolated without a sign-up per check. Accounts are shared
    * four profiles at a time (sign-up is the scarcest budget under strict rate limits, and four
-   * profiles streaming at once still fit the Premium plan).
+   * profiles streaming at once still fit the Premium plan). `member: false` takes it from a pool
+   * of accounts without a membership: for checks that never play, which then also run where the
+   * suite cannot make a member (no fake payment provider).
    */
   isolatedViewer(
     tag: string,
-    options: { isKids?: boolean; maturityCeiling?: Profile["maturityCeiling"] } = {},
+    options: {
+      isKids?: boolean;
+      maturityCeiling?: Profile["maturityCeiling"];
+      member?: boolean;
+    } = {},
   ): Promise<Viewer> {
+    const kind = options.member === false ? "account" : "member";
     const next = this.poolLock.then(async () => {
-      if (!this.pool || this.pool.profiles >= 4) {
-        this.pool = { account: await this.signup("pool"), profiles: 0 };
+      let pool = this.pools[kind];
+      if (!pool || pool.profiles >= 4) {
+        pool = {
+          account:
+            kind === "member" ? await this.signup("pool") : await this.bareSignup("pool-account"),
+          profiles: 0,
+        };
+        this.pools[kind] = pool;
       }
-      this.pool.profiles += 1;
-      const account = this.pool.account;
+      pool.profiles += 1;
+      const account = pool.account;
       const profile = await this.createProfile(account.agent, {
         name: tag.slice(0, 30),
         ...(options.isKids === undefined ? {} : { isKids: options.isKids }),

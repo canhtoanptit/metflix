@@ -87,6 +87,21 @@ export class IdentityNotConfirmed extends Error {
   }
 }
 
+/**
+ * Give focus back to what opened the prompt. That is often the button of the request the prompt
+ * was for, disabled while the request runs again with the proof: focus it once it is enabled
+ * (within a few seconds), so focus is never left on the page itself (UX review 2.7).
+ */
+function focusWhenReady(target: HTMLElement, tries = 50): void {
+  if (!target.isConnected) return;
+  const disabled = target instanceof HTMLButtonElement && target.disabled;
+  if (!disabled) {
+    target.focus();
+    return;
+  }
+  if (tries > 0) window.setTimeout(() => focusWhenReady(target, tries - 1), 100);
+}
+
 /** A refusal that a fresh account-holder proof answers. */
 export function needsIdentityProof(error: unknown): boolean {
   return ApiError.is(error, "reauthentication_required") || ApiError.is(error, "password_required");
@@ -207,7 +222,10 @@ export function useConfirmIdentity(options: ConfirmIdentityOptions): ConfirmIden
     const outcome = parseOutcome(params.get("oidc"));
     const provider = parseProvider(params.get("provider"));
     const error = parseOidcError(params.get(OIDC_ERROR_PARAM));
-    router.history.replace(pathWithout(router.state.location.href), router.history.location.state);
+    router.history.replace(
+      pathWithout(router.history.location.href),
+      router.history.location.state,
+    );
     if (!outcome) return;
     resumeOnProof.current = true;
     if (outcome !== "reauthenticated") {
@@ -291,7 +309,7 @@ export function ConfirmIdentityDialog({
           const target = returnFocusTo?.current ?? captured.current;
           if (!target?.isConnected) return;
           event.preventDefault();
-          target.focus();
+          focusWhenReady(target);
         }}
       >
         {open ? (
@@ -579,11 +597,15 @@ function SetPasswordByEmail({ onCancel }: { onCancel: () => void }) {
     meta: { silent: true },
     onError: rate.track,
   });
+  const sentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (send.isSuccess) sentRef.current?.focus();
+  }, [send.isSuccess]);
 
   if (send.isSuccess) {
     return (
       <div className="flex flex-col gap-4">
-        <FormAlert tone="positive" icon={MailIcon} title="Check your email">
+        <FormAlert ref={sentRef} tone="positive" icon={MailIcon} title="Check your email">
           We sent a link to <span className="text-fg">{email}</span>. It works once and expires in
           30 minutes.
         </FormAlert>

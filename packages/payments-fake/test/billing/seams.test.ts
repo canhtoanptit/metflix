@@ -71,6 +71,49 @@ describe("billing's seams with the other areas", () => {
     expect(summaries.has("acct-unknown")).toBe(false);
   });
 
+  it("exports every checkout with its promo code and what became of it, and every card change; never a secret", async () => {
+    const h = await createBillingHarness();
+    await h.fake.definePromotion({ code: "WEBFLIX50", percentOff: 50 });
+    const auth = await h.account();
+    const accountId = auth.session.accountId;
+    const started = await h.services.billing.startCheckout(auth, {
+      planId: "standard",
+      promotionCode: "WEBFLIX50",
+    });
+    await h.confirm(started.clientSecret, "visa");
+    await h.services.billing.confirmCheckout(accountId, started.id);
+    await h.drain();
+    const setup = await h.services.billing.setupPaymentMethod(accountId);
+    const exported = (await h.services.billing.exportAccountData?.(accountId)) as {
+      checkouts: { id: string; planId: string; status: string; clientSecret: null }[];
+      promotionCodes: { code: string; checkoutId: string; outcome: string }[];
+      cardChanges: { id: string; status: string; clientSecret: null }[];
+    };
+    expect(exported.checkouts).toEqual([
+      expect.objectContaining({
+        id: started.id,
+        planId: "standard",
+        status: "complete",
+        clientSecret: null,
+      }),
+    ]);
+    expect(exported.promotionCodes).toEqual([
+      expect.objectContaining({
+        code: "WEBFLIX50",
+        checkoutId: started.id,
+        outcome: "not_applied_trial",
+      }),
+    ]);
+    expect(exported.cardChanges).toEqual([
+      expect.objectContaining({
+        id: setup.id,
+        status: "requires_confirmation",
+        clientSecret: null,
+      }),
+    ]);
+    expect(JSON.stringify(exported)).not.toContain("_secret_");
+  });
+
   it("exports the membership and invoices, and on erasure deletes the customer at the provider but keeps the invoices", async () => {
     const h = await createBillingHarness();
     const used = await h.account();
@@ -85,12 +128,16 @@ describe("billing's seams with the other areas", () => {
     expect(exported.membership).toMatchObject({ status: "active", planId: "basic" });
     expect(exported.invoices.some((invoice) => invoice.amountPaid.amountMinor === 799)).toBe(true);
 
-    await h.services.billing.eraseAccountData?.(accountId);
-    await h.services.billing.eraseAccountData?.(accountId);
     const record = await h.repos.billing.getMembership(accountId);
+    await h.services.billing.eraseAccountData?.(accountId);
+    await h.services.billing.eraseAccountData?.(accountId);
     expect((await h.fake.retrieveSubscription(record?.providerSubscriptionId ?? ""))?.status).toBe(
       "canceled",
     );
+    // Billing's own records of the account: only the financial ones are left.
+    expect(await h.repos.billing.getMembership(accountId)).toBeNull();
+    expect(await h.repos.billing.getCustomer(accountId, "fake")).toBeNull();
+    expect(await h.repos.billing.hasTrialFingerprint(accountId)).toBe(false);
     const invoices = await h.repos.billing.listInvoices(accountId, { limit: 10, before: null });
     expect(invoices.length).toBeGreaterThan(0);
     expect((await h.fake.retrieveInvoice(invoices[0]?.providerInvoiceId ?? ""))?.status).toBe(

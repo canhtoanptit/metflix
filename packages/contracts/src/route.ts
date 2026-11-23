@@ -80,7 +80,13 @@ export type StaffRouteRole = StaffRole | "any";
  * - `email-send-recipient`: per recipient address, the same requests (charged by the handler
  *   once it knows the address, like `auth-email`).
  * - `events`: per account (signed out: per client address), behaviour event batches.
- * - `promotion`: per account, promo-code lookups (codes must not be guessable by enumeration).
+ * - `promotion`: per account, promo-code lookups (codes must not be guessable by enumeration),
+ *   whichever route makes them (validation, or a checkout started with a code).
+ * - `billing`: per account, member requests that create something at the payment provider
+ *   (a checkout start, a card setup, a plan-change preview): one account cannot spend the
+ *   provider's account-wide budget for every member.
+ * - `billing-refresh`: per account, how often a poll (`GET /billing/checkout/:id`, a card
+ *   change's status) reads the provider; a poll inside it answers from stored state, never 429.
  */
 export const RATE_LIMIT_POLICY_NAMES = [
   "auth",
@@ -95,6 +101,8 @@ export const RATE_LIMIT_POLICY_NAMES = [
   "email-send-recipient",
   "events",
   "promotion",
+  "billing",
+  "billing-refresh",
 ] as const;
 export type RateLimitPolicyName = (typeof RATE_LIMIT_POLICY_NAMES)[number];
 

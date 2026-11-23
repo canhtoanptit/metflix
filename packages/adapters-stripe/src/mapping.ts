@@ -96,6 +96,26 @@ export function toSubscription(value: StripeObject, clockNow: number | null): Pr
 
 const BILLING_REASONS = ["subscription_create", "subscription_cycle", "subscription_update"];
 
+/** An invoice's (or a preview's) discounts: the sum of `total_discount_amounts`. */
+export function discountOf(value: StripeObject): number {
+  return list(value.total_discount_amounts).reduce(
+    (sum, entry) => sum + (num(entry.amount) ?? 0),
+    0,
+  );
+}
+
+/**
+ * The customer credit an invoice (or a preview) uses: `total - amount_due`, bounded by the
+ * credit the customer had (`starting_balance` < 0), so a total below Stripe's minimum charge
+ * (also answered with `amount_due` 0) is never reported as credit.
+ */
+export function creditAppliedOf(value: StripeObject): number {
+  const total = num(value.total) ?? 0;
+  const due = num(value.amount_due) ?? total;
+  const available = Math.max(0, -(num(value.starting_balance) ?? 0));
+  return total > 0 ? Math.min(Math.max(0, total - due), available) : 0;
+}
+
 export function toInvoice(value: StripeObject, amountRefundedMinor: number): ProviderInvoice {
   const parent = obj(value.parent);
   const details = obj(parent?.subscription_details);
@@ -125,6 +145,8 @@ export function toInvoice(value: StripeObject, amountRefundedMinor: number): Pro
     nextPaymentAttempt: ms(value.next_payment_attempt),
     hostedUrl: str(value.hosted_invoice_url),
     pdfUrl: str(value.invoice_pdf),
+    discountMinor: discountOf(value),
+    creditAppliedMinor: creditAppliedOf(value),
   };
 }
 

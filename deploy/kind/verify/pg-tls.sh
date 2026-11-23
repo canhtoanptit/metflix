@@ -62,7 +62,7 @@ api() { # <sslmode> <with-ca: yes|no> <command...>     (WEBFLIX_DATABASE_URL ove
   local extra=()
   [ "$ca" = yes ] && extra=(-v "$DIR/bundle:/etc/webflix/ca:ro" -e NODE_EXTRA_CA_CERTS=/etc/webflix/ca/ca.crt
     -v "$DIR/client:/etc/webflix/tls/database:ro")
-  docker run --rm --network "$NET" "${extra[@]+"${extra[@]}"}" -e WEBFLIX_MODE=k8s \
+  docker run --rm --network "$NET" "${extra[@]+"${extra[@]}"}" -e WEBFLIX_MODE=k8s -e WEBFLIX_ENV=development \
     -e "WEBFLIX_DATABASE_URL=${URL:-postgres://webflix@$RUN:5432/webflix?sslmode=$mode}" -e PGPASSWORD=webflix \
     -e WEBFLIX_BLOB_STORE=memory "$IMAGE" "$@" 2>&1 || true
 }

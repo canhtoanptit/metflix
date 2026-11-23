@@ -12,7 +12,11 @@
  * - file-like misses (anything under `/assets/`, or a last segment with an extension that is
  *   not a navigation) are a 404 problem document with `no-store`;
  * - everything else is a client-side route: the SPA shell (`index.html` from the asset layer,
- *   with its revalidating cache headers, ETag and the chart's security headers).
+ *   with its revalidating cache headers, ETag and the chart's security headers);
+ * - except under `/admin/`, the staff console (apps/admin, staged there beside the member app):
+ *   its own client-side routes get the console's `index.html` (the asset layer knows only one
+ *   SPA index), never cached; a missing `/admin/assets/*` file is a 404 like any build file.
+ *   `/admin/config.json` is the Worker's (`admin-console.ts`).
  */
 
 /** Must equal the positive entries of `assets.run_worker_first` (a test checks). */
@@ -26,7 +30,16 @@ export const SERVER_PATHS = [
   // form (`/_pay/*`, billing area) are served by the Worker, never the SPA shell.
   "/dev-idp/*",
   "/_pay/*",
+  // The staff console's settings, from the Worker's own staff configuration (admin-console.ts).
+  "/admin/config.json",
 ] as const;
+
+/** Where the staff console's build is staged and served (apps/admin's `base`). */
+export const CONSOLE_BASE = "/admin/";
+
+export function isConsolePath(pathname: string): boolean {
+  return pathname.startsWith(CONSOLE_BASE);
+}
 
 export function isServerPath(pathname: string): boolean {
   return SERVER_PATHS.some((rule) =>
@@ -38,7 +51,7 @@ const EXTENSION = /\.[A-Za-z0-9]{1,10}$/;
 
 /** Build output or a file name: never a client-side route. */
 export function isFileLike(pathname: string, navigation: boolean): boolean {
-  if (pathname.startsWith("/assets/")) return true;
+  if (pathname.startsWith("/assets/") || pathname.startsWith(`${CONSOLE_BASE}assets/`)) return true;
   const last = pathname.slice(pathname.lastIndexOf("/") + 1);
   return EXTENSION.test(last) && !navigation;
 }
@@ -47,14 +60,15 @@ export function isNavigation(request: Request): boolean {
   return request.headers.get("Sec-Fetch-Mode") === "navigate";
 }
 
-export type MissRoute = "app" | "shell";
+export type MissRoute = "app" | "shell" | "console";
 
 /** Where a request that reached the Worker goes. */
 export function routeRequest(request: Request): MissRoute {
   const { pathname } = new URL(request.url);
   if (isServerPath(pathname)) return "app";
   if (request.method !== "GET" && request.method !== "HEAD") return "app";
-  return isFileLike(pathname, isNavigation(request)) ? "app" : "shell";
+  if (isFileLike(pathname, isNavigation(request))) return "app";
+  return isConsolePath(pathname) ? "console" : "shell";
 }
 
 /**
@@ -68,4 +82,26 @@ export async function serveShell(request: Request, assets: Fetcher): Promise<Res
     if (value) headers.set(name, value);
   }
   return assets.fetch(new Request(new URL("/", request.url), { method: request.method, headers }));
+}
+
+/**
+ * The staff console's `index.html` for one of its client-side routes (`/admin/members/…`): the
+ * asset layer's `/admin/` (its `index.html`, with the security headers of `_headers`), under the
+ * console's own Content-Security-Policy (`policy`, set here as well: Cloudflare does not promise
+ * `_headers` on what a Worker returns), never cached by anyone, so a deploy's new console is the
+ * one every navigation loads.
+ */
+export async function serveConsoleShell(
+  request: Request,
+  assets: Fetcher,
+  policy: string,
+): Promise<Response> {
+  const response = await assets.fetch(
+    new Request(new URL(CONSOLE_BASE, request.url), { method: request.method }),
+  );
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.set("Content-Security-Policy", policy);
+  headers.delete("ETag");
+  return new Response(response.body, { status: response.status, headers });
 }

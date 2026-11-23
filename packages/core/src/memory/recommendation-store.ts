@@ -10,6 +10,9 @@ import {
   type ServingSnapshot,
 } from "../ports/recommendation-store.ts";
 
+/** Profile keys per `profileKeys` page (small, so the paging is exercised). */
+const PROFILE_KEYS_PAGE = 100;
+
 /** In-process `RecommendationStore` (tests; any mode configured with `memory`). */
 export class MemoryRecommendationStore implements RecommendationStore {
   private readonly registered = new Map<string, RecommendationModel>();
@@ -128,6 +131,24 @@ export class MemoryRecommendationStore implements RecommendationStore {
     for (const byProfile of this.lists.values()) {
       for (const key of profileKeys) byProfile.delete(key);
     }
+  }
+
+  async profileKeys(
+    run: string,
+    cursor: string | null,
+  ): Promise<{ keys: string[]; cursor: string | null }> {
+    const keys = [...(this.lists.get(run)?.keys() ?? [])].sort(compareBytes);
+    const after = cursor === null ? keys : keys.filter((key) => key > cursor);
+    const page = after.slice(0, PROFILE_KEYS_PAGE);
+    return {
+      keys: page,
+      cursor: after.length > PROFILE_KEYS_PAGE ? (page[page.length - 1] ?? null) : null,
+    };
+  }
+
+  async recordManifest(run: string, manifestSha256: string): Promise<void> {
+    const model = this.requireBegun(run);
+    this.registered.set(run, { ...model, manifestSha256 });
   }
 
   private requireBegun(run: string): RecommendationModel {

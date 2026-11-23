@@ -86,6 +86,12 @@ export interface ActiveSession {
   session: SessionRecord;
   /** The active profile, only if it still exists and belongs to the session's account. */
   profile: ProfileRecord | null;
+  /**
+   * Whether the account has any profile, read in the same query and only for a session without
+   * an active profile (true whenever one is active). An account with none is managed from the
+   * profile gate (`requireAccountHolder`).
+   */
+  accountHasProfiles: boolean;
 }
 
 export interface SessionRepository {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   importRecommendations,
+  importSizeProblem,
   RecommendationImportError,
   RecommendationImportTooLargeError,
   rollbackRecommendations,
@@ -132,6 +133,160 @@ describe("recommendation importer", () => {
     await publish(blobs, RUN_A);
     await run();
     expect(await run()).toMatchObject({ status: "unchanged", run: RUN_A, profiles: 0 });
+  });
+
+  it("applies a rewrite of the served run (same run, new digest): what it dropped goes", async () => {
+    const { blobs, store, run, clock } = await setup();
+    // The previous run, kept for rollback, holds the same subjects.
+    await publish(blobs, RUN_A, { profiles: 3 });
+    await run();
+    clock.advance(1_000);
+    await publish(blobs, RUN_B, { profiles: 120 });
+    await run();
+    // The pipeline's erase removes profile 7 from the published version and re-points
+    // recs/current.json at the rewritten manifest (same run).
+    const rewritten = await writeRecsVersion(blobs, {
+      run: RUN_B,
+      asOf: NOW - DAY,
+      expiresAt: NOW + 2 * DAY,
+      neighbours: neighbours(RUN_B),
+      profiles: Array.from({ length: 120 }, (_, index) => index)
+        .filter((index) => index !== 7)
+        .map((index) => lists(RUN_B, key(index))),
+      rowGroupSize: 4,
+    });
+    const result = await run();
+    expect(result).toMatchObject({
+      status: "rewritten",
+      run: RUN_B,
+      profiles: 119,
+      removedProfiles: 1,
+      neighbourRows: 6,
+    });
+    expect(await store.profileLists(RUN_B, key(7), NOW)).toBeNull();
+    expect(await store.profileLists(RUN_B, key(8), NOW)).not.toBeNull();
+    // Other runs' other subjects are untouched.
+    expect(await store.profileLists(RUN_A, key(1), NOW)).not.toBeNull();
+    expect((await store.activeModel())?.manifestSha256).toBe(rewritten.manifestSha256);
+    // Applied once: the same version again is unchanged.
+    expect(await run()).toMatchObject({ status: "unchanged" });
+  });
+
+  it("drops a removed subject from the run kept for rollback as well", async () => {
+    const { blobs, store, run, clock } = await setup();
+    await publish(blobs, RUN_A, { profiles: 3 });
+    await run();
+    clock.advance(1_000);
+    await publish(blobs, RUN_B, { profiles: 3 });
+    await run();
+    await writeRecsVersion(blobs, {
+      run: RUN_B,
+      asOf: NOW - DAY,
+      expiresAt: NOW + 2 * DAY,
+      neighbours: neighbours(RUN_B),
+      profiles: [lists(RUN_B, key(0)), lists(RUN_B, key(2))],
+    });
+    expect(await run()).toMatchObject({ status: "rewritten", removedProfiles: 1 });
+    expect(await store.profileLists(RUN_A, key(1), NOW)).toBeNull();
+    expect(await store.profileLists(RUN_A, key(0), NOW)).not.toBeNull();
+  });
+
+  it("withholds the keys it is told to, in an import and in a rewrite", async () => {
+    const { blobs, store, clock, logger } = await setup();
+    const withheld = new Set([key(1)]);
+    const asked: number[] = [];
+    const run = () =>
+      importRecommendations({
+        blobs,
+        store,
+        clock,
+        logger,
+        withheld: async (asOf) => {
+          asked.push(asOf);
+          return withheld;
+        },
+      });
+    await publish(blobs, RUN_A, { profiles: 3 });
+    expect(await run()).toMatchObject({ profiles: 2, withheldProfiles: 1 });
+    expect(asked).toEqual([NOW - DAY]);
+    expect(await store.profileLists(RUN_A, key(1), NOW)).toBeNull();
+    // Withheld later (its erasure was requested meanwhile), then the version is rewritten.
+    withheld.add(key(2));
+    await writeRecsVersion(blobs, {
+      run: RUN_A,
+      asOf: NOW - DAY,
+      expiresAt: NOW + 2 * DAY,
+      neighbours: neighbours(RUN_A),
+      profiles: [0, 1, 2].map((index) => lists(RUN_A, key(index))),
+      // Other bytes (one row per group): another manifest digest, the same subjects.
+      rowGroupSize: 1,
+    });
+    expect(await run()).toMatchObject({
+      status: "rewritten",
+      profiles: 1,
+      withheldProfiles: 2,
+      removedProfiles: 1,
+    });
+    expect(await store.profileLists(RUN_A, key(2), NOW)).toBeNull();
+    expect(await store.profileLists(RUN_A, key(0), NOW)).not.toBeNull();
+  });
+
+  it("counts everything a rewrite does against the store's budget, and refuses before writing", async () => {
+    const { blobs, store, clock, logger } = await setup();
+    const budget = (maxProfileLists: number): RecommendationStore => ({
+      ...bind(store),
+      importCapacity: { maxProfileLists, explanation: "use the importer outside the Worker" },
+    });
+    const run = (target: RecommendationStore) =>
+      importRecommendations({ blobs, store: target, clock, logger });
+    await publish(blobs, RUN_A, { profiles: 20 });
+    await run(budget(30));
+    clock.advance(1_000);
+    await publish(blobs, RUN_B, { profiles: 20 });
+    await run(budget(30));
+    const before = await store.activeModel();
+    // The rewrite keeps 10 of 20: 10 lists written, 10 removed from each of 2 runs, 1 page of
+    // keys read = 31 operations, over a budget of 30 (its list writes alone would fit).
+    await writeRecsVersion(blobs, {
+      run: RUN_B,
+      asOf: NOW - DAY,
+      expiresAt: NOW + 2 * DAY,
+      neighbours: neighbours(RUN_B),
+      profiles: Array.from({ length: 10 }, (_, index) => lists(RUN_B, key(index))),
+    });
+    const problem = await importSizeProblem({ blobs, store: budget(30), clock, logger });
+    expect(problem).toMatch(
+      /31 store operations \(10 lists written, 10 removed from 2 runs, 1 pages/,
+    );
+    expect(problem).toMatch(/use the importer outside the Worker/);
+    await expect(run(budget(30))).rejects.toBeInstanceOf(RecommendationImportTooLargeError);
+    // Nothing was written: every list still there, the digest unchanged.
+    for (const index of [5, 15, 19]) {
+      expect(await store.profileLists(RUN_B, key(index), NOW)).not.toBeNull();
+      expect(await store.profileLists(RUN_A, key(index), NOW)).not.toBeNull();
+    }
+    expect(await store.activeModel()).toEqual(before);
+    // With the room for all of it, it is applied.
+    expect(await importSizeProblem({ blobs, store: budget(31), clock, logger })).toBeNull();
+    expect(await run(budget(31))).toMatchObject({ status: "rewritten", removedProfiles: 10 });
+    expect(await store.profileLists(RUN_A, key(15), NOW)).toBeNull();
+  });
+
+  it("imports nothing when the withheld keys cannot be read", async () => {
+    const { blobs, store, clock, logger } = await setup();
+    await publish(blobs, RUN_A, { profiles: 3 });
+    await expect(
+      importRecommendations({
+        blobs,
+        store,
+        clock,
+        logger,
+        withheld: async () => {
+          throw new Error("erasure list unreadable");
+        },
+      }),
+    ).rejects.toThrow(/erasure list unreadable/);
+    expect(await store.activeModel()).toBeNull();
   });
 
   it("keeps the previous run for rollback and deletes older ones", async () => {
@@ -324,5 +479,7 @@ function bind(store: RecommendationStore): RecommendationStore {
     activate: (run, now) => store.activate(run, now),
     deleteRun: (run) => store.deleteRun(run),
     deleteProfileLists: (keys) => store.deleteProfileLists(keys),
+    profileKeys: (run, cursor) => store.profileKeys(run, cursor),
+    recordManifest: (run, sha) => store.recordManifest(run, sha),
   };
 }

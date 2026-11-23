@@ -176,11 +176,13 @@ export const adminRoutes = {
     area: "admin",
     auth: "staff",
     staffRole: "support",
-    summary: "Record the member's consent answer, given to support",
+    summary: "Record the member's withdrawal of consent, given to support",
+    description:
+      "Staff may only withdraw (`granted: false`); a grant answers `consent_grant_member_only` (403): turning a purpose on is the member's own answer, in Account › Privacy.",
     params: AccountIdParams,
     body: SetMemberConsentBody,
     response: ConsentState,
-    errors: ["not_found"],
+    errors: ["not_found", "consent_grant_member_only"],
     examples: { request: { purpose: "personalisation", granted: false, ...reason } },
   }),
   cancelMemberDeletion: defineRoute({

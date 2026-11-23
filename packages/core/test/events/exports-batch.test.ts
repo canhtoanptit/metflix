@@ -98,13 +98,13 @@ describe("a batch-mode export", () => {
     expect(scanned).toBe(0);
     expect(await listed(t, member)).toMatchObject({ status: "processing", downloadUrl: null });
     expect(t.ports.email.mailbox()).toEqual([]);
-    const requestedAt = Date.parse(request.requestedAt);
+    // Everything the lake still holds, up to the request: never cut at the retention period.
     expect(await t.services.events.staff.pendingExports(10)).toEqual({
       requests: [
         {
           requestId: request.id,
           accountKey: await keys.account(member.accountId),
-          from: new Date(requestedAt - 396 * DAY_MS).toISOString(),
+          from: "1970-01-01T00:00:00.000Z",
           to: request.requestedAt,
         },
       ],
@@ -231,10 +231,14 @@ describe("a batch-mode export", () => {
   });
 
   it("is cancelled, its partial document deleted, when the account is erased meanwhile", async () => {
-    const t = await eventServices({ WEBFLIX_EXPORT_EVENTS: "batch" }, {});
+    // A short cooling-off: the export is still within its day when the erasure runs.
+    const t = await eventServices(
+      { WEBFLIX_EXPORT_EVENTS: "batch", WEBFLIX_DELETION_COOLING_OFF_SEC: "3600" },
+      {},
+    );
     const { member, request } = await waiting(t);
     await t.services.events.requestDeletion(member.as("adult"));
-    t.clock.advance(14 * DAY_MS + 1);
+    t.clock.advance(3600_000 + 1);
     await t.services.scheduler.tick();
     await settle(t);
     expect(await t.deps.repos.events.getPrivacyRequest(request.id)).toMatchObject({

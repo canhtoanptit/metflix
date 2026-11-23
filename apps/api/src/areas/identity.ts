@@ -133,10 +133,9 @@ export function createIdentityPorts(
     createClaimStore(createIdentityRepository(context.database), clock),
   );
   const email = emailSender(context);
-  if (
-    config.core.environment === "production" &&
-    (email instanceof MemoryEmailSender || config.core.identity.emailSender === "outbox")
-  ) {
+  // The outbox is refused in production by the configuration (it stores live links); memory
+  // only keeps them in the process.
+  if (config.core.environment === "production" && email instanceof MemoryEmailSender) {
     // Verification and reset links would never leave the process: say so at every start.
     logger.warn("identity.email_not_delivered", { sender: config.core.identity.emailSender });
   }

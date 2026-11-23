@@ -500,6 +500,17 @@ function view(record: MockCheckoutRecord): Checkout {
       record.amountDueMinor === null
         ? null
         : { amountMinor: record.amountDueMinor, currency: plan.monthlyPrice.currency },
+    // Why it is below the plan's price (the mock has no account credit: only the code).
+    creditApplied: null,
+    discount:
+      record.amountDueMinor !== null &&
+      record.amountDueMinor > 0 &&
+      record.amountDueMinor < plan.monthlyPrice.amountMinor
+        ? {
+            amountMinor: plan.monthlyPrice.amountMinor - record.amountDueMinor,
+            currency: plan.monthlyPrice.currency,
+          }
+        : null,
     promotion,
     promotionOutcome: !record.promotionCode
       ? null
@@ -634,7 +645,10 @@ export function createBillingHandlers(deps: BillingHandlerDeps): Handlers {
         paymentSecret: null,
         trial: null,
         promotionCode: code,
-        amountDueMinor: null,
+        // An account that had its trial knows what is due from the start (the server's rule).
+        amountDueMinor: billing.trialUsed
+          ? discounted(planOf(body.planId).monthlyPrice.amountMinor, code)
+          : null,
         failureReason: null,
         createdAt: new Date().toISOString(),
       };
@@ -841,7 +855,10 @@ export function createBillingHandlers(deps: BillingHandlerDeps): Handlers {
       const open = billingOf(state).checkouts.find((candidate) =>
         ["requires_setup", "requires_payment", "processing"].includes(candidate.status),
       );
-      return { checkout: open ? { ...view(open), clientSecret: null } : null };
+      return {
+        checkout: open ? { ...view(open), clientSecret: null } : null,
+        trialEligible: !billingOf(state).trialUsed,
+      };
     },
 
     listInvoices: (_input, state) => {

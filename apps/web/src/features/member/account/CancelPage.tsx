@@ -8,7 +8,6 @@ import {
   HeartIcon,
   RefreshIcon,
   Skeleton,
-  toast,
 } from "@webflix/ui";
 import type { ReactNode } from "react";
 import { api } from "../../../app/api.ts";
@@ -18,13 +17,19 @@ import {
   isDeletionScheduled,
   useScheduledDeletion,
 } from "../billing/deletion.tsx";
+import { focusPageHeading } from "../billing/focus.ts";
+import { endingNotice } from "../billing/membership.ts";
+import { describeOutcome, membershipOutcome } from "../billing/outcome.ts";
+import { membershipToast } from "../billing/toasts.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatLongDate } from "../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../shared/privileges.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
 import { AccountHeading } from "./AccountLayout.tsx";
+import { priceOf } from "./MembershipSummary.tsx";
 import {
   applyMembership,
+  freshMembershipView,
   membershipOfDetails,
   useAccountDetails,
   useResumeMembership,
@@ -42,21 +47,27 @@ export function AccountCancelPage() {
   const details = useAccountDetails();
   const deletion = useScheduledDeletion(!demo);
   const flight = useSingleFlight();
+  // Both outcomes land on Membership, its heading focused, with one toast in the page's words.
   const resume = useResumeMembership({
-    onSuccess: () => {
-      toast.success("Your membership will continue");
-      void navigate({ to: "/account/membership" });
+    onSuccess: async (_membership, fresh) => {
+      const charge = fresh
+        ? describeOutcome(membershipOutcome(fresh.view, priceOf(fresh.details))).charge
+        : null;
+      membershipToast("Your membership will continue", charge ?? undefined);
+      await navigate({ to: "/account/membership" });
+      focusPageHeading("Membership");
     },
   });
   const cancel = useMutation({
     mutationFn: () => api().cancelMembership(),
     meta: { silent: true },
-    onSuccess: (membership) => {
+    onSuccess: async (membership) => {
       applyMembership(queryClient, membership);
-      toast.success("Your membership is canceled", {
-        description: `You can keep watching until ${formatLongDate(membership.subscription.currentPeriodEnd)}.`,
-      });
-      void navigate({ to: "/account/membership" });
+      const fresh = await freshMembershipView(queryClient);
+      const ending = fresh ? endingNotice(fresh.view) : null;
+      membershipToast(ending?.title ?? "Your membership is set to end", ending?.body);
+      await navigate({ to: "/account/membership" });
+      focusPageHeading("Membership");
     },
   });
 
@@ -103,28 +114,33 @@ export function AccountCancelPage() {
     );
   }
 
-  const { membership, entitlement } = membershipOfDetails(details.data);
+  const view = membershipOfDetails(details.data);
+  const { membership } = view;
   const { plan } = details.data;
   const trial = membership.status === "trialing";
-  const endIso = trial
-    ? membership.trialEndsAt
-    : (entitlement.until ?? membership.currentPeriodEnd);
-  const ends = endIso ? formatLongDate(endIso) : null;
+  // What cancelling today does, as the Membership page will then say it.
+  const ifCancelled = membershipOutcome({
+    ...view,
+    membership: { ...membership, cancelAtPeriodEnd: true },
+  });
+  const ends = ifCancelled.watchingEnds ? formatLongDate(ifCancelled.watchingEnds.at) : null;
   const running = membership.status === "trialing" || membership.status === "active";
 
   if (deletion || isDeletionScheduled(resume.error)) {
+    // Nothing renews while the deletion is scheduled: nothing to cancel (the notice says until when).
     return (
       <>
         <AccountHeading title="Cancel membership" />
-        <DeletionScheduledNotice scheduledFor={deletion?.scheduledFor} />
-        <p className="type-body text-fg-muted">
-          {ends
-            ? `Your membership ends on ${ends} and won't renew: there's nothing to cancel.`
-            : "Your membership won't renew: there's nothing to cancel."}
-        </p>
+        <DeletionScheduledNotice scheduledFor={deletion?.scheduledFor} view={view} />
+        <div>
+          <Button variant="outline" size="lg" asChild>
+            <Link to="/account/membership">Back to membership</Link>
+          </Button>
+        </div>
       </>
     );
   }
+  const ending = endingNotice(view);
   if (!running || membership.cancelAtPeriodEnd) {
     const ended = !running;
     return (
@@ -137,9 +153,7 @@ export function AccountCancelPage() {
               ? membership.status === "canceled"
                 ? "Your membership has already ended"
                 : "There's no running membership to cancel"
-              : ends
-                ? `Your membership is already set to end on ${ends}`
-                : "Your membership is already set to end"
+              : (ending?.title ?? "Your membership is already set to end")
           }
           action={
             ended ? (
@@ -160,7 +174,7 @@ export function AccountCancelPage() {
         >
           {ended
             ? "Your membership page shows what you can do next."
-            : "You won't be charged again. Changed your mind? Keep it in one click."}
+            : `${ending?.body ?? "Nothing more is charged."} Changed your mind? Keep it in one click.`}
           {resume.isError ? (
             <span className="mt-2 block text-danger">
               {describeMemberError(resume.error).description}

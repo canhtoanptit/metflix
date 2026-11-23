@@ -7,6 +7,7 @@ import type {
 } from "@webflix/contracts";
 import { toIsoString } from "../../ports/clock.ts";
 import type { ProviderInvoice } from "../../ports/payment-provider.ts";
+import { moneyOrNull } from "./projection.ts";
 import type {
   CheckoutPromotion,
   CheckoutRecord,
@@ -57,6 +58,14 @@ export function presentCheckout(
       checkout.amountDueMinor === null
         ? null
         : { amountMinor: checkout.amountDueMinor, currency: checkout.currency },
+    creditApplied:
+      checkout.amountDueMinor === null
+        ? null
+        : moneyOrNull(checkout.creditAppliedMinor, checkout.currency),
+    discount:
+      checkout.amountDueMinor === null
+        ? null
+        : moneyOrNull(checkout.discountMinor, checkout.currency),
     promotion: presentPromotion(checkout.promotion),
     // A code is never spent on a payment of nothing: a trial withholds it (it is not redeemed).
     promotionOutcome:
@@ -105,6 +114,8 @@ export function presentInvoice(invoice: InvoiceRecord): Invoice {
     amountPaid: { amountMinor: invoice.amountPaidMinor, currency },
     amountDue: { amountMinor: invoice.amountDueMinor, currency },
     amountRefunded: { amountMinor: invoice.amountRefundedMinor, currency },
+    creditApplied: moneyOrNull(invoice.creditAppliedMinor, currency),
+    discount: moneyOrNull(invoice.discountMinor, currency),
     periodStart: iso(invoice.periodStart),
     periodEnd: iso(invoice.periodEnd),
     createdAt: toIsoString(invoice.issuedAt),
@@ -147,6 +158,8 @@ export function invoiceRecord(
     periodEnd: invoice.periodEnd,
     hostedUrl: invoice.hostedUrl,
     pdfUrl: invoice.pdfUrl,
+    creditAppliedMinor: invoice.creditAppliedMinor,
+    discountMinor: invoice.discountMinor,
     issuedAt: invoice.createdAt,
     paidAt: invoice.paidAt,
     updatedAt: input.now,

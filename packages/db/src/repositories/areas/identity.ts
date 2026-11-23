@@ -31,7 +31,13 @@ const NO_PASSWORD = "";
 function toAccount(
   row: Pick<
     AccountsTable,
-    "id" | "email" | "password_hash" | "email_verified_at" | "created_at" | "updated_at"
+    | "id"
+    | "email"
+    | "password_hash"
+    | "email_verified_at"
+    | "access_proven_at"
+    | "created_at"
+    | "updated_at"
   >,
 ): IdentityAccount {
   return {
@@ -39,6 +45,7 @@ function toAccount(
     email: row.email,
     passwordHash: row.password_hash === NO_PASSWORD ? null : row.password_hash,
     emailVerifiedAt: row.email_verified_at,
+    accessProvenAt: row.access_proven_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -90,6 +97,7 @@ const ACCOUNT_COLUMNS = [
   "email",
   "password_hash",
   "email_verified_at",
+  "access_proven_at",
   "created_at",
   "updated_at",
 ] as const;
@@ -119,6 +127,7 @@ export function createIdentityRepository(database: Database): IdentityRepository
         "a.email",
         "a.password_hash",
         "a.email_verified_at",
+        "a.access_proven_at",
         "a.created_at",
         "a.updated_at",
         "s.account_id as s_account_id",
@@ -275,6 +284,7 @@ export function createIdentityRepository(database: Database): IdentityRepository
             email: account.email,
             password_hash: account.passwordHash ?? NO_PASSWORD,
             email_verified_at: account.emailVerifiedAt,
+            access_proven_at: account.accessProvenAt ?? null,
             created_at: account.createdAt,
             updated_at: account.updatedAt,
           }),
@@ -309,7 +319,7 @@ export function createIdentityRepository(database: Database): IdentityRepository
       try {
         await db
           .updateTable("accounts")
-          .set({ email, email_verified_at: null, updated_at: now })
+          .set({ email, email_verified_at: null, access_proven_at: null, updated_at: now })
           .where("id", "=", accountId)
           .execute();
       } catch (error) {
@@ -515,15 +525,26 @@ export function createIdentityRepository(database: Database): IdentityRepository
       return row ? toToken(row) : null;
     },
 
-    async consumeVerificationToken(tokenHash, now) {
-      const [, consumed] = await database.batch([
+    async consumeVerificationToken(tokenHash, now, sessionAccountId) {
+      const live = () => liveTokenAccount(tokenHash, "verify_email", now);
+      const results = await database.batch([
         db
           .updateTable("accounts")
           .set((eb) => ({ email_verified_at: eb.fn.coalesce("email_verified_at", eb.val(now)) }))
-          .where("id", "in", liveTokenAccount(tokenHash, "verify_email", now)),
+          .where("id", "in", live()),
+        // Opened in a session of the token's own account: its ways in are proven too.
+        ...(sessionAccountId === null
+          ? []
+          : [
+              db
+                .updateTable("accounts")
+                .set({ access_proven_at: now })
+                .where("id", "=", sessionAccountId)
+                .where("id", "in", live()),
+            ]),
         consumeToken(tokenHash, "verify_email", now),
       ]);
-      if (consumed.numAffectedRows !== 1) return null;
+      if (results.at(-1)?.numAffectedRows !== 1) return null;
       const row = await db
         .selectFrom("account_tokens")
         .select("account_id")
@@ -532,48 +553,50 @@ export function createIdentityRepository(database: Database): IdentityRepository
       return row?.account_id ?? null;
     },
 
-    async completePasswordReset({ tokenHash, passwordHash, now }) {
-      const token = await db
-        .selectFrom("account_tokens")
-        .select(["account_id", "email"])
-        .where("token_hash", "=", tokenHash)
-        .executeTakeFirst();
-      if (!token) return null;
-      const before = await db
-        .selectFrom("account_identities")
-        .select(["provider", "email_at_link"])
-        .where("account_id", "=", token.account_id)
-        .execute();
+    async completePasswordReset({ tokenHash, passwordHash, now, session }) {
       const live = () => liveTokenAccount(tokenHash, "reset_password", now);
+      // An identity linked under another address than the account's own: the one the link was
+      // sent to, which a live token is bound to.
+      // biome-ignore lint/suspicious/noExplicitAny: Kysely's expression builder.
+      const foreign = (eb: any) =>
+        eb.or([
+          eb("account_identities.email_at_link", "is", null),
+          eb(
+            "account_identities.email_at_link",
+            "<>",
+            eb
+              .selectFrom("accounts as owner")
+              .select("owner.email")
+              .whereRef("owner.id", "=", "account_identities.account_id"),
+          ),
+        ]);
+      // One round trip: what the reset drops is read inside the same batch, before it changes.
       const results = await database.batch([
+        db
+          .selectFrom("account_identities")
+          .select(["account_identities.provider", "account_identities.email_at_link"])
+          .where("account_identities.account_id", "in", live())
+          .where(foreign),
+        db.selectFrom("accounts").select(["id", "email"]).where("id", "in", live()),
         db
           .updateTable("accounts")
           .set((eb) => ({
             password_hash: passwordHash,
             email_verified_at: eb.fn.coalesce("email_verified_at", eb.val(now)),
+            access_proven_at: now,
             updated_at: now,
           }))
           .where("id", "in", live()),
         db.deleteFrom("sessions").where("account_id", "in", live()),
+        // The device that completed the reset is signed in (removed again below if the token was
+        // not this reset's to consume).
+        db.insertInto("sessions").values(fromSession(session)),
         // Identities linked under another address than the one the link just proved: recorded as
         // removed (never auto-linked again), then deleted.
         recordRemovals("password_reset", now, (query) =>
-          query
-            .where("account_identities.account_id", "in", live())
-            // biome-ignore lint/suspicious/noExplicitAny: Kysely's expression builder.
-            .where((eb: any) =>
-              eb.or([
-                eb("account_identities.email_at_link", "is", null),
-                eb("account_identities.email_at_link", "<>", token.email),
-              ]),
-            ),
+          query.where("account_identities.account_id", "in", live()).where(foreign),
         ),
-        db
-          .deleteFrom("account_identities")
-          .where("account_id", "in", live())
-          .where((eb) =>
-            eb.or([eb("email_at_link", "is", null), eb("email_at_link", "<>", token.email)]),
-          ),
+        db.deleteFrom("account_identities").where("account_id", "in", live()).where(foreign),
         consumeToken(tokenHash, "reset_password", now),
         // Every other open reset link of the account dies with this one.
         db
@@ -588,14 +611,36 @@ export function createIdentityRepository(database: Database): IdentityRepository
               .where("done.token_hash", "=", tokenHash)
               .where("done.used_at", "=", now),
           ),
+        // No session for a reset that did not happen (an unknown, used, expired or moved token).
+        db
+          .deleteFrom("sessions")
+          .where("id", "=", session.id)
+          .where((eb) =>
+            eb.not(
+              eb.exists(
+                eb
+                  .selectFrom("account_tokens as done")
+                  .select("done.token_hash")
+                  .where("done.token_hash", "=", tokenHash)
+                  .where("done.account_id", "=", session.accountId)
+                  .where("done.used_at", "=", now),
+              ),
+            ),
+          ),
       ]);
-      if (results[4].numAffectedRows !== 1) return null;
+      if (results[7]?.numAffectedRows !== 1) return null;
+      const dropped = (results[0]?.rows ?? []) as Array<{ provider: string }>;
+      const [owner] = (results[1]?.rows ?? []) as Array<{ id: string; email: string }>;
+      if (!owner) return null;
+      // The caller builds the session for the token's account (it read the token first); the
+      // last statement removed a session for any other, so nobody was signed in to the wrong one.
+      if (owner.id !== session.accountId) {
+        throw new Error("completePasswordReset: the session is not for the token's account");
+      }
       return {
-        accountId: token.account_id,
-        email: token.email,
-        unlinked: before
-          .filter((identity) => identity.email_at_link !== token.email)
-          .map((identity) => identity.provider as OidcProvider),
+        accountId: session.accountId,
+        email: owner.email,
+        unlinked: dropped.map((identity) => identity.provider as OidcProvider),
       };
     },
 

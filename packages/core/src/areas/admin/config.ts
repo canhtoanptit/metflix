@@ -1,5 +1,5 @@
 import { STAFF_API_AUDIENCE, STAFF_CLIENT_ID } from "@webflix/contracts";
-import { type AreaConfigInput, type AreaConfigResult, choice } from "../config.ts";
+import { type AreaConfigInput, type AreaConfigResult, choice, positiveInteger } from "../config.ts";
 import { ID_TOKEN_ALGORITHMS, type IdTokenAlgorithm } from "../identity/jose.ts";
 
 /** `memory` (tokens mintable only in process: nobody else gets in); `oidc` (the staff issuer). */
@@ -18,14 +18,24 @@ export interface AdminAreaConfig {
   staffClientId: string;
   /** Signature algorithms accepted on staff tokens, fixed here and never read from a token. */
   staffAlgorithms: IdTokenAlgorithm[];
+  /** Audit entries older than this are deleted by the scheduled sweep (days). */
+  auditRetentionDays: number;
 }
+
+/**
+ * 396 days (13 months): a year of staff activity for investigations (the payment industry asks
+ * for twelve months of audit trail), a month of margin, and the same period as raw events, so no
+ * record of staff access to a member outlives the member's own activity by much.
+ */
+export const DEFAULT_AUDIT_RETENTION_DAYS = 396;
 
 /**
  * Variables: WEBFLIX_STAFF_VERIFIER (default `oidc` outside production, against the development
  * issuer; `memory` in production, which admits nobody until a staff issuer is configured),
  * WEBFLIX_STAFF_ISSUER (URL; required for `oidc` in production), WEBFLIX_STAFF_AUDIENCE (default
  * webflix-admin-api), WEBFLIX_STAFF_CLIENT_ID (default webflix-admin), WEBFLIX_STAFF_ALGORITHMS
- * (comma-separated RS256 and/or ES256; default RS256, Keycloak's default).
+ * (comma-separated RS256 and/or ES256; default RS256, Keycloak's default),
+ * WEBFLIX_AUDIT_RETENTION_DAYS (default 396: `DEFAULT_AUDIT_RETENTION_DAYS`).
  */
 export function loadAdminConfig(input: AreaConfigInput): AreaConfigResult<AdminAreaConfig> {
   const issues: string[] = [];
@@ -63,6 +73,12 @@ export function loadAdminConfig(input: AreaConfigInput): AreaConfigResult<AdminA
       issues.push(`WEBFLIX_STAFF_ALGORITHMS: expected RS256 and/or ES256, got "${trimmed}"`);
     }
   }
+  const auditRetentionDays = positiveInteger(
+    input,
+    "WEBFLIX_AUDIT_RETENTION_DAYS",
+    DEFAULT_AUDIT_RETENTION_DAYS,
+    issues,
+  );
   return {
     config: {
       staffVerifier,
@@ -70,6 +86,7 @@ export function loadAdminConfig(input: AreaConfigInput): AreaConfigResult<AdminA
       staffAudience: input.vars.WEBFLIX_STAFF_AUDIENCE ?? STAFF_API_AUDIENCE,
       staffClientId: input.vars.WEBFLIX_STAFF_CLIENT_ID ?? STAFF_CLIENT_ID,
       staffAlgorithms: algorithms.length > 0 ? algorithms : ["RS256"],
+      auditRetentionDays,
     },
     issues,
   };

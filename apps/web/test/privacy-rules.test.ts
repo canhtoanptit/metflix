@@ -425,6 +425,58 @@ describe("another identity", () => {
   });
 });
 
+describe("the device id", () => {
+  it("is never carried from one account to another, or to the signed-out device", async () => {
+    const t = setup();
+    t.setSession(signedIn(profile(), "acct-a"));
+    t.setConsent("acct-a", consent("opt-out"));
+    t.runtime.start();
+    t.runtime.track("title.open", { titleId: "t-a" });
+    await t.flushTimers();
+    t.setSession({ authenticated: false });
+    t.setConsent("anonymous", consent("opt-out"));
+    t.runtime.track("signup.step", { step: "email", outcome: "viewed" }, { surface: "signup" });
+    await t.flushTimers();
+    t.setSession(signedIn(profile(), "acct-b"));
+    t.setConsent("acct-b", consent("opt-out"));
+    t.runtime.track("title.open", { titleId: "t-b" });
+    await t.flushTimers();
+    const devices = t.sentEvents().map((event) => event.deviceId);
+    expect(devices).toHaveLength(3);
+    expect(new Set(devices).size).toBe(3);
+    t.runtime.stop();
+  });
+
+  it("stays the same across a profile switch within one account", async () => {
+    const t = setup();
+    t.setSession(signedIn(profile({ id: "profile-a" })));
+    t.setConsent("acct-1", consent("opt-out"));
+    t.runtime.start();
+    t.runtime.track("title.open", { titleId: "t-a" });
+    await t.flushTimers();
+    t.setSession(signedIn(profile({ id: "profile-b" })));
+    t.runtime.track("title.open", { titleId: "t-b" });
+    await t.flushTimers();
+    const devices = t.sentEvents().map((event) => event.deviceId);
+    expect(devices).toHaveLength(2);
+    expect(devices[0]).toBe(devices[1]);
+    t.runtime.stop();
+  });
+
+  it("drops an id left by another account in an earlier visit", async () => {
+    const t = setup();
+    t.storage.setItem("webflix.deviceId", "left-by-someone-else");
+    t.storage.setItem("webflix.deviceId.owner", "account:acct-other");
+    t.setSession(signedIn(profile()));
+    t.setConsent("acct-1", consent("opt-out"));
+    t.runtime.start();
+    t.runtime.track("title.open", { titleId: "t-1" });
+    await t.flushTimers();
+    expect(t.sentEvents()[0]?.deviceId).not.toBe("left-by-someone-else");
+    t.runtime.stop();
+  });
+});
+
 describe("an identity change in flight", () => {
   function switchingClient() {
     let settle: { resolve: (value: unknown) => void; reject: (error: unknown) => void } | null =

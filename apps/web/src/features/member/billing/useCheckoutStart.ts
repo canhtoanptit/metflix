@@ -1,8 +1,14 @@
-import { ApiError, type Checkout, type PlanId, type PromotionQuote } from "@webflix/contracts";
+import {
+  ApiError,
+  type AppliedPromotion,
+  type Checkout,
+  type Money,
+  type PlanId,
+} from "@webflix/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { clearHandOff, handOffOf } from "./checkoutMemory.ts";
-import type { DeclineReason } from "./copy.ts";
+import type { DeclineReason, PromotionFailureReason } from "./copy.ts";
 import { patiently } from "./polling.ts";
 
 export type CheckoutStartState =
@@ -19,7 +25,31 @@ export type CheckoutStartState =
 
 export interface AppliedCode {
   code: string;
-  quote: PromotionQuote;
+  /** What the code does (from the checkout that carries it, or from its quote). */
+  promotion: AppliedPromotion;
+  /** The quoted price with it, when it was just quoted (the checkout's own amounts win). */
+  discountedPrice: Money | null;
+}
+
+/**
+ * Why applying or removing a code failed, and at which step: checking the code (the promo-code
+ * budget) or restarting the checkout with it (either budget). The page words a `rate_limited`
+ * by it, with when to try again (UX review, rate limits).
+ */
+export class CodeStepError extends Error {
+  readonly step: "check" | "checkout";
+  readonly error: unknown;
+  constructor(step: "check" | "checkout", error: unknown) {
+    super(`promo code ${step} failed`);
+    this.step = step;
+    this.error = error;
+  }
+}
+
+/** A code the checkout could not keep for this plan (it applied to the plan chosen before). */
+export interface DroppedCode {
+  code: string;
+  reason: PromotionFailureReason | undefined;
 }
 
 /** Thrown inside a start sequence that was superseded (the page moved on): not an error. */
@@ -57,14 +87,31 @@ export function useCheckoutStart(accountId: string, planId: PlanId, enabled: boo
   const [state, setState] = useState<CheckoutStartState>({ kind: "starting" });
   const [declined, setDeclined] = useState<DeclineReason | null>(null);
   const [applied, setApplied] = useState<AppliedCode | null>(null);
+  const [dropped, setDropped] = useState<DroppedCode | null>(null);
+  /** Whether the account can still have a free trial (the server's answer; null until known). */
+  const [trialEligible, setTrialEligible] = useState<boolean | null>(null);
   const [attempt, setAttempt] = useState(0);
   /** The current sequence: anything an older one would set is dropped. */
   const generation = useRef(0);
 
+  /** Start (or resume) with `promotionCode`; the code shown is the one the checkout carries. */
   const start = useCallback(
-    async (promotionCode: string | null, owner: number): Promise<void> => {
+    async (
+      promotionCode: string | null,
+      owner: number,
+      quoted: Money | null = null,
+    ): Promise<void> => {
       const checkout = await startOnce(planId, promotionCode);
       if (owner !== generation.current) throw new Superseded();
+      setApplied(
+        checkout.promotion
+          ? {
+              code: checkout.promotion.code,
+              promotion: checkout.promotion,
+              discountedPrice: quoted,
+            }
+          : null,
+      );
       if (checkout.status === "requires_setup" && checkout.clientSecret) {
         setState({ kind: "ready", checkout: { ...checkout, clientSecret: checkout.clientSecret } });
       } else {
@@ -83,9 +130,11 @@ export function useCheckoutStart(accountId: string, planId: PlanId, enabled: boo
     };
     setState({ kind: "starting" });
     const run = async () => {
-      const open = (await patiently(() => api().getOpenCheckout())).checkout;
+      const answer = await patiently(() => api().getOpenCheckout());
       current();
-      let code: string | null = open?.promotion?.code ?? null;
+      const open = answer.checkout;
+      setTrialEligible(answer.trialEligible ?? null);
+      const code: string | null = open?.promotion?.code ?? null;
       if (open) {
         const pastTheCard =
           open.status === "processing" ||
@@ -113,22 +162,15 @@ export function useCheckoutStart(accountId: string, planId: PlanId, enabled: boo
           }
         }
       }
-      if (code) {
-        try {
-          // The code was checked for the checkout's plan: check it again for this one.
-          const quote = await api().validatePromotion({ body: { code, planId } });
-          current();
-          setApplied({ code: quote.promotion.code, quote });
-        } catch (error) {
-          if (error instanceof Superseded) throw error;
-          code = null; // It doesn't apply here: start without it.
-        }
-      }
+      // The code the open checkout carries is sent again as it is (free: it never spends the
+      // promo-code budget, and it is never checked again here). Only the server's refusal of it
+      // for this plan drops it, and the page says so; a `rate_limited` never does.
       try {
         await start(code, owner);
       } catch (error) {
         if (code && ApiError.is(error, "promotion_code_invalid")) {
-          setApplied(null);
+          current();
+          setDropped({ code, reason: error.problem.promotionReason });
           await start(null, owner);
           return;
         }
@@ -150,23 +192,41 @@ export function useCheckoutStart(accountId: string, planId: PlanId, enabled: boo
     };
   }, [accountId, planId, start, attempt, enabled]);
 
-  /** Validate a code against this plan, then attach it to the checkout. Throws the refusal. */
+  /**
+   * Check a code against this plan, then attach it to the checkout. Throws a `CodeStepError`
+   * naming the step that refused (the code's own refusal, or a limit), and changes nothing then.
+   */
   const applyCode = useCallback(
     async (code: string) => {
       const owner = generation.current;
-      const quote = await api().validatePromotion({ body: { code, planId } });
-      await start(quote.promotion.code, owner);
-      setApplied({ code: quote.promotion.code, quote });
+      let quote: Awaited<ReturnType<ReturnType<typeof api>["validatePromotion"]>>;
+      try {
+        quote = await api().validatePromotion({ body: { code, planId } });
+      } catch (error) {
+        throw new CodeStepError("check", error);
+      }
+      try {
+        await start(quote.promotion.code, owner, quote.discountedPrice);
+        setDropped(null);
+      } catch (error) {
+        if (error instanceof Superseded) throw error;
+        throw new CodeStepError("checkout", error);
+      }
     },
     [planId, start],
   );
 
+  /** Restart the checkout without its code. Throws a `CodeStepError`; the code stays then. */
   const removeCode = useCallback(async () => {
-    await start(null, generation.current);
-    setApplied(null);
+    try {
+      await start(null, generation.current);
+    } catch (error) {
+      if (error instanceof Superseded) throw error;
+      throw new CodeStepError("checkout", error);
+    }
   }, [start]);
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
 
-  return { state, declined, applied, applyCode, removeCode, retry };
+  return { state, declined, applied, dropped, trialEligible, applyCode, removeCode, retry };
 }

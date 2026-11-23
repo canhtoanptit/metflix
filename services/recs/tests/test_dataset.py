@@ -1,16 +1,21 @@
-"""build-dataset: duplicates, late events, clock skew, consent and restricted subjects."""
+"""build-dataset: duplicates, late events, clock skew, consent, restricted subjects and subjects
+pending erasure."""
 
 from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Any
 
+import orjson
 import polars as pl
+import pytest
 
 from helpers import ANCHOR_MS, make_event, put_catalog, synthetic_catalog_document, write_lake
-from webflix_recs.dataset import build_dataset, event_key
+from webflix_recs import cli, erasure
+from webflix_recs.dataset import build_dataset, event_key, load_dataset
 from webflix_recs.ids import DAY_MS, HOUR_MS, iso_ms
-from webflix_recs.storage import LocalStorage
+from webflix_recs.storage import LocalStorage, put_json
 
 T0 = ANCHOR_MS - 10 * DAY_MS
 
@@ -162,3 +167,79 @@ def test_plays_are_attributed_to_the_card_and_cards_after_a_play_are_censored(
     assert row["censored"].to_list() == [False, False, True, True]
     other = impressions.filter(pl.col("row_rank") == 6)
     assert other["played"].to_list() == [False]
+
+
+def test_subjects_pending_erasure_when_the_build_starts_are_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An erasure requested a second before the build (the account, as the product lists it),
+    a profile restricted since its last event (the product lists the profile's key), and a key
+    the erasure plan still holds: none of their events is read into the dataset."""
+    storage = LocalStorage(tmp_path)
+    put_catalog(storage, synthetic_catalog_document(40))
+    erased, erased_profile = "a" * 22, "A" * 22
+    restricted_since, restricted_account = "B" * 22, "b" * 22
+    in_plan, in_plan_account = "C" * 22, "c" * 22
+    fine, fine_account = "F" * 22, "f" * 22
+    events = [
+        make_event("playback.start", T0, profile=erased_profile, account=erased),
+        make_event("consent.change", T0 + 1, profile=None, account=erased),
+        make_event("playback.start", T0, profile=restricted_since, account=restricted_account),
+        make_event("playback.start", T0, profile=in_plan, account=in_plan_account),
+        make_event("playback.start", T0, profile=fine, account=fine_account),
+    ]
+    write_lake(storage, events, "a")
+    plan = erasure.load_plan(storage)
+    plan["subjects"][in_plan] = {"kind": "profile", "via": in_plan_account, "confirmedAt": None}
+    put_json(storage, erasure.PLAN_KEY, plan)
+    keys = tmp_path.parent / f"{tmp_path.name}-pending.json"
+    keys.write_bytes(orjson.dumps({"subjectKeys": [erased, restricted_since]}))
+    monkeypatch.delenv("WEBFLIX_ADMIN_API_URL", raising=False)
+    cli.main([
+        "--store", str(tmp_path), "--workers", "1", "build-dataset", "--dataset", "x",
+        "--as-of", iso_ms(T0 + DAY_MS), "--erasures", str(keys),
+    ])  # fmt: skip
+    summary = orjson.loads(capsys.readouterr().out)
+    assert summary["excludedSubjects"] == 3
+    assert summary["counts"]["pendingErasureEventsDropped"] == 4
+    dataset = load_dataset(storage, "x")
+    assert dataset.tables["profiles"]["profile"].to_list() == [fine]
+    for name in ("playback", "actions", "profiles"):
+        assert set(dataset.tables[name]["profile"].to_list()) <= {fine}
+    assert set(dataset.tables["accounts"]["account"].to_list()) <= {fine_account}
+    # Without the list (`--erasures none`), only the plan's key is left out.
+    cli.main([
+        "--store", str(tmp_path), "--workers", "1", "build-dataset", "--dataset", "y",
+        "--as-of", iso_ms(T0 + DAY_MS), "--erasures", "none",
+    ])  # fmt: skip
+    capsys.readouterr()
+    assert sorted(load_dataset(storage, "y").tables["profiles"]["profile"].to_list()) == sorted(
+        [erased_profile, restricted_since, fine]
+    )
+
+
+def test_a_grant_by_support_never_makes_an_account_eligible(tmp_path: Path) -> None:
+    """Lakes written before staff lost the power to grant can hold consent.change events with
+    source support and granted true, and the stamps after one may come from it: such an account
+    is not consenting until the member answers again themselves."""
+    storage = LocalStorage(tmp_path)
+    granted_by_support, answered_after, own = "S" * 22, "M" * 22, "O" * 22
+
+    def grant(account: str, at: int, source: str) -> dict[str, Any]:
+        event = make_event("consent.change", at, profile=None, account=account, source=source)
+        assert event["payload"] == {"purpose": "personalisation", "granted": True, "source": source}
+        return event
+
+    events = [
+        grant(granted_by_support, T0, "support"),
+        make_event("playback.start", T0 + HOUR_MS, profile="s" * 22, account=granted_by_support),
+        grant(answered_after, T0, "support"),
+        grant(answered_after, T0 + 2 * HOUR_MS, "settings"),
+        make_event("playback.start", T0 + 3 * HOUR_MS, profile="m" * 22, account=answered_after),
+        grant(own, T0, "banner"),
+        make_event("playback.start", T0 + HOUR_MS, profile="o" * 22, account=own),
+    ]
+    write_lake(storage, events, "a")
+    result = _build(tmp_path, T0 + DAY_MS)
+    assert sorted(result.tables["profiles"]["profile"].to_list()) == ["m" * 22, "o" * 22]
+    assert result.manifest["counts"]["profiles"]["excludedNoConsent"] == 1

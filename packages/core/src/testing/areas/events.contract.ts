@@ -40,6 +40,10 @@ const request = (overrides: Partial<PrivacyRequestRecord>): PrivacyRequestRecord
   updatedAt: T0,
   membershipStep: null,
   membershipEndsAt: null,
+  startedAt: null,
+  attempts: null,
+  retryAt: null,
+  emailStatus: null,
   ...overrides,
 });
 
@@ -368,6 +372,40 @@ export function describeEventsRepositoryContract(
       ]);
     });
 
+    it("lists the erasures a run with data up to a cutoff may still carry (the importer's)", async () => {
+      const key = (index: number) => `k${index.toString().padStart(21, "0")}`;
+      const erasure = (
+        subjectKey: string,
+        kind: "account" | "profile",
+        accountKey: string | null = null,
+      ) => ({ subjectKey, kind, accountKey, requestedAt: T0, compactedAt: null });
+      // An account with its profiles, settled at T0 + 50; a profile alone, settled at T0 + 10;
+      // another profile alone, still pending.
+      await repo().addErasures([
+        erasure(key(1), "account"),
+        erasure(key(2), "profile", key(1)),
+        erasure(key(3), "profile", key(1)),
+      ]);
+      await repo().addErasures([erasure(key(4), "profile")]);
+      await repo().addErasures([erasure(key(5), "profile")]);
+      await repo().markErasuresCompacted([key(1)], T0 + 50);
+      await repo().markErasuresCompacted([key(4)], T0 + 10);
+      const keysAt = async (asOf: number) =>
+        (await repo().erasuresUnsettledAt(asOf, null, 100)).map((record) => record.subjectKey);
+      // Data up to T0 + 20: the account was erased after it (its records are unsettled for such
+      // a run), the lone profile before it; pending is always unsettled.
+      expect(await keysAt(T0 + 20)).toEqual([key(1), key(2), key(3), key(5)]);
+      // Data up to T0 + 50 or later: only what is pending (settled at the cutoff counts).
+      expect(await keysAt(T0 + 50)).toEqual([key(1), key(2), key(3), key(5)]);
+      expect(await keysAt(T0 + 51)).toEqual([key(5)]);
+      // Keyset pages, in subject key order.
+      const first = await repo().erasuresUnsettledAt(T0, null, 2);
+      expect(first.map((record) => record.subjectKey)).toEqual([key(1), key(2)]);
+      const rest = await repo().erasuresUnsettledAt(T0, key(2), 10);
+      expect(rest.map((record) => record.subjectKey)).toEqual([key(3), key(4), key(5)]);
+      expect(rest[1]).toMatchObject({ kind: "profile", accountKey: null, compactedAt: T0 + 10 });
+    });
+
     it("mirrors recordHeartbeat's credit exactly (playback events read no row back)", async () => {
       await account();
       await h().repos.profiles.createWithinLimit(
@@ -563,6 +601,189 @@ export function describeEventsRepositoryContract(
       // Another account is untouched.
       expect(await h().repos.accounts.get("acc-2")).not.toBeNull();
       expect(await repo().listConsents("acc-2")).toHaveLength(1);
+    });
+
+    it("never answers a support grant as the consent in force (only the member grants)", async () => {
+      await account();
+      await repo().addConsent(
+        consent({ id: "0193a1d2-0000-7000-8000-000000000101", granted: false, source: "settings" }),
+      );
+      await repo().addConsent(
+        consent({
+          id: "0193a1d2-0000-7000-8000-000000000102",
+          granted: true,
+          source: "support",
+          createdAt: T0 + 1,
+        }),
+      );
+      // The member's own withdrawal stays in force; the grant stays in the history.
+      expect(await repo().consentsAt("acc-1", T0 + 5)).toMatchObject([
+        { purpose: "analytics", granted: false, source: "settings" },
+      ]);
+      expect(await repo().listConsents("acc-1")).toHaveLength(2);
+      // A support withdrawal is an answer in force.
+      await repo().addConsent(
+        consent({
+          id: "0193a1d2-0000-7000-8000-000000000103",
+          purpose: "personalisation",
+          granted: false,
+          source: "support",
+          createdAt: T0 + 2,
+        }),
+      );
+      expect(
+        (await repo().consentsAt("acc-1", T0 + 5)).find((r) => r.purpose === "personalisation"),
+      ).toMatchObject({ granted: false, source: "support" });
+    });
+
+    it("finds exports overdue, erasures due to run again and erasures in progress", async () => {
+      for (const id of ["acc-1", "acc-2", "acc-3", "acc-4"]) await account(id);
+      await repo().createPrivacyRequest(
+        request({ id: "x-old", accountId: "acc-1", status: "processing", requestedAt: T0 }),
+      );
+      await repo().createPrivacyRequest(
+        request({
+          id: "x-waiting",
+          accountId: "acc-2",
+          status: "processing",
+          requestedAt: T0 + 10,
+          exportBlobKey: "privacy/exports/x-waiting.partial.json.gz",
+        }),
+      );
+      await repo().createPrivacyRequest(
+        request({ id: "x-new", accountId: "acc-3", requestedAt: T0 + 1000 }),
+      );
+      expect((await repo().overdueExports(T0 + 100, 10)).map((r) => r.id)).toEqual([
+        "x-old",
+        "x-waiting",
+      ]);
+      expect((await repo().overdueExports(T0 + 100, 1)).map((r) => r.id)).toEqual(["x-old"]);
+      const erasure = (overrides: Partial<PrivacyRequestRecord>) =>
+        request({ kind: "deletion", status: "processing", scheduledFor: T0, ...overrides });
+      await repo().createPrivacyRequest(
+        erasure({ id: "e-later", accountId: "acc-1", startedAt: T0 + 50, retryAt: T0 + 500 }),
+      );
+      await repo().createPrivacyRequest(
+        erasure({ id: "e-due", accountId: "acc-2", startedAt: T0 + 20, retryAt: T0 + 100 }),
+      );
+      // Left in progress before retries were recorded: no start, no retry time.
+      await repo().createPrivacyRequest(erasure({ id: "e-legacy", accountId: "acc-3" }));
+      await repo().createPrivacyRequest(
+        request({ id: "e-scheduled", accountId: "acc-4", kind: "deletion", status: "scheduled" }),
+      );
+      expect((await repo().dueErasureRetries(T0 + 100, 10)).map((r) => r.id)).toEqual([
+        "e-legacy",
+        "e-due",
+      ]);
+      expect((await repo().erasuresInProgress(10)).map((r) => r.id)).toEqual([
+        "e-legacy",
+        "e-due",
+        "e-later",
+      ]);
+      expect(await repo().getPrivacyRequest("e-due")).toMatchObject({
+        startedAt: T0 + 20,
+        attempts: null,
+        retryAt: T0 + 100,
+        emailStatus: null,
+      });
+      await repo().transitionPrivacyRequest("e-due", ["processing"], {
+        attempts: 3,
+        retryAt: T0 + 900,
+        emailStatus: "sent",
+        updatedAt: T0 + 101,
+      });
+      expect(await repo().getPrivacyRequest("e-due")).toMatchObject({
+        attempts: 3,
+        retryAt: T0 + 900,
+        emailStatus: "sent",
+      });
+      expect((await repo().dueErasureRetries(T0 + 100, 10)).map((r) => r.id)).toEqual(["e-legacy"]);
+    });
+
+    it("looks erasure records up by subject key, settled or not", async () => {
+      const at = (key: string, kind: "account" | "profile", accountKey: string | null) => ({
+        subjectKey: key,
+        kind,
+        accountKey,
+        requestedAt: T0,
+        compactedAt: null,
+      });
+      await repo().addErasures([
+        at("acctKeyacctKeyacctKey1", "account", null),
+        at("profKeyprofKeyprofKey1", "profile", "acctKeyacctKeyacctKey1"),
+        at("profKeyprofKeyprofKey2", "profile", null),
+      ]);
+      await repo().markErasuresCompacted(["profKeyprofKeyprofKey2"], T0 + 5);
+      const found = await repo().erasuresOf([
+        "acctKeyacctKeyacctKey1",
+        "profKeyprofKeyprofKey2",
+        "unknownunknownunknown1",
+        "acctKeyacctKeyacctKey1",
+      ]);
+      expect(found.map((record) => record.subjectKey).sort()).toEqual([
+        "acctKeyacctKeyacctKey1",
+        "profKeyprofKeyprofKey2",
+      ]);
+      expect(await repo().erasuresOf([])).toEqual([]);
+      // Many keys at once (several statements on D1).
+      const many = Array.from({ length: 200 }, (_, i) => `many${String(i).padStart(18, "0")}`);
+      expect(await repo().erasuresOf([...many, "profKeyprofKeyprofKey1"])).toHaveLength(1);
+    });
+
+    it("locks an account for its erasure: no session, no password, its address replaced", async () => {
+      await account("acc-1");
+      await account("acc-2");
+      expect(await repo().lockAccountForErasure("acc-1", T0 + 9)).toBe(true);
+      expect(await repo().lockAccountForErasure("acc-1", T0 + 10)).toBe(true); // idempotent
+      const locked = await h().repos.accounts.get("acc-1");
+      expect(locked?.account).toMatchObject({
+        email: "erased-acc-1@erasure.invalid",
+        passwordHash: "",
+      });
+      expect(await h().repos.accounts.findByEmail("acc-1@example.com")).toBeNull();
+      expect(await h().repos.sessions.listForAccount("acc-1", T0)).toEqual([]);
+      // Another account is untouched.
+      expect(await h().repos.sessions.listForAccount("acc-2", T0)).toHaveLength(1);
+      expect(await repo().lockAccountForErasure("acc-missing", T0)).toBe(false);
+    });
+
+    it("prunes finished exports and settled erasures by age, never a deletion request", async () => {
+      await account("acc-1");
+      await account("acc-2");
+      await repo().createPrivacyRequest(
+        request({ id: "x-done", status: "completed", requestedAt: T0, updatedAt: T0 + 50 }),
+      );
+      await repo().createPrivacyRequest(
+        request({ id: "x-open", accountId: "acc-2", status: "processing", requestedAt: T0 }),
+      );
+      await repo().createPrivacyRequest(
+        request({ id: "d-done", kind: "deletion", status: "completed", requestedAt: T0 }),
+      );
+      expect(await repo().pruneFinishedExports(T0 + 1)).toBe(1);
+      expect(await repo().getPrivacyRequest("x-done")).toBeNull();
+      expect(await repo().getPrivacyRequest("x-open")).not.toBeNull();
+      expect(await repo().getPrivacyRequest("d-done")).not.toBeNull();
+      await repo().addErasures([
+        {
+          subjectKey: "oldOldOldOldOldOldOld1",
+          kind: "profile",
+          accountKey: null,
+          requestedAt: T0,
+          compactedAt: null,
+        },
+        {
+          subjectKey: "pendingPendingPending1",
+          kind: "profile",
+          accountKey: null,
+          requestedAt: T0,
+          compactedAt: null,
+        },
+      ]);
+      await repo().markErasuresCompacted(["oldOldOldOldOldOldOld1"], T0 + 5);
+      expect(await repo().pruneSettledErasures(T0 + 10)).toBe(1);
+      expect((await repo().erasuresOf(["oldOldOldOldOldOldOld1"])).length).toBe(0);
+      expect((await repo().erasuresOf(["pendingPendingPending1"])).length).toBe(1);
+      expect(await repo().pruneAggregates("2026-01-01")).toBe(0);
     });
   });
 }

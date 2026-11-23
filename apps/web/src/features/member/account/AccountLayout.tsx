@@ -18,6 +18,8 @@ import {
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { qk } from "../../../app/query/keys.ts";
 import { useAuthenticatedSession } from "../../../app/session/session.ts";
+import { FinishSetupNotice } from "../billing/FinishSetupNotice.tsx";
+import { isUnfinishedSignup } from "../billing/membership.ts";
 import { MATURITY_COPY } from "../profiles/maturity.ts";
 import { MemberHeader } from "../shared/Chrome.tsx";
 import { possessive } from "../shared/format.ts";
@@ -35,6 +37,8 @@ interface NavItem {
   label: string;
   icon: IconComponent;
   exact?: boolean;
+  /** Needs a profile: not offered to an account that has not finished sign-up. */
+  profiles?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -43,8 +47,8 @@ const NAV: NavItem[] = [
   { to: "/account/security", label: "Security", icon: ShieldIcon },
   { to: "/account/devices", label: "Devices", icon: DevicesIcon },
   { to: "/account/privacy", label: "Privacy", icon: EyeIcon },
-  { to: "/profiles/manage", label: "Profiles", icon: UsersIcon },
-  { to: "/account/activity", label: "Viewing activity", icon: HistoryIcon },
+  { to: "/profiles/manage", label: "Profiles", icon: UsersIcon, profiles: true },
+  { to: "/account/activity", label: "Viewing activity", icon: HistoryIcon, profiles: true },
 ];
 
 /**
@@ -150,13 +154,21 @@ export function AccountFrame({
 }) {
   const session = useAuthenticatedSession();
   const profile = session.activeProfile;
+  const unfinished = isUnfinishedSignup(session);
   return (
     <div className="flex min-h-dvh flex-col bg-canvas">
       <MemberHeader
-        home={profile ? "/browse" : "/profiles"}
+        home={profile ? "/browse" : unfinished ? "/" : "/profiles"}
         className="border-b border-line-subtle"
         action={
-          profile ? (
+          unfinished ? (
+            <Link
+              to="/logout"
+              className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+            >
+              Sign out
+            </Link>
+          ) : profile ? (
             <Link
               to="/browse"
               className="focus-ring flex items-center gap-2.5 rounded-sm type-label text-fg-muted hover:text-fg"
@@ -176,7 +188,7 @@ export function AccountFrame({
         }
       />
       <div className="mx-auto flex w-full max-w-page flex-1 flex-col gap-6 px-gutter pt-6 pb-20 lg:flex-row lg:gap-12 lg:pt-12">
-        {navigation ? <AccountNav /> : null}
+        {navigation ? <AccountNav withProfiles={!unfinished} /> : null}
         <main
           id="main"
           className={cx(
@@ -184,6 +196,7 @@ export function AccountFrame({
             !navigation && "mx-auto",
           )}
         >
+          <FinishSetupNotice session={session} />
           {children}
         </main>
       </div>
@@ -196,7 +209,7 @@ export function AccountFrame({
  * On a phone the current section is brought into view (centred when it can be), and the strip
  * fades at an edge with more sections beyond it, so it is evident that it scrolls.
  */
-function AccountNav() {
+function AccountNav({ withProfiles }: { withProfiles: boolean }) {
   const list = useRef<HTMLUListElement>(null);
   const pathname = useLocation({ select: (location) => location.pathname });
   const [edges, setEdges] = useState({ start: false, end: false });
@@ -261,7 +274,7 @@ function AccountNav() {
         style={mask ? { maskImage: mask, WebkitMaskImage: mask } : undefined}
         className="scrollbar-none relative flex gap-1 overflow-x-auto px-gutter lg:sticky lg:top-6 lg:flex-col lg:overflow-visible lg:px-0"
       >
-        {NAV.map((item) => (
+        {NAV.filter((item) => withProfiles || !item.profiles).map((item) => (
           <li key={item.to} className="shrink-0">
             <Link
               to={item.to}

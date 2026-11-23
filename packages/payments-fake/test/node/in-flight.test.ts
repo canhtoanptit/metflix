@@ -271,13 +271,16 @@ describe("a member's request whose provider read fails for a moment", () => {
       const other = await pair.api.account();
       const started = await pair.api.services.billing.startCheckout(other, { planId: "basic" });
       const setupId = (await pair.api.services.billing.setupPaymentMethod(accountId)).id;
-      pair.api.fake.retrieveSetup = async () => {
+      const unavailable = async (): Promise<never> => {
         throw new PaymentProviderError("unavailable", "the provider is not answering");
       };
-      // A checkout waiting for its card (its client secret comes from the provider).
+      pair.api.fake.retrieveSetup = unavailable;
+      pair.api.fake.createSetup = unavailable;
+      // A checkout waiting for its card needs no provider read: its client secret is stored
+      // with it (review M1).
       expect(
         await answer(pair.api.services.billing.getCheckout(other.session.accountId, started.id)),
-      ).toBe("service_unavailable");
+      ).toBe("ok");
       // A card change: starting one, and polling one.
       expect(await answer(pair.api.services.billing.setupPaymentMethod(accountId))).toBe(
         "service_unavailable",

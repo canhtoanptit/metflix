@@ -110,7 +110,7 @@ export const consistencyChecks: CheckDefinition[] = [
     timeoutMs: 240_000,
     async run(ctx: CheckContext) {
       // Its own account: every round switches profiles from every instance.
-      const viewer = await ctx.env.viewer("session-consistency");
+      const viewer = await ctx.env.viewer("session-consistency", { member: false });
       const fan = ctx.options.parallelism;
       const fresh = await ctx.env.login(viewer.account, "session-consistency-new");
       const sessions = await fanOut(fan, () => fresh.fetch(`${API}/profiles`));
@@ -154,7 +154,7 @@ export const consistencyChecks: CheckDefinition[] = [
     title: "My List and ratings writes are read back by every following request",
     tags: ["consistency"],
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("library-consistency");
+      const viewer = await ctx.env.isolatedViewer("library-consistency", { member: false });
       const { cards } = await ctx.env.catalog();
       const title = cards[cards.length - 1];
       check(title, "empty catalog");

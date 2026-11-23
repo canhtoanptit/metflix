@@ -84,7 +84,7 @@ export function createPersonalisationRepository(database: Database): Personalisa
 
   return {
     async loadEditorial() {
-      const [billboards, collections, items, availability] = await database.batch([
+      const [billboards, collections, items, availability, withdrawn] = await database.batch([
         db.selectFrom("editorial_billboards").selectAll().orderBy("view"),
         collectionsQuery().where("status", "=", "published"),
         db
@@ -93,12 +93,71 @@ export function createPersonalisationRepository(database: Database): Personalisa
           .selectAll("i")
           .where("c.status", "=", "published"),
         db.selectFrom("title_availability").selectAll().orderBy("title_id"),
+        db
+          .selectFrom("recommendation_withdrawals")
+          .select("subject_key")
+          .where("kind", "=", "account")
+          .orderBy("subject_key"),
       ]);
       return {
         billboards: billboards.rows.map(toBillboard),
         collections: toCollections(collections.rows, items.rows),
         availability: availability.rows.map(toAvailability),
+        withdrawnAccounts: withdrawn.rows.map((row) => row.subject_key),
       };
+    },
+
+    async recordWithdrawal(withdrawal) {
+      const rows = [
+        { kind: "account", subject_key: withdrawal.accountKey },
+        ...withdrawal.profileKeys.map((key) => ({ kind: "profile", subject_key: key })),
+      ].map((row) => ({
+        ...row,
+        account_key: withdrawal.accountKey,
+        withdrawn_at: withdrawal.withdrawnAt,
+      }));
+      // 4 bound parameters per row: 25 rows per INSERT; an existing row keeps its first time.
+      await database.batch(
+        chunkRows(rows, 4).map((chunk) =>
+          db
+            .insertInto("recommendation_withdrawals")
+            .values(chunk)
+            .onConflict((oc) => oc.column("subject_key").doNothing()),
+        ),
+      );
+    },
+
+    async clearWithdrawal(accountKey) {
+      await db
+        .deleteFrom("recommendation_withdrawals")
+        .where("account_key", "=", accountKey)
+        .execute();
+    },
+
+    async getWithdrawal(accountKey) {
+      const rows = await db
+        .selectFrom("recommendation_withdrawals")
+        .selectAll()
+        .where("account_key", "=", accountKey)
+        .orderBy("subject_key")
+        .execute();
+      const account = rows.find((row) => row.kind === "account");
+      if (!account) return null;
+      return {
+        accountKey,
+        profileKeys: rows.filter((row) => row.kind === "profile").map((row) => row.subject_key),
+        withdrawnAt: Number(account.withdrawn_at),
+      };
+    },
+
+    async withdrawnProfileKeys(after, limit) {
+      let query = db
+        .selectFrom("recommendation_withdrawals")
+        .select("subject_key")
+        .where("kind", "=", "profile");
+      if (after !== null) query = query.where("subject_key", ">", after);
+      const rows = await query.orderBy("subject_key").limit(limit).execute();
+      return rows.map((row) => row.subject_key);
     },
 
     async getBillboard(view) {
@@ -221,6 +280,8 @@ export function createPersonalisationRepository(database: Database): Personalisa
 
 // --- RecommendationStore on SQL ------------------------------------------------------------------
 
+/** Profile keys per `profileKeys` page. */
+const PROFILE_KEYS_PAGE = 1_000;
 /** 6 bound parameters per neighbour row, 4 per list row: one INSERT stays within 100. */
 const NEIGHBOUR_COLUMNS = 6;
 const LIST_COLUMNS = 4;
@@ -449,6 +510,26 @@ export function createDatabaseRecommendationStore(database: Database): Recommend
       await db
         .deleteFrom("recommendation_profile_lists")
         .where("profile_key", "in", [...profileKeys])
+        .execute();
+    },
+
+    async profileKeys(run, cursor) {
+      let query = db
+        .selectFrom("recommendation_profile_lists")
+        .select("profile_key")
+        .where("model_version", "=", run);
+      if (cursor !== null) query = query.where("profile_key", ">", cursor);
+      const rows = await query.orderBy("profile_key").limit(PROFILE_KEYS_PAGE).execute();
+      const keys = rows.map((row) => row.profile_key);
+      return { keys, cursor: keys.length === PROFILE_KEYS_PAGE ? (keys.at(-1) ?? null) : null };
+    },
+
+    async recordManifest(run, manifestSha256) {
+      await requireBegun(run);
+      await db
+        .updateTable("recommendation_models")
+        .set({ manifest_sha256: manifestSha256 })
+        .where("run", "=", run)
         .execute();
     },
 

@@ -17,6 +17,7 @@ function account(id: string, overrides: Partial<IdentityAccount> = {}): Identity
     email: `${id}@example.test`,
     passwordHash: "$pbkdf2-sha256$i=1$c2FsdA$aGFzaA",
     emailVerifiedAt: null,
+    accessProvenAt: null,
     createdAt: T0,
     updatedAt: T0,
     ...overrides,
@@ -149,6 +150,7 @@ export function describeIdentityRepositoryContract(
           email: "m1@example.test",
           passwordHash: "$h$1",
           emailVerifiedAt: null,
+          accessProvenAt: null,
           createdAt: T0,
           updatedAt: T0,
         });
@@ -216,6 +218,7 @@ export function describeIdentityRepositoryContract(
             email: "m1@example.test",
             passwordHash: "$h$1",
             emailVerifiedAt: null,
+            accessProvenAt: null,
             createdAt: T0,
             updatedAt: T0,
           },
@@ -243,13 +246,35 @@ export function describeIdentityRepositoryContract(
         expect(await repo().getSession("s-acc-3", T0)).toBeNull();
       });
 
-      it("changes the address and forgets that the old one was verified", async () => {
-        await create("acc-1", { emailVerifiedAt: T0 });
+      it("stores whether an account's ways in are proven, null unless given", async () => {
+        await create("acc-1", { passwordHash: null, emailVerifiedAt: T0, accessProvenAt: T0 });
+        await repo().createAccount({
+          account: {
+            id: "acc-2",
+            email: "acc-2@example.test",
+            passwordHash: "$h$2",
+            emailVerifiedAt: null,
+            createdAt: T0,
+            updatedAt: T0,
+          },
+          session: session("s-acc-2", "acc-2"),
+          identity: null,
+        });
+        expect((await repo().getAccount("acc-1"))?.accessProvenAt).toBe(T0);
+        expect((await repo().findAccountByEmail("acc-1@example.test"))?.accessProvenAt).toBe(T0);
+        expect((await repo().getAccountWithSubscription("acc-1"))?.account.accessProvenAt).toBe(T0);
+        expect((await repo().loadBootstrap("acc-1"))?.account.accessProvenAt).toBe(T0);
+        expect((await repo().getAccount("acc-2"))?.accessProvenAt).toBeNull();
+      });
+
+      it("changes the address and forgets that the old one was verified and its ways in proven", async () => {
+        await create("acc-1", { emailVerifiedAt: T0, accessProvenAt: T0 });
         await create("acc-2");
         await repo().changeEmail("acc-1", "new@example.test", T0 + 1);
         expect(await repo().getAccount("acc-1")).toMatchObject({
           email: "new@example.test",
           emailVerifiedAt: null,
+          accessProvenAt: null,
           updatedAt: T0 + 1,
         });
         await rejectsWith(repo().changeEmail("acc-1", "acc-2@example.test", T0 + 2), "email");
@@ -262,6 +287,8 @@ export function describeIdentityRepositoryContract(
         expect(await repo().markEmailVerified("acc-1", "acc-1@example.test", T0 + 2)).toBe(true);
         expect(await repo().markEmailVerified("acc-1", "acc-1@example.test", T0 + 3)).toBe(true);
         expect((await repo().getAccount("acc-1"))?.emailVerifiedAt).toBe(T0 + 2);
+        // An issuer vouching for the address says nothing about who set the password.
+        expect((await repo().getAccount("acc-1"))?.accessProvenAt).toBeNull();
       });
     });
 
@@ -372,20 +399,48 @@ export function describeIdentityRepositoryContract(
         await create("acc-1");
         await repo().createToken(token("t-1", "acc-1", "verify_email"));
         await repo().createToken(token("t-r", "acc-1", "reset_password"));
-        expect(await repo().consumeVerificationToken("t-r", T0)).toBeNull();
-        expect(await repo().consumeVerificationToken("t-1", T0 + 5)).toBe("acc-1");
+        expect(await repo().consumeVerificationToken("t-r", T0, null)).toBeNull();
+        expect(await repo().consumeVerificationToken("t-1", T0 + 5, null)).toBe("acc-1");
         expect((await repo().getAccount("acc-1"))?.emailVerifiedAt).toBe(T0 + 5);
-        expect(await repo().consumeVerificationToken("t-1", T0 + 6)).toBeNull();
+        expect(await repo().consumeVerificationToken("t-1", T0 + 6, "acc-1")).toBeNull();
         expect(await repo().findLiveToken("t-r", "reset_password", T0)).not.toBeNull();
+        // Opened outside a session of the account: verified, ways in not proven.
+        expect((await repo().getAccount("acc-1"))?.accessProvenAt).toBeNull();
+      });
+
+      it("proves the ways in only for a link opened in a session of the token's own account", async () => {
+        await create("acc-1");
+        await create("acc-2");
+        await create("acc-3");
+        await repo().createToken(token("t-1", "acc-1", "verify_email"));
+        await repo().createToken(token("t-2", "acc-2", "verify_email"));
+        await repo().createToken(token("t-3", "acc-3", "verify_email"));
+        // In another account's session: verified, not proven, and the other account untouched.
+        expect(await repo().consumeVerificationToken("t-1", T0 + 1, "acc-2")).toBe("acc-1");
+        expect(await repo().getAccount("acc-1")).toMatchObject({
+          emailVerifiedAt: T0 + 1,
+          accessProvenAt: null,
+        });
+        expect((await repo().getAccount("acc-2"))?.accessProvenAt).toBeNull();
+        // In its own account's session: verified and proven.
+        expect(await repo().consumeVerificationToken("t-2", T0 + 2, "acc-2")).toBe("acc-2");
+        expect(await repo().getAccount("acc-2")).toMatchObject({
+          emailVerifiedAt: T0 + 2,
+          accessProvenAt: T0 + 2,
+        });
+        // A dead token proves nothing, even in the right session.
+        await repo().changeEmail("acc-3", "moved-3@example.test", T0 + 3);
+        expect(await repo().consumeVerificationToken("t-3", T0 + 4, "acc-3")).toBeNull();
+        expect((await repo().getAccount("acc-3"))?.accessProvenAt).toBeNull();
       });
 
       it("refuses an expired verification token or one for a previous address, changing nothing", async () => {
         await create("acc-1");
         await repo().createToken(token("t-old", "acc-1", "verify_email", { expiresAt: T0 }));
-        expect(await repo().consumeVerificationToken("t-old", T0)).toBeNull();
+        expect(await repo().consumeVerificationToken("t-old", T0, "acc-1")).toBeNull();
         await repo().createToken(token("t-moved", "acc-1", "verify_email"));
         await repo().changeEmail("acc-1", "moved@example.test", T0);
-        expect(await repo().consumeVerificationToken("t-moved", T0)).toBeNull();
+        expect(await repo().consumeVerificationToken("t-moved", T0, "acc-1")).toBeNull();
         expect((await repo().getAccount("acc-1"))?.emailVerifiedAt).toBeNull();
       });
 
@@ -403,6 +458,7 @@ export function describeIdentityRepositoryContract(
           tokenHash: "t-1",
           passwordHash: "$new$",
           now: T0 + 7,
+          session: session("s-reset", "acc-1"),
         });
         expect(reset).toEqual({
           accountId: "acc-1",
@@ -412,9 +468,16 @@ export function describeIdentityRepositoryContract(
         expect(await repo().getAccount("acc-1")).toMatchObject({
           passwordHash: "$new$",
           emailVerifiedAt: T0 + 7,
+          // What is left is the owner's: the new password and identities under this address.
+          accessProvenAt: T0 + 7,
           updatedAt: T0 + 7,
         });
-        expect(await repo().countSessions("acc-1", T0 + 7)).toBe(0);
+        expect((await repo().getAccount("acc-2"))?.accessProvenAt).toBeNull();
+        // Every device signed out, then the one that completed the reset signed in.
+        expect(await repo().countSessions("acc-1", T0 + 7)).toBe(1);
+        expect((await repo().getSession("s-reset", T0 + 7))?.session.accountId).toBe("acc-1");
+        expect(await repo().getSession("s-acc-1", T0 + 7)).toBeNull();
+        expect(await repo().getSession("s-other", T0 + 7)).toBeNull();
         expect(await repo().countSessions("acc-2", T0 + 7)).toBe(1);
         expect((await repo().listIdentities("acc-1")).map((entry) => entry.provider)).toEqual([
           "google",
@@ -433,6 +496,7 @@ export function describeIdentityRepositoryContract(
             tokenHash: "t-1",
             passwordHash: "$x$",
             now: T0 + 8,
+            session: session("s-replay", "acc-1"),
           }),
         ).toBeNull();
         expect(
@@ -440,16 +504,26 @@ export function describeIdentityRepositoryContract(
             tokenHash: "t-2",
             passwordHash: "$x$",
             now: T0 + 8,
+            session: session("s-other-link", "acc-1"),
           }),
         ).toBeNull();
         expect((await repo().getAccount("acc-1"))?.passwordHash).toBe("$new$");
+        // A replayed or dead link signs nobody in; the reset's own session stays.
+        expect(await repo().getSession("s-replay", T0 + 8)).toBeNull();
+        expect(await repo().getSession("s-other-link", T0 + 8)).toBeNull();
+        expect(await repo().countSessions("acc-1", T0 + 8)).toBe(1);
       });
 
       it("changes nothing for an expired reset token or one sent to a previous address", async () => {
         await create("acc-1");
         await repo().createToken(token("t-old", "acc-1", "reset_password", { expiresAt: T0 }));
         expect(
-          await repo().completePasswordReset({ tokenHash: "t-old", passwordHash: "$x$", now: T0 }),
+          await repo().completePasswordReset({
+            tokenHash: "t-old",
+            passwordHash: "$x$",
+            now: T0,
+            session: session("s-old", "acc-1"),
+          }),
         ).toBeNull();
         await repo().createToken(token("t-moved", "acc-1", "reset_password"));
         await repo().changeEmail("acc-1", "moved@example.test", T0);
@@ -458,14 +532,25 @@ export function describeIdentityRepositoryContract(
             tokenHash: "t-moved",
             passwordHash: "$x$",
             now: T0,
+            session: session("s-moved", "acc-1"),
           }),
         ).toBeNull();
         expect(
-          await repo().completePasswordReset({ tokenHash: "t-none", passwordHash: "$x$", now: T0 }),
+          await repo().completePasswordReset({
+            tokenHash: "t-none",
+            passwordHash: "$x$",
+            now: T0,
+            session: session("s-none", "acc-1"),
+          }),
         ).toBeNull();
+        // A reset that did not happen signs nobody in.
+        for (const id of ["s-old", "s-moved", "s-none"]) {
+          expect(await repo().getSession(id, T0), id).toBeNull();
+        }
         expect((await repo().getAccount("acc-1"))?.passwordHash).toBe(
           account("acc-1").passwordHash,
         );
+        expect((await repo().getAccount("acc-1"))?.accessProvenAt).toBeNull();
         expect(await repo().countSessions("acc-1", T0)).toBe(1);
       });
     });
@@ -566,7 +651,7 @@ export function describeIdentityRepositoryContract(
             createdAt: T0,
           });
         }
-        await repo().consumeVerificationToken("t-used", T0);
+        await repo().consumeVerificationToken("t-used", T0, null);
         expect(await repo().deleteExpired(T0, 100)).toBe(3);
         expect(await repo().claim("c-live", T0 + HOUR, T0 + 1)).toBe(false);
         expect(await repo().findLiveToken("t-live", "verify_email", T0)).not.toBeNull();

@@ -30,14 +30,64 @@ class RuleEngineUnavailable(RuntimeError):
     pass
 
 
-def engine_input(history: History, catalog: Catalog, profiles: list[str], path: Path) -> None:
+def learned_section(
+    models: Any, history: History, catalog: Catalog, profiles: list[str], run: str
+) -> dict[str, Any]:
+    """What serving would hand the engine for these profiles if the run trained as of the
+    history's cutoff were active (areas/personalisation/serving.ts): the run's neighbours, as
+    `score` writes them, and each profile's lists, the rows of its artefact payload. Lists are
+    generated at the cutoff and valid for `VALID_FOR_DAYS`, as a scheduled run's are."""
+    from webflix_recs.artefacts import VALID_FOR_DAYS, neighbour_rows  # noqa: PLC0415
+    from webflix_recs.recommend import Recommender  # noqa: PLC0415
+
+    as_of = history.as_of_ms
+    table = neighbour_rows(models, catalog, catalog.available_mask(as_of))
+    neighbours: dict[str, list[list[Any]]] = {}
+    for title, neighbour, value in zip(
+        table["title_id"], table["neighbour_id"], table["score"], strict=True
+    ):
+        neighbours.setdefault(title, []).append([neighbour, round(value, 5)])
+    recommender = Recommender(models, history)
+    lists: dict[str, list[dict[str, Any]]] = {}
+    rows = history.rows(profiles)
+    for start in range(0, len(rows), 2000):
+        block = recommender.score(rows[start : start + 2000], ("ranker",))
+        lists.update(recommender.lists(block))
+    return {
+        "header": {
+            "run": run,
+            "generatedAt": iso_ms(as_of),
+            "expiresAt": iso_ms(as_of + VALID_FOR_DAYS * DAY_MS),
+            "neighbours": sorted(neighbours.items()),
+        },
+        "lists": lists,
+    }
+
+
+def engine_input(
+    history: History,
+    catalog: Catalog,
+    profiles: list[str],
+    path: Path,
+    *,
+    views_history: History | None = None,
+    section: str | None = None,
+    append: bool = False,
+    learned: dict[str, Any] | None = None,
+) -> None:
+    """Write one section of the engine's input: a header, then a line per profile. `history`
+    holds the evaluated profiles' signals; `views_history` (default: the same) the plays behind
+    Trending and Top 10, which in the product count every member, not only the evaluated ones.
+    `section` names the section's output directory; `append` adds the section to the file.
+    `learned` (`learned_section`): the run whose learned home page the Node step also ranks."""
     as_of = history.as_of_ms
     playback = history.tables["playback"]
     actions = history.tables["actions"]
     wanted = pl.DataFrame({"profile": profiles})
     # Views: a profile credited with >= 60 s of a title on a UTC day (the engine's definition),
     # over the 14 days before the cutoff.
-    recent = playback.filter(pl.col("event_time") >= as_of - 14 * DAY_MS)
+    viewed = (views_history or history).tables["playback"]
+    recent = viewed.filter(pl.col("event_time") >= as_of - 14 * DAY_MS)
     sessions = (
         recent.group_by(["profile", "title_id", "playback_id"])
         .agg(
@@ -65,6 +115,8 @@ def engine_input(history: History, catalog: Catalog, profiles: list[str], path: 
             for day, title, n in views.iter_rows()
         ],
         "limit": len(catalog),
+        **({"section": section} if section else {}),
+        **({"learned": learned["header"]} if learned else {}),
     }
     mine = actions.join(wanted, on="profile", how="semi").sort("event_time")
     lists = (
@@ -114,16 +166,28 @@ def engine_input(history: History, catalog: Catalog, profiles: list[str], path: 
                 "updatedAt": int(at),
             }
         )
-    with path.open("wb") as handle:
+    with path.open("ab" if append else "wb") as handle:
         handle.write(orjson.dumps(header) + b"\n")
         for profile in profiles:
             # Every evaluated profile is unrestricted, hence the default ceiling.
-            line = {"profileKey": profile, "maturityCeiling": "18+", **by_profile[profile]}
+            line: dict[str, Any] = {
+                "profileKey": profile,
+                "maturityCeiling": "18+",
+                **by_profile[profile],
+            }
+            if learned:
+                line["lists"] = learned["lists"].get(profile)
             handle.write(orjson.dumps(line) + b"\n")
 
 
 def run_rule_engine(
-    history: History, catalog: Catalog, profiles: list[str], work: Path
+    history: History,
+    catalog: Catalog,
+    profiles: list[str],
+    work: Path,
+    *,
+    views_history: History | None = None,
+    learned: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     node = shutil.which("node")
     script = SCRIPTS / "rule-engine-rankings.ts"
@@ -134,7 +198,7 @@ def run_rule_engine(
         )
     work.mkdir(parents=True, exist_ok=True)
     source = work / "engine-input.ndjson"
-    engine_input(history, catalog, profiles, source)
+    engine_input(history, catalog, profiles, source, views_history=views_history, learned=learned)
     completed = subprocess.run(
         [node, str(script), "--input", str(source), "--out-dir", str(work)],
         capture_output=True,
@@ -144,7 +208,15 @@ def run_rule_engine(
     )
     if completed.returncode != 0:
         raise RuleEngineUnavailable(f"rule engine failed: {completed.stderr.strip()[-2000:]}")
+    return engine_outputs(work)
+
+
+def engine_outputs(directory: Path) -> dict[str, Path]:
+    """The rankings files the Node step wrote into `directory` (learned home only when its
+    input carried a run)."""
+    names = ("rule-engine", "rule-engine-home", "learned-home")
     return {
-        "rule-engine": work / "rule-engine.ndjson",
-        "rule-engine-home": work / "rule-engine-home.ndjson",
+        name: directory / f"{name}.ndjson"
+        for name in names
+        if (directory / f"{name}.ndjson").exists() or name != "learned-home"
     }

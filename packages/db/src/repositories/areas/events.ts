@@ -2,11 +2,13 @@ import { CONSENT_PURPOSES } from "@webflix/contracts";
 import {
   type ConsentRecord,
   type EventsRepository,
+  erasedAddress,
   OPEN_PRIVACY_STATUSES,
   PARTIAL_EXPORT_SUFFIX,
   type PrivacyErasureRecord,
   type PrivacyRequestRecord,
 } from "@webflix/core";
+import { sql } from "kysely";
 import { type Database, isUniqueViolation } from "../../database.ts";
 import type {
   ConsentsTable,
@@ -18,6 +20,8 @@ import { excluded, fromBool, toBool, typed } from "../mapping.ts";
 
 /** Erasure keys per statement: 5 bound parameters each (and the upsert's), within D1's 100. */
 const ERASURE_CHUNK = 15;
+/** Subject keys per lookup statement, within D1's 100 bound parameters. */
+const ERASURE_LOOKUP_CHUNK = 90;
 
 function toConsent(row: ConsentsTable): ConsentRecord {
   return {
@@ -47,6 +51,10 @@ function toPrivacyRequest(row: PrivacyRequestsTable): PrivacyRequestRecord {
     updatedAt: Number(row.updated_at),
     membershipStep: row.membership_step as PrivacyRequestRecord["membershipStep"],
     membershipEndsAt: nullableTime(row.membership_ends_at),
+    startedAt: nullableTime(row.started_at),
+    attempts: row.attempts === null ? null : Number(row.attempts),
+    retryAt: nullableTime(row.retry_at),
+    emailStatus: row.email_status as PrivacyRequestRecord["emailStatus"],
   };
 }
 
@@ -91,6 +99,10 @@ export function createEventsRepository(database: Database): EventsRepository {
           .where("account_id", "=", accountId)
           .where("purpose", "=", purpose)
           .where("created_at", "<=", at)
+          // Only the member can grant: a support grant is never the answer in force.
+          .where((eb) =>
+            eb.or([eb("source", "!=", "support"), eb("granted", "=", fromBool(false))]),
+          )
           .orderBy("created_at", "desc")
           .orderBy("id", "desc")
           .limit(1);
@@ -133,6 +145,10 @@ export function createEventsRepository(database: Database): EventsRepository {
             "updated_at",
             "membership_step",
             "membership_ends_at",
+            "started_at",
+            "attempts",
+            "retry_at",
+            "email_status",
           ])
           .expression(
             db
@@ -150,6 +166,10 @@ export function createEventsRepository(database: Database): EventsRepository {
                 typed(dialect, record.updatedAt, "time").as("updated_at"),
                 typed(dialect, record.membershipStep, "text").as("membership_step"),
                 typed(dialect, record.membershipEndsAt, "time").as("membership_ends_at"),
+                typed(dialect, record.startedAt, "time").as("started_at"),
+                typed(dialect, record.attempts, "int").as("attempts"),
+                typed(dialect, record.retryAt, "time").as("retry_at"),
+                typed(dialect, record.emailStatus, "text").as("email_status"),
               ])
               .where(({ not, exists, selectFrom }) =>
                 not(
@@ -202,6 +222,10 @@ export function createEventsRepository(database: Database): EventsRepository {
       if (patch.lastError !== undefined) set.last_error = patch.lastError;
       if (patch.membershipStep !== undefined) set.membership_step = patch.membershipStep;
       if (patch.membershipEndsAt !== undefined) set.membership_ends_at = patch.membershipEndsAt;
+      if (patch.startedAt !== undefined) set.started_at = patch.startedAt;
+      if (patch.attempts !== undefined) set.attempts = patch.attempts;
+      if (patch.retryAt !== undefined) set.retry_at = patch.retryAt;
+      if (patch.emailStatus !== undefined) set.email_status = patch.emailStatus;
       const result = await db
         .updateTable("privacy_requests")
         .set(set)
@@ -259,9 +283,56 @@ export function createEventsRepository(database: Database): EventsRepository {
         .selectAll()
         .where("kind", "=", "export")
         .where("status", "in", ["pending", "processing"])
-        .where("export_blob_key", "is", null)
+        .where((eb) =>
+          eb.or([
+            eb("export_blob_key", "is", null),
+            eb("export_blob_key", "not like", `%${PARTIAL_EXPORT_SUFFIX}`),
+          ]),
+        )
         .where("updated_at", "<", before)
         .orderBy("updated_at", "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPrivacyRequest);
+    },
+
+    async overdueExports(before, limit) {
+      const rows = await db
+        .selectFrom("privacy_requests")
+        .selectAll()
+        .where("kind", "=", "export")
+        .where("status", "in", ["pending", "processing"])
+        .where("requested_at", "<", before)
+        .orderBy("requested_at", "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPrivacyRequest);
+    },
+
+    async dueErasureRetries(now, limit) {
+      const rows = await db
+        .selectFrom("privacy_requests")
+        .selectAll()
+        .where("status", "=", "processing")
+        .where("kind", "=", "deletion")
+        // No retry time: an erasure left `processing` before retries were recorded.
+        .where((eb) => eb.or([eb("retry_at", "<=", now), eb("retry_at", "is", null)]))
+        .orderBy(sql`coalesce(started_at, scheduled_for)`, "asc")
+        .orderBy("id", "asc")
+        .limit(limit)
+        .execute();
+      return rows.map(toPrivacyRequest);
+    },
+
+    async erasuresInProgress(limit) {
+      const rows = await db
+        .selectFrom("privacy_requests")
+        .selectAll()
+        .where("status", "=", "processing")
+        .where("kind", "=", "deletion")
+        .orderBy(sql`coalesce(started_at, scheduled_for)`, "asc")
         .orderBy("id", "asc")
         .limit(limit)
         .execute();
@@ -336,6 +407,31 @@ export function createEventsRepository(database: Database): EventsRepository {
       }
     },
 
+    async erasuresUnsettledAt(asOf, after, limit) {
+      let query = db
+        .selectFrom("privacy_erasures")
+        .selectAll()
+        .where((eb) => eb.or([eb("compacted_at", "is", null), eb("compacted_at", ">=", asOf)]));
+      if (after !== null) query = query.where("subject_key", ">", after);
+      const rows = await query.orderBy("subject_key", "asc").limit(limit).execute();
+      return rows.map(toErasure);
+    },
+
+    async erasuresOf(subjectKeys) {
+      const unique = [...new Set(subjectKeys)];
+      const records: PrivacyErasureRecord[] = [];
+      for (let index = 0; index < unique.length; index += ERASURE_LOOKUP_CHUNK) {
+        const chunk = unique.slice(index, index + ERASURE_LOOKUP_CHUNK);
+        const rows = await db
+          .selectFrom("privacy_erasures")
+          .selectAll()
+          .where("subject_key", "in", chunk)
+          .execute();
+        records.push(...rows.map(toErasure));
+      }
+      return records;
+    },
+
     async openPlaybackBefore(cutoff, limit) {
       const rows = await db
         .selectFrom("playback_sessions")
@@ -381,6 +477,53 @@ export function createEventsRepository(database: Database): EventsRepository {
         db.deleteFrom("accounts").where("id", "=", accountId),
       ]);
       return deleted.numAffectedRows > 0;
+    },
+
+    async lockAccountForErasure(accountId, at) {
+      const results = await database.batch([
+        db.deleteFrom("sessions").where("account_id", "=", accountId),
+        db.deleteFrom("account_identities").where("account_id", "=", accountId),
+        db.deleteFrom("account_tokens").where("account_id", "=", accountId),
+        db.deleteFrom("event_outbox").where("account_id", "=", accountId),
+        db
+          .updateTable("accounts")
+          .set({
+            email: erasedAddress(accountId),
+            password_hash: "",
+            email_verified_at: null,
+            access_proven_at: null,
+            updated_at: at,
+          })
+          .where("id", "=", accountId),
+      ]);
+      return (results.at(-1)?.numAffectedRows ?? 0) > 0;
+    },
+
+    async pruneFinishedExports(before) {
+      const result = await db
+        .deleteFrom("privacy_requests")
+        .where("kind", "=", "export")
+        .where("status", "in", ["completed", "failed", "canceled"])
+        .where("requested_at", "<", before)
+        .executeTakeFirst();
+      return Number(result.numDeletedRows);
+    },
+
+    async pruneSettledErasures(before) {
+      const result = await db
+        .deleteFrom("privacy_erasures")
+        .where("compacted_at", "is not", null)
+        .where("compacted_at", "<", before)
+        .executeTakeFirst();
+      return Number(result.numDeletedRows);
+    },
+
+    async pruneAggregates(beforeDay) {
+      const result = await db
+        .deleteFrom("analytics_daily")
+        .where("day", "<", beforeDay)
+        .executeTakeFirst();
+      return Number(result.numDeletedRows);
     },
   };
 }

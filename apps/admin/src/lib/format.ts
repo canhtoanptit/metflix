@@ -10,6 +10,7 @@ const dateTimeSeconds = new Intl.DateTimeFormat(undefined, {
   timeStyle: "medium",
 });
 const dateOnly = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+const timeSeconds = new Intl.DateTimeFormat(undefined, { timeStyle: "medium" });
 const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
   .formatToParts(new Date())
   .find((part) => part.type === "timeZoneName")?.value;
@@ -23,6 +24,12 @@ export function formatDateTime(iso: string, options: { seconds?: boolean } = {})
 export function formatDate(iso: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "—" : dateOnly.format(date);
+}
+
+/** "7:54:48 AM": the time of day alone, with seconds (beside a date shown apart). */
+export function formatTimeSeconds(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "—" : timeSeconds.format(date);
 }
 
 /** "Nov 30 – Dec 30, 2026": a period, said once. */

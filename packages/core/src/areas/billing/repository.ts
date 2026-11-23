@@ -54,7 +54,14 @@ export interface MembershipRecord {
    * The next invoice as the provider previewed it at the last write (provider time); null when
    * there is none (cancelling, ended, not live) or it was not computed yet.
    */
-  nextInvoice: { at: number; amountMinor: number; currency: string } | null;
+  nextInvoice: {
+    at: number;
+    amountMinor: number;
+    currency: string;
+    /** Why it is below the price (absent on records written before they were kept). */
+    creditAppliedMinor?: number;
+    discountMinor?: number;
+  } | null;
   version: number;
   providerSyncedAt: number;
   createdAt: number;
@@ -139,6 +146,9 @@ export interface InvoiceRecord {
   periodEnd: number | null;
   hostedUrl: string | null;
   pdfUrl: string | null;
+  /** 0026: the account credit it used and its discount (null: not known, rows from before). */
+  creditAppliedMinor: number | null;
+  discountMinor: number | null;
   issuedAt: number;
   paidAt: number | null;
   updatedAt: number;
@@ -206,7 +216,15 @@ export interface CheckoutRecord {
   /** The card fingerprint this checkout claimed for its trial (released if it fails). */
   trialFingerprint: string | null;
   amountDueMinor: number | null;
+  /** 0026: why `amountDueMinor` is below the plan's price: credit used, discount. */
+  creditAppliedMinor: number | null;
+  discountMinor: number | null;
   failureReason: DeclineReason | null;
+  /**
+   * What the browser confirms with while `requires_setup` (the setup's) or `requires_payment`
+   * (the first payment's), as the provider gave it; null otherwise. Never logged.
+   */
+  clientSecret: string | null;
   /** The Webflix operation behind the subscription call (idempotency key with `attempt`). */
   operationId: string;
   attempt: number;
@@ -222,12 +240,19 @@ export interface PaymentMethodSetupRecord {
   providerSetupId: string;
   providerPaymentMethodId: string | null;
   status: SetupStatus;
+  /** The setup's client secret for the provider's form, as the provider gave it. Never logged. */
+  clientSecret: string | null;
+  /** Why a `failed` card change failed (a checkout decline's words). */
+  failureReason: DeclineReason | null;
   attempt: number;
   createdAt: number;
   updatedAt: number;
 }
 
 export type TrialClaim = "claimed" | "mine" | "taken";
+
+/** Who a trial fingerprint belongs to once its account was erased: nobody (privacy review M5). */
+export const ERASED_TRIAL_OWNER = "erased";
 
 /**
  * Repository port of the billing area: `memberships`, `billing_customers`, `billing_operations`,
@@ -319,6 +344,26 @@ export interface BillingRepository {
   ): Promise<void>;
   /** Whether the account ever claimed a trial with any card. */
   hasTrialFingerprint(accountId: string): Promise<boolean>;
+  /**
+   * Whether the account has had a trial: a trial claim of its own, or a membership that redeemed
+   * one (UX review 2.6). One query.
+   */
+  trialUsed(accountId: string): Promise<boolean>;
+
+  // --- Privacy (§6.3, privacy review M5) ------------------------------------------------------
+  /**
+   * What billing keeps of an erased account: its invoices (without the provider's hosted page
+   * and PDF links, which show the member's name and address) and refunds, the financial record;
+   * and each card fingerprint that had a trial, with no link left to the account
+   * (`ERASED_TRIAL_OWNER`, no time). Everything else keyed by the account or its provider
+   * customers goes: the account's own trial marker, operations, provider events, checkouts,
+   * card changes, the projection, and the customer links last (so a run cut short is finished by
+   * the next: the erasure job runs it again). Idempotent.
+   */
+  forgetAccount(input: { accountId: string; customerIds: readonly string[] }): Promise<void>;
+  /** The account's checkouts and card changes, newest first (its data export). */
+  listCheckouts(accountId: string, limit: number): Promise<CheckoutRecord[]>;
+  listSetups(accountId: string, limit: number): Promise<PaymentMethodSetupRecord[]>;
 
   // --- Invoices and refunds -------------------------------------------------------------------
   /** By (provider, provider invoice id); the Webflix id of an existing row is kept. */
@@ -343,6 +388,11 @@ export interface BillingRepository {
   getCheckout(accountId: string, id: string): Promise<CheckoutRecord | null>;
   /** The newest checkout of the account that is still open (not complete, failed or expired). */
   findOpenCheckout(accountId: string, now: number): Promise<CheckoutRecord | null>;
+  /** `findOpenCheckout` and `trialUsed` in one round trip (`GET /billing/checkout`). */
+  findOpenCheckoutAndTrial(
+    accountId: string,
+    now: number,
+  ): Promise<{ checkout: CheckoutRecord | null; trialUsed: boolean }>;
   listCheckoutsForSubscription(
     provider: PaymentProviderId,
     subscriptionId: string,

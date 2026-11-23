@@ -18,6 +18,7 @@ export type { AdminRepository } from "./areas/admin/repository.ts";
 export type { AdminService } from "./areas/admin/service.ts";
 export * from "./areas/billing/config.ts";
 export type * from "./areas/billing/repository.ts";
+export { ERASED_TRIAL_OWNER } from "./areas/billing/repository.ts";
 export type { BillingService } from "./areas/billing/service.ts";
 export type { AreaConfigInput, AreaConfigResult } from "./areas/config.ts";
 export * from "./areas/events/config.ts";

@@ -20,11 +20,13 @@ import { createR2BlobStore, serveBlobOrigin } from "@webflix/adapters-cloudflare
 import { createProblem } from "@webflix/contracts";
 import { ConfigError, serializeError } from "@webflix/core";
 import { problemResponse } from "@webflix/http";
+import { CONSOLE_CONFIG_PATH, consoleConfigResponse, consoleIssuer } from "./admin-console.ts";
 import { handleBillingRequest } from "./areas/billing.ts";
 import { handleIdentityRequest } from "./areas/identity.ts";
+import { consoleContentSecurityPolicy } from "./console-policy.ts";
 import type { Env } from "./env.ts";
 import { getRuntime, type Runtime } from "./runtime.ts";
-import { routeRequest, serveShell } from "./spa.ts";
+import { routeRequest, serveConsoleShell, serveShell } from "./spa.ts";
 
 export { RateLimiterObject, StreamGateObject } from "@webflix/adapters-cloudflare";
 export type { Env } from "./env.ts";
@@ -91,9 +93,19 @@ export async function handleFetch(
   build: (env: Env) => Runtime = getRuntime,
 ): Promise<Response> {
   // Client-side routes the asset layer had no file for: the SPA shell, no app needed.
-  if (routeRequest(request) === "shell") return serveShell(request, env.ASSETS);
+  const route = routeRequest(request);
+  if (route === "shell") return serveShell(request, env.ASSETS);
   const runtime = compose(env, "fetch", build);
   if (runtime instanceof ConfigError) return configFailure();
+  // The staff console's client-side routes: its index, under its own policy (its staff issuer).
+  if (route === "console") {
+    const issuer = consoleIssuer(runtime.config.core);
+    return serveConsoleShell(request, env.ASSETS, consoleContentSecurityPolicy(issuer));
+  }
+  // The staff console's settings, from the configuration the staff API verifies with.
+  if (new URL(request.url).pathname === CONSOLE_CONFIG_PATH) {
+    return consoleConfigResponse(runtime.config.core);
+  }
   // Milestone 2: the development issuer (`/dev-idp/*`, never in production), ahead of the app
   // so its pages keep their own headers.
   const issuer = handleIdentityRequest(request, env, runtime.config.core);

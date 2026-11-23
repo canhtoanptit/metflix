@@ -3,9 +3,11 @@
  * privacy), and the actions support and billing can take. Opening it is audited
  * (`member.viewed`); the privacy view is a separate audited read, loaded only when asked for.
  *
- * Controls appear only where they can work: billing actions for the billing role, "extend the
- * trial" only during a trial, "remove PIN" only on a locked profile, "refund" only while money
- * is left on an invoice, nothing the server protects on the shared demo account.
+ * Controls appear only where they can work: "extend the trial" only during a trial, "remove
+ * PIN" only on a locked profile, "refund" only while money is left on an invoice, nothing the
+ * server protects on the shared demo account. A billing action that would apply but needs a
+ * role the staff member lacks is shown, unavailable, with the role it needs (UX review 2.16):
+ * they learn it exists and whom to ask, and nothing is sent.
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
@@ -24,7 +26,7 @@ import {
   ShieldIcon,
   UnlockIcon,
 } from "@webflix/ui";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import { useStaff } from "../../access/staff.tsx";
 import { qk, queries } from "../../api/queries.ts";
 import { type Column, DataTable } from "../../components/DataTable.tsx";
@@ -39,7 +41,7 @@ import {
   YesNo,
 } from "../../components/primitives.tsx";
 import { Empty, ErrorPanel, LoadingPage, LoadingRows } from "../../components/states.tsx";
-import { formatDate, formatDateRange } from "../../lib/format.ts";
+import { formatDate, formatDateRange, plural } from "../../lib/format.ts";
 import { useDocumentTitle } from "../../lib/hooks.ts";
 import {
   ENTITLEMENT,
@@ -52,6 +54,7 @@ import {
 import {
   CancelDeletionDialog,
   CancelMembershipDialog,
+  CONSENT_PURPOSES_LABEL,
   ComplimentaryDialog,
   ConsentDialog,
   ExtendTrialDialog,
@@ -59,6 +62,7 @@ import {
   RefundDialog,
   RemovePinDialog,
   SignOutEverywhereDialog,
+  withdrawablePurposes,
 } from "./actions.tsx";
 
 const route = getRouteApi("/members/$accountId");
@@ -66,6 +70,31 @@ const route = getRouteApi("/members/$accountId");
 const ENTITLED = new Set(["trialing", "active", "past_due"]);
 const PROVIDERS: Record<string, string> = { stripe: "Stripe", fake: "Test provider" };
 const ISSUERS: Record<string, string> = { google: "Google", apple: "Apple", keycloak: "Keycloak" };
+const CONSENT_SOURCES: Record<string, string> = {
+  banner: "the member, when asked",
+  settings: "the member, in Account › Privacy",
+  gpc: "Global Privacy Control",
+  support: "support, at the member's request",
+};
+
+/**
+ * An action the staff member's roles don't cover: shown, unavailable (focusable, so it is read
+ * out with the reason `describedBy` points at), and never sent.
+ */
+function LockedAction({ label, describedBy }: { label: string; describedBy: string }) {
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      icon={LockIcon}
+      aria-disabled="true"
+      aria-describedby={describedBy}
+      onClick={(event) => event.preventDefault()}
+    >
+      {label}
+    </Button>
+  );
+}
 
 export function MemberPage() {
   useDocumentTitle("Member");
@@ -181,13 +210,19 @@ function MembershipSection({ member }: { member: MemberDetail }) {
   const state = member.membership;
   const entitlement = member.entitlement;
   const billing = staff.has("billing");
+  const lockedNote = useId();
   const cancel = useDialog();
   const extend = useDialog();
   const free = useDialog();
   const entitled = ENTITLED.has(state.status);
-  const canCancel = billing && !member.account.isDemo && entitled && state.provider !== null;
-  const canExtend = billing && state.status === "trialing" && state.trialEndsAt !== null;
-  const canGive = billing && entitled && state.provider !== null;
+  // What the membership allows, whoever looks; the role decides whether it can be used.
+  const cancelApplies = !member.account.isDemo && entitled && state.provider !== null;
+  const extendApplies = state.status === "trialing" && state.trialEndsAt !== null;
+  const giveApplies = entitled && state.provider !== null;
+  const canCancel = billing && cancelApplies;
+  const canExtend = billing && extendApplies;
+  const canGive = billing && giveApplies;
+  const anyApplies = cancelApplies || extendApplies || giveApplies;
   const items: { label: ReactNode; value: ReactNode }[] = [
     { label: "Status", value: <MembershipStatusLine member={member} /> },
     { label: "Plan", value: planName(state.planId) },
@@ -206,50 +241,46 @@ function MembershipSection({ member }: { member: MemberDetail }) {
     items.push({ label: "Suspended because", value: SUSPENDED_REASON[state.suspendedReason] });
   }
   items.push(
-    {
-      label: "Can watch",
-      value: (
-        <span>
-          {entitlement.entitled ? "Yes" : "No"}
-          <span className="text-fg-subtle">
-            {" "}
-            · {ENTITLEMENT[entitlement.reason]}
-            {entitlement.entitled
-              ? ` · ${entitlement.maxStreams} ${entitlement.maxStreams === 1 ? "screen" : "screens"}${entitlement.maxVideoHeight ? `, up to ${entitlement.maxVideoHeight}p` : ""}`
-              : ""}
-            {entitlement.until ? ` · until ${formatDate(entitlement.until)}` : ""}
-          </span>
-        </span>
-      ),
-    },
+    { label: "Can watch", value: <WatchLine entitlement={entitlement} /> },
     {
       label: "Payment provider",
       value: state.provider ? (PROVIDERS[state.provider] ?? state.provider) : "—",
     },
   );
-  const actions =
-    canCancel || canExtend || canGive ? (
-      <>
-        {canExtend ? (
-          <Button size="sm" variant="outline" onClick={extend.show}>
-            Extend trial
-          </Button>
-        ) : null}
-        {canGive ? (
-          <Button size="sm" variant="outline" onClick={free.show}>
-            Give free time
-          </Button>
-        ) : null}
-        {canCancel ? (
-          <Button size="sm" variant="outline" onClick={cancel.show}>
-            Cancel membership
-          </Button>
-        ) : null}
-      </>
-    ) : null;
+  const actions = !anyApplies ? null : billing ? (
+    <>
+      {canExtend ? (
+        <Button size="sm" variant="outline" onClick={extend.show}>
+          Extend trial
+        </Button>
+      ) : null}
+      {canGive ? (
+        <Button size="sm" variant="outline" onClick={free.show}>
+          Give free time
+        </Button>
+      ) : null}
+      {canCancel ? (
+        <Button size="sm" variant="outline" onClick={cancel.show}>
+          Cancel membership
+        </Button>
+      ) : null}
+    </>
+  ) : (
+    <>
+      {extendApplies ? <LockedAction label="Extend trial" describedBy={lockedNote} /> : null}
+      {giveApplies ? <LockedAction label="Give free time" describedBy={lockedNote} /> : null}
+      {cancelApplies ? <LockedAction label="Cancel membership" describedBy={lockedNote} /> : null}
+    </>
+  );
   return (
     <Section id="membership" title="Membership" actions={actions}>
       <KeyValueList items={items} />
+      {!billing && anyApplies ? (
+        <p id={lockedNote} className="mt-4 flex items-start gap-1.5 type-caption text-fg-subtle">
+          <LockIcon size="xs" className="mt-0.5 shrink-0" />
+          These need the Billing role. Ask a colleague who has it, or an admin.
+        </p>
+      ) : null}
       {billing && !entitled ? (
         <p className="mt-4 type-caption text-fg-subtle">
           Billing actions need a running membership (a trial, active or past due).
@@ -273,6 +304,28 @@ function MembershipSection({ member }: { member: MemberDetail }) {
   );
 }
 
+/** "Yes · 2 screens at a time, up to 1080p · until Dec 30, 2026", or "No: membership ended". */
+function WatchLine({ entitlement }: { entitlement: MemberDetail["entitlement"] }) {
+  if (!entitlement.entitled) {
+    return (
+      <span>
+        No<span className="text-fg-muted">: {ENTITLEMENT[entitlement.reason]}</span>
+      </span>
+    );
+  }
+  const quality = entitlement.maxVideoHeight ? `, up to ${entitlement.maxVideoHeight}p` : "";
+  return (
+    <span>
+      Yes
+      <span className="text-fg-subtle">
+        {" "}
+        · {plural(entitlement.maxStreams, "screen", "screens")} at a time{quality}
+        {entitlement.until ? ` · until ${formatDate(entitlement.until)}` : ""}
+      </span>
+    </span>
+  );
+}
+
 function MembershipStatusLine({ member }: { member: MemberDetail }) {
   const state = member.membership;
   return (
@@ -290,6 +343,7 @@ function MembershipStatusLine({ member }: { member: MemberDetail }) {
 function InvoicesSection({ member, canRefund }: { member: MemberDetail; canRefund: boolean }) {
   const [refunding, setRefunding] = useState<Invoice | null>(null);
   const [open, setOpen] = useState(false);
+  const lockedNote = useId();
   const columns: Column<Invoice>[] = [
     {
       id: "invoice",
@@ -336,13 +390,16 @@ function InvoicesSection({ member, canRefund }: { member: MemberDetail; canRefun
         ),
     },
   ];
-  if (canRefund) {
+  const refundable = (invoice: Invoice) =>
+    invoice.amountPaid.amountMinor - invoice.amountRefunded.amountMinor > 0;
+  const anyRefundable = member.recentInvoices.some(refundable);
+  if (canRefund || anyRefundable) {
     columns.push({
       id: "actions",
       header: <span className="sr-only">Actions</span>,
       align: "end",
       cell: (invoice) =>
-        invoice.amountPaid.amountMinor - invoice.amountRefunded.amountMinor > 0 ? (
+        !refundable(invoice) ? null : canRefund ? (
           <Button
             size="sm"
             variant="outline"
@@ -354,7 +411,19 @@ function InvoicesSection({ member, canRefund }: { member: MemberDetail; canRefun
           >
             Refund
           </Button>
-        ) : null,
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            icon={LockIcon}
+            aria-disabled="true"
+            aria-label={`Refund invoice ${invoice.number ?? invoice.id}`}
+            aria-describedby={lockedNote}
+            onClick={(event) => event.preventDefault()}
+          >
+            Refund
+          </Button>
+        ),
     });
   }
   return (
@@ -371,6 +440,12 @@ function InvoicesSection({ member, canRefund }: { member: MemberDetail; canRefun
         initialSort={{ column: "invoice", direction: "desc" }}
         empty={<Empty title="No invoices" description="The member hasn't been billed yet." />}
       />
+      {!canRefund && anyRefundable ? (
+        <p id={lockedNote} className="mt-3 flex items-start gap-1.5 type-caption text-fg-subtle">
+          <LockIcon size="xs" className="mt-0.5 shrink-0" />
+          Refunds need the Billing role. Ask a colleague who has it, or an admin.
+        </p>
+      ) : null}
       {refunding ? (
         <RefundDialog
           key={refunding.id}
@@ -536,13 +611,21 @@ function PrivacySection({ accountId }: { accountId: string }) {
   const queryClient = useQueryClient();
   const privacy = useQuery({ ...queries.memberPrivacy(accountId), enabled: shown });
   const consent = useDialog();
+  // Each opening starts from the consent as it stands then (a fresh form).
+  const [consentForm, setConsentForm] = useState(0);
   const cancel = useDialog();
   const scheduled = privacy.data?.requests.find(
     (request) => request.kind === "deletion" && request.status === "scheduled",
   );
-  // The dialog outlives the scheduled request it cancels, to show its outcome.
+  const erasing = privacy.data?.requests.find(
+    (request) => request.kind === "deletion" && request.status === "processing",
+  );
+  const withdrawable = privacy.data ? withdrawablePurposes(privacy.data.consent) : [];
+  // The dialogs outlive what they act on, to show their outcome.
   const lastScheduled = useRef(scheduled);
   if (scheduled) lastScheduled.current = scheduled;
+  const lastConsent = useRef(privacy.data?.consent);
+  if (privacy.data) lastConsent.current = privacy.data.consent;
   return (
     <Section
       id="privacy"
@@ -551,9 +634,18 @@ function PrivacySection({ accountId }: { accountId: string }) {
       actions={
         shown && privacy.data ? (
           <>
-            <Button size="sm" variant="outline" onClick={consent.show}>
-              Record consent answer
-            </Button>
+            {withdrawable.length > 0 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setConsentForm((count) => count + 1);
+                  consent.show();
+                }}
+              >
+                Record a withdrawal
+              </Button>
+            ) : null}
             {scheduled ? (
               <Button size="sm" variant="outline" onClick={cancel.show}>
                 Cancel deletion
@@ -578,44 +670,72 @@ function PrivacySection({ accountId }: { accountId: string }) {
         />
       ) : (
         <div className="flex flex-col gap-5">
-          <KeyValueList
-            items={[
-              {
-                label: "Consent mode",
-                value: (
-                  <span>
-                    {privacy.data.consent.mode === "opt-in"
-                      ? "Ask first (opt-in)"
-                      : privacy.data.consent.mode === "opt-out"
-                        ? "Until withdrawn (opt-out)"
-                        : "Nothing collected (off)"}
-                    {privacy.data.consent.gpc ? (
-                      <span className="text-fg-subtle"> · Global Privacy Control seen</span>
-                    ) : null}
-                  </span>
-                ),
-              },
-              ...(["analytics", "personalisation"] as const).map((purpose) => {
-                const state = privacy.data.consent.purposes[purpose];
-                return {
-                  label: purpose === "analytics" ? "Analytics" : "Personalisation",
+          {erasing ? (
+            <div className="flex gap-2 rounded-md border border-info/40 p-3">
+              <InfoIcon size="sm" className="mt-0.5 shrink-0 text-info" />
+              <div className="flex flex-col gap-0.5 type-body-sm">
+                <p className="type-label text-fg">This account is being deleted</p>
+                <p className="text-fg-muted">
+                  Erasure started
+                  {erasing.scheduledFor ? (
+                    <>
+                      {" "}
+                      <DateTime value={erasing.scheduledFor} />
+                    </>
+                  ) : null}
+                  . The account is locked (signed out everywhere, no sign-in) and can no longer be
+                  kept; Webflix retries until the erasure finishes. If it stays like this for long,
+                  System health shows it as overdue.
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <div className="flex flex-col gap-2">
+            <KeyValueList
+              items={[
+                {
+                  label: "Consent mode",
                   value: (
-                    <span className="flex flex-wrap items-center gap-2">
-                      <StatusBadge tone={state.granted ? "positive" : "outline"}>
-                        {state.granted ? "Granted" : "Not granted"}
-                      </StatusBadge>
-                      <span className="text-fg-subtle">
-                        {state.source
-                          ? `by ${state.source === "gpc" ? "Global Privacy Control" : state.source}`
-                          : "the default"}
-                        {state.updatedAt ? `, ${formatDate(state.updatedAt)}` : ""}
-                      </span>
+                    <span>
+                      {privacy.data.consent.mode === "opt-in"
+                        ? "Ask first (opt-in)"
+                        : privacy.data.consent.mode === "opt-out"
+                          ? "Until withdrawn (opt-out)"
+                          : "Nothing collected (off)"}
+                      {privacy.data.consent.gpc ? (
+                        <span className="text-fg-subtle"> · Global Privacy Control seen</span>
+                      ) : null}
                     </span>
                   ),
-                };
-              }),
-            ]}
-          />
+                },
+                ...(["analytics", "personalisation"] as const).map((purpose) => {
+                  const state = privacy.data.consent.purposes[purpose];
+                  return {
+                    label: CONSENT_PURPOSES_LABEL[purpose],
+                    value: (
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <StatusBadge tone={state.granted ? "positive" : "outline"}>
+                          {state.granted ? "On" : "Off"}
+                        </StatusBadge>
+                        <span className="text-fg-subtle">
+                          {state.source
+                            ? `by ${CONSENT_SOURCES[state.source] ?? state.source}`
+                            : "the default"}
+                          {state.updatedAt ? `, ${formatDate(state.updatedAt)}` : ""}
+                        </span>
+                      </span>
+                    ),
+                  };
+                }),
+              ]}
+            />
+            <p className="flex items-start gap-1.5 type-caption text-fg-subtle">
+              <InfoIcon size="xs" className="mt-0.5 shrink-0" />
+              {withdrawable.length === 0
+                ? "Both purposes are off, so there is nothing to withdraw. Only the member can turn one on, in Account › Privacy."
+                : "Staff can record a withdrawal when the member asks. Only the member can turn a purpose on, in Account › Privacy."}
+            </p>
+          </div>
           <div className="flex flex-col gap-2">
             <h3 className="type-caption text-fg-muted">Data requests</h3>
             {privacy.data.requests.length === 0 ? (
@@ -631,7 +751,9 @@ function PrivacySection({ accountId }: { accountId: string }) {
                       {request.kind === "export" ? "Data export" : "Account deletion"}
                     </span>
                     <StatusBadge tone={PRIVACY_REQUEST[request.status].tone}>
-                      {PRIVACY_REQUEST[request.status].label}
+                      {request.kind === "deletion" && request.status === "processing"
+                        ? "Being erased"
+                        : PRIVACY_REQUEST[request.status].label}
                     </StatusBadge>
                     <span className="text-fg-subtle">
                       asked <DateTime value={request.requestedAt} />
@@ -649,6 +771,7 @@ function PrivacySection({ accountId }: { accountId: string }) {
                           · done <DateTime value={request.completedAt} />
                         </>
                       ) : null}
+                      {request.email === "suppressed" ? " · no email (address bounced before)" : ""}
                     </span>
                   </li>
                 ))}
@@ -659,12 +782,15 @@ function PrivacySection({ accountId }: { accountId: string }) {
               Export downloads and the member's activity are never shown to staff.
             </p>
           </div>
-          <ConsentDialog
-            accountId={accountId}
-            consent={privacy.data.consent}
-            open={consent.open}
-            onOpenChange={consent.onOpenChange}
-          />
+          {lastConsent.current && (withdrawable.length > 0 || consent.open) ? (
+            <ConsentDialog
+              key={consentForm}
+              accountId={accountId}
+              consent={lastConsent.current}
+              open={consent.open}
+              onOpenChange={consent.onOpenChange}
+            />
+          ) : null}
           {lastScheduled.current && (scheduled || cancel.open) ? (
             <CancelDeletionDialog
               accountId={accountId}

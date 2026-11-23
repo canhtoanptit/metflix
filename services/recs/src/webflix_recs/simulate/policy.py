@@ -23,6 +23,10 @@ from webflix_recs.ids import DAY_MS
 
 ROW_ITEMS = 20
 MIN_ROW_ITEMS = 4
+# The engine's learned integration (packages/core/src/recommendations/engine.ts).
+SESSION_SEEDS = 5
+SESSION_BOOST_WEIGHT = 0.25
+BILLBOARD_CANDIDATES = 3
 MIN_GENRE_ITEMS = 6
 NEW_RELEASE_DAYS = 45
 FRESHNESS_DAYS = 45.0
@@ -49,6 +53,20 @@ class Library:
     list_added: dict[int, int] = field(default_factory=dict)
     ratings: dict[int, str] = field(default_factory=dict)
     progress: dict[int, Progress] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class LearnedProfile:
+    """One profile's lists from a scored run (the rows of its artefact payload, by title index),
+    as serving hands them to the engine; empty when the run did not score the profile (the
+    engine then has the run's neighbours only)."""
+
+    generated_ms: int
+    personal: dict[int, float] = field(default_factory=dict)
+    percentile: dict[int, float] = field(default_factory=dict)
+    top_picks: list[int] = field(default_factory=list)
+    billboard: list[int] = field(default_factory=list)
+    because: dict[int, list[int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +167,16 @@ class Policy:
         now_ms: int,
         explore: bool,
         rng: np.random.Generator,
+        learned: LearnedProfile | None = None,
+        neighbours: dict[int, list[tuple[int, float]]] | None = None,
     ) -> list[Module]:
+        """The home page. With `learned` (and the run's `neighbours`), the page the learned
+        policy serves, as the engine composes it with a model's candidates (engine.ts): the
+        model's billboard and Top Picks, rows ordered by the model's personal scores (titles
+        it scored first, the rest by the engine's score), its Because You Watched rows first,
+        its percentiles as the taste term, and a session boost for neighbours of what was
+        watched since the lists were made. The rules still dispose: visibility, dislikes,
+        finished and started titles."""
         catalog = self.catalog
         visible = (catalog.maturity_rank <= ceiling_rank) & (catalog.added_at <= now_ms)
         taste, total = self.taste(library, now_ms, visible)
@@ -175,14 +202,58 @@ class Policy:
         candidates = visible & ~disliked
         ranked_score = score - finished.astype(np.float64)
         order = np.lexsort((np.arange(self.titles), -ranked_score))
+        boost = np.zeros(self.titles)
+        if learned is not None:
+            # Session seeds: titles watched far enough since the lists were made.
+            seeds = sorted(
+                (
+                    (progress.last_ms, title)
+                    for title, progress in library.progress.items()
+                    if progress.engaged
+                    and progress.last_ms > learned.generated_ms
+                    and not disliked[title]
+                ),
+                reverse=True,
+            )[:SESSION_SEEDS]
+            seed_titles = {title for _, title in seeds}
+            for _, title in seeds:
+                for neighbour, similarity in (neighbours or {}).get(title, []):
+                    if neighbour not in seed_titles and similarity > boost[neighbour]:
+                        boost[neighbour] = similarity
+            personal = np.full(self.titles, np.nan)
+            for title, personal_score in learned.personal.items():
+                personal[title] = personal_score
+            scored = ~np.isnan(personal) | (boost > 0)
+            tier = np.where(finished, -1.0, np.where(scored, 1.0, 0.0))
+            ordering = np.where(
+                scored & ~finished, np.nan_to_num(personal) + SESSION_BOOST_WEIGHT * boost, score
+            )
+            order = np.lexsort((np.arange(self.titles), -ordering, -tier))
+            percentile = np.zeros(self.titles)
+            for title, rank in learned.percentile.items():
+                percentile[title] = rank
+            taste_term = (
+                np.maximum(percentile, boost) if learned.personal else np.maximum(affinity, boost)
+            )
+        else:
+            taste_term = affinity
 
         def by_score(mask: npt.NDArray[np.bool_]) -> npt.NDArray[np.int64]:
             return order[mask[order]][:ROW_ITEMS]
 
         modules: list[Module] = []
+        unstarted = candidates & ~started & ~finished
+        model_billboard = (
+            [t for t in learned.billboard if unstarted[t]][:BILLBOARD_CANDIDATES]
+            if learned is not None
+            else []
+        )
         # Billboard: a strong match the profile has not started, rotating daily among the top 3.
-        pool = order[(candidates & ~started & ~finished)[order]][:12]
-        if len(pool):
+        pool = order[unstarted[order]][:12]
+        if model_billboard:
+            pick = model_billboard[(profile_hash + day) % len(model_billboard)]
+            modules.append(Module("home:billboard", "billboard", np.array([pick])))
+        elif len(pool):
             bonus = (
                 0.6 * (1 - np.arange(len(pool)) / max(1, len(pool) - 1))
                 + 0.2 * fresh[pool]
@@ -205,10 +276,19 @@ class Policy:
                     np.array([t for _, t in continuing][:ROW_ITEMS]),
                 )
             )
+        if learned is not None:
+            # Top Picks: the model's re-ranked list in its order, less what the rules forbid.
+            picks = [t for t in learned.top_picks if candidates[t] and not started[t]]
+            if len(picks) >= MIN_ROW_ITEMS:
+                modules.append(Module("home:top-picks", "top-picks", np.array(picks[:ROW_ITEMS])))
         recent = np.where(visible, self.popularity.recent[day], -1.0)
         top10 = np.lexsort((np.arange(self.titles), -recent))[: min(10, int(visible.sum()))]
         modules.append(Module("home:top-10", "top-10", top10))
-        trending_rank = trend + (0.0 if cold else 0.25 * np.maximum(affinity, 0)) + 0.001 * self.pop
+        trending_rank = (
+            trend
+            + (0.0 if cold and learned is None else 0.25 * np.maximum(taste_term, 0))
+            + 0.001 * self.pop
+        )
         trending = np.lexsort((np.arange(self.titles), -trending_rank))
         modules.append(
             Module("home:trending", "trending", trending[candidates[trending]][:ROW_ITEMS])
@@ -233,17 +313,26 @@ class Policy:
         for _, source in sources:
             if len(because) >= 3:
                 break
-            rank = 0.75 * self.similarity[source] + 0.25 * np.maximum(affinity, 0)
-            neighbours = np.lexsort((np.arange(self.titles), -rank))
-            neighbours = neighbours[(candidates & ~finished)[neighbours] & (neighbours != source)][
-                :ROW_ITEMS
-            ]
-            if len(neighbours) >= MIN_ROW_ITEMS:
+            rank = 0.75 * self.similarity[source] + 0.25 * np.maximum(taste_term, 0)
+            similar = np.lexsort((np.arange(self.titles), -rank))
+            similar = similar[(candidates & ~finished)[similar] & (similar != source)]
+            if learned is not None:
+                # The model's own row for this source first, then the similar titles.
+                model_row = [
+                    t
+                    for t in learned.because.get(source, [])
+                    if t != source and candidates[t] and not finished[t]
+                ]
+                similar = np.array(
+                    list(dict.fromkeys([*model_row, *similar.tolist()])), dtype=np.int64
+                )
+            similar = similar[:ROW_ITEMS]
+            if len(similar) >= MIN_ROW_ITEMS:
                 because.append(
                     Module(
                         f"home:because-you-watched:{self.ids[source]}",
                         "because-you-watched",
-                        neighbours,
+                        similar,
                     )
                 )
         if because:
@@ -312,6 +401,7 @@ class Policy:
     def _variety(modules: list[Module]) -> list[Module]:
         fixed = {
             "billboard",
+            "top-picks",
             "continue-watching",
             "my-list",
             "top-10",

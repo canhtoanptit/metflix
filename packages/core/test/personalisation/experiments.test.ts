@@ -31,6 +31,13 @@ const UNITS = Array.from({ length: 20_000 }, (_, index) => ({
   type: "profile" as const,
   id: `0190e1c2-${String(index).padStart(4, "0")}-7000-8000-${String(index * 7919).padStart(12, "0")}`,
 }));
+/**
+ * The independence tests' sample. Dependence between two layers shows as chi-square ≈ N·ρ²
+ * (ρ the correlation of their arms): 2,000 units detect ρ ≥ 0.074 at p = 0.001, and a shared hash
+ * (ρ = 1) scores about 2,000. Each unit costs six SHA-256 digests, so the full 20,000 took over
+ * 3 s and timed out under a loaded whole-workspace run.
+ */
+const PAIRED = UNITS.slice(0, 2_000);
 /** Chi-square critical values at p = 0.001. */
 const CHI2_001 = { 1: 10.83, 9: 27.88 } as const;
 
@@ -91,14 +98,16 @@ describe("assignment", () => {
       [0, 0],
       [0, 0],
     ];
-    for (const unit of UNITS) {
-      const assigned = await assignVariants(definitions, unit, ANYONE, TEST_NOW);
+    const assignments = await Promise.all(
+      PAIRED.map((unit) => assignVariants(definitions, unit, ANYONE, TEST_NOW)),
+    );
+    for (const assigned of assignments) {
       const a = assigned["recs.learned-vs-rules"] === "treatment" ? 1 : 0;
       const b = assigned["ui.row-titles"] === "treatment" ? 1 : 0;
       const row = table[a] as number[];
       row[b] = (row[b] ?? 0) + 1;
     }
-    const total = UNITS.length;
+    const total = PAIRED.length;
     const rowSum = (index: number) => (table[index]?.[0] ?? 0) + (table[index]?.[1] ?? 0);
     const colSum = (index: number) => (table[0]?.[index] ?? 0) + (table[1]?.[index] ?? 0);
     const observed = [table[0]?.[0], table[0]?.[1], table[1]?.[0], table[1]?.[1]].map(Number);

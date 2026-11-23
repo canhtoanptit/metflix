@@ -9,9 +9,10 @@ Layout (the precise schema is in services/recs/README.md, "Artefacts"):
     recs/history/{publishedAt}-{run}.json         every pointer ever published (audit, rollback)
 
 Atomicity: `score` writes the files of a new version, then its manifest; a version without a
-manifest is incomplete and nobody points at it. `publish` checks the evaluation gate, validates
-the whole version against the manifest and the schemas, and only then replaces the pointer with
-one atomic object write. A reader that follows the pointer therefore always finds a complete,
+manifest is incomplete and nobody points at it. `publish` checks the gate decision that belongs
+to the run (gate.py) against the evaluations as they are then, validates the whole version
+against the manifest and the schemas, and only then replaces the pointer with one atomic object
+write. A reader that follows the pointer therefore always finds a complete,
 validated version, before, during and after a publish.
 """
 
@@ -147,10 +148,22 @@ class ScoreResult:
     manifest: dict[str, Any]
 
 
-def scoring_profiles(dataset: DatasetResult, history: History, as_of_ms: int) -> list[str]:
+def scoring_profiles(
+    dataset: DatasetResult,
+    history: History,
+    as_of_ms: int,
+    excluded: frozenset[str] = frozenset(),
+) -> list[str]:
     """Profiles to score: eligible (the dataset already excludes restricted and non-consenting
-    ones), seen in the last 60 days, and on an account that has not cancelled."""
+    ones), seen in the last 60 days, on an account that has not cancelled, and neither the
+    profile nor its account pending erasure when scoring starts (`excluded`: an erased account,
+    a profile newly restricted; the dataset may be older than the request)."""
     profiles = dataset.tables["profiles"]
+    if excluded:
+        wanted = list(excluded)
+        profiles = profiles.filter(
+            ~(pl.col("profile").is_in(wanted) | pl.col("account").is_in(wanted).fill_null(False))
+        )
     accounts = dataset.tables["accounts"]
     canceled = (
         set(accounts.filter(pl.col("state") == "canceled")["account"].to_list())
@@ -164,33 +177,11 @@ def scoring_profiles(dataset: DatasetResult, history: History, as_of_ms: int) ->
     return sorted(set(recent["profile"].to_list()) & set(history.profiles))
 
 
-def score(
-    storage: Storage,
-    catalog: Catalog,
-    dataset: DatasetResult,
-    models: Models,
-    run_manifest: dict[str, Any],
-    *,
-    evaluation: dict[str, Any] | None = None,
-    profiles_per_shard: int = PROFILES_PER_SHARD,
-    fail_after_shards: int | None = None,
-    log: Any = print,
-) -> ScoreResult:
-    """Write a complete artefact version for the run (manifest last)."""
-    started = time.perf_counter()
-    run = run_manifest["run"]
-    as_of = int(run_manifest["data"]["asOfMs"])
-    prefix = f"{RECS_PREFIX}v={run}/"
-    eligible = dataset.tables["profiles"]["profile"].sort().to_list()
-    history = History.build(dataset, catalog, as_of, profiles=eligible)
-    profiles = scoring_profiles(dataset, history, as_of)
-    recommender = Recommender(models, history)
-    generated = iso_ms(int(time.time() * 1000))
-    expires = iso_ms(as_of + VALID_FOR_DAYS * DAY_MS)
-    available = catalog.available_mask(as_of)
-    files: list[dict[str, Any]] = []
-
-    # Item neighbours: co-watch blended with content, among titles that have arrived.
+def neighbour_rows(
+    models: Models, catalog: Catalog, available: np.ndarray[Any, np.dtype[np.bool_]]
+) -> dict[str, list[Any]]:
+    """The neighbours table's rows: for each title that has arrived, its `NEIGHBOURS` best
+    blended (co-watch and content) neighbours among titles that have arrived, score > 0."""
     ids = catalog.ids
     rows: dict[str, list[Any]] = {
         "title_id": [],
@@ -214,7 +205,38 @@ def score(
             rows["neighbour_id"].append(ids[target])
             rows["score"].append(float(min(1.0, values[target])))
             rows["support"].append(int(models.cowatch.support[source, target]))
-    neighbours = _frame("neighbours", rows)
+    return rows
+
+
+def score(
+    storage: Storage,
+    catalog: Catalog,
+    dataset: DatasetResult,
+    models: Models,
+    run_manifest: dict[str, Any],
+    *,
+    evaluation: dict[str, Any] | None = None,
+    profiles_per_shard: int = PROFILES_PER_SHARD,
+    fail_after_shards: int | None = None,
+    log: Any = print,
+    excluded: frozenset[str] = frozenset(),
+) -> ScoreResult:
+    """Write a complete artefact version for the run (manifest last)."""
+    started = time.perf_counter()
+    run = run_manifest["run"]
+    as_of = int(run_manifest["data"]["asOfMs"])
+    prefix = f"{RECS_PREFIX}v={run}/"
+    eligible = dataset.tables["profiles"]["profile"].sort().to_list()
+    history = History.build(dataset, catalog, as_of, profiles=eligible)
+    profiles = scoring_profiles(dataset, history, as_of, excluded)
+    recommender = Recommender(models, history)
+    generated = iso_ms(int(time.time() * 1000))
+    expires = iso_ms(as_of + VALID_FOR_DAYS * DAY_MS)
+    available = catalog.available_mask(as_of)
+    files: list[dict[str, Any]] = []
+
+    # Item neighbours: co-watch blended with content, among titles that have arrived.
+    neighbours = _frame("neighbours", neighbour_rows(models, catalog, available))
     body = _parquet(neighbours)
     storage.put(prefix + "neighbours/part-00000.parquet", body)
     files.append(
@@ -434,32 +456,6 @@ def _check_neighbours(frame: pl.DataFrame, where: str) -> list[str]:
 # --- Publishing ---------------------------------------------------------------------------------
 
 
-def passing_evaluation(storage: Storage, recipe: str) -> dict[str, Any] | None:
-    """The latest evaluation of this recipe (same code and parameters) whose gate passed."""
-    best = None
-    for info in storage.list(f"{EVALUATIONS_PREFIX}{recipe}/"):
-        report: dict[str, Any] = get_json(storage, info.key) or {}
-        if (
-            report.get("gate", {}).get("passed")
-            and report.get("recipeHash") == recipe
-            and (best is None or report["cutoff"] > best["cutoff"])
-        ):
-            best = report
-    return best
-
-
-def gate_summary(report: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "run": report["run"],
-        "cutoff": report["cutoff"],
-        "profiles": report["profiles"],
-        **{
-            key: report["gate"][key]
-            for key in ("metric", "candidate", "baseline", "difference", "passed")
-        },
-    }
-
-
 def publish(storage: Storage, run: str, *, keep: int = 3, log: Any = print) -> dict[str, Any]:
     prefix = f"{RECS_PREFIX}v={run}/"
     manifest = get_json(storage, prefix + "manifest.json")
@@ -468,13 +464,11 @@ def publish(storage: Storage, run: str, *, keep: int = 3, log: Any = print) -> d
             f"run {run} has no complete artefact version ({prefix}manifest.json missing): "
             "run `score` first"
         )
-    report = passing_evaluation(storage, manifest["recipeHash"])
-    if report is None:
-        raise PublishRefused(
-            f"no evaluation of recipe {manifest['recipeHash']} beats the rule engine on the "
-            "gate metric; "
-            "run `evaluate` (a backtest of the same code and parameters) first"
-        )
+    from webflix_recs.gate import publish_problems  # noqa: PLC0415
+
+    refusals = publish_problems(storage, manifest)
+    if refusals:
+        raise PublishRefused(f"the gate refuses run {run}: " + "; ".join(refusals))
     problems = validate_version(storage, run)
     if problems:
         raise PublishRefused(f"version {run} is invalid: " + "; ".join(problems[:10]))
@@ -490,7 +484,7 @@ def publish(storage: Storage, run: str, *, keep: int = 3, log: Any = print) -> d
         "manifestSha256": sha256(body),
         "publishedAt": iso_ms(int(time.time() * 1000)),
         "previous": previous if previous != run else (current or {}).get("previous"),
-        "gate": gate_summary(report),
+        "gate": manifest["evaluation"],
     }
     schemas.validate("recs-pointer", pointer)
     put_json(
@@ -500,9 +494,10 @@ def publish(storage: Storage, run: str, *, keep: int = 3, log: Any = print) -> d
     )
     # The flip: one atomic object write. Everything it names is already complete and valid.
     put_json(storage, POINTER_KEY, pointer)
+    gate = manifest["evaluation"]
     log(
-        f"published {run} (previous: {pointer['previous']}); gate {report['gate']['metric']} "
-        f"difference {report['gate']['difference']}"
+        f"published {run} (previous: {pointer['previous']}); gate {gate.get('metric')} "
+        f"differences {[entry.get('difference') for entry in gate.get('cutoffs', [])]}"
     )
     prune(storage, keep=keep, protect={run, pointer["previous"] or ""})
     return pointer

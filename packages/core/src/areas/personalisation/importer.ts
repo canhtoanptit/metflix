@@ -7,6 +7,7 @@ import {
   decodeProfileLists,
   type ImportCapacity,
   MAX_NEIGHBOURS_PER_TITLE,
+  MAX_PROFILE_ERASURE,
   type Neighbour,
   type ProfileLists,
   type RecommendationStore,
@@ -63,6 +64,8 @@ export class RecommendationImportTooLargeError extends RecommendationImportError
 /** What a published (or named) version holds, read from its pointer and manifest only. */
 export interface RecommendationVersionSummary {
   run: string;
+  /** The manifest's SHA-256: what the version holds (a rewrite of the same run changes it). */
+  manifestSha256: string;
   /** Rows of its profile shards (an upper bound on the lists an import writes). */
   profileLists: number;
   neighbourRows: number;
@@ -73,9 +76,10 @@ export async function inspectRecommendations(
   blobs: BlobStore,
   run?: string,
 ): Promise<RecommendationVersionSummary> {
-  const { manifest } = await locateVersion(blobs, run);
+  const { manifest, manifestSha256 } = await locateVersion(blobs, run);
   return {
     run: manifest.run,
+    manifestSha256,
     profileLists: rowsOf(manifest, "profiles"),
     neighbourRows: rowsOf(manifest, "neighbours"),
   };
@@ -111,11 +115,22 @@ export interface RecommendationImportOptions {
   run?: string;
   /** Runs kept after the activation, the active one included (default 2). */
   keep?: number;
+  /**
+   * The profile keys this run must not store lists for (privacy review M3): erasures still
+   * unsettled for data known at the run's `asOf`, profiles whose account withdrew consent to
+   * personalisation. Read once per import, before any list is written; a failure fails the
+   * import (nothing is stored without the check).
+   */
+  withheld?: (asOf: number) => Promise<ReadonlySet<string>>;
 }
 
 export interface RecommendationImportResult {
-  /** `unchanged`: the published run is already the active one. */
-  status: "imported" | "unchanged";
+  /**
+   * `unchanged`: the published version is the one served (same run, same manifest digest).
+   * `rewritten`: the served run was published again with other content (the pipeline's erasure
+   * removed rows from it): applied in place, what it no longer holds dropped.
+   */
+  status: "imported" | "unchanged" | "rewritten";
   run: string;
   /** The run served before (null: none, or unchanged). */
   previous: string | null;
@@ -123,9 +138,19 @@ export interface RecommendationImportResult {
   profiles: number;
   /** Lists already expired when imported (never served, so not written). */
   expiredProfiles: number;
+  /** Lists of withheld keys (erased, being erased, withdrawn): never written. */
+  withheldProfiles: number;
+  /** `rewritten`: stored lists the new version no longer holds (or withholds), dropped. */
+  removedProfiles: number;
   /** Runs deleted after the activation. */
   deleted: string[];
   durationMs: number;
+  /**
+   * Set by the personalisation service after a change (not `unchanged`): whether the shared
+   * caches were told (retried a few times). False: every process still serves the change within
+   * `MODEL_MAX_AGE_MS` (30 s), and the command-line importer exits 3 to say so.
+   */
+  cacheInvalidated?: boolean;
 }
 
 interface ManifestFile {
@@ -152,6 +177,10 @@ export async function importRecommendations(
   const located = await locateVersion(blobs, options.run);
   const active = await store.activeModel();
   if (active?.run === located.manifest.run) {
+    // Decided by content, not by name: a version rewritten under the same run is applied.
+    if (active.manifestSha256 !== located.manifestSha256) {
+      return applyRewrite(options, located, started);
+    }
     logger.info("recs.import_unchanged", { run: active.run });
     return {
       status: "unchanged",
@@ -160,6 +189,8 @@ export async function importRecommendations(
       neighbourRows: 0,
       profiles: 0,
       expiredProfiles: 0,
+      withheldProfiles: 0,
+      removedProfiles: 0,
       deleted: [],
       durationMs: clock.now() - started,
     };
@@ -196,7 +227,9 @@ export async function importRecommendations(
   let neighbourRows = 0;
   let profiles = 0;
   let expiredProfiles = 0;
+  let withheldProfiles = 0;
   try {
+    const withheld = options.withheld ? await options.withheld(manifest.asOf) : new Set<string>();
     for (const file of manifest.files.filter((entry) => entry.table === "neighbours")) {
       const rows = await readNeighbours(await readVerified(blobs, run, file), file);
       for (let index = 0; index < rows.length; index += NEIGHBOUR_BATCH) {
@@ -207,13 +240,14 @@ export async function importRecommendations(
     const now = clock.now();
     for (const file of manifest.files.filter((entry) => entry.table === "profiles")) {
       const bytes = await readVerified(blobs, run, file);
-      const counted = await importProfiles(bytes, file, run, now, async (lists) => {
+      const counted = await importProfiles(bytes, file, run, now, withheld, async (lists) => {
         for (let index = 0; index < lists.length; index += PROFILE_BATCH) {
           await store.putProfileLists(run, lists.slice(index, index + PROFILE_BATCH));
         }
       });
       profiles += counted.written;
       expiredProfiles += counted.expired;
+      withheldProfiles += counted.withheld;
     }
     await store.activate(run, clock.now());
   } catch (error) {
@@ -232,11 +266,199 @@ export async function importRecommendations(
     neighbourRows,
     profiles,
     expiredProfiles,
+    withheldProfiles,
+    removedProfiles: 0,
     deleted,
     durationMs: clock.now() - started,
   };
   logger.info("recs.import_activated", { ...result, deleted: deleted.join(",") });
   return result;
+}
+
+/** What applying a rewrite will do, counted before anything is written. */
+interface RewritePlan {
+  withheld: ReadonlySet<string>;
+  /** Lists the version holds that will be written (fresh, not withheld). */
+  written: number;
+  expired: number;
+  withheldCount: number;
+  /** Stored keys of the run the version no longer holds (or withholds). */
+  removed: string[];
+  /** Runs registered now: a removed key is deleted from each. */
+  runs: number;
+  /** Pages of stored keys read to find `removed`. */
+  listPages: number;
+  /**
+   * Store operations the rewrite makes: one per list written, one per removed key and run, one
+   * per page of stored keys (on Workers KV through the binding, each comes out of the
+   * invocation's 1,000).
+   */
+  operations: number;
+}
+
+async function planRewrite(
+  options: RecommendationImportOptions,
+  manifest: Manifest,
+  now: number,
+): Promise<RewritePlan> {
+  const { blobs, store } = options;
+  const run = manifest.run;
+  const withheld = options.withheld ? await options.withheld(manifest.asOf) : new Set<string>();
+  const held = new Set<string>();
+  let expired = 0;
+  let withheldCount = 0;
+  for (const file of manifest.files.filter((entry) => entry.table === "profiles")) {
+    const bytes = await readVerified(blobs, run, file);
+    const counted = await importProfiles(bytes, file, run, now, withheld, async (lists) => {
+      for (const list of lists) held.add(list.profileKey);
+    });
+    expired += counted.expired;
+    withheldCount += counted.withheld;
+  }
+  for (const file of manifest.files.filter((entry) => entry.table === "neighbours")) {
+    await readNeighbours(await readVerified(blobs, run, file), file);
+  }
+  const removed: string[] = [];
+  let listPages = 0;
+  let cursor: string | null = null;
+  do {
+    const page: { keys: string[]; cursor: string | null } = await store.profileKeys(run, cursor);
+    listPages += 1;
+    for (const key of page.keys) if (!held.has(key)) removed.push(key);
+    cursor = page.cursor;
+  } while (cursor !== null);
+  const runs = (await store.models()).length;
+  return {
+    withheld,
+    written: held.size,
+    expired,
+    withheldCount,
+    removed,
+    runs,
+    listPages,
+    operations: held.size + removed.length * runs + listPages,
+  };
+}
+
+/** The refusal of a rewrite larger than `capacity` (every operation counted), or null. */
+function rewriteCapacityProblem(
+  run: string,
+  plan: RewritePlan,
+  capacity: ImportCapacity | undefined,
+): string | null {
+  if (!capacity || plan.operations <= capacity.maxProfileLists) return null;
+  return `Rewriting run ${run} takes ${plan.operations} store operations (${plan.written} lists written, ${plan.removed.length} removed from ${plan.runs} runs, ${plan.listPages} pages of keys read); an import here makes at most ${capacity.maxProfileLists}: ${capacity.explanation}`;
+}
+
+/**
+ * The refusal an import of the published (or named) version would end in for its size, said
+ * before queuing it (the staff route): a new run's lists, or everything a rewrite of the served
+ * run would do. Null when it fits, or when the store has no limit.
+ */
+export async function importSizeProblem(
+  options: RecommendationImportOptions,
+): Promise<string | null> {
+  const capacity = options.store.importCapacity;
+  if (!capacity) return null;
+  const located = await locateVersion(options.blobs, options.run);
+  const active = await options.store.activeModel();
+  const { manifest } = located;
+  if (active?.run !== manifest.run) {
+    return importCapacityProblem(manifest.run, rowsOf(manifest, "profiles"), capacity);
+  }
+  if (active.manifestSha256 === located.manifestSha256) return null;
+  const plan = await planRewrite(options, manifest, options.clock.now());
+  return rewriteCapacityProblem(manifest.run, plan, capacity);
+}
+
+/**
+ * The served run published again with other content (services/recs `erase` removes an erased
+ * subject's rows from published versions and re-points `recs/current.json` at the rewritten
+ * manifest). The active run cannot be re-imported beside itself, so the rewrite is applied in
+ * place, every file verified first as in an import: its neighbours and lists written over the
+ * stored ones (each key is replaced at once, so readers see the old or the new list), then
+ * every stored list the version no longer holds (or withholds) dropped, then its digest
+ * recorded. Everything it will do is counted first (`planRewrite`): a rewrite larger than the
+ * store takes in one invocation is refused before anything is written, never part-way.
+ * Idempotent: an interrupted rewrite is finished by the next import.
+ */
+async function applyRewrite(
+  options: RecommendationImportOptions,
+  located: { manifest: Manifest; manifestSha256: string },
+  started: number,
+): Promise<RecommendationImportResult> {
+  const { blobs, store, clock, logger } = options;
+  const { manifest } = located;
+  const run = manifest.run;
+  const now = clock.now();
+  let plan: RewritePlan;
+  try {
+    plan = await planRewrite(options, manifest, now);
+  } catch (error) {
+    logger.error("recs.rewrite_failed", { run, error: serializeError(error) });
+    throw error instanceof RecommendationImportError
+      ? error
+      : new RecommendationImportError(`Rewrite of ${run} failed: ${String(error)}`, {
+          cause: error,
+        });
+  }
+  const tooLarge = rewriteCapacityProblem(run, plan, store.importCapacity);
+  if (tooLarge) {
+    logger.warn("recs.rewrite_refused", { run, reason: tooLarge });
+    throw new RecommendationImportTooLargeError(
+      tooLarge,
+      plan.operations,
+      store.importCapacity?.maxProfileLists ?? 0,
+    );
+  }
+  logger.info("recs.rewrite_started", { run, files: manifest.files.length });
+  try {
+    let neighbourRows = 0;
+    for (const file of manifest.files.filter((entry) => entry.table === "neighbours")) {
+      const rows = await readNeighbours(await readVerified(blobs, run, file), file);
+      for (let index = 0; index < rows.length; index += NEIGHBOUR_BATCH) {
+        await store.putNeighbours(run, rows.slice(index, index + NEIGHBOUR_BATCH));
+      }
+      neighbourRows += rows.length;
+    }
+    let profiles = 0;
+    for (const file of manifest.files.filter((entry) => entry.table === "profiles")) {
+      const bytes = await readVerified(blobs, run, file);
+      const counted = await importProfiles(bytes, file, run, now, plan.withheld, async (lists) => {
+        for (let index = 0; index < lists.length; index += PROFILE_BATCH) {
+          await store.putProfileLists(run, lists.slice(index, index + PROFILE_BATCH));
+        }
+      });
+      profiles += counted.written;
+    }
+    // Every stored list of the run the version does not hold any more: dropped (in every run,
+    // so a rollback cannot bring an erased subject's list back either).
+    const { removed } = plan;
+    for (let index = 0; index < removed.length; index += MAX_PROFILE_ERASURE) {
+      await store.deleteProfileLists(removed.slice(index, index + MAX_PROFILE_ERASURE));
+    }
+    await store.recordManifest(run, located.manifestSha256);
+    const result: RecommendationImportResult = {
+      status: "rewritten",
+      run,
+      previous: null,
+      neighbourRows,
+      profiles,
+      expiredProfiles: plan.expired,
+      withheldProfiles: plan.withheldCount,
+      removedProfiles: removed.length,
+      deleted: [],
+      durationMs: clock.now() - started,
+    };
+    logger.info("recs.rewrite_applied", { ...result, deleted: "" });
+    return result;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.error("recs.rewrite_failed", { run, error: serializeError(error) });
+    throw error instanceof RecommendationImportError
+      ? error
+      : new RecommendationImportError(`Rewrite of ${run} failed: ${reason}`, { cause: error });
+  }
 }
 
 /**
@@ -517,11 +739,13 @@ async function importProfiles(
   file: ManifestFile,
   run: string,
   now: number,
+  withheld: ReadonlySet<string>,
   write: (lists: ProfileLists[]) => Promise<void>,
-): Promise<{ written: number; expired: number }> {
+): Promise<{ written: number; expired: number; withheld: number }> {
   const metadata = metadataOf(bytes, file.path, file.rows);
   let written = 0;
   let expired = 0;
+  let skipped = 0;
   let rowStart = 0;
   // One row group at a time (at most 10,000 rows by the artefact contract): bounded memory.
   for (const group of metadata.row_groups) {
@@ -543,6 +767,10 @@ async function importProfiles(
           `${file.path}: the payload of ${profileKey} names ${decoded.profileKey} in ${decoded.run}`,
         );
       }
+      if (withheld.has(profileKey)) {
+        skipped += 1;
+        continue;
+      }
       if (decoded.expiresAt <= now) {
         expired += 1;
         continue;
@@ -553,5 +781,5 @@ async function importProfiles(
     written += lists.length;
     rowStart = rowEnd;
   }
-  return { written, expired };
+  return { written, expired, withheld: skipped };
 }

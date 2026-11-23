@@ -316,6 +316,10 @@
             "release": {
               "type": "string",
               "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$"
+            },
+            "exportTypicalSec": {
+              "type": ["integer", "null"],
+              "minimum": 1
             }
           },
           "description": "Behaviour events and privacy (events)"
@@ -808,6 +812,25 @@
         },
         "priorityClassName": {
           "type": "string"
+        },
+        "admin": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The staff console under /admin/",
+          "properties": {
+            "clientId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]{1,128}$"
+            },
+            "scope": {
+              "type": "string",
+              "pattern": "(^|\\s)openid(\\s|$)"
+            },
+            "contentSecurityPolicy": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -1852,6 +1875,19 @@
                   "minLength": 9
                 }
               }
+            },
+            "retain": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "type": "string",
+                  "minLength": 9
+                }
+              }
             }
           }
         },
@@ -1888,6 +1924,10 @@
           "type": ["integer", "null"],
           "minimum": 1,
           "maximum": 32
+        },
+        "external": {
+          "type": "boolean",
+          "description": "An external runner erases, exports and expires the lake"
         }
       },
       "description": "The recommendation pipeline's and the privacy jobs' CronJobs (services/recs)"

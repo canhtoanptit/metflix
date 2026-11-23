@@ -1,11 +1,16 @@
 /**
- * The audit log: who did what, to what, why, and how it ended, newest first. Filters live in
- * the URL (identifiers only), so an action whose outcome was unclear can link straight to its
- * entry (`?requestId=`: the `X-Request-Id` the console sent it with, opened and highlighted).
- * Each entry opens to show what was asked and what changed.
+ * The audit log: what staff did, to whom, how much, why and how it ended, newest first, in
+ * words ("Refunded $4.00", "Member · jane@example.test"). Changes are listed by default; the
+ * records of staff viewing member data are left out unless asked for (`show`). Filters live in
+ * the URL (identifiers only), so an action can link straight to its entry (`?requestId=`: the
+ * `X-Request-Id` the console sent it with, opened and highlighted). Each entry opens to show its
+ * action code, what was asked and what changed.
+ *
+ * Reading the log is itself audited (`audit.read`), so it never refetches on its own (focus,
+ * reconnect): each look is one entry.
  */
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import {
   AUDIT_OUTCOMES,
   type AuditLogEntry,
@@ -19,6 +24,7 @@ import {
   Field,
   FilterIcon,
   Input,
+  RefreshIcon,
   Select,
   SelectItem,
 } from "@webflix/ui";
@@ -31,24 +37,20 @@ import {
   Identifier,
   PageHeader,
   Section,
+  Stamp,
   StatusBadge,
 } from "../../components/primitives.tsx";
 import { Empty, ErrorPanel, LoadingRows } from "../../components/states.tsx";
 import { useDocumentTitle } from "../../lib/hooks.ts";
 import { AUDIT_OUTCOME } from "../../lib/status.ts";
+import { EntryError, EntryWhat } from "./AuditEntryParts.tsx";
+import { AUDIT_SHOW, type AuditShow, auditKind, auditShow } from "./audit-filter.ts";
+import { auditHeadline, auditTarget, TARGET_TYPES } from "./audit-words.ts";
 
-const TARGET_TYPES: Record<string, string> = {
-  member: "Member",
-  member_search: "Member search",
-  plan_price: "Plan price",
-  plan_catalogue: "Plan catalogue",
-  billboard: "Billboard",
-  collection: "Collection",
-  title: "Title",
-  experiment: "Experiment",
-  dead_letter: "Failed job",
-  recommendations: "Recommendations",
-  event_lake: "Event lake",
+const SHOW_LABELS: Record<AuditShow, string> = {
+  actions: "Actions",
+  all: "Actions and views",
+  views: "Views only",
 };
 
 const auditRoute = getRouteApi("/operations/audit");
@@ -62,12 +64,15 @@ export function AuditPage() {
   const navigate = useNavigate({ from: "/operations/audit" });
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const show = auditShow(search);
+  const kind = auditKind(show);
   const filterKey = JSON.stringify([
     search.targetType,
     search.targetId,
     search.actorId,
     search.outcome,
     search.requestId,
+    show,
   ]);
   // A new filter starts from the first page.
   useEffect(() => setCursors([null]), [filterKey]);
@@ -79,6 +84,7 @@ export function AuditPage() {
     ...(search.actorId ? { actorId: search.actorId } : {}),
     ...(search.outcome ? { outcome: search.outcome } : {}),
     ...(search.requestId ? { requestId: search.requestId } : {}),
+    ...(kind ? { kind } : {}),
     ...(cursor ? { cursor } : {}),
   };
   const page = useQuery({ ...queries.audit(query), placeholderData: keepPreviousData });
@@ -99,6 +105,7 @@ export function AuditPage() {
       return next;
     });
 
+  const linkMembers = staff.has("support");
   const columns: Column<AuditLogEntry>[] = [
     {
       id: "when",
@@ -111,41 +118,23 @@ export function AuditPage() {
           className="focus-ring-inset -mx-1 inline-flex items-center gap-1 rounded-xs px-1 text-start text-fg hover:text-fg-muted"
         >
           {expanded.has(entry.id) ? <ChevronDownIcon size="xs" /> : <ChevronRightIcon size="xs" />}
-          <span className="sr-only">Details of {entry.action}, </span>
-          <span className="whitespace-nowrap">
-            <DateTime value={entry.createdAt} seconds />
-          </span>
+          <span className="sr-only">Details of {auditHeadline(entry)}, </span>
+          <Stamp value={entry.createdAt} />
         </button>
       ),
     },
     {
-      id: "action",
-      header: "Action",
+      id: "what",
+      header: "What",
       cell: (entry) => (
-        <span className="flex flex-col gap-0.5">
-          <code className="font-mono text-xs text-fg">{entry.action}</code>
-          <span className="type-caption text-fg-subtle">
-            {TARGET_TYPES[entry.target.type] ?? entry.target.type}
-            {entry.target.type === "member" ? (
-              <>
-                {" "}
-                <Link
-                  to="/members/$accountId"
-                  params={{ accountId: entry.target.id }}
-                  className="focus-ring rounded-xs underline-offset-4 hover:text-fg hover:underline"
-                >
-                  {entry.target.id.slice(0, 13)}…
-                </Link>
-              </>
-            ) : entry.target.type === "member_search" ? null : (
-              ` ${entry.target.id}`
-            )}
-          </span>
+        <span className="flex flex-col gap-1">
+          <EntryWhat entry={entry} linkMembers={linkMembers} />
           {/* On phones the outcome rides under the action instead of in its own column. */}
-          <span className="sm:hidden">
+          <span className="flex flex-col items-start gap-0.5 sm:hidden">
             <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
               {AUDIT_OUTCOME[entry.outcome].label}
             </StatusBadge>
+            <EntryError entry={entry} />
           </span>
         </span>
       ),
@@ -178,9 +167,12 @@ export function AuditPage() {
       header: "Outcome",
       hideBelow: "sm",
       cell: (entry) => (
-        <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
-          {AUDIT_OUTCOME[entry.outcome].label}
-        </StatusBadge>
+        <span className="flex flex-col items-start gap-0.5">
+          <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
+            {AUDIT_OUTCOME[entry.outcome].label}
+          </StatusBadge>
+          <EntryError entry={entry} />
+        </span>
       ),
     },
   ];
@@ -189,7 +181,7 @@ export function AuditPage() {
     <>
       <PageHeader
         title="Audit log"
-        description="Every staff action and every read of a member's data, newest first. Unknown means the action ended without saying whether it happened: check the target before trying again."
+        description="What staff did, to whom and why, newest first. Views of member data are recorded too, and listed when you ask for them. Unknown means an action ended without saying whether it happened: check the target before trying again."
       />
       <Filters
         key={filterKey}
@@ -197,7 +189,21 @@ export function AuditPage() {
         mySubject={staff.identity.subject}
         onApply={(next) => void navigate({ search: next })}
       />
-      <Section title="Entries" className="mt-4">
+      <Section
+        title="Entries"
+        className="mt-4"
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            icon={RefreshIcon}
+            loading={page.isFetching}
+            onClick={() => void page.refetch()}
+          >
+            Refresh
+          </Button>
+        }
+      >
         {search.requestId && page.data && page.data.items.length === 0 ? (
           <p role="status" className="mb-3 type-body-sm text-fg-muted">
             No entry for request <code className="font-mono text-xs">{search.requestId}</code>.
@@ -218,7 +224,16 @@ export function AuditPage() {
             rowKey={(entry) => entry.id}
             highlight={(entry) => entry.id === highlighted?.id}
             expanded={(entry) => (expanded.has(entry.id) ? <EntryDetail entry={entry} /> : null)}
-            empty={<Empty title="No entries" description="Nothing matches these filters." />}
+            empty={
+              <Empty
+                title="No entries"
+                description={
+                  show === "actions"
+                    ? "No action matches these filters. Views of member data are left out: show them to look there too."
+                    : "Nothing matches these filters."
+                }
+              />
+            }
             pager={
               cursors.length > 1 || page.data.nextCursor
                 ? {
@@ -247,6 +262,7 @@ interface FilterValues {
   actorId?: string;
   outcome?: AuditOutcome;
   requestId?: string;
+  show?: AuditShow;
 }
 
 function Filters({
@@ -263,22 +279,41 @@ function Filters({
   const [actorId, setActorId] = useState(initial.actorId ?? "");
   const [outcome, setOutcome] = useState<string>(initial.outcome ?? ANY);
   const [requestId, setRequestId] = useState(initial.requestId ?? "");
-  const values = (): FilterValues => ({
-    ...(targetType !== ANY ? { targetType } : {}),
-    ...(targetId.trim() ? { targetId: targetId.trim() } : {}),
-    ...(actorId.trim() ? { actorId: actorId.trim() } : {}),
-    ...(outcome !== ANY ? { outcome: outcome as AuditOutcome } : {}),
-    ...(/^[A-Za-z0-9._-]{1,64}$/.test(requestId.trim()) ? { requestId: requestId.trim() } : {}),
-  });
+  const [show, setShow] = useState<AuditShow>(auditShow(initial));
+  const values = (): FilterValues => {
+    const request = /^[A-Za-z0-9._-]{1,64}$/.test(requestId.trim()) ? requestId.trim() : null;
+    return {
+      ...(targetType !== ANY ? { targetType } : {}),
+      ...(targetId.trim() ? { targetId: targetId.trim() } : {}),
+      ...(actorId.trim() ? { actorId: actorId.trim() } : {}),
+      ...(outcome !== ANY ? { outcome: outcome as AuditOutcome } : {}),
+      ...(request ? { requestId: request } : {}),
+      // Said in the URL only when it isn't what the URL would mean without it.
+      ...(show !== auditShow(request ? { requestId: request } : {}) ? { show } : {}),
+    };
+  };
   return (
     <form
       aria-label="Filter the audit log"
-      className="grid gap-3 rounded-lg border border-line-subtle bg-surface-1 p-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto]"
+      className="grid gap-3 rounded-lg border border-line-subtle bg-surface-1 p-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_1fr_auto]"
       onSubmit={(event) => {
         event.preventDefault();
         onApply(values());
       }}
     >
+      <Field label="Show">
+        <Select
+          variant="compact"
+          value={show}
+          onValueChange={(value) => setShow(value as AuditShow)}
+        >
+          {AUDIT_SHOW.map((value) => (
+            <SelectItem key={value} value={value}>
+              {SHOW_LABELS[value]}
+            </SelectItem>
+          ))}
+        </Select>
+      </Field>
       <Field label="Target">
         <Select variant="compact" value={targetType} onValueChange={setTargetType}>
           <SelectItem value={ANY}>Any target</SelectItem>
@@ -354,6 +389,7 @@ function Filters({
             setActorId("");
             setOutcome(ANY);
             setRequestId("");
+            setShow("actions");
             onApply({});
           }}
         >
@@ -365,11 +401,24 @@ function Filters({
 }
 
 function EntryDetail({ entry }: { entry: AuditLogEntry }) {
+  const target = auditTarget(entry);
   return (
     <div className="flex flex-col gap-3">
       <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-[auto_1fr]">
+        <dt className="type-caption text-fg-subtle">What</dt>
+        <dd className="type-body-sm text-fg">
+          {auditHeadline(entry)}{" "}
+          <code className="font-mono text-xs text-fg-subtle">{entry.action}</code>
+        </dd>
         <dt className="type-caption text-fg-subtle">Why</dt>
-        <dd className="type-body-sm break-words text-fg">{entry.reason ?? "No reason (a read)"}</dd>
+        <dd className="type-body-sm break-words text-fg">
+          {entry.reason ??
+            (entry.kind === "read"
+              ? "No reason (a view)"
+              : target.erased
+                ? "Not kept: the member was erased"
+                : "None given")}
+        </dd>
         <dt className="type-caption text-fg-subtle">Who</dt>
         <dd className="type-body-sm text-fg">
           {entry.actor.name ?? "Unnamed"}{" "}
@@ -377,8 +426,10 @@ function EntryDetail({ entry }: { entry: AuditLogEntry }) {
           <Identifier value={entry.actor.id} label="staff subject" />
         </dd>
         <dt className="type-caption text-fg-subtle">Target</dt>
-        <dd className="type-body-sm break-all text-fg">
-          {TARGET_TYPES[entry.target.type] ?? entry.target.type}: {entry.target.id}
+        <dd className="flex flex-wrap items-center gap-x-2 type-body-sm break-words text-fg">
+          {target.kind}
+          {target.label ? `: ${target.label}` : ""}
+          {target.erased ? null : <Identifier value={entry.target.id} label="target ID" />}
         </dd>
         <dt className="type-caption text-fg-subtle">Settled</dt>
         <dd className="type-body-sm text-fg">

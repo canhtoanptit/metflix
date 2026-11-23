@@ -791,3 +791,190 @@ clients' fixtures keep compiling.
   provider (production configuration) the checks that need a member skip with that reason. New
   conformance checks: `identity.signup.card-data-refused` (replacing
   `identity.signup.declined-cards`) and `plans.payment-budget` (replacing `plans.payment-method`).
+
+## 2026-11-23 — identity: automatic linking needs ways in the address's owner set up (behaviour)
+
+Security review H1 (pre-account takeover). No schema change; the routes answer as before.
+
+- **A verification link opened outside the account's own session no longer enables automatic
+  linking.** `POST /auth/email-verification/confirm` still verifies the address from any browser
+  and still answers 204. Only when the request carries a live session of the token's own account
+  does it also prove the account's ways in, and only then may a Google or Apple sign-in with that
+  address link itself (§4.1). Otherwise such a sign-in answers `?oidc=link-required`.
+- **What proves an account's ways in:** a federated sign-up with an issuer-verified address; a
+  completed password reset; the verification link opened in a session of that account. Not a
+  password change, a password sign-in, a deliberate link, or a verification click anywhere else.
+  **An address change clears the proof** (the new address is verified and proven again).
+- **Who now sees `link-required` where they were linked before:** a password account whose
+  address was verified outside its own signed-in session (another device, signed out, an
+  expired session, another account's session), and every account that existed before this
+  change, unless it reset its password since. Those members sign in and link from Account, or
+  reset the password.
+- **Configuration:** `WEBFLIX_EMAIL_SENDER=outbox` is refused at startup in production on Node
+  and on the Worker (review L4: it stores live reset and verification links). Development and
+  test keep it (local Cloudflare, the Kubernetes conformance variant).
+
+## 2026-11-23 — billing: per-account budgets for routes that call the provider (behaviour)
+
+Security review M1. No new field; three routes gain `rate_limited` (429, `Retry-After`).
+
+- **One promo-code budget, whichever route.** `POST /billing/checkout` with a `promotionCode`
+  now spends the account's `promotion` budget (10/600 s), the one
+  `POST /billing/promotions/validate` spends. The code the account's open checkout already
+  carries is not charged again (a payment page picking its checkout up). A checkout without a
+  code is not a lookup.
+- **`billing`, 30/600 s per account**, on `POST /billing/checkout`,
+  `POST /billing/subscription/preview` and `POST /billing/payment-method/setup` (each calls the
+  provider). Refused with `rate_limited`; nothing is started or changed.
+- **Polls are never refused.** `GET /billing/checkout/:id` and
+  `GET /billing/payment-method/setup/:id` read the provider at most once per account every two
+  seconds (`billing-refresh`); a poll in between answers from stored state, so an answer can
+  trail the provider by up to two seconds (plus the poll interval). The client secret is stored
+  with the checkout and the card change (migration 0021, `client_secret`, cleared once the
+  browser no longer needs it), and a failed card change keeps its reason (`failure_reason`).
+- **Clients**: the conformance suite's documented limits (`tools/smoke/src/limits.ts`) list
+  both policies, strict and relaxed alike.
+
+## 2026-11-23 — staff API: privacy review (M2, M5, M6, L9) and the audit log at a glance (UX 2.17)
+
+All additive for a client of the previous contract (new response fields, a new query filter,
+new constants); the behaviour changes are listed so the console and the conformance suite can
+follow them.
+
+- **`AuditLogEntry` gains** `kind` (`AUDIT_ENTRY_KINDS`: `action` | `read`), `targetLabel`
+  (string | null: the target in words, resolved when the log is read and never stored: a
+  member's current address, `ERASED_MEMBER_LABEL` "Erased member" for a target `erased:<id>`, a
+  title's or collection's name; null where `target.id` reads well) and `facts` (`AuditFacts`:
+  optional `amount` (Money), `planId`, `days`, `when`, `status`, `purpose`, `granted`,
+  `available`, `titleCount`, `outcome`, `run`, `count`, `error`; only those that apply). In
+  `GET /audit/mine`, `facts` is `{}` or `{ error }`, and a member target's label is null unless
+  the caller holds `support` or `admin`.
+- **`AuditQuery.kind`** (and `OwnAuditQuery.kind`): `action` leaves out the reads
+  (`AUDIT_READ_ACTIONS`: `member.viewed`, `member.searched`, `member.privacy_viewed`,
+  `audit.read`, `privacy.erasures_listed`, `privacy.exports_listed`); `read` lists only them.
+- **`SystemHealth.privacy`** (new, required): `pendingErasures`, `oldestPendingErasureAt`,
+  `oldestPendingErasureAgeSec`, `waitingExports`, `oldestWaitingExportAt`,
+  `oldestWaitingExportAgeSec` (counts up to 500; ages in seconds; nulls when nothing waits).
+- **Behaviour.**
+  - `member.searched` keeps the query's shape only (`target.id` `j***@e***` for an address, the
+    first three characters of anything else); migration `0023_admin_audit_privacy` masks the
+    entries written before (first character) and drops the key lists of earlier erasure
+    confirmations.
+  - `privacy.erasures_confirmed` keeps `before.request: { keys: <count> }`, never the keys.
+  - Reading `GET /audit` writes `audit.read` (`after: { filters, results }`); the operator
+    lists write `privacy.erasures_listed` / `privacy.exports_listed` (`after: { count }`).
+  - After a member's erasure their entries have `target.id` `erased:<id>` (one marker per
+    member), `before`, `reason` and the idempotency key null, `after` null or `{ error }`; other
+    entries naming them have each identifier replaced by the marker.
+  - The data export's `areas.admin` is `{ staffAccess: [{ at, action }] }`, oldest first.
+  - Entries older than `WEBFLIX_AUDIT_RETENTION_DAYS` (default 396) are deleted.
+- **Constants**: `AUDIT_READ_ACTIONS`, `AUDIT_ENTRY_KINDS`, `ERASED_MEMBER_LABEL`.
+- **Schemas**: `AuditFacts`.
+- **What the conformance suite can assert**: a staff search by a full address leaves an entry
+  whose `target.id` contains no `@`-address; `GET /audit` itself produces an `audit.read` entry;
+  `GET /audit?kind=action` contains no entry of `AUDIT_READ_ACTIONS` and `kind=read` only those;
+  a refund's entry has `facts.amount`; a member target's `targetLabel` is the member's address;
+  `GET /system/health` has the six `privacy` fields; after `privacy.deletion.erasure`,
+  `GET /audit?targetId=<the erased account id>` is empty while the staff member's entries of the
+  same moments still exist with a target `erased:…` and `targetLabel` "Erased member"; the
+  member's export (taken before deleting) has `areas.admin.staffAccess` items with exactly the
+  keys `at` and `action`.
+
+## 2026-11-23 — identity: a reset signs you in; an account with no profile manages itself
+
+- **`POST /auth/password-reset/confirm` answers the session** (breaking for a reader of its
+  response: it was `204` with no body). Now `200` with `AuthenticatedSession`, the session cookie
+  and the known-device cookie, exactly as `POST /auth/login` does. Every other device is still
+  signed out and identities linked under another address are still dropped; the device that
+  completed the reset is the only one signed in, at the profile gate (`activeProfile` null).
+  Show "you're signed in here, and signed out everywhere else" and continue as after sign-in.
+  The web's mock handler (`apps/web/src/mocks/handlers.ts`, `confirmPasswordReset`) must now
+  return the session.
+- **An account with no profile at all is its own account holder at the profile gate**
+  (behaviour; no schema change). The account-holder routes (`GET`/`PATCH /account`, devices,
+  identities, privacy requests, export and deletion, billing's account routes, `POST
+  /auth/logout-all`) answered `403 profile_required` for an account that never made a profile.
+  They now answer as for a profile without parental controls, as long as the account has no
+  profile. Each route's own proof still applies: `currentPassword` or a fresh proof for `PATCH
+  /account`, a fresh proof for export and deletion. As soon as one profile exists (a kids one
+  included), the gate answers `profile_required` again, as before.
+
+## 2026-11-23 — events: the privacy review's fixes (additive, one rule tightened)
+
+For the web privacy screens, the staff console and the conformance suite. No field is removed;
+two are added as required (a client building these objects must add them).
+
+- **`PrivacyRequest.email`** (required, nullable): `"pending" | "sent" | "suppressed" | null`.
+  What the request's email did: an export's "ready" email, a deletion's "will be deleted" one.
+  `pending`: it will be sent (an export when ready; a deletion's, queued after a delivery
+  error); `sent`; `suppressed`: the address bounced or complained before, so none is or will
+  be sent (privacy review L10); null: none (older requests).
+- **A deletion's `status: processing`** now means the erasure has started: the account is
+  locked (every session ended, no sign-in), it can no longer be kept, and it is retried until it
+  finishes ("we're deleting your account"). `POST /account/deletion` answers
+  `privacy_request_pending` and `DELETE /account/deletion` `not_found` meanwhile. An export's
+  `pending`/`processing` is given up after a day (`failed`; ask again).
+- **`POST /privacy/exports/:id/download`** (`fetchDataExport`, account holder): body
+  `DataExportDownloadBody { token }`, answers `DataExport` as the GET does: the token never sits
+  in a URL (L3). Both forms now need a fresh account-holder proof: `403
+  reauthentication_required`, checked after the token (a foreign, expired or bad token stays
+  `404 not_found`) (L2). The export email's landing page should call the POST form.
+- **`pendingExports`' `from`** is `1970-01-01T00:00:00.000Z`: an export covers every event the
+  lake still holds, never cut at the retention period (H1). The pipeline's `export-events`
+  already lists every hour and filters by window.
+- **Error `consent_grant_member_only`** (403, "Only the member can turn this on"; detail "Staff
+  can only record a withdrawal. The member turns a purpose on themselves, in Account ›
+  Privacy."): `PUT /api/admin/v1/members/:accountId/privacy/consent` with `granted: true`
+  (declared on that staff route). A withdrawal is recorded as before (M4). A support grant
+  recorded earlier is no longer the consent in force, so `ConsentState` shows the answer before
+  it (or the mode's default) and `promptRequired` again where nothing else was answered.
+- **`SystemHealth.privacy`** gains `erasuresInProgress`, `oldestErasureInProgressAt`,
+  `oldestErasureInProgressAgeSec`: account erasures started and not finished; one whose age
+  keeps growing is stuck (the events area's `staff.erasuresInProgress` says why).
+- **Email templates** (`EMAIL_TEMPLATES`, `packages/email`): `account-deletion-scheduled`
+  `{ scheduledFor, keepUrl }` and `account-deletion-canceled` `{ manageUrl }` (M7).
+- **`DataExport.notes`** describe the `areas` parts present (identity, billing,
+  personalisation's `recommendationLists`, admin's `staffAccess`) and say what is held but not
+  included; the card note says what Webflix stores (brand, last four digits, expiry) (M6).
+- **Schemas**: `DataExportDownloadBody`.
+
+## 2026-11-23 — billing: trial eligibility and amounts with their reason (additive)
+
+UX review 2.6, 2.3 and 2.2. Fields only; nothing removed. Migration 0026 (billing) stores the
+amounts' reasons on invoices and checkouts.
+
+- **`OpenCheckout.trialEligible: boolean`** (`GET /billing/checkout`, also when `checkout` is
+  null): true until the account has had a trial (the plan's `trial` is then what it gets, unless
+  the card it confirms already had a trial elsewhere: that checkout goes to `requires_payment`);
+  false once it had one, and when no provider is configured.
+- **`creditApplied: Money | null` and `discount: Money | null`** (null when zero) on
+  `MembershipState.nextInvoice`, `Checkout` (beside `amountDue`), `PlanChangePreview` (beside
+  `amountDue`), `PlanChangePreview.nextRenewal` and `Invoice`. Everywhere: the price before
+  credit and discounts is `amount + creditApplied + discount` (a renewal or first payment: the
+  plan's price; a plan change's `amountDue`: the new plan's remaining time, `creditApplied`
+  being the current plan's unused time and any account credit).
+- **`Checkout.amountDue` is known at `requires_setup`** for an account with `trialEligible`
+  false: the provider previews the first invoice (the account's credit, the code), so a restart
+  states "$3.01 today ($7.99 less your $4.98 credit)" before the provider's form. For an
+  eligible account it stays null until the card is confirmed.
+- **`Invoice.total` < 0** is documented as a credit to the account (a downgrade's unused time),
+  not a payment: `amountPaid` is 0 and later invoices show it as `creditApplied`.
+- **Port**: `PaymentProvider.previewFirstInvoice`; `ProviderInvoice`, `NextInvoicePreview` and
+  `ProrationPreview` (and its `nextRenewal`) carry `creditAppliedMinor` and `discountMinor`.
+
+## 2026-11-23 — billing: what an erasure keeps, the export, no cancellation email for a deletion (behaviour)
+
+Privacy review M5, M6, M7. No route or field changes.
+
+- **Erasure** keeps only invoices (without `hostedUrl`/`pdfUrl`) and refunds, and each card
+  fingerprint that had a trial with no account and no time (docs/FOUNDATION.md D-M2-6). The fake
+  provider follows: the customer becomes a stub naming no one; its cards, setups, event log,
+  test clock and idempotency records go; invoices lose their client secrets.
+- **Provider events naming a customer that is no one's** (an erased account's, another
+  deployment's on a shared provider account) are acknowledged (`duplicate: false`) and not
+  stored; reconciliation skips them the same way.
+- **Data export** (`areas.billing`) adds `checkouts` (the `Checkout` shape, `clientSecret` always
+  null), `promotionCodes` (`code`, `checkoutId`, `outcome`, `at`) and `cardChanges` (the
+  `PaymentMethodSetup` shape, `clientSecret` null).
+- **No `cancellation` email when the account's deletion is scheduled** (the request's own cancel,
+  the sweep's retry, a staff cancel meanwhile). An ordinary cancel still sends it.

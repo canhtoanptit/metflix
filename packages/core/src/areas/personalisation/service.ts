@@ -3,6 +3,7 @@ import type {
   EditorialBillboard,
   EditorialCollection,
   EditorialCollectionList,
+  JsonValue,
   RecommendationStatus,
   TitleAvailability,
 } from "@webflix/contracts";
@@ -11,14 +12,15 @@ import { AppError } from "../../errors.ts";
 import type { BlobStore } from "../../ports/blob-store.ts";
 import { toIsoString } from "../../ports/clock.ts";
 import { defineJob, handleJob } from "../../ports/job-queue.ts";
+import { serializeError } from "../../ports/logger.ts";
+import { MAX_PROFILE_ERASURE } from "../../ports/recommendation-store.ts";
 import type { ServiceDependencies } from "../../services/context.ts";
 import { createProfileService } from "../../services/profiles.ts";
 import { auditRecord, type StaffAction } from "../experiments/audit.ts";
 import type { AreaModule, AreaSeams } from "../module.ts";
 import {
-  importCapacityProblem,
   importRecommendations,
-  inspectRecommendations,
+  importSizeProblem,
   RecommendationImportError,
   type RecommendationImportResult,
   rollbackRecommendations,
@@ -43,6 +45,12 @@ export interface AvailabilityChange {
   availableFrom?: string | null | undefined;
   availableUntil?: string | null | undefined;
 }
+
+/** Waits between attempts to tell the shared cache of a new model (then it gives up). */
+export const INVALIDATION_RETRY_DELAYS_MS = [500, 1_000, 2_000] as const;
+
+/** Withdrawn profile keys read per page when an import collects what it withholds. */
+const WITHDRAWN_PAGE = 1_000;
 
 /** Import the published (or the named) recommendation run (`POST /system/recommendations/import`). */
 export const recommendationImportJob = defineJob(
@@ -108,9 +116,33 @@ export interface PersonalisationService extends AreaModule, StaffTitles {
   /**
    * Account deletion (§6.3, the events area's erasure job, before the account row goes): the
    * per-profile lists of the account's profiles, in every run, in the store (database or Workers
-   * KV) and in the caches.
+   * KV) and in the caches, and the account's withdrawal record.
    */
   eraseAccountData(accountId: string): Promise<void>;
+  /**
+   * Data export (§6.3, privacy review M6): the recommendation lists held for the account's
+   * profiles now, in every registered run of the mode's store (database rows, or Workers KV on
+   * Cloudflare): run, list kinds, title ids, expiry; and whether personalisation is withdrawn.
+   */
+  exportAccountData(accountId: string): Promise<JsonValue>;
+  /**
+   * The `AreaSeams.personalisationConsentChanged` seam (privacy review L1): on a withdrawal the
+   * account's key and its profiles' keys are recorded (serving gives the profiles the rule
+   * engine, `rules`, with no exposure; the importer stores no list for them) and their stored
+   * lists are dropped from every run; on a grant the record goes, and the next import brings
+   * their lists back. Idempotent; never throws (a failure is logged).
+   */
+  personalisationConsentChanged(input: {
+    accountId: string;
+    granted: boolean;
+    at: number;
+  }): Promise<void>;
+  /**
+   * A profile became restricted (kids, or a lowered ceiling; the `forgetProfileBehaviour` seam,
+   * after the events area queued its erasure): its stored lists are dropped from every run at
+   * once. Later imports withhold it while its erasure is unsettled (privacy review M3).
+   */
+  forgetProfileLists(input: { accountId: string; profileId: string }): Promise<void>;
 }
 
 function presentCollection(record: EditorialCollectionRecord): EditorialCollection {
@@ -177,10 +209,69 @@ export function createPersonalisationService(
       store: deps.recommendations,
       clock: deps.clock,
       logger: deps.logger,
+      withheld,
       ...(run ? { run } : {}),
     });
-    if (result.status === "imported") await serving.invalidate();
-    return result;
+    if (result.status === "unchanged") return result;
+    return { ...result, cacheInvalidated: await invalidateServing() };
+  }
+
+  /**
+   * Tells every cache level that the served model changed, retried briefly: a one-shot process
+   * (the importer Job on a new pod) may find the shared cache not reachable yet (finding K15).
+   * False after the last attempt; the age bound still serves the change within 30 s.
+   */
+  async function invalidateServing(): Promise<boolean> {
+    for (let attempt = 0; ; attempt += 1) {
+      if (await serving.invalidate()) return true;
+      const delay = INVALIDATION_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        deps.logger.error("recs.cache_invalidation_failed", {
+          attempts: attempt + 1,
+          detail: "every process serves the change within the model's age bound (30 s)",
+        });
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  /**
+   * The keys a run with data up to `asOf` must not store lists for (privacy review M3):
+   * erasures the events area still holds unsettled for that cutoff (deleted accounts' profiles,
+   * profiles that became restricted), and the profiles of accounts that withdrew
+   * personalisation. Keyed by pseudonymous key only (no pseudonym secret needed, so the
+   * Cloudflare ops importer reads the same), in keyset pages whatever the run's size.
+   */
+  async function withheld(asOf: number): Promise<ReadonlySet<string>> {
+    const keys = new Set(await seams.withheldSubjects(asOf));
+    let after: string | null = null;
+    for (;;) {
+      const page = await deps.repos.personalisation.withdrawnProfileKeys(after, WITHDRAWN_PAGE);
+      for (const key of page) keys.add(key);
+      if (page.length < WITHDRAWN_PAGE) return keys;
+      after = page[page.length - 1] ?? null;
+    }
+  }
+
+  /** Drops these profiles' lists from every run, in the store and the caches. */
+  async function dropLists(profileKeys: readonly string[]): Promise<void> {
+    if (profileKeys.length === 0) return;
+    const runs = (await deps.recommendations.models()).map((model) => model.run);
+    for (let index = 0; index < profileKeys.length; index += MAX_PROFILE_ERASURE) {
+      await deps.recommendations.deleteProfileLists(
+        profileKeys.slice(index, index + MAX_PROFILE_ERASURE),
+      );
+    }
+    await serving.forgetProfiles(runs, profileKeys);
+  }
+
+  async function accountProfiles(accountId: string) {
+    // The identity area's profile listing.
+    const { items } = await createProfileService(deps).list(accountId);
+    return Promise.all(
+      items.map(async (profile) => ({ profile, key: await serving.profileKey(profile.id) })),
+    );
   }
 
   const editorialRepo = () => deps.repos.personalisation;
@@ -279,7 +370,7 @@ export function createPersonalisationService(
       const rolled = await rollbackRecommendations(deps.recommendations, deps.clock.now());
       if (!rolled) throw new AppError("not_found", { detail: "No previous run to roll back to" });
       deps.logger.info("recs.rolled_back", rolled);
-      await serving.invalidate();
+      await invalidateServing();
       return status();
     },
 
@@ -289,14 +380,18 @@ export function createPersonalisationService(
       // A run this runtime cannot import in one invocation is refused now, naming the importer
       // that can, instead of failing half-way in the job.
       const blobs = deps.recommendationArtefacts;
-      const capacity = deps.recommendations.importCapacity;
-      if (blobs && capacity) {
-        const version = await inspectRecommendations(blobs, run).catch(() => null);
-        const active = await deps.recommendations.activeModel();
-        const problem =
-          version && version.run !== active?.run
-            ? importCapacityProblem(version.run, version.profileLists, capacity)
-            : null;
+      if (blobs && deps.recommendations.importCapacity) {
+        // A new run's lists, or everything a rewrite of the served run would do (its writes,
+        // its deletions in every run, its key listings). Unreadable artefacts are the job's to
+        // report: it records why.
+        const problem = await importSizeProblem({
+          blobs,
+          store: deps.recommendations,
+          clock: deps.clock,
+          logger: deps.logger,
+          withheld,
+          ...(run ? { run } : {}),
+        }).catch(() => null);
         if (problem) throw new AppError("recommendation_import_too_large", { detail: problem });
       }
       await deps.jobs.publish(recommendationImportJob.create({ run: run ?? null }));
@@ -368,14 +463,81 @@ export function createPersonalisationService(
     },
 
     async eraseAccountData(accountId) {
-      // The identity area's profile listing; the profiles still exist when the job calls this.
-      const { items } = await createProfileService(deps).list(accountId);
-      if (items.length === 0) return;
-      const keys = await Promise.all(items.map((profile) => serving.profileKey(profile.id)));
-      const runs = (await deps.recommendations.models()).map((model) => model.run);
-      await deps.recommendations.deleteProfileLists(keys);
-      await serving.forgetProfiles(runs, keys);
-      deps.logger.info("recs.account_erased", { profiles: keys.length, runs: runs.length });
+      // The profiles still exist when the job calls this.
+      const keys = (await accountProfiles(accountId)).map((entry) => entry.key);
+      await dropLists(keys);
+      await deps.repos.personalisation.clearWithdrawal(await serving.accountKey(accountId));
+      await serving.invalidateEditorial();
+      deps.logger.info("recs.account_erased", { profiles: keys.length });
+    },
+
+    async exportAccountData(accountId) {
+      const [profiles, models, withdrawal] = await Promise.all([
+        accountProfiles(accountId),
+        deps.recommendations.models(),
+        serving.accountKey(accountId).then((key) => deps.repos.personalisation.getWithdrawal(key)),
+      ]);
+      const recommendationLists: JsonValue[] = [];
+      for (const { profile, key } of profiles) {
+        for (const model of models) {
+          // Whatever is held, expired or not (`now` 0): it is what the store keeps.
+          const held = await deps.recommendations.profileLists(model.run, key, 0);
+          if (!held) continue;
+          recommendationLists.push({
+            profileId: profile.id,
+            profileName: profile.name,
+            run: model.run,
+            served: model.status === "active",
+            generatedAt: toIsoString(held.generatedAt),
+            expiresAt: toIsoString(held.expiresAt),
+            lists: held.rows.map((row) => ({
+              kind: row.type,
+              because: row.param,
+              titleIds: row.items.map(([titleId]) => titleId),
+            })),
+          });
+        }
+      }
+      return {
+        recommendationLists,
+        personalisationWithdrawnAt: withdrawal ? toIsoString(withdrawal.withdrawnAt) : null,
+        note: "Recommendation lists computed for your profiles from what they watched, rated and added to My List, under pseudonymous keys, as held now in every run Webflix keeps (the served one and the previous one, for a rollback). Each expires a few days after it was computed; a newer run replaces it. None are kept for kids or restricted profiles, nor after you turn personalised recommendations off.",
+      };
+    },
+
+    async personalisationConsentChanged({ accountId, granted, at }) {
+      try {
+        const accountKey = await serving.accountKey(accountId);
+        if (granted) {
+          await deps.repos.personalisation.clearWithdrawal(accountKey);
+        } else {
+          const keys = (await accountProfiles(accountId)).map((entry) => entry.key);
+          await deps.repos.personalisation.recordWithdrawal({
+            accountKey,
+            profileKeys: keys,
+            withdrawnAt: at,
+          });
+          // What is stored goes too: kept for nothing once the purpose is withdrawn (and a
+          // rollback cannot bring it back).
+          await dropLists(keys);
+        }
+        // This process at once; every other within the editorial copy's bound (30 s).
+        await serving.invalidateEditorial();
+        deps.logger.info(
+          granted ? "recs.personalisation_granted" : "recs.personalisation_withdrawn",
+          {},
+        );
+      } catch (error) {
+        deps.logger.error("recs.personalisation_consent_failed", {
+          granted,
+          error: serializeError(error),
+        });
+      }
+    },
+
+    async forgetProfileLists({ profileId }) {
+      await dropLists([await serving.profileKey(profileId)]);
+      deps.logger.info("recs.profile_lists_forgotten", {});
     },
 
     async isTitleUnavailable(titleId) {

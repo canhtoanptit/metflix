@@ -1,12 +1,18 @@
 /**
- * Saving a data export as a file from what the API answers (`GET /privacy/exports/:id?token=`):
- * the export link landing (the email's link) and mock mode use it. The signed-in privacy page
- * links straight to the export instead, which lets the browser stream it.
+ * Saving a data export as a file. The token goes in the request's body
+ * (`POST /privacy/exports/:id/download`), never in a URL (privacy review L3); the server asks for
+ * a fresh "Confirm it's you" first (`reauthentication_required`), which the callers handle with
+ * `useConfirmIdentity().run`.
  */
 import { api } from "../../../../app/api.ts";
 
+/** The token a request's `downloadUrl` carries (`…/exports/{id}?token={token}`). */
+export function tokenOf(downloadUrl: string): string | null {
+  return new URL(downloadUrl, "https://webflix.invalid").searchParams.get("token");
+}
+
 export async function saveDataExport(requestId: string, token: string): Promise<void> {
-  const document = await api().downloadDataExport({ params: { id: requestId }, query: { token } });
+  const document = await api().fetchDataExport({ params: { id: requestId }, body: { token } });
   const blob = new Blob([JSON.stringify(document, null, 2)], { type: "application/json" });
   const href = URL.createObjectURL(blob);
   const link = Object.assign(window.document.createElement("a"), {

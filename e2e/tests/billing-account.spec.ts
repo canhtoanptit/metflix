@@ -54,7 +54,9 @@ test("a trial: what the member has, cancelling it (watch until it ends, no charg
   await expectAccessible(page);
   await page.getByRole("button", { name: "Finish cancellation" }).click();
   await expect(page).toHaveURL(/\/account\/membership$/);
-  await expect(page.getByText(/Your free trial ends on/)).toBeVisible();
+  // Focus lands on the destination's heading, and the toast says what the page says.
+  await expect(page.getByRole("heading", { name: "Membership", level: 1 })).toBeFocused();
+  await expect(page.getByText(/Your free trial ends on/)).toHaveCount(2);
   const cancelled = await membershipOf(request);
   expect(cancelled.status).toBe("trialing");
   expect(cancelled.cancelAtPeriodEnd).toBe(true);
@@ -66,7 +68,15 @@ test("a trial: what the member has, cancelling it (watch until it ends, no charg
   await page.goto("/account/membership");
   await page.getByRole("button", { name: "Keep my membership" }).click();
   await expect(page.getByText(/Your free trial ends on/)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Your membership" })).toBeFocused();
+  await expect(page.getByText("Your membership will continue")).toHaveCount(1);
   expect((await membershipOf(request)).cancelAtPeriodEnd).toBe(false);
+
+  // The trial's $0 invoice is the free trial, not a payment (UX review 3.9).
+  await page.goto("/account/membership/invoices");
+  const trialRow = page.getByRole("main").getByRole("listitem").last();
+  await expect(trialRow).toContainText("Free trial");
+  await expect(trialRow).not.toContainText("Paid");
 });
 
 test("plan changes: an upgrade is charged exactly as previewed, a downgrade credits what it said", async ({
@@ -88,9 +98,11 @@ test("plan changes: an upgrade is charged exactly as previewed, a downgrade cred
   const amount = label.match(/\$(\d+\.\d\d)/)?.[1];
   expect(amount, `the button names the previewed charge (${label})`).toBeTruthy();
   await expect(preview).toContainText(`$${amount}`);
+  await expect(page.getByRole("link", { name: "Keep Standard" })).toBeVisible();
   await pay.click();
   await expect(page).toHaveURL(/\/account\/membership$/);
   await expect(page.getByText("You're now on Premium").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Membership", level: 1 })).toBeFocused();
   // The provider invoiced exactly the previewed amount.
   const invoices = (await (await request.get("/api/v1/billing/invoices")).json()) as {
     items: Array<{ total: { amountMinor: number } }>;
@@ -102,6 +114,14 @@ test("plan changes: an upgrade is charged exactly as previewed, a downgrade cred
   await page.goto("/account/membership/plan");
   await page.getByRole("radio", { name: /Basic/ }).click();
   const down = page.getByRole("status", { name: "Switching to Basic" });
+  // One Webflix sentence for today and one for the next payment, each with its reason; the
+  // provider's own lines are folded away (UX review 2.3).
+  await expect(down).toContainText(/Nothing to pay today\. The time left on Premium covers Basic/);
+  await expect(down).toContainText(
+    /Your \$\d+\.\d\d credit makes your next payment \$\d+\.\d\d on .+, then \$7\.99 a month\./,
+  );
+  await expect(down.getByText("Credit kept for your next payments")).toBeHidden();
+  await down.getByText("How this is worked out").click();
   await expect(down.getByText("Credit kept for your next payments")).toBeVisible();
   await expect(down).toContainText("the most recent streams will stop");
   const nextPayment =
@@ -115,9 +135,15 @@ test("plan changes: an upgrade is charged exactly as previewed, a downgrade cred
   expect((await membershipOf(request)).planId).toBe("basic");
   // The membership's next payment is the one the preview showed (the credit applied).
   expect(nextAmount, nextPayment).toBeTruthy();
-  await expect(page.getByRole("region", { name: "Your membership" })).toContainText(
-    `Next payment${nextAmount} on`,
-  );
+  const membership = page.getByRole("region", { name: "Your membership" });
+  await expect(membership).toContainText(`Next payment${nextAmount} on`);
+  await expect(membership).toContainText(/\$7\.99 less your \$\d+\.\d\d credit/);
+  // Billing history labels the credit as a credit, not a payment.
+  await page.goto("/account/membership/invoices");
+  const credit = page.getByRole("main").getByRole("listitem").first();
+  await expect(credit).toContainText(/\$\d+\.\d\d credit/);
+  await expect(credit).toContainText("Credited");
+  await expect(credit).not.toContainText("Paid");
 });
 
 test("the card is replaced in the provider's form, never on Webflix's page", async ({ page }) => {
@@ -130,8 +156,8 @@ test("the card is replaced in the provider's form, never on Webflix's page", asy
   await page.goto("/account/membership/payment");
   await expect(page.getByText("Visa •••• 4242")).toBeVisible();
   await expectAccessible(page);
+  // One click to the provider's page (UX review 3.14).
   await page.getByRole("button", { name: "Replace card" }).click();
-  await page.getByRole("button", { name: "Continue to add your card" }).click();
   await expect(page).toHaveURL(/\/_pay\/form\?/);
   await page.getByLabel(/type a test card number/i).fill(freshCard("mastercard"));
   await page.getByRole("button", { name: "Save card" }).click();
@@ -140,13 +166,11 @@ test("the card is replaced in the provider's form, never on Webflix's page", asy
 
   // A refused card comes back with its reason; returning without one says so.
   await page.getByRole("button", { name: "Replace card" }).click();
-  await page.getByRole("button", { name: "Continue to add your card" }).click();
   await page.getByLabel(/type a test card number/i).fill("4000000000000069");
   await page.getByRole("button", { name: "Save card" }).click();
   await expect(page.getByText("Your card has expired")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(/Your card on file hasn't changed/)).toBeVisible();
   await page.getByRole("button", { name: "Replace card" }).click();
-  await page.getByRole("button", { name: "Continue to add your card" }).click();
   await page.getByRole("link", { name: "Cancel and return" }).click();
   await expect(page.getByText("No new card was added")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("Mastercard •••• 4444")).toBeVisible();
@@ -185,7 +209,6 @@ test("a failed renewal: still watching in grace with one clear ask, then on hold
   await page.getByRole("link", { name: "Update payment method" }).click();
   await expect(page).toHaveURL(/\/account\/membership\/payment/);
   await page.getByRole("button", { name: "Replace card" }).click();
-  await page.getByRole("button", { name: "Continue to add your card" }).click();
   await page.getByLabel(/type a test card number/i).fill(freshCard("visa"));
   await page.getByRole("button", { name: "Save card" }).click();
   await expect(page.getByText("Your payment went through")).toBeVisible({ timeout: 30_000 });
@@ -226,10 +249,12 @@ test("an ended membership restarts through a new checkout, without a second tria
   await page.getByRole("button", { name: "Continue to payment" }).click();
   await page.getByLabel(/type a test card number/i).fill(freshCard("mastercard"));
   await page.getByRole("button", { name: "Save card" }).click();
-  // The account had its trial: the first payment is asked for.
-  await expect(page.getByRole("heading", { name: "Confirm your first payment" })).toBeVisible({
+  // The account had its trial: the payment is asked for, and a returning member is never told
+  // it is a "first payment" (UX review 2.2).
+  await expect(page.getByRole("heading", { name: "Restart Standard" })).toBeVisible({
     timeout: 20_000,
   });
+  await expect(page.getByText(/first payment|first month/i)).toHaveCount(0);
   await page.getByRole("button", { name: "Pay $12.99" }).click();
   await expect(page).toHaveURL(/\/_pay\/form\?/);
   await page.getByRole("button", { name: "Pay", exact: true }).click();
@@ -283,7 +308,7 @@ test("membership changes work with the keyboard alone: change plan, cancel, keep
   await page.keyboard.press("Enter");
   await tabTo(page, page.getByRole("button", { name: "Finish cancellation" }));
   await page.keyboard.press("Enter");
-  await expect(page.getByText(/Your membership ends on/)).toBeVisible();
+  await expect(page.getByText(/Your membership ends on/).first()).toBeVisible();
   await tabTo(page, page.getByRole("button", { name: "Keep my membership" }));
   await page.keyboard.press("Enter");
   await expect(page.getByText(/Your membership ends on/)).toHaveCount(0);
@@ -322,6 +347,14 @@ test("a scheduled deletion: the membership says so, offers nothing billing would
   await page.goto("/account/membership");
   const notice = page.getByText(/Your account is scheduled to be deleted on/);
   await expect(notice).toBeVisible();
+  // The same truth as Privacy (UX review 2.1): watching carries on until the trial ends (it
+  // comes before the deletion), and nothing more is charged; no "first payment" is promised.
+  await expect(
+    page.getByText(
+      /You can keep watching until .+, when your free trial ends, and nothing more is charged\./,
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("First payment")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Change plan" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Keep my membership" })).toHaveCount(0);
   await expectAccessible(page);

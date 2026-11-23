@@ -216,6 +216,9 @@ EVENT_PROJECTION: Final[dict[str, Any]] = {
             "planId": pl.String,
             "reason": pl.String,
             "resultRank": pl.Int64,
+            "purpose": pl.String,
+            "granted": pl.Boolean,
+            "source": pl.String,
         }
     ),
 }
@@ -282,6 +285,9 @@ def flatten_projection(frame: pl.DataFrame) -> pl.DataFrame:
         payload.struct.field("planId").alias("plan_id"),
         payload.struct.field("reason").alias("reason"),
         payload.struct.field("resultRank").alias("result_rank"),
+        payload.struct.field("purpose").alias("consent_purpose"),
+        payload.struct.field("granted").alias("consent_granted"),
+        payload.struct.field("source").alias("consent_source"),
     )
 
 
@@ -325,4 +331,7 @@ FLAT_EVENT_SCHEMA: Final[dict[str, Any]] = {
     "plan_id": pl.String,
     "reason": pl.String,
     "result_rank": pl.Int64,
+    "consent_purpose": pl.String,
+    "consent_granted": pl.Boolean,
+    "consent_source": pl.String,
 }

@@ -27,6 +27,7 @@ spec:
         {{- end }}
       annotations:
         checksum/headers: {{ include (print $.Template.BasePath "/web/configmap.yaml") . | sha256sum }}
+        checksum/admin: {{ include (print $.Template.BasePath "/web/admin.yaml") . | sha256sum }}
         {{- with $c.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -84,6 +85,14 @@ spec:
               mountPath: /etc/nginx/security-headers.conf
               subPath: security-headers.conf
               readOnly: true
+            - name: admin
+              mountPath: /etc/nginx/admin-security-headers.conf
+              subPath: admin-security-headers.conf
+              readOnly: true
+            - name: admin
+              mountPath: /etc/nginx/admin-config.conf
+              subPath: admin-config.conf
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir:
@@ -91,6 +100,9 @@ spec:
         - name: headers
           configMap:
             name: {{ include "webflix.component" (list . "web") }}
+        - name: admin
+          configMap:
+            name: {{ include "webflix.component" (list . "web-admin") }}
       topologySpreadConstraints:
         {{- include "webflix.topologySpread" (list . "web" $c.topologySpreadConstraints) | nindent 8 }}
       {{- with $c.nodeSelector }}

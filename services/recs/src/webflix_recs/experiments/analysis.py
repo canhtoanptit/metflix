@@ -51,7 +51,7 @@ from __future__ import annotations
 import functools
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
@@ -60,6 +60,10 @@ import polars as pl
 from scipy import stats
 
 from webflix_recs import schemas
+from webflix_recs.consent import BATCH_SCHEMA as CONSENT_BATCH_SCHEMA
+from webflix_recs.consent import per_batch as consent_per_batch
+from webflix_recs.consent import resolve as resolve_consent
+from webflix_recs.consent import support_grants
 from webflix_recs.dataset import event_key_columns
 from webflix_recs.ids import DAY_MS, HOUR_MS, iso_ms, parse_iso_ms
 from webflix_recs.lake import read_events
@@ -502,6 +506,12 @@ def analyse_frames(
     ]
     significant: list[str] = []
     for metric in metrics:
+        # The primary metric decides at alpha (split over treatments). Secondary metrics are
+        # reported at alpha split over them too (Bonferroni), so "significant" on one of several
+        # secondaries is not the chance finding it would be at the primary's level.
+        metric_alpha = (
+            comparison_alpha if metric == primary else comparison_alpha / max(len(secondary), 1)
+        )
         series = values[metric]
         final = series[-1] if len(looks) else np.zeros(data.units)
         summaries = {}
@@ -539,7 +549,7 @@ def analyse_frames(
                     best_log_lambda = max(best_log_lambda, log_lambda)
                     # The estimand of a cumulative metric grows with the window, so the sequence is
                     # reported at the latest look rather than intersected across looks.
-                    half = msprt_half_width(variance, tau * tau, comparison_alpha)
+                    half = msprt_half_width(variance, tau * tau, metric_alpha)
                     low, high = difference - half, difference + half
                 if metric == primary:
                     naive = (
@@ -576,7 +586,7 @@ def analyse_frames(
                     float("nan"),
                 )
             reached = ends is not None and end >= ends
-            is_significant = bool(p_value < comparison_alpha)
+            is_significant = bool(p_value < metric_alpha)
             if metric == primary and is_significant:
                 significant.append(treatment)
             comparisons.append(
@@ -589,7 +599,7 @@ def analyse_frames(
                     "sequential": {
                         "method": "msprt-normal-mixture",
                         "tau": _num(tau),
-                        "alpha": comparison_alpha,
+                        "alpha": metric_alpha,
                         "alwaysValidP": p_value,
                         "confidenceSequence": [_num(low), _num(high)],
                         "significant": is_significant,
@@ -692,11 +702,7 @@ _STATE_SCHEMA: Final = {
     "latest_received": pl.Int64,
     "any_restricted": pl.Boolean,
 }
-_CONSENT_SCHEMA: Final = {
-    "account": pl.String,
-    "latest_received": pl.Int64,
-    "latest_analytics": pl.Boolean,
-}
+_CONSENT_SCHEMA: Final = CONSENT_BATCH_SCHEMA
 _ENVELOPE: Final = {
     "eid_hi": pl.UInt64,
     "eid_lo": pl.UInt64,
@@ -753,16 +759,9 @@ def _slim(frame: pl.DataFrame, as_of_ms: int | None) -> dict[str, pl.DataFrame]:
         )
     )
     # Consent is the account's: the latest stamp on any of its events, consent.change included
-    # (a withdrawal is honoured even when the member never comes back).
-    consent = (
-        frame.filter(pl.col("account").is_not_null())
-        .sort("received_at")
-        .group_by("account")
-        .agg(
-            pl.col("received_at").max().alias("latest_received"),
-            pl.col("consent_analytics").last().alias("latest_analytics"),
-        )
-    )
+    # (a withdrawal is honoured even when the member never comes back); a grant by support never
+    # counts (consent.py).
+    consent = consent_per_batch(frame, "consent_analytics", "analytics")
     links = (
         frame.filter(
             (pl.col("source") == "client")
@@ -820,6 +819,10 @@ class LakeFrames:
     playback: pl.DataFrame
     billing: pl.DataFrame
     max_received_ms: int | None
+    #: Accounts whose latest analytics consent change is a grant by support (consent.py).
+    support_grants: pl.DataFrame = field(
+        default_factory=lambda: pl.DataFrame(schema={"account": pl.String})
+    )
 
     def frames_for(self, unit: str) -> tuple[pl.DataFrame, pl.DataFrame]:
         """(exposures, outcomes) of one unit type, with `profile` holding the unit's key."""
@@ -857,6 +860,14 @@ class LakeFrames:
                 "occurred_at",
                 pl.lit(False).alias("restricted"),
                 pl.col("stamp_analytics").fill_null(False).alias("analytics"),
+            )
+            # The stamp of a signed-in device follows its account's consent, so a grant by
+            # support behind it does not count either.
+            .with_columns(
+                pl.col("analytics")
+                & ~pl.col("account")
+                .is_in(self.support_grants["account"].to_list())
+                .fill_null(False)
             )
         )
         linked = self.links.select("device_id", "profile")
@@ -899,12 +910,7 @@ def read_lake(
         name: pl.concat(items, how="vertical") if items else empty[name]
         for name, items in parts.items()
     }
-    consent = (
-        frames["consent"]
-        .sort("latest_received")
-        .group_by("account")
-        .agg(pl.col("latest_analytics").last().fill_null(False).alias("analytics"))
-    )
+    consent = resolve_consent(frames["consent"]).rename({"granted": "analytics"})
     state = (
         frames["state"]
         .sort("latest_received")
@@ -940,7 +946,13 @@ def read_lake(
         if frame.height
     ]
     lake = LakeFrames(
-        exposures, state, links, playback, billing, max(candidates) if candidates else None
+        exposures,
+        state,
+        links,
+        playback,
+        billing,
+        max(candidates) if candidates else None,
+        support_grants(frames["consent"]),
     )
     return lake, read_stats.to_dict(), hours
 

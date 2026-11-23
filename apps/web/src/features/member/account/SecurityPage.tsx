@@ -1,5 +1,5 @@
 import { type UseQueryResult, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import {
   type AccountDetails,
   ApiError,
@@ -30,24 +30,24 @@ import { qk } from "../../../app/query/keys.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { useAuthenticatedSession } from "../../../app/session/session.ts";
 import { useOutcomeFromUrl } from "../auth/FederatedButtons.tsx";
+import { forgetLinkIntent } from "../auth/linkIntent.ts";
 import {
   federatedStartUrl,
   hasProviderMark,
   onPageRestored,
+  parseProvider,
+  pathWithout,
   providerName,
   withParams,
 } from "../auth/oidc.ts";
+import { EmailText } from "../auth/parts.tsx";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown, formatShortDate } from "../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../shared/privileges.ts";
+import { useFocusAfterBusy } from "../shared/useFocusAfterBusy.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
-import {
-  normalizeEmail,
-  validateCurrentPassword,
-  validateEmail,
-  validateNewPassword,
-} from "../shared/validation.ts";
+import { normalizeEmail, validateEmail, validateNewPassword } from "../shared/validation.ts";
 import { AccountHeading, AccountSection } from "./AccountLayout.tsx";
 
 const HERE = "/account/security";
@@ -89,11 +89,7 @@ export function AccountSecurityPage() {
       {demo ? null : (
         <>
           <EmailSection hasPassword={hasPassword} />
-          {hasPassword ? (
-            <PasswordForm fieldRef={passwordRef} />
-          ) : (
-            <SetPasswordForm fieldRef={passwordRef} />
-          )}
+          <PasswordSection hasPassword={hasPassword} fieldRef={passwordRef} />
         </>
       )}
     </>
@@ -117,6 +113,7 @@ function SignInMethods({
   const queryClient = useQueryClient();
   const providers = useQuery(queries.signInProviders());
   const returned = useOutcomeFromUrl();
+  const offer = useLinkOffer();
   const [problem, setProblem] = useState<ReactNode>(null);
 
   // Back from linking at a provider: the list has changed (or not); read it again.
@@ -181,8 +178,7 @@ function SignInMethods({
             status={
               hasPassword ? (
                 <>
-                  Signs in as{" "}
-                  <span className="wrap-anywhere text-fg-muted">{session.account.email}</span>
+                  Signs in as <EmailText>{session.account.email}</EmailText>
                 </>
               ) : (
                 "No password yet"
@@ -212,6 +208,7 @@ function SignInMethods({
               }
               demo={demo}
               onProblem={setProblem}
+              offerAdd={offer === provider}
             />
           ))}
         </ul>
@@ -257,6 +254,7 @@ function ProviderRow({
   demo,
   onProblem,
   askAgain = false,
+  offerAdd = false,
 }: {
   provider: OidcProvider;
   name: string;
@@ -269,6 +267,8 @@ function ProviderRow({
   onProblem: (problem: ReactNode) => void;
   /** Came back refused for want of a fresh proof: reopen "Confirm it's you" for linking. */
   askAgain?: boolean;
+  /** Arrived to add this provider (after `link-required`): offer it at once. */
+  offerAdd?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [leaving, setLeaving] = useState(false);
@@ -304,6 +304,8 @@ function ProviderRow({
     // Linking needs a fresh proof before the navigation: the start route refuses without one.
     if (await linkProof.confirm()) goLink();
   };
+  // Arrived from `link-required` (signed in, or reset the password): "Add Google?" at once.
+  const [offering, setOffering] = useState(() => offerAdd && !identity && offered && !demo);
   const askedAgain = useRef(false);
   useEffect(() => {
     if (!askAgain || askedAgain.current) return;
@@ -348,7 +350,7 @@ function ProviderRow({
       {identity.emailAtLink ? (
         <>
           {" · "}
-          <span className="wrap-anywhere text-fg-muted">{identity.emailAtLink}</span>
+          <EmailText>{identity.emailAtLink}</EmailText>
         </>
       ) : null}
       {` · since ${formatShortDate(identity.linkedAt)}`}
@@ -426,6 +428,19 @@ function ProviderRow({
         onConfirm={() => {
           setAskUnlink(false);
           unlink.mutate();
+        }}
+      />
+      <ConfirmDialog
+        open={offering}
+        onOpenChange={setOffering}
+        tone="accent"
+        title={`Add ${name} to your account?`}
+        description={`You tried to sign in with ${name}. Add it, and ${name} signs you in to this account from now on. You'll choose your ${name} account, then come back here.`}
+        confirmLabel={`Add ${name}`}
+        cancelLabel="Not now"
+        onConfirm={() => {
+          setOffering(false);
+          void link();
         }}
       />
       <ConfirmDialog
@@ -549,11 +564,10 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
   const session = useAuthenticatedSession();
   const verified = session.account.emailVerified;
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [checked, setChecked] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
-  const passwordRef = useRef<HTMLInputElement>(null);
   const [resumed, setResumed] = useState(false);
+  // One way to prove it is the account holder everywhere (UX review 3.3): "Confirm it's you".
   const proof = useConfirmIdentity({
     id: "change-email",
     purpose: "change your email",
@@ -568,20 +582,16 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
       description: `We sent a link to ${details.account.email} to verify it.`,
     });
     setEmail("");
-    setPassword("");
     setChecked(false);
   });
 
+  const submitRef = useRef<HTMLButtonElement>(null);
+  useFocusAfterBusy(mutation.isPending, submitRef);
   const same = normalizeEmail(email) === session.account.email;
   const emailError = ApiError.is(mutation.error, "email_already_registered")
     ? "Another account already uses this email."
     : checked
       ? (validateEmail(email) ?? (same ? "That's already your email." : null))
-      : null;
-  const passwordError = ApiError.is(mutation.error, "current_password_invalid")
-    ? "That password isn't right."
-    : checked && hasPassword
-      ? validateCurrentPassword(password)
       : null;
 
   const submit = (event: FormEvent) => {
@@ -589,18 +599,11 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
     setChecked(true);
     if (mutation.isPending || rate.limited) return;
     if (validateEmail(email) || same) return emailRef.current?.focus();
-    if (hasPassword && validateCurrentPassword(password)) return passwordRef.current?.focus();
-    mutation.mutate(
-      hasPassword
-        ? { body: { email: normalizeEmail(email), currentPassword: password } }
-        : { body: { email: normalizeEmail(email) }, run: proof.run },
-    );
+    mutation.mutate({ body: { email: normalizeEmail(email) }, run: proof.run });
   };
 
   const other =
-    mutation.error &&
-    !ApiError.is(mutation.error, "email_already_registered") &&
-    !ApiError.is(mutation.error, "current_password_invalid")
+    mutation.error && !ApiError.is(mutation.error, "email_already_registered")
       ? mutation.error
       : null;
 
@@ -610,12 +613,11 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
       description={
         hasPassword ? (
           <>
-            You sign in with <span className="wrap-anywhere text-fg">{session.account.email}</span>.
+            You sign in with <EmailText>{session.account.email}</EmailText>.
           </>
         ) : (
           <>
-            Your account's email is{" "}
-            <span className="wrap-anywhere text-fg">{session.account.email}</span>.
+            Your account's email is <EmailText>{session.account.email}</EmailText>.
           </>
         )
       }
@@ -655,25 +657,13 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
           }}
           error={emailError}
         />
-        {hasPassword ? (
-          <PasswordField
-            ref={passwordRef}
-            label="Current password"
-            name="current-password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => {
-              setPassword(event.target.value);
-              if (ApiError.is(mutation.error, "current_password_invalid")) mutation.reset();
-            }}
-            error={passwordError}
-          />
-        ) : null}
         <p className="type-body-sm text-fg-subtle">
-          We'll email the new address a link to verify it, and let your current address know.
+          You'll be asked to confirm it's you. We'll email the new address a link to verify it, and
+          let your current address know.
         </p>
         <div>
           <Button
+            ref={submitRef}
             type="submit"
             variant="accent"
             loading={mutation.isPending}
@@ -697,11 +687,15 @@ function VerifyReminder({ email }: { email: string }) {
     onError: rate.track,
   });
   const hours = Math.round(EMAIL_VERIFICATION_TTL_SEC / 3600);
+  // The button is replaced by the answer: focus moves to it, not to the page (UX review 2.7).
+  const sentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (send.isSuccess) sentRef.current?.focus();
+  }, [send.isSuccess]);
   if (send.isSuccess) {
     return (
-      <FormAlert tone="positive" icon={MailIcon} title="Check your email">
-        We sent a link to <span className="wrap-anywhere text-fg">{email}</span>. It expires in{" "}
-        {hours} hours.
+      <FormAlert ref={sentRef} tone="positive" icon={MailIcon} title="Check your email">
+        We sent a link to <EmailText>{email}</EmailText>. It expires in {hours} hours.
       </FormAlert>
     );
   }
@@ -722,9 +716,8 @@ function VerifyReminder({ email }: { email: string }) {
         </Button>
       }
     >
-      Follow the link we emailed to <span className="wrap-anywhere text-fg">{email}</span>. A
-      verified address lets you reset your password, and lets Google or Apple sign you in when they
-      use the same address.
+      Follow the link we emailed to <EmailText>{email}</EmailText>. A verified address is how you
+      get back into your account if you forget your password.
       {send.isError && !ApiError.is(send.error, "rate_limited") ? (
         <span className="mt-1 block text-danger">{describeError(send.error).description}</span>
       ) : null}
@@ -734,130 +727,43 @@ function VerifyReminder({ email }: { email: string }) {
 
 // --- Password -------------------------------------------------------------------------------------
 
-function PasswordForm({ fieldRef }: { fieldRef: RefObject<HTMLInputElement | null> }) {
-  const session = useAuthenticatedSession();
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [checked, setChecked] = useState(false);
-  const nextRef = useRef<HTMLInputElement>(null);
-  const { mutation, rate } = useUpdateAccount(() => {
-    toast.success("Password changed", {
-      description: "Other devices have been signed out. This one stays signed in.",
-    });
-    setCurrent("");
-    setNext("");
-    setChecked(false);
-  });
-
-  const reused = next.length > 0 && next === current;
-  const currentError = ApiError.is(mutation.error, "current_password_invalid")
-    ? "That password isn't right."
-    : checked
-      ? validateCurrentPassword(current)
-      : null;
-  const nextError = checked
-    ? (validateNewPassword(next) ?? (reused ? "Choose a password you haven't used here." : null))
-    : null;
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setChecked(true);
-    if (mutation.isPending || rate.limited) return;
-    if (validateCurrentPassword(current)) return fieldRef.current?.focus();
-    if (validateNewPassword(next) || reused) return nextRef.current?.focus();
-    mutation.mutate({ body: { currentPassword: current, newPassword: next } });
-  };
-
-  const other =
-    mutation.error && !ApiError.is(mutation.error, "current_password_invalid")
-      ? mutation.error
-      : null;
-
-  return (
-    <AccountSection
-      title="Password"
-      description="Changing your password signs out every other device. Anything playing on them stops within about half a minute."
-    >
-      <form
-        onSubmit={submit}
-        noValidate
-        className="flex flex-col gap-4"
-        aria-label="Change password"
-      >
-        <RateOrError error={other} limited={rate.limited} />
-        {/* Lets password managers attach the new password to the right account. */}
-        <input
-          type="hidden"
-          name="username"
-          autoComplete="username"
-          value={session.account.email}
-          readOnly
-        />
-        <PasswordField
-          ref={fieldRef}
-          label="Current password"
-          name="current-password"
-          autoComplete="current-password"
-          value={current}
-          onChange={(event) => {
-            setCurrent(event.target.value);
-            if (ApiError.is(mutation.error, "current_password_invalid")) mutation.reset();
-          }}
-          error={currentError}
-        />
-        <PasswordField
-          ref={nextRef}
-          label="New password"
-          name="new-password"
-          autoComplete="new-password"
-          value={next}
-          onChange={(event) => setNext(event.target.value)}
-          error={nextError}
-          hint="At least 8 characters."
-        />
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-          <Button
-            type="submit"
-            variant="accent"
-            loading={mutation.isPending}
-            disabled={rate.limited}
-          >
-            {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Change password"}
-          </Button>
-          <Link
-            to="/forgot-password"
-            search={{ email: session.account.email }}
-            className="focus-ring rounded-xs type-label text-fg-muted underline-offset-2 hover:text-fg hover:underline"
-          >
-            Forgot your current password?
-          </Link>
-        </div>
-      </form>
-    </AccountSection>
-  );
-}
-
-/** A first password for an account created with Google or Apple. Needs a fresh proof. */
-function SetPasswordForm({ fieldRef }: { fieldRef: RefObject<HTMLInputElement | null> }) {
+/**
+ * Set a first password (an account made with Google or Apple) or change it. Either way the proof
+ * is "Confirm it's you" (the password itself, or a fresh sign-in at a provider), as for every
+ * other change here, and only the new password is typed. One component for both, so focus stays
+ * on the button when a first password turns the section into "Change" (UX review 2.7).
+ */
+function PasswordSection({
+  hasPassword,
+  fieldRef,
+}: {
+  hasPassword: boolean;
+  fieldRef: RefObject<HTMLInputElement | null>;
+}) {
   const session = useAuthenticatedSession();
   const [next, setNext] = useState("");
   const [checked, setChecked] = useState(false);
   const [resumed, setResumed] = useState(false);
   const proof = useConfirmIdentity({
-    id: "set-password",
-    purpose: "set a password",
+    id: hasPassword ? "change-password" : "set-password",
+    purpose: hasPassword ? "change your password" : "set a password",
     onResume: () => {
       setResumed(true);
       fieldRef.current?.focus();
     },
   });
   const { mutation, rate } = useUpdateAccount(() => {
-    toast.success("Password set", {
-      description: `You can also sign in with ${session.account.email} and your password now. Other devices were signed out.`,
+    toast.success(hasPassword ? "Password changed" : "Password set", {
+      description: hasPassword
+        ? "Other devices have been signed out. This one stays signed in."
+        : `You can also sign in with ${session.account.email} and your password now. Other devices were signed out.`,
     });
     setNext("");
     setChecked(false);
+    setResumed(false);
   });
+  const submitRef = useRef<HTMLButtonElement>(null);
+  useFocusAfterBusy(mutation.isPending, submitRef);
   const nextError = checked ? validateNewPassword(next) : null;
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -870,25 +776,30 @@ function SetPasswordForm({ fieldRef }: { fieldRef: RefObject<HTMLInputElement | 
     <AccountSection
       title="Password"
       description={
-        <>
-          Your account has no password yet: you sign in with a provider. Set one to also sign in
-          with <span className="wrap-anywhere text-fg">{session.account.email}</span>. Setting it
-          signs out your other devices.
-        </>
+        hasPassword ? (
+          "Changing your password signs out every other device. Anything playing on them stops within about half a minute."
+        ) : (
+          <>
+            Your account has no password yet: you sign in with a provider. Set one to also sign in
+            with <EmailText>{session.account.email}</EmailText>. Setting it signs out your other
+            devices.
+          </>
+        )
       }
     >
       <form
         onSubmit={submit}
         noValidate
         className="flex flex-col gap-4"
-        aria-label="Set a password"
+        aria-label={hasPassword ? "Change password" : "Set a password"}
       >
         {resumed && !mutation.isSuccess ? (
           <FormAlert tone="positive" title="You're confirmed">
-            Enter your new password again to set it.
+            Enter your new password again to {hasPassword ? "change" : "set"} it.
           </FormAlert>
         ) : null}
         <RateOrError error={mutation.error} limited={rate.limited} />
+        {/* Lets password managers attach the new password to the right account. */}
         <input
           type="hidden"
           name="username"
@@ -904,20 +815,52 @@ function SetPasswordForm({ fieldRef }: { fieldRef: RefObject<HTMLInputElement | 
           value={next}
           onChange={(event) => setNext(event.target.value)}
           error={nextError}
-          hint="At least 8 characters."
+          hint={
+            hasPassword
+              ? "At least 8 characters. You'll be asked to confirm it's you."
+              : "At least 8 characters."
+          }
         />
         <div>
           <Button
+            ref={submitRef}
             type="submit"
             variant="accent"
             loading={mutation.isPending}
             disabled={rate.limited}
           >
-            {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Set password"}
+            {rate.limited
+              ? `Try again in ${formatCountdown(rate.waiting)}`
+              : hasPassword
+                ? "Change password"
+                : "Set password"}
           </Button>
         </div>
       </form>
       {proof.prompt}
     </AccountSection>
   );
+}
+
+/**
+ * `?link=<provider>`: the member signed in (or reset the password) to add a provider that could
+ * not attach itself (`link-required`). Read once, then gone from the address bar; the wish kept
+ * across those steps is forgotten too, since it is now offered.
+ */
+function useLinkOffer(): OidcProvider | null {
+  const router = useRouter();
+  const [provider] = useState(() =>
+    parseProvider(new URLSearchParams(router.state.location.searchStr).get("link")),
+  );
+  const done = useRef(false);
+  useEffect(() => {
+    if (!provider || done.current) return;
+    done.current = true;
+    forgetLinkIntent();
+    router.history.replace(
+      pathWithout(router.history.location.href, ["link"]),
+      router.history.location.state,
+    );
+  }, [provider, router]);
+  return provider ?? null;
 }

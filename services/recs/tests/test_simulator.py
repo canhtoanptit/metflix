@@ -181,3 +181,59 @@ def test_experiment_assignment_follows_the_design_weights() -> None:
     assignments = collections.Counter(spec.assign(f"unit-{i}") for i in range(20_000))
     assert abs(assignments["control"] / 20_000 - 0.7) < 0.015
     assert spec.assign("unit-1") == spec.assign("unit-1")
+
+
+def test_a_served_experiment_serves_the_run_from_its_start_and_changes_nothing_before(
+    tmp_path: Path,
+) -> None:
+    """`served=learned`: the treatment arm's pages come from the scored run's lists from the
+    experiment's start day; before it, and for households without a treated profile, the
+    simulation is the same event for event as the pass without the run (whose lake the run is
+    trained on)."""
+    from helpers import write_version
+
+    catalog = synthetic_catalog()
+    start_day = 6
+    spec = ExperimentSpec.parse(f"recs-learned:served=learned:start={start_day}")
+    config = replace(CONFIG, experiments=(spec,), seed=11)
+    first, truth = simulate_in_memory(config, catalog)
+    treated = {row["profile_key"] for row in truth if "treatment" in row["assignments"]}
+    assert treated
+    # A run whose lists put two titles first for every treated profile.
+    storage = LocalStorage(tmp_path)
+    write_version(storage, "20261001-000000-feedbeef", {key: ["t-3", "t-7"] for key in treated})
+    served = replace(config, learned_store=str(tmp_path), learned_run="20261001-000000-feedbeef")
+    second, _ = simulate_in_memory(served, catalog)
+    starts = config.start_ms + start_day * DAY_MS
+
+    def before(events: list[dict]) -> list[bytes]:  # type: ignore[type-arg]
+        return [orjson.dumps(e) for e in events if parse_iso_ms(e["occurredAt"]) < starts]
+
+    assert before(first) == before(second)
+    no_exposure_before = [
+        e
+        for e in first
+        if e["type"] == "experiment.exposure" and parse_iso_ms(e["occurredAt"]) < starts
+    ]
+    assert not no_exposure_before
+    households = {row["profile_key"]: row["account_key"] for row in truth}
+    treated_households = {households[key] for key in treated}
+
+    def untreated(events: list[dict]) -> set[tuple[str, str, str, str]]:  # type: ignore[type-arg]
+        # What the members did (the shard's emitter draws event ids and delivery faults for every
+        # household in turn, so those shift; behaviour comes from each household's own stream).
+        return {
+            (e["type"], e["occurredAt"], e["subject"]["profile"], e["payload"].get("titleId"))
+            for e in events
+            if e["subject"]["account"] and e["subject"]["account"] not in treated_households
+        }
+
+    assert untreated(first) == untreated(second)
+    pages = [
+        e
+        for e in second
+        if e["type"] == "impression"
+        and (e["context"].get("policy") or {}).get("id") == "learned-sim:20261001-000000-feedbeef"
+    ]
+    assert pages and all(e["subject"]["profile"] in treated for e in pages)
+    assert all(parse_iso_ms(e["occurredAt"]) >= starts for e in pages)

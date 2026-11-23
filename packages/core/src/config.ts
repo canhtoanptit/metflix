@@ -53,8 +53,18 @@ export const DEFAULT_RATE_LIMITS: Readonly<Record<RateLimitPolicyName, RateLimit
   // Event batches per account (signed out: per address). The SDK flushes every few seconds per
   // device; a household's devices together stay below it.
   events: { name: "events", limit: 120, windowSec: 60 },
-  // Promo-code lookups per account: enough to correct a typo, too few to enumerate codes.
+  // Promo-code lookups per account, through validation or a checkout started with a code:
+  // enough to correct a typo, too few to enumerate codes.
   promotion: { name: "promotion", limit: 10, windowSec: 600 },
+  // Member requests that create something at the payment provider (checkout starts, card
+  // setups, plan-change previews), per account. An honest journey sends a handful (a checkout
+  // retried after declines, resumed on another device, a plan previewed several times, a card
+  // change): 30 in ten minutes leaves room for all of them at once, and keeps one account from
+  // spending the provider's account-wide request budget for every member.
+  billing: { name: "billing", limit: 30, windowSec: 600 },
+  // How often polls (a checkout's status, a card change's) read the provider, per account: at
+  // most once every two seconds; a poll in between answers from stored state, never refused.
+  "billing-refresh": { name: "billing-refresh", limit: 1, windowSec: 2 },
 };
 
 /** What is wrong with a rate-limit table: a policy the contract names but the table lacks. */

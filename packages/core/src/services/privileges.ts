@@ -9,7 +9,9 @@ import type { AuthContext } from "./context.ts";
  * decision is taken here; the HTTP guard (`auth: "account-holder"`) and the profile and account
  * services call these functions and never restate a rule.
  *
- * - Account management needs an active profile without parental controls.
+ * - Account management needs an active profile without parental controls, or, while the account
+ *   has no profile at all (sign-up abandoned before the first), the session at the profile gate:
+ *   there are no parental controls to protect yet.
  * - A kids profile may switch profile and change its own name, avatar and settings; nothing else.
  * - Loosening a profile, or adding one while parental controls are in use, needs the account
  *   password; a locked profile is its owner's, so changing or deleting it from any other session
@@ -45,10 +47,18 @@ export function parentalControlsInUse(
   );
 }
 
-/** Account management: the session's active profile must have no parental controls. */
+/**
+ * Account management: the session's active profile must have no parental controls. At the gate
+ * (no active profile) only an account with no profile at all passes: once one exists, it must be
+ * chosen, so a kids or restricted profile's household cannot be bypassed by not choosing one.
+ * Fresh-proof requirements (password, elevation) are the services' and apply unchanged.
+ */
 export function requireAccountHolder(auth: AuthContext): void {
   const standing = standingOf(auth.profile);
-  if (standing === "gate") throw new AppError("profile_required");
+  if (standing === "gate") {
+    if (auth.accountHasProfiles === false) return;
+    throw new AppError("profile_required");
+  }
   if (standing !== "unrestricted") throw new AppError("unrestricted_profile_required");
 }
 

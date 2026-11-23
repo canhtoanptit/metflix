@@ -11,10 +11,11 @@ import { Button, ErrorState, Skeleton, Switch, toast } from "@webflix/ui";
 import { useState } from "react";
 import { describeError } from "../../../../app/query/errors.ts";
 import {
+  KEPT_REGARDLESS,
   PURPOSE_COPY,
   PURPOSE_ORDER,
   WHAT_IS_RECORDED,
-  WITHOUT_PERMISSION,
+  WITHOUT_PERSONALISATION,
 } from "../../../../app/telemetry/copy.ts";
 import {
   browserGpc,
@@ -84,14 +85,18 @@ function ConsentChoices({ consent }: { consent: ConsentState }) {
 
   if (consent.mode === "off") {
     return (
-      <FormAlert tone="info" title="Nothing is recorded on this service">
-        This Webflix service doesn't record activity at all, so there's nothing to choose.
-        Recommendations rely only on what you watch, rate and add to My List.
+      <FormAlert tone="info" title="Nothing to choose on this service">
+        This Webflix service doesn't record what you browse and play for recommendations or to
+        improve Webflix. It keeps only what it needs to work, like your watch history, ratings and
+        My List, and your rows come from those and from what's new and popular.
       </FormAlert>
     );
   }
 
   const change = async (purpose: ConsentPurpose, granted: boolean) => {
+    // The switch keeps focus and stays enabled while saving (UX review 2.7): a change asked for
+    // meanwhile is ignored, and the line under it says "Saving…".
+    if (asked[purpose] !== undefined) return;
     setAsked((current) => ({ ...current, [purpose]: granted }));
     try {
       await answer({ [purpose]: granted }, "settings");
@@ -127,7 +132,6 @@ function ConsentChoices({ consent }: { consent: ConsentState }) {
                 label={PURPOSE_COPY[purpose].label}
                 description={PURPOSE_COPY[purpose].description}
                 checked={checked}
-                disabled={pending !== undefined}
                 onCheckedChange={(next) => void change(purpose, next)}
               />
               <p className="type-caption text-fg-subtle" aria-live="polite">
@@ -139,12 +143,15 @@ function ConsentChoices({ consent }: { consent: ConsentState }) {
           );
         })}
       </ul>
-      <p className="type-body-sm text-fg-muted">
-        {WITHOUT_PERMISSION}
-        {terms
-          ? ` What is recorded is kept for ${formatRetention(terms.eventsRetentionDays)}, and totals made from it (never about one member) for ${formatRetention(terms.aggregatesRetentionDays)}.`
-          : null}
-      </p>
+      <div className="flex flex-col gap-2 type-body-sm text-fg-muted">
+        <p>{WITHOUT_PERSONALISATION}</p>
+        <p>
+          {KEPT_REGARDLESS}
+          {terms
+            ? ` What is recorded for these two uses is deleted after ${formatRetention(terms.eventsRetentionDays)}, and totals made from it after ${formatRetention(terms.aggregatesRetentionDays)}.`
+            : null}
+        </p>
+      </div>
     </div>
   );
 }
@@ -156,23 +163,26 @@ function describeSource(
   source: ConsentState["purposes"]["analytics"]["source"],
   updatedAt: string | null,
 ): string {
-  const when = updatedAt ? ` on ${formatShortDate(updatedAt)}` : "";
+  const on = updatedAt ? ` on ${formatShortDate(updatedAt)}` : "";
   switch (source) {
     case "banner":
     case "settings":
-      return `You turned this ${granted ? "on" : "off"}${when}.`;
+      return `Turned ${granted ? "on" : "off"} by you${on}.`;
     case "gpc":
       return "Off because your browser sends Global Privacy Control.";
     case "support":
-      return `Webflix support turned this ${granted ? "on" : "off"} at your request${when}.`;
+      // Staff can only record a withdrawal (a grant from support is never in force).
+      return granted ? defaultSource(mode, granted) : `Turned off by Webflix support${on}.`;
     default:
-      if (mode === "opt-out" && !granted) {
-        return "Off because your browser sends Global Privacy Control.";
-      }
-      return mode === "opt-out"
-        ? "On by default. Turn it off any time."
-        : "Off until you turn it on.";
+      return defaultSource(mode, granted);
   }
+}
+
+function defaultSource(mode: ConsentState["mode"], granted: boolean): string {
+  if (mode === "opt-out" && !granted) {
+    return "Off because your browser sends Global Privacy Control.";
+  }
+  return mode === "opt-out" ? "On by default. Turn it off any time." : "Off until you turn it on.";
 }
 
 function lowerFirst(text: string): string {

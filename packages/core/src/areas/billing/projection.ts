@@ -20,6 +20,14 @@ import type { CardBrand, StoredCard, SubscriptionRecord } from "../../repositori
 import { effectiveSubscription } from "../../services/subscriptions.ts";
 import type { MembershipRecord, SuspendedReason } from "./repository.ts";
 
+/** An amount that explains another (a credit, a discount): null when there is none. */
+export function moneyOrNull(
+  amountMinor: number | null | undefined,
+  currency: string,
+): { amountMinor: number; currency: string } | null {
+  return amountMinor ? { amountMinor, currency: currency.toUpperCase() } : null;
+}
+
 /**
  * The membership state machine (docs/BLUEPRINT-M2.md §5.2, docs/STRIPE.md §9), as pure
  * functions. Two halves:
@@ -367,6 +375,14 @@ export function presentMembershipState(membership: EffectiveMembership): Members
             amountMinor: membership.nextInvoice.amountMinor,
             currency: membership.nextInvoice.currency,
           },
+          creditApplied: moneyOrNull(
+            membership.nextInvoice.creditAppliedMinor,
+            membership.nextInvoice.currency,
+          ),
+          discount: moneyOrNull(
+            membership.nextInvoice.discountMinor,
+            membership.nextInvoice.currency,
+          ),
         }
       : null,
   };

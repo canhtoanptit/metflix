@@ -1,6 +1,7 @@
 import { hexEncode, timingSafeEqual, utf8Decode, utf8Encode } from "../encoding.ts";
 import { type Clock, systemClock } from "../ports/clock.ts";
 import {
+  type AmountPreview,
   type CatalogueEntry,
   type CatalogueSyncResult,
   type NextInvoicePreview,
@@ -214,13 +215,19 @@ export class MemoryPaymentProvider implements PaymentProvider {
       };
       // Like Stripe's `default_incomplete`: a trial invoices nothing; otherwise the browser
       // confirms the first payment (where a challenge happens), whatever card is on file.
-      const amount = trial ? 0 : this.discounted(price.amountMinor, promotion);
+      const total = trial ? 0 : this.discounted(price.amountMinor, promotion);
+      // The customer's credit (a downgrade's) pays first, as at the provider.
+      const credit = Math.min(total, customer.creditMinor);
+      customer.creditMinor -= credit;
+      const amount = total - credit;
       const invoice = this.newInvoice(subscription, {
-        totalMinor: amount,
+        totalMinor: total,
         currency: price.currency,
         billingReason: "subscription_create",
         periodStart: subscription.currentPeriodStart,
         periodEnd: subscription.currentPeriodEnd,
+        discountMinor: trial ? 0 : price.amountMinor - total,
+        creditAppliedMinor: credit,
       });
       if (amount === 0) {
         this.markPaid(invoice, 0);
@@ -259,10 +266,33 @@ export class MemoryPaymentProvider implements PaymentProvider {
     if (at === null) return null;
     const price = this.price(subscription.priceLookupKey);
     const customer = this.customer(subscription.customerId);
+    const credit = Math.min(price.amountMinor, customer.creditMinor);
     return {
       at,
-      amountMinor: Math.max(0, price.amountMinor - customer.creditMinor),
+      amountMinor: price.amountMinor - credit,
       currency: price.currency,
+      creditAppliedMinor: credit,
+      discountMinor: 0,
+    };
+  }
+
+  async previewFirstInvoice(input: {
+    customerId: string;
+    priceLookupKey: string;
+    promotionId: string | null;
+  }): Promise<AmountPreview> {
+    const customer = this.customer(input.customerId);
+    const price = this.price(input.priceLookupKey);
+    const promotion = input.promotionId
+      ? ([...this.promotions.values()].find((entry) => entry.id === input.promotionId) ?? null)
+      : null;
+    const total = this.discounted(price.amountMinor, promotion);
+    const credit = Math.min(total, customer.creditMinor);
+    return {
+      amountMinor: total - credit,
+      currency: price.currency,
+      creditAppliedMinor: credit,
+      discountMinor: price.amountMinor - total,
     };
   }
 
@@ -659,10 +689,15 @@ export class MemoryPaymentProvider implements PaymentProvider {
       );
     }
     const total = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+    const charged = lines.reduce((sum, line) => sum + Math.max(0, line.amountMinor), 0);
     const credit = Math.max(0, -total);
+    const amountDue = Math.max(0, total);
+    const renewal = Math.max(0, next.amountMinor - customer.creditMinor - credit);
     return {
       currency: next.currency,
-      amountDueMinor: Math.max(0, total),
+      amountDueMinor: amountDue,
+      creditAppliedMinor: charged - amountDue,
+      discountMinor: 0,
       creditMinor: credit,
       lines,
       prorationDate: input.prorationDate,
@@ -671,7 +706,9 @@ export class MemoryPaymentProvider implements PaymentProvider {
           ? null
           : {
               at: subscription.currentPeriodEnd,
-              amountMinor: Math.max(0, next.amountMinor - customer.creditMinor - credit),
+              amountMinor: renewal,
+              creditAppliedMinor: next.amountMinor - renewal,
+              discountMinor: 0,
             },
     };
   }
@@ -692,6 +729,8 @@ export class MemoryPaymentProvider implements PaymentProvider {
       billingReason: ProviderInvoice["billingReason"];
       periodStart: number | null;
       periodEnd: number | null;
+      discountMinor?: number;
+      creditAppliedMinor?: number;
     },
   ): ProviderInvoice & { clientSecret: string | null } {
     const invoice = {
@@ -703,7 +742,7 @@ export class MemoryPaymentProvider implements PaymentProvider {
       currency: input.currency,
       totalMinor: input.totalMinor,
       amountPaidMinor: 0,
-      amountDueMinor: Math.max(0, input.totalMinor),
+      amountDueMinor: Math.max(0, input.totalMinor - (input.creditAppliedMinor ?? 0)),
       amountRefundedMinor: 0,
       billingReason: input.billingReason,
       periodStart: input.periodStart,
@@ -714,6 +753,8 @@ export class MemoryPaymentProvider implements PaymentProvider {
       nextPaymentAttempt: null,
       hostedUrl: null,
       pdfUrl: null,
+      discountMinor: input.discountMinor ?? 0,
+      creditAppliedMinor: input.creditAppliedMinor ?? 0,
       clientSecret: null,
     };
     this.invoices.set(invoice.id, invoice);

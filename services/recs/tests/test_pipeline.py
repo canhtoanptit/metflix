@@ -38,11 +38,73 @@ def evaluation(e2e: EndToEnd, trained: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_the_real_rule_engine_ranks_every_evaluated_profile(evaluation: dict[str, Any]) -> None:
-    assert evaluation["externalCoverage"] == {"rule-engine": 1.0, "rule-engine-home": 1.0}
+    assert evaluation["externalCoverage"] == {
+        "rule-engine": 1.0,
+        "rule-engine-home": 1.0,
+        "learned-home": 1.0,
+    }
     results = evaluation["results"]
     assert results["rule-engine"]["all"]["ndcg@10"][0] > results["random"]["all"]["ndcg@10"][0]
     assert evaluation["leakCheck"] == "passed"
-    assert evaluation["gate"]["metric"] == "utility@10"
+    # The gate compares what members see: the engine's home page with and without the run.
+    gate = evaluation["gate"]
+    assert gate["metric"] == "utility@10"
+    assert (gate["candidate"], gate["baseline"]) == ("learned-home", "rule-engine-home")
+    assert (
+        gate["difference"]
+        == evaluation["differencesVsRuleEngineHome"]["learned-home"]["utility@10"]
+    )
+    # The run changes the page: the learned home page is not the engine's own.
+    assert (
+        results["learned-home"]["all"]["utility@10"]
+        != results["rule-engine-home"]["all"]["utility@10"]
+    )
+
+
+def test_the_engine_gets_each_profiles_whole_library(
+    e2e: EndToEnd, trained: dict[str, Any], tmp_path: Path
+) -> None:
+    """What the engine reads from the database, as of the cutoff, for every evaluated profile:
+    My List, ratings and progress, each checked against the dataset independently; and, for
+    the learned home page, the run's lists for that profile and its neighbours."""
+    from webflix_recs import schemas as ev
+    from webflix_recs.evaluation.harness import write_rule_engine_input
+
+    models, manifest = trained["backtest"]
+    inputs = EvaluationInputs(e2e.catalog, e2e.dataset, models, manifest)
+    path = write_rule_engine_input(inputs, tmp_path, log=lambda *_: None)
+    header, *lines = [orjson.loads(line) for line in path.read_bytes().splitlines()]
+    assert header["learned"]["run"] == manifest["run"] and header["learned"]["neighbours"]
+    known = pl.col("received_at") < e2e.cutoff_ms
+    playback = e2e.dataset.tables["playback"].filter(known)
+    actions = e2e.dataset.tables["actions"].filter(known).sort("event_time")
+
+    def latest(kinds: tuple[str, str]) -> dict[str, set[str]]:
+        last = (
+            actions.filter(pl.col("type").is_in(kinds))
+            .group_by(["profile", "title_id"])
+            .agg(pl.col("type").last())
+            .filter(pl.col("type") == kinds[0])
+        )
+        out: dict[str, set[str]] = {}
+        for profile, title, _ in last.iter_rows():
+            out.setdefault(profile, set()).add(title)
+        return out
+
+    in_list = latest((ev.LIST_ADD, ev.LIST_REMOVE))
+    rated = latest((ev.RATING_SET, ev.RATING_CLEAR))
+    items: dict[str, set[str]] = {}
+    for profile, item in playback.select(
+        "profile", pl.coalesce("episode_id", "title_id")
+    ).iter_rows():
+        items.setdefault(profile, set()).add(item)
+    assert lines and any(line["progress"] for line in lines)
+    for line in lines:
+        key = line["profileKey"]
+        assert {entry["itemId"] for entry in line["progress"]} == items.get(key, set()), key
+        assert {entry["titleId"] for entry in line["myList"]} == in_list.get(key, set()), key
+        assert {entry["titleId"] for entry in line["ratings"]} == rated.get(key, set()), key
+        assert line["lists"] and {row["type"] for row in line["lists"]} >= {"personal"}
 
 
 def test_a_planted_leak_is_refused_and_would_have_inflated_the_metrics(
@@ -84,10 +146,7 @@ def test_a_planted_leak_is_refused_and_would_have_inflated_the_metrics(
     ]
     peek.write_bytes(b"\n".join(lines) + b"\n")
     honest_models, honest_manifest = trained["backtest"]
-    externals = {
-        "rule-engine": e2e.work / "evaluate" / "rule-engine" / "rule-engine.ndjson",
-        "peek": peek,
-    }
+    externals = {"peek": peek}  # the harness runs the rule engine itself
     with pytest.raises(LeakError, match="after the cutoff"):
         evaluate(
             EvaluationInputs(
@@ -172,50 +231,70 @@ def test_restricted_profiles_never_reach_training_data_candidates_or_artefacts(
     assert evaluation["profiles"] > 0
 
 
-def test_publish_refuses_without_a_passing_evaluation(
+def test_publish_refuses_unless_the_runs_own_backtest_passed(
     e2e: EndToEnd, trained: dict[str, Any]
 ) -> None:
     models, manifest = trained["production"]
-    result = artefacts.score(
-        e2e.storage, e2e.catalog, e2e.dataset, models, manifest, log=lambda *_: None
-    )
     recipe = manifest["recipeHash"]
     stored = {
         i.key: e2e.storage.get(i.key)
         for i in e2e.storage.list(f"{artefacts.EVALUATIONS_PREFIX}{recipe}/")
     }
     e2e.storage.delete(list(stored))
-    failing = {
-        "recipeHash": recipe,
-        "run": "x",
-        "cutoff": iso_ms(e2e.cutoff_ms),
-        "gate": {"passed": False},
-    }
-    put_json(e2e.storage, f"{artefacts.EVALUATIONS_PREFIX}{recipe}/x.json", failing)
+    put_json(e2e.storage, *_report(recipe, e2e.cutoff_ms, passed=False))
+    # A pass of the same recipe at another cutoff does not stand in for it.
+    put_json(e2e.storage, *_report(recipe, e2e.cutoff_ms - 7 * DAY_MS, passed=True))
     try:
-        with pytest.raises(artefacts.PublishRefused, match="beats the rule engine"):
+        result = artefacts.score(
+            e2e.storage, e2e.catalog, e2e.dataset, models, manifest,
+            evaluation=_decided(e2e.storage, manifest, 1), log=lambda *_: None,
+        )  # fmt: skip
+        assert result.manifest["evaluation"]["passed"] is False
+        with pytest.raises(artefacts.PublishRefused, match="did not all beat the rule engine"):
             artefacts.publish(e2e.storage, result.run, log=lambda *_: None)
         assert get_json(e2e.storage, artefacts.POINTER_KEY) is None
     finally:
-        e2e.storage.delete([f"{artefacts.EVALUATIONS_PREFIX}{recipe}/x.json"])
+        e2e.storage.delete(
+            [i.key for i in e2e.storage.list(f"{artefacts.EVALUATIONS_PREFIX}{recipe}/")]
+        )
         for key, body in stored.items():
             e2e.storage.put(key, body or b"")
 
 
-def _passing_report(recipe: str, run: str, cutoff: str) -> dict[str, Any]:
-    return {
+def _report(recipe: str, cutoff_ms: int, *, passed: bool = True) -> tuple[str, dict[str, Any]]:
+    """An evaluation of the backtest of `recipe` at `cutoff_ms`, and its key."""
+    from webflix_recs import gate
+    from webflix_recs.train import run_id_for
+
+    run = run_id_for(cutoff_ms, recipe)
+    report = {
         "recipeHash": recipe,
         "run": run,
-        "cutoff": cutoff,
+        "cutoff": iso_ms(cutoff_ms),
         "profiles": 1,
         "gate": {
             "metric": "utility@10",
             "candidate": "learned",
             "baseline": "rule-engine",
-            "difference": [0.1, 0.05, 0.15],
-            "passed": True,
+            "difference": [0.1, 0.05, 0.15] if passed else [-0.1, -0.15, -0.05],
+            "passed": passed,
         },
     }
+    return gate.evaluation_key(recipe, run), report
+
+
+def _decided(storage: Any, manifest: dict[str, Any], count: int) -> dict[str, Any]:
+    """What scoring records in the version's manifest: the run's own gate decision."""
+    from webflix_recs import gate
+
+    decision = gate.decide(
+        storage,
+        run=manifest["run"],
+        recipe=manifest["recipeHash"],
+        as_of_ms=int(manifest["data"]["asOfMs"]),
+        count=count,
+    )
+    return gate.manifest_evaluation(decision)
 
 
 def test_publishing_is_atomic_and_readers_only_ever_see_complete_versions(
@@ -230,12 +309,8 @@ def test_publishing_is_atomic_and_readers_only_ever_see_complete_versions(
             storage.put(info.key, e2e.storage.get(info.key) or b"")
     models, manifest = trained["production"]
     recipe = manifest["recipeHash"]
-    # The gate itself is tested above; here a passing report is planted so publish can proceed.
-    put_json(
-        storage,
-        f"{artefacts.EVALUATIONS_PREFIX}{recipe}/plant.json",
-        _passing_report(recipe, "plant", iso_ms(e2e.cutoff_ms)),
-    )
+    # The gate is tested above and in test_gate.py; here the run's backtest passed.
+    put_json(storage, *_report(recipe, e2e.cutoff_ms))
 
     first = artefacts.score(
         storage,
@@ -243,6 +318,7 @@ def test_publishing_is_atomic_and_readers_only_ever_see_complete_versions(
         e2e.dataset,
         models,
         manifest,
+        evaluation=_decided(storage, manifest, 1),
         profiles_per_shard=40,
         log=lambda *_: None,
     )
@@ -260,6 +336,7 @@ def test_publishing_is_atomic_and_readers_only_ever_see_complete_versions(
             e2e.dataset,
             models,
             second_manifest,
+            evaluation=_decided(storage, second_manifest, 1),
             profiles_per_shard=40,
             fail_after_shards=2,
             log=lambda *_: None,
@@ -282,6 +359,7 @@ def test_publishing_is_atomic_and_readers_only_ever_see_complete_versions(
         e2e.dataset,
         models,
         second_manifest,
+        evaluation=_decided(storage, second_manifest, 1),
         profiles_per_shard=40,
         log=lambda *_: None,
     )
@@ -354,9 +432,22 @@ def test_the_scheduled_jobs_on_simulated_data(
     params = tmp_path / "params.json"
     params.write_bytes(orjson.dumps({"em_rounds": 1, "iterations": 4}))
     common = ["--store", str(store), "--workers", "2"]
+    # Erasures pending when the job starts leave the dataset; one requested while it runs (after
+    # the prepare phase) leaves the scored lists. Two active members, both in the lake.
+    profiles = e2e.dataset.tables["profiles"]
+    active = (
+        profiles.filter(pl.col("last_seen") >= e2e.end_ms - 7 * DAY_MS)
+        .group_by("account")
+        .agg(pl.col("profile"))
+        .sort("account")
+    )
+    (early, early_profiles), (late, late_profiles) = active.head(2).iter_rows()
+    pending = tmp_path / "pending.json"
+    pending.write_bytes(orjson.dumps({"subjectKeys": [early]}))
     job = [
         *common, "train-and-score", "--as-of", iso_ms(e2e.end_ms), "--work", str(work),
         "--truth", str(e2e.truth), "--bootstrap", "100", "--params", str(params),
+        "--gate-cutoffs", "2", "--erasures", str(pending),
     ]  # fmt: skip
 
     def run(args: list[str]) -> tuple[int, dict[str, Any]]:
@@ -367,47 +458,96 @@ def test_the_scheduled_jobs_on_simulated_data(
             return int(stop.code or 0), {}
         return 0, orjson.loads(capsys.readouterr().out)
 
+    def node_step(engine_input: str) -> None:
+        node = subprocess.run(
+            [
+                "node",
+                str(Path(__file__).resolve().parents[1] / "scripts" / "rule-engine-rankings.ts"),
+                "--input", engine_input, "--out-dir", str(work),
+            ],
+            capture_output=True, text=True, timeout=600, check=False,
+        )  # fmt: skip
+        assert node.returncode == 0, node.stderr
+
     code, prepared = run([*job, "--phase", "prepare"])
     assert code == 0 and Path(prepared["engineInput"]).exists()
-    node = subprocess.run(
-        [
-            "node",
-            str(Path(__file__).resolve().parents[1] / "scripts" / "rule-engine-rankings.ts"),
-            "--input", prepared["engineInput"], "--out-dir", str(work),
-        ],
-        capture_output=True, text=True, timeout=600, check=False,
-    )  # fmt: skip
-    assert node.returncode == 0, node.stderr
+    assert prepared["excludedAtStart"] == 1 and len(prepared["backtestRuns"]) == 2
+    pending.write_bytes(orjson.dumps({"subjectKeys": [early, late]}))
+    node_step(prepared["engineInput"])
     code, finished = run([*job, "--phase", "finish"])
     assert code == 0 and finished["status"] == "scored"
     run_id = finished["run"]
     assert finished["dataset"] == dataset_id_for(e2e.end_ms)
+    assert finished["excludedAtScoring"] == 2
+    # The backtest learned from a dataset as of its own cutoff, deleted once it was trained.
+    backtest = get_json(storage, f"recs-work/runs/{finished['backtestRuns'][0]}/manifest.json")
+    assert backtest is not None and backtest["data"]["datasetId"].startswith("backtest-")
+    assert backtest["data"]["asOfMs"] == e2e.cutoff_ms
+    assert not list(storage.list("recs-work/datasets/backtest-"))
+    # Two gate cutoffs, end - 7 d and end - 14 d; the lake (21 days) is too young to train at the
+    # second (no play before its ranker window): that fails the gate, not the job.
+    assert len(finished["evaluations"]) == 1
+    second = get_json(storage, finished["gate"]["decision"])["cutoffs"][1]  # type: ignore[index]
+    assert second["passed"] is False and second["reason"].startswith("nothing to train")
+    assert finished["gate"]["passed"] is False
+    job_dataset = pl.read_parquet(
+        io.BytesIO(storage.get(f"recs-work/datasets/{finished['dataset']}/profiles.parquet") or b"")
+    )["profile"].to_list()
+    assert not set(job_dataset) & set(early_profiles)
+    assert set(late_profiles) <= set(job_dataset)  # in the dataset (requested later) ...
+
+    def scored_profiles() -> set[str]:
+        keys: set[str] = set()
+        for info in storage.list(f"recs/v={run_id}/profiles/"):
+            frame = pl.read_parquet(io.BytesIO(storage.get(info.key) or b""))
+            keys |= set(frame["profile_key"].to_list())
+        return keys
+
+    assert scored_profiles()  # ... but not scored
+    assert not scored_profiles() & {*early_profiles, *late_profiles}
+    # The exchange files with the Node step held profile keys and libraries: gone once scored.
+    sample = [key.encode() for key in job_dataset[:200]]
+    for path in work.rglob("*"):
+        if path.is_file():
+            body = path.read_bytes()
+            assert not any(key in body for key in sample), path
     assert (get_json(storage, SCORED_MARKER) or {})["run"] == run_id
     assert artefacts.validate_version(storage, run_id) == []
     # Idempotent: the version is complete, so a rerun does nothing (and cannot rescore files a
-    # pointer may name).
+    # pointer may name), in one process or split around the Node step as a Kubernetes Job runs
+    # it (its retry after a failed import): every phase ends cleanly, and publish runs after.
     code, again = run([*job, "--phase", "all"])
     assert code == 0 and again["status"] == "already-scored"
-    # Publish takes the scored run; it is refused unless the gate passed (smoke-sized data
-    # rarely beats the engine), and nothing is published then.
-    gate_passed = finished["gate"]["passed"]
+    code, again = run([*job, "--phase", "prepare"])
+    assert code == 0 and again["status"] == "already-scored"
+    node_step(again["engineInput"])
+    code, again = run([*job, "--phase", "finish"])
+    assert code == 0 and again["status"] == "already-scored" and again["run"] == run_id
+    assert (get_json(storage, SCORED_MARKER) or {})["run"] == run_id
+    # Publish takes the scored run; it is refused unless the run's own gate decision passed,
+    # and nothing is published then.
     code, published = run([*common, "publish"])
-    if not gate_passed:
-        assert code == cli.EXIT_PUBLISH_REFUSED
-        assert get_json(storage, artefacts.POINTER_KEY) is None
-        recipe = finished["recipeHash"]
-        put_json(
-            storage,
-            f"{artefacts.EVALUATIONS_PREFIX}{recipe}/plant.json",
-            _passing_report(recipe, "plant", iso_ms(e2e.cutoff_ms)),
-        )
-        code, published = run([*common, "publish"])
+    assert code == cli.EXIT_PUBLISH_REFUSED
+    assert get_json(storage, artefacts.POINTER_KEY) is None
+    # Passing evaluations of the same recipe planted afterwards do not change the decision the
+    # run was scored with ...
+    recipe = finished["recipeHash"]
+    for weeks in (1, 2):
+        put_json(storage, *_report(recipe, e2e.end_ms - 7 * weeks * DAY_MS))
+    code, published = run([*common, "publish"])
+    assert code == cli.EXIT_PUBLISH_REFUSED
+    # ... scoring the run again records a new one (and still leaves out what is pending).
+    code, rescored = run([
+        *common, "score", "--run", run_id, "--gate-cutoffs", "2", "--erasures", str(pending),
+    ])  # fmt: skip
+    assert code == 0 and rescored["gate"]["passed"] and rescored["excludedSubjects"] == 2
+    assert not scored_profiles() & {*early_profiles, *late_profiles}
+    code, published = run([*common, "publish"])
     assert code == 0 and published["status"] == "published" and published["run"] == run_id
     code, unchanged = run([*common, "publish"])
     assert code == 0 and unchanged["status"] == "unchanged"
 
     # Erase a member who is everywhere: the lake, the job's dataset, the published lists.
-    profiles = e2e.dataset.tables["profiles"]
     shard = next(f for f in artefacts.read_current(storage)[1]["files"] if f["table"] == "profiles")  # type: ignore[index]
     listed = pl.read_parquet(io.BytesIO(storage.get(f"recs/v={run_id}/{shard['path']}") or b""))[
         "profile_key"
@@ -459,3 +599,34 @@ def test_nobody_to_evaluate_is_a_refused_gate_not_a_crash(
     assert report["gate"]["passed"] is False and "nothing to evaluate" in report["gate"]["reason"]
     path = write_rule_engine_input(inputs, e2e.work / "quiet-input", log=lambda *_: None)
     assert len(path.read_bytes().splitlines()) == 1
+
+
+def test_the_ranker_learns_from_features_its_labels_never_saw(
+    e2e: EndToEnd, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Temporal stacking: the ranker's training examples are the impressions of [T - 7 d, T),
+    and their features come from candidate models and a history as of T - 7 d (stage A), so no
+    feature saw its own label. Computed as of T, a play inside the window would feed the
+    features of the very impression it labels."""
+    from webflix_recs import train as training
+
+    seen: dict[str, Any] = {}
+
+    class Stop(Exception):
+        pass
+
+    def spy(context: Any, examples: pl.DataFrame) -> Any:
+        seen["history"] = context.history.as_of_ms
+        times = examples["event_time"].to_numpy()
+        seen["window"] = (int(times.min()), int(times.max()))
+        raise Stop
+
+    monkeypatch.setattr(training, "gather_features", spy)
+    with pytest.raises(Stop):
+        training.train(
+            e2e.catalog, e2e.dataset, as_of_ms=e2e.cutoff_ms, params=training.TrainParams(),
+            log=lambda *_: None,
+        )  # fmt: skip
+    window_start = e2e.cutoff_ms - 7 * DAY_MS
+    assert seen["history"] == window_start
+    assert window_start <= seen["window"][0] and seen["window"][1] < e2e.cutoff_ms

@@ -14,32 +14,51 @@ class ExperimentSpec:
     """An experiment the simulated platform runs. Assignment is deterministic per profile
     (hash of salt, key and the profile's pseudonymous key); the treatment multiplies the
     profile's session rate by `1 + effect` (0 for an A/A test), a planted effect of known size
-    on visits and hence on qualified plays per member."""
+    on visits and hence on qualified plays per member.
+
+    `served=learned`: the treatment arm's home pages are composed with a scored run's lists, as
+    the learned policy serves them (policy.Policy.home with `learned`; the run is
+    SimConfig.learned_store/learned_run); the control arm keeps the rule engine's pages. No
+    planted effect is needed: whatever the pages change in what members watch is the effect.
+    Without a run configured the treatment arm gets the rule engine's pages too (the first
+    pass, whose lake the run is trained on). `start`: the day the experiment starts (exposures,
+    treatment); nothing about it happens before, so the days before are identical with or
+    without it."""
 
     key: str
     variants: tuple[tuple[str, float], ...] = (("control", 0.5), ("treatment", 0.5))
     effect: float = 0.0
     treatment: str = "treatment"
     salt: str = "sim"
+    served: str = ""
+    start_day: int = 0
 
     @classmethod
     def parse(cls, text: str) -> ExperimentSpec:
-        """`key[:effect=0.1][:variants=control=50,treatment=50]`."""
+        """`key[:effect=0.1][:variants=control=50,treatment=50][:served=learned][:start=42]`."""
         parts = text.split(":")
         key = parts[0]
         effect = 0.0
+        served = ""
+        start_day = 0
         variants: tuple[tuple[str, float], ...] = (("control", 0.5), ("treatment", 0.5))
         for part in parts[1:]:
             name, _, value = part.partition("=")
             if name == "effect":
                 effect = float(value)
+            elif name == "served":
+                if value != "learned":
+                    raise ValueError(f"served: only `learned` is known, got {value!r}")
+                served = value
+            elif name == "start":
+                start_day = int(value)
             elif name == "variants":
                 pairs = [item.split("=") for item in value.split(",")]
                 total = sum(float(weight) for _, weight in pairs)
                 variants = tuple((label, float(weight) / total) for label, weight in pairs)
             else:
                 raise ValueError(f"unknown experiment option {name!r} in {text!r}")
-        return cls(key=key, variants=variants, effect=effect)
+        return cls(key=key, variants=variants, effect=effect, served=served, start_day=start_day)
 
     def assign(self, unit: str) -> str:
         digest = hashlib.sha256(f"{self.salt}:{self.key}:{unit}".encode()).digest()
@@ -93,6 +112,10 @@ class SimConfig:
     #: Store only what the product's collector would (emit.py). Off only to measure what the
     #: rules remove: the stored events are otherwise identical either way.
     collect_like_the_product: bool = True
+    #: The scored run whose lists the treatment arm of a `served=learned` experiment is served
+    #: (a store and a run id; its version `recs/v={run}/`).
+    learned_store: str | None = None
+    learned_run: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -111,7 +134,8 @@ class SimConfig:
         data = asdict(self)
         data["experiments"] = [
             {"key": e.key, "variants": [list(v) for v in e.variants], "effect": e.effect,
-             "treatment": e.treatment, "salt": e.salt}
+             "treatment": e.treatment, "salt": e.salt, "served": e.served,
+             "startDay": e.start_day}
             for e in self.experiments
         ]  # fmt: skip
         return data

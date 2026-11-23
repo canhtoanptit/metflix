@@ -9,6 +9,7 @@ import {
   type ClientEventInput,
   type ConsentState,
   DataExport,
+  ERASED_MEMBER_LABEL,
   type LakeEvent,
   type PrivacyRequest,
   type PrivacyTerms,
@@ -17,14 +18,21 @@ import {
 import type { TestAccount } from "../env.ts";
 import { check, equal, fail, problem, rejects, status, succeeds } from "../expect.ts";
 import { type Agent, isApiError } from "../http.ts";
-import { awaitMail } from "../mail.ts";
+import { awaitMail, mailboxNow } from "../mail.ts";
 import { needs } from "../needs.ts";
 import { STAFF_PERSONAS } from "../oidc.ts";
-import { advancePast, confirmCard, paidMembership, RENEWAL_SETTLE_SEC } from "../payments.ts";
+import {
+  advancePast,
+  confirmCard,
+  labelledCard,
+  paidMembership,
+  RENEWAL_SETTLE_SEC,
+  subscribe,
+} from "../payments.ts";
 import { deviceId, EventStream } from "../telemetry.ts";
 import type { CheckContext, CheckDefinition } from "../types.ts";
 import { spentCard } from "./billing.ts";
-import { audited, auditOf } from "./staff.ts";
+import { audited, auditOf, staffClient } from "./staff.ts";
 import { API, CSRF, maturityRank, unique } from "./util.ts";
 
 const SUBJECT_KEY = /^[A-Za-z0-9_-]{22}$/;
@@ -114,6 +122,69 @@ function resultsDocument(results: Record<string, unknown>[], reason: string) {
   };
 }
 
+/**
+ * The export's parts from each area (privacy review M6): identity; billing with the checkouts
+ * (never a client secret) and the promo codes used; personalisation's recommendation lists and
+ * when personalisation was turned off; admin's record of staff access, each item exactly the
+ * date and the action (never who or why).
+ */
+function assertExportAreas(areas: Record<string, unknown>, staffRead: boolean): void {
+  const part = (name: string): Record<string, unknown> => {
+    const value = areas[name];
+    check(
+      typeof value === "object" && value !== null && !Array.isArray(value),
+      `export: areas.${name} is missing`,
+      { observed: `areas: ${Object.keys(areas).join(", ") || "none"}` },
+    );
+    return value as Record<string, unknown>;
+  };
+  const listOf = (owner: Record<string, unknown>, name: string, where: string): unknown[] => {
+    const value = owner[name];
+    check(Array.isArray(value), `export: ${where}.${name} is not a list`, {
+      observed: JSON.stringify(value ?? null).slice(0, 200),
+    });
+    return value;
+  };
+  part("identity");
+  const billing = part("billing");
+  const checkouts = listOf(billing, "checkouts", "areas.billing") as {
+    id?: unknown;
+    clientSecret?: unknown;
+  }[];
+  check(
+    checkouts.length > 0,
+    "export: the member's checkout is missing from areas.billing.checkouts",
+  );
+  check(
+    checkouts.every((item) => item.clientSecret === null),
+    "export: a checkout carries a client secret",
+    { observed: JSON.stringify(checkouts).slice(0, 300) },
+  );
+  listOf(billing, "promotionCodes", "areas.billing");
+  const personalisation = part("personalisation");
+  listOf(personalisation, "recommendationLists", "areas.personalisation");
+  check(
+    "personalisationWithdrawnAt" in personalisation,
+    "export: areas.personalisation.personalisationWithdrawnAt is missing",
+    { observed: Object.keys(personalisation).join(", ") },
+  );
+  const access = listOf(part("admin"), "staffAccess", "areas.admin") as Record<string, unknown>[];
+  for (const item of access) {
+    equal(
+      Object.keys(item).sort().join(","),
+      "action,at",
+      "export: the keys of a staff access item (the date and the action only)",
+    );
+  }
+  if (staffRead) {
+    check(
+      access.some((item) => item.action === "member.viewed"),
+      "export: staff reading the member is not in areas.admin.staffAccess",
+      { observed: JSON.stringify(access).slice(0, 300) },
+    );
+  }
+}
+
 /** The export's status while it is not finished yet. */
 async function exportStatus(agent: Agent, requestId: string) {
   const list = await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests");
@@ -169,19 +240,35 @@ async function awaitExport(
   const admin = ctx
     .agent("export-operator")
     .staffApi(() => ctx.env.staffToken(STAFF_PERSONAS.admin));
-  const pending = await succeeds(
-    () => admin.listPendingExports({ query: { limit: 500 } }),
-    "GET /system/privacy/exports",
+  // The request is listed once the deployment's own export job has assembled everything but the
+  // events: at once where jobs run in the API process (dev), after a queue delivery elsewhere
+  // (Valkey Streams, Cloudflare Queues' batch window). Waited for like any eventual effect, once
+  // a second (each read of the operator's list is itself audited).
+  type Pending = Awaited<ReturnType<typeof admin.listPendingExports>>["requests"][number];
+  type Listed = { completed: PrivacyRequest } | { entry: Pending };
+  const listed = await ctx.eventually<Listed>(
+    "the batch export is listed for the pipeline's job at GET /api/admin/v1/system/privacy/exports (or completes)",
+    async () => {
+      const current = await exportStatus(agent, started.id);
+      if (current?.status === "completed" && current.downloadUrl) {
+        return { done: true, value: { completed: current } };
+      }
+      const pending = await succeeds(
+        () => admin.listPendingExports({ query: { limit: 500 } }),
+        "GET /system/privacy/exports",
+      );
+      const found = pending.requests.find((item) => item.requestId === started.id);
+      return found
+        ? { done: true, value: { entry: found } }
+        : {
+            done: false,
+            observed: `status ${current?.status ?? "unlisted"}, not among ${pending.requests.length} pending exports`,
+          };
+    },
+    { intervalMs: 1_000 },
   );
-  const entry = pending.requests.find((item) => item.requestId === started.id);
-  if (!entry) {
-    request = await exportStatus(agent, started.id);
-    if (request?.status === "completed" && request.downloadUrl) return request;
-    fail("a batch export is neither complete nor listed for the pipeline's job", {
-      expected: "listed at GET /api/admin/v1/system/privacy/exports until its events are extracted",
-      observed: `status ${request?.status ?? "unlisted"}, not among ${pending.requests.length} pending exports`,
-    });
-  }
+  if ("completed" in listed.value) return listed.value.completed;
+  const entry = listed.value.entry;
   // Batch mode: the entry the job reads (the account's key, the retention window up to the request).
   equal(entry.to, started.requestedAt, "the pending export's window ends at the request");
   check(
@@ -706,6 +793,16 @@ export const privacyChecks: CheckDefinition[] = [
             )
           ).accepted === 1;
       }
+      // Staff reading the member is part of what the export reports (`areas.admin.staffAccess`).
+      const staffRead = (await ctx.env.staffIssuer()).available
+        ? await audited(
+            async () =>
+              (await staffClient(ctx, "support")).getMember({
+                params: { accountId: account.session.account.id },
+              }),
+            "GET /members/:id (support reads the member before the export)",
+          )
+        : null;
       await rejects(
         () => agent.api.requestDataExport(),
         "reauthentication_required",
@@ -724,11 +821,23 @@ export const privacyChecks: CheckDefinition[] = [
       const refused = raced.find((result) => result.status !== 202);
       check(refused, "both concurrent exports answered 202");
       problem(refused, "privacy_request_pending", "the second concurrent export");
-      const startedRequest = started[0]?.json<{ id: string; requestedAt: string }>();
+      const startedRequest = started[0]?.json<PrivacyRequest>();
       check(startedRequest, "the started export has no body");
+      check(
+        startedRequest.email === "pending" || startedRequest.email === "sent",
+        "a new export's email is not pending",
+        { expected: 'email "pending" (sent when ready)', observed: String(startedRequest.email) },
+      );
       const terms = (await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests"))
         .terms;
       const done = await awaitExport(ctx, agent, startedRequest, collected ? event : null, terms);
+      // The "your data is ready" email went out (suite addresses never bounced).
+      await ctx.eventually("the completed export's email is sent", async () => {
+        const email = (await exportStatus(agent, startedRequest.id))?.email;
+        return email === "sent"
+          ? { done: true, value: email }
+          : { done: false, observed: `email ${String(email)}` };
+      });
       if (done.completedAt && done.expiresAt) {
         const ttl = (Date.parse(done.expiresAt) - Date.parse(done.completedAt)) / 1000;
         check(
@@ -748,16 +857,50 @@ export const privacyChecks: CheckDefinition[] = [
         done.expiresAt && Date.parse(done.expiresAt) > Date.now(),
         "the export link has no future expiry",
       );
-      const download = await agent.fetch(link);
-      status(download, 200, "GET the export link");
-      check(
-        /attachment/i.test(download.headers.get("Content-Disposition") ?? ""),
-        "the export is not served as an attachment",
-        {
-          observed: download.headers.get("Content-Disposition") ?? "(absent)",
-          exchange: download.exchange,
-        },
+      const token = new URL(link, agent.origin).searchParams.get("token");
+      check(token, "the export link carries no token", { observed: link });
+      const downloadPath = `${API}/privacy/exports/${encodeURIComponent(startedRequest.id)}/download`;
+      const fetchExport = (device: Agent, body: { token: string }) =>
+        device.fetch(downloadPath, { method: "POST", headers: CSRF, body });
+      const attachment = (result: Awaited<ReturnType<Agent["fetch"]>>, what: string) =>
+        check(
+          /attachment/i.test(result.headers.get("Content-Disposition") ?? ""),
+          `${what}: the export is not served as an attachment`,
+          {
+            observed: result.headers.get("Content-Disposition") ?? "(absent)",
+            exchange: result.exchange,
+          },
+        );
+      // The link form still works for the holder with a fresh proof (links already handed out).
+      const viaLink = await agent.fetch(link);
+      status(viaLink, 200, "GET the export link (fresh proof)");
+      attachment(viaLink, "GET the export link");
+      // Another device of the account, the holder's profile chosen, no fresh proof: refused in
+      // either form (the token is checked first: a bad one is not_found even without a proof).
+      const device = await ctx.env.login(account, "export-device");
+      await ctx.env.holder(account, device);
+      problem(
+        await device.fetch(link),
+        "reauthentication_required",
+        "GET the export link without a fresh proof",
       );
+      problem(
+        await fetchExport(device, { token: `${token.slice(0, -2)}AA` }),
+        "not_found",
+        "POST /privacy/exports/:id/download with a bad token (no fresh proof)",
+      );
+      problem(
+        await fetchExport(device, { token }),
+        "reauthentication_required",
+        "POST /privacy/exports/:id/download without a fresh proof",
+      );
+      await succeeds(
+        () => device.api.elevate({ body: { password: account.password } }),
+        "POST /session/elevation (the other device)",
+      );
+      const download = await fetchExport(device, { token });
+      status(download, 200, "POST /privacy/exports/:id/download (the token in the body)");
+      attachment(download, "POST /privacy/exports/:id/download");
       const parsed = DataExport.safeParse(download.json());
       if (!parsed.success) {
         fail("the export document does not match the contract", {
@@ -774,13 +917,7 @@ export const privacyChecks: CheckDefinition[] = [
         document.profiles.some((profile) => profile.name === "Holder"),
         "export: the profile is missing",
       );
-      check(
-        "billing" in document.areas && "identity" in document.areas,
-        "export: an area's part is missing",
-        {
-          observed: Object.keys(document.areas).join(", "),
-        },
-      );
+      assertExportAreas(document.areas, staffRead !== null);
       if (collected) {
         check(
           document.events.some((item) => item.eventId === event.eventId),
@@ -836,11 +973,10 @@ export const privacyChecks: CheckDefinition[] = [
           "",
           "the export page link's query (the token belongs in the fragment)",
         );
-        const token = new URLSearchParams(emailed.hash.slice(1)).get("token");
-        check(token, "the export page link has no #token=", { observed: emailed.href });
-        const viaEmail = await agent.fetch(
-          `${API}/privacy/exports/${encodeURIComponent(startedRequest.id)}?token=${encodeURIComponent(token)}`,
-        );
+        const emailedToken = new URLSearchParams(emailed.hash.slice(1)).get("token");
+        check(emailedToken, "the export page link has no #token=", { observed: emailed.href });
+        // The page sends the fragment's token in the body (never in a URL).
+        const viaEmail = await fetchExport(device, { token: emailedToken });
         status(viaEmail, 200, "the export downloaded with the emailed token");
         equal(
           viaEmail.json<{ requestId?: unknown }>().requestId,
@@ -854,7 +990,7 @@ export const privacyChecks: CheckDefinition[] = [
     id: "privacy.export-operator",
     area: "privacy",
     title:
-      "The operator's side of data exports (admin only): a results document for an unknown request changes nothing, one pointing at a file that is not the request's own or a complete result without its checksum is refused; in batch mode a deferred result keeps the export listed",
+      "The operator's side of data exports (admin only): a results document for an unknown request changes nothing, one pointing at a file that is not the request's own or a complete result without its checksum is refused; in batch mode a deferred or failed result keeps the export listed for the job's next round (still one export at a time)",
     needs: [needs.staffIssuer],
     async run(ctx: CheckContext) {
       const admin = ctx
@@ -1045,7 +1181,52 @@ export const privacyChecks: CheckDefinition[] = [
         "processing",
         "a deferred export's status",
       );
-      ctx.note("batch exports (WEBFLIX_EXPORT_EVENTS=batch)");
+      // The job reports it failed: the request stays listed for the job's next round (docs/
+      // BACKEND.md: `deferred` and `failed` keep the request listed; every export still open a
+      // day after it was asked for is given up, then the member can ask again: privacy review M1).
+      await succeeds(
+        () =>
+          admin.recordExportResults({
+            body: resultsDocument(
+              [
+                {
+                  requestId: requested.id,
+                  status: "failed",
+                  from: now,
+                  to: now,
+                  error: "smoke: the job could not read the events",
+                },
+              ],
+              "smoke: failed",
+            ),
+          }),
+        "POST /system/privacy/exports/results (failed)",
+      );
+      const failedState = (
+        await succeeds(() => account.agent.api.listPrivacyRequests(), "GET /privacy/requests")
+      ).items.find((item) => item.id === requested.id);
+      equal(
+        failedState?.status,
+        "processing",
+        "the export after one failed round (retried by the job's next round)",
+      );
+      check(
+        (
+          await succeeds(
+            () => admin.listPendingExports({ query: { limit: 500 } }),
+            "GET /system/privacy/exports",
+          )
+        ).requests.some((item) => item.requestId === requested.id),
+        "an export the job failed once is no longer listed for its next round",
+      );
+      problem(
+        await account.agent.fetch(`${API}/privacy/export`, { method: "POST", headers: CSRF }),
+        "privacy_request_pending",
+        "a new export while the failed one is still retried (one at a time)",
+      );
+      ctx.note(
+        "batch exports (WEBFLIX_EXPORT_EVENTS=batch): a failed round keeps the export listed and processing; the give-up a day after the request is not observable within a run",
+      );
     },
   },
   {
@@ -1355,6 +1536,93 @@ export const privacyChecks: CheckDefinition[] = [
     },
   },
   {
+    id: "privacy.deletion.emails",
+    area: "privacy",
+    title:
+      "A deletion says so by email: scheduling sends account-deletion-scheduled with its date and a link to Account › Privacy, keeping the account sends account-deletion-canceled, and the renewals it stopped send no cancellation email (an ordinary cancel still does)",
+    needs: [needs.mailbox, needs.fakePayments],
+    timeoutMs: 180_000,
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const account = await env.bareHolder("deletion-emails");
+      const agent = account.agent;
+      const terms = (await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests"))
+        .terms;
+      if (terms.deletionCoolingOffSec < 8) {
+        ctx.skip(
+          `the cooling-off period (${terms.deletionCoolingOffSec} s) is too short to keep the account inside it`,
+        );
+      }
+      // A member: a deletion then stops the renewals (through billing's cancel).
+      await subscribe(ctx, agent, {
+        planId: "basic",
+        card: labelledCard("visa", ctx.options.runId, "deletion-emails"),
+      });
+      await succeeds(
+        () => agent.api.elevate({ body: { password: account.password } }),
+        "POST /session/elevation",
+      );
+      const request = await succeeds(
+        () => agent.api.requestAccountDeletion(),
+        "POST /account/deletion",
+      );
+      check(request.scheduledFor, "a deletion without scheduledFor");
+      const [scheduled] = await awaitMail(ctx, agent, account.email, "account-deletion-scheduled");
+      check(scheduled, "no account-deletion-scheduled email");
+      const when = new Date(request.scheduledFor);
+      const dated = [
+        `${when.getUTCDate()} ${when.toLocaleString("en-GB", { month: "long", timeZone: "UTC" })} ${when.getUTCFullYear()}`,
+        request.scheduledFor.slice(0, 10),
+      ];
+      check(
+        dated.some((form) => scheduled.text.includes(form)),
+        "the deletion email does not say when the account will be deleted",
+        { expected: `the date ${dated.join(" or ")}`, observed: scheduled.text.slice(0, 400) },
+      );
+      const privacyPage = scheduled.links.find((link) => {
+        try {
+          return new URL(link).pathname === "/account/privacy";
+        } catch {
+          return false;
+        }
+      });
+      check(
+        privacyPage,
+        "the deletion email has no link to Account › Privacy (to keep the account)",
+        {
+          observed: scheduled.links.join(", ") || "no links",
+        },
+      );
+      check(agent.sameDeployment(privacyPage), "the deletion email links to another origin", {
+        observed: privacyPage,
+      });
+      await ctx.eventually("the deletion's email is recorded as sent", async () => {
+        const email = (
+          await succeeds(() => agent.api.listPrivacyRequests(), "GET /privacy/requests")
+        ).items.find((item) => item.id === request.id)?.email;
+        return email === "sent"
+          ? { done: true, value: email }
+          : { done: false, observed: `email ${String(email)}` };
+      });
+      await succeeds(() => agent.api.cancelAccountDeletion(), "DELETE /account/deletion (keep)");
+      await awaitMail(ctx, agent, account.email, "account-deletion-canceled");
+      // The renewals the deletion stopped sent no "your membership ends" email.
+      const box = await mailboxNow(agent, account.email);
+      check(
+        !box.some((message) => message.template === "cancellation"),
+        "a cancellation email was sent for the renewals a deletion stopped",
+        {
+          expected: "account-deletion-scheduled and account-deletion-canceled only",
+          observed: box.map((message) => message.template).join(", "),
+        },
+      );
+      // An ordinary cancel still sends one.
+      await succeeds(() => agent.api.resumeMembership(), "resume the membership");
+      await succeeds(() => agent.api.cancelMembership(), "cancel the membership (ordinary)");
+      await awaitMail(ctx, agent, account.email, "cancellation");
+    },
+  },
+  {
     id: "privacy.deletion",
     area: "privacy",
     title:
@@ -1432,7 +1700,7 @@ export const privacyChecks: CheckDefinition[] = [
     id: "privacy.deletion.erasure",
     area: "privacy",
     title:
-      "When the cooling-off period ends the account is erased: its sessions end and its address is free again",
+      "When the cooling-off period ends the account is erased: its sessions end, sign-in is refused, its address is free again; nothing is left in progress (health), and the audit log keeps staff's entries with the member erased from them",
     timeoutMs: 240_000,
     async run(ctx: CheckContext) {
       const account = await ctx.env.bareHolder("erasure");
@@ -1464,15 +1732,37 @@ export const privacyChecks: CheckDefinition[] = [
         );
       }
       const budget = Math.ceil(coolingSec * 1000) + 120_000;
+      const accountId = account.session.account.id;
+      // Staff read the member before the erasure: that entry must survive it, pseudonymised.
+      const staff = (await ctx.env.staffIssuer()).available;
+      const read = staff
+        ? await audited(
+            async () => (await staffClient(ctx, "support")).getMember({ params: { accountId } }),
+            "GET /members/:id (support reads the member before the erasure)",
+          )
+        : null;
       const other = await ctx.env.login(account, "erasure-other");
       const before = await succeeds(
         () => other.api.getSession(),
         "GET /session before the erasure",
       );
       check(before.authenticated, "the account's other device is not signed in before the erasure");
+      // While the erasure runs (`processing`) the account cannot be kept nor asked to be deleted
+      // again. It usually lasts less than a poll; when a poll sees it, it is asserted.
+      let caughtInProgress = false;
       const erased = await ctx.eventually(
         "the account is erased (its session ends)",
         async () => {
+          const mine = await agent.fetch(`${API}/privacy/requests`);
+          if (mine.status === 200) {
+            const state = mine
+              .json<{ items: PrivacyRequest[] }>()
+              .items.find((item) => item.id === request.id)?.status;
+            if (state === "processing" && !caughtInProgress) {
+              caughtInProgress = true;
+              await expectErasureLocked(agent);
+            }
+          }
           const state = await succeeds(() => other.api.getSession(), "GET /session");
           return state.authenticated
             ? { done: false, observed: "still signed in" }
@@ -1480,8 +1770,19 @@ export const privacyChecks: CheckDefinition[] = [
         },
         { timeoutMs: budget, intervalMs: 1_000 },
       );
-      ctx.note(`erased ${Math.round(erased.elapsedMs / 1000)} s after the request`);
+      ctx.note(
+        `erased ${Math.round(erased.elapsedMs / 1000)} s after the request${caughtInProgress ? " (seen in progress: neither kept nor asked again)" : " (the erasure ran between two polls: its in-progress state was not observable)"}`,
+      );
       await signedOutEverywhere(agent);
+      // Sign-in is refused: no password finds the account any more.
+      await rejects(
+        () =>
+          ctx.env
+            .knownDevice(account, ctx.agent("erasure-signin"))
+            .api.login({ body: { email: account.email, password: account.password } }),
+        "invalid_credentials",
+        "signing in to the erased account",
+      );
       const status_ = await succeeds(
         () => agent.api.getEmailStatus({ query: { email: account.email } }),
         "GET /auth/email-status",
@@ -1493,9 +1794,75 @@ export const privacyChecks: CheckDefinition[] = [
         "the erased account's requests are still served",
         { exchange: list.exchange },
       );
+      if (!read) {
+        ctx.note(
+          "no staff token: the audit log and the health report after the erasure are not checked",
+        );
+        return;
+      }
+      const admin = await staffClient(ctx, "admin");
+      // Nothing in progress once it finished (privacy review H2): the health report says so.
+      await ctx.eventually(
+        "GET /system/health privacy.erasuresInProgress returns to 0",
+        async () => {
+          const health = await succeeds(() => admin.getSystemHealth(), "GET /system/health");
+          const privacy = health.privacy;
+          return privacy.erasuresInProgress === 0
+            ? { done: true, value: privacy }
+            : {
+                done: false,
+                observed: `${privacy.erasuresInProgress} in progress, the oldest since ${privacy.oldestErasureInProgressAt} (${privacy.oldestErasureInProgressAgeSec} s)`,
+              };
+        },
+      );
+      // The audit log keeps what staff did, no longer naming the member (privacy review M5).
+      const byTarget = await succeeds(
+        () => admin.listAuditLog({ query: { targetId: accountId, limit: 100 } }),
+        "GET /audit?targetId=<the erased account>",
+      );
+      equal(byTarget.items.length, 0, "audit entries still naming the erased account");
+      const kept = await succeeds(
+        () => admin.listAuditLog({ query: { requestId: read.requestId } }),
+        "GET /audit?requestId= (the staff read before the erasure)",
+      );
+      const entry = kept.items[0];
+      check(entry, "the staff member's entry was deleted with the member", {
+        expected: `an entry with requestId ${read.requestId}`,
+      });
+      check(
+        entry.target.id.startsWith("erased:") && !entry.target.id.includes(accountId),
+        "the staff member's entry still names the erased member",
+        { expected: "target.id erased:…", observed: entry.target.id },
+      );
+      equal(entry.targetLabel, ERASED_MEMBER_LABEL, "the entry's targetLabel after the erasure");
     },
   },
 ];
+
+/**
+ * An erasure in progress: the account can no longer be kept (`DELETE /account/deletion` →
+ * not_found) nor asked to be deleted again (`privacy_request_pending`). The session may already
+ * be gone (the lock ends every session): then `unauthenticated`, never a success.
+ */
+async function expectErasureLocked(agent: Agent): Promise<void> {
+  const keep = await agent.fetch(`${API}/account/deletion`, { method: "DELETE", headers: CSRF });
+  const keepCode = keep.status >= 400 ? keep.json<{ code?: string }>().code : "(success)";
+  check(
+    keepCode === "not_found" || keepCode === "unauthenticated",
+    "an erasure in progress could still be cancelled",
+    { expected: "404 not_found (or 401 once the lock ended the session)", exchange: keep.exchange },
+  );
+  const again = await agent.fetch(`${API}/account/deletion`, { method: "POST", headers: CSRF });
+  const againCode = again.status >= 400 ? again.json<{ code?: string }>().code : "(success)";
+  check(
+    againCode === "privacy_request_pending" || againCode === "unauthenticated",
+    "a deletion could be asked again during the erasure",
+    {
+      expected: "409 privacy_request_pending (or 401 once the lock ended the session)",
+      exchange: again.exchange,
+    },
+  );
+}
 
 async function signedOutEverywhere(agent: Agent): Promise<void> {
   const state = await succeeds(() => agent.api.getSession(), "GET /session");

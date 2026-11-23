@@ -2,6 +2,7 @@
  * Milestone 2's areas (docs/FOUNDATION.md §8): one module per area, each owning its service,
  * repository port and configuration, composed by `createServices`.
  */
+import { serializeError } from "../ports/logger.ts";
 import type { ServiceDependencies } from "../services/context.ts";
 import { type AdminService, createAdminService } from "./admin/service.ts";
 import { type BillingService, createBillingService } from "./billing/service.ts";
@@ -31,11 +32,22 @@ export function createAreaServices(deps: ServiceDependencies): {
   // The seams call the services built below; nothing calls them during construction.
   const seams: AreaSeams = {
     emitServerEvent: (event) => events.emitServerEvent(event),
-    forgetProfileBehaviour: (input) => events.forgetProfileBehaviour(input),
+    forgetProfileBehaviour: async (input) => {
+      await events.forgetProfileBehaviour(input);
+      // Its stored recommendation lists go at once too (privacy review M3); the erasure is
+      // queued first, and a failure here is logged: the lists are never served to a restricted
+      // profile, imports withhold it, and they expire within days.
+      await areas.personalisation.forgetProfileLists(input).catch((error: unknown) => {
+        deps.logger.error("recs.profile_lists_forget_failed", { error: serializeError(error) });
+      });
+    },
     accountDeletionScheduled: (accountId) => events.accountDeletionScheduled(accountId),
+    withheldSubjects: (asOf) => events.withheldSubjects(asOf),
     assignments: (unit, context) => experiments.assignments(unit, context),
     logExposure: (exposure) => experiments.logExposure(exposure),
     sendEmail: (request) => areas.identity.sendEmail(request),
+    personalisationConsentChanged: (input) =>
+      areas.personalisation.personalisationConsentChanged(input),
   };
   // The events area's privacy jobs ask the other areas for their part of an export or an
   // erasure (`AreaModule.exportAccountData`, `eraseAccountData`), resolved when a job runs.
@@ -44,6 +56,7 @@ export function createAreaServices(deps: ServiceDependencies): {
       const { events: _events, ...others } = areas;
       return others;
     },
+    seams,
   });
   const experiments = createExperimentsService(deps, seams);
   const areas: AreaServices = {

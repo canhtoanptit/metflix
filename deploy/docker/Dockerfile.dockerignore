@@ -11,6 +11,7 @@
 !e2e/package.json
 !apps/api
 !apps/web
+!apps/admin
 !packages
 !tools/media
 !services/recs/scripts

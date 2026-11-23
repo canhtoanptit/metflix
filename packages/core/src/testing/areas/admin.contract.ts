@@ -190,6 +190,132 @@ export function describeAdminRepositoryContract(
       });
     });
 
+    it("deletes entries older than a cutoff, a bounded batch at a time", async () => {
+      for (let index = 0; index < 5; index += 1) {
+        await repo().appendAudit(
+          audit({ id: `r-${index}`, createdAt: T0 + index, outcome: "succeeded" }),
+        );
+      }
+      expect(await repo().deleteAuditBefore(T0 + 3, 2)).toBe(2);
+      expect(await repo().deleteAuditBefore(T0 + 3, 10)).toBe(1);
+      expect(await repo().deleteAuditBefore(T0 + 3, 10)).toBe(0);
+      const left = await repo().listAudit({}, { before: null, limit: 10 });
+      expect(left.map((row) => row.id)).toEqual(["r-4", "r-3"]);
+    });
+
+    it("erases a member from the log: who did what and when stay, nothing identifies them", async () => {
+      const member = { type: "member", id: "acct-erased-1" };
+      await repo().appendAudit(
+        audit({
+          id: "x-1",
+          action: "billing.refund",
+          target: member,
+          before: { request: { invoiceId: "inv-9", amount: null } },
+          after: { id: "re-1", invoiceId: "inv-9" },
+          reason: "Asked by Jane Doe (jane@example.test)",
+          outcome: "succeeded",
+          idempotencyKey: "refund-for-acct-erased-1",
+        }),
+      );
+      await repo().appendAudit(
+        audit({
+          id: "x-2",
+          action: "member.signed_out_everywhere",
+          target: member,
+          before: { request: null },
+          after: { error: "demo_account_protected" },
+          outcome: "failed",
+        }),
+      );
+      await repo().appendAudit(
+        audit({
+          id: "x-3",
+          action: "audit.read",
+          target: { type: "audit_log", id: "all" },
+          before: null,
+          after: { filters: { targetId: "acct-erased-1" }, results: 2 },
+          reason: null,
+          outcome: "succeeded",
+        }),
+      );
+      await repo().appendAudit(
+        audit({
+          id: "x-4",
+          action: "privacy.export_events_recorded",
+          target: { type: "event_lake", id: "exports" },
+          before: { request: { results: [{ requestId: "req-erased-9", status: "complete" }] } },
+          after: { completed: ["req-erased-9"], erased: [], kept: [], ignored: [] },
+          reason: "Run for JANE@EXAMPLE.TEST",
+          outcome: "succeeded",
+        }),
+      );
+      await repo().appendAudit(
+        audit({
+          id: "x-5",
+          target: { type: "member", id: "acct-other" },
+          outcome: "succeeded",
+          idempotencyKey: "kept-key-0000000001",
+        }),
+      );
+      await repo().appendAudit(
+        audit({
+          id: "x-6",
+          action: "billing.plans_synced",
+          target: { type: "plan_catalogue", id: "all" },
+          outcome: "succeeded",
+          idempotencyKey: "key-jane@example.test",
+        }),
+      );
+      const erasure = {
+        target: member,
+        identifiers: ["acct-erased-1", "jane@example.test", "req-erased-9"],
+        marker: "erased:m-1",
+      };
+      expect(await repo().eraseAuditSubject(erasure)).toBe(5);
+      const all = await repo().listAudit({}, { before: null, limit: 20 });
+      const text = JSON.stringify(all).toLowerCase();
+      for (const identifier of [...erasure.identifiers, "jane doe", "inv-9"]) {
+        expect(text, identifier).not.toContain(identifier);
+      }
+      const byId = Object.fromEntries(all.map((row) => [row.id, row]));
+      expect(byId["x-1"]).toMatchObject({
+        action: "billing.refund",
+        actor: { type: "staff", id: "staff-1", name: "Ada" },
+        target: { type: "member", id: "erased:m-1" },
+        before: null,
+        after: null,
+        reason: null,
+        createdAt: T0,
+        outcome: "succeeded",
+      });
+      expect(byId["x-2"]).toMatchObject({
+        target: { type: "member", id: "erased:m-1" },
+        after: { error: "demo_account_protected" },
+      });
+      expect(byId["x-3"]?.after).toEqual({ filters: { targetId: "erased:m-1" }, results: 2 });
+      expect(byId["x-4"]?.after).toMatchObject({ completed: ["erased:m-1"] });
+      expect(byId["x-4"]?.reason).toBe("Run for erased:m-1");
+      expect(byId["x-5"]).toMatchObject({
+        target: { type: "member", id: "acct-other" },
+        idempotencyKey: "kept-key-0000000001",
+      });
+      // A key that names the member is dropped (keys are unique: no marker in its place).
+      expect(byId["x-1"]?.idempotencyKey).toBeNull();
+      expect(byId["x-6"]?.idempotencyKey).toBeNull();
+      // Idempotent: a second run finds nothing left to change.
+      expect(await repo().eraseAuditSubject({ ...erasure, marker: "erased:m-2" })).toBe(0);
+    });
+
+    it("deletes the dead letters that mention an erased member", async () => {
+      await repo().saveDeadLetter(
+        deadLetter({ id: "dl-1", payload: { email: "Jane@Example.test" } }),
+      );
+      await repo().saveDeadLetter(deadLetter({ id: "dl-2", payload: { requestId: "req-9" } }));
+      expect(await repo().deleteDeadLettersMentioning(["jane@example.test", "acct-x"])).toBe(1);
+      expect(await repo().getDeadLetter("dl-1")).toBeNull();
+      expect(await repo().getDeadLetter("dl-2")).not.toBeNull();
+    });
+
     it("keeps dead letters once per delivery, newest first, and replays each once", async () => {
       await repo().saveDeadLetter(deadLetter({ id: "g-1", failedAt: T0 }));
       await repo().saveDeadLetter(deadLetter({ id: "g-1", failedAt: T0 + 50, attempts: 9 }));

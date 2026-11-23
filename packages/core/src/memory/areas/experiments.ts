@@ -59,5 +59,19 @@ export function createMemoryExperimentsRepository(): MemoryExperimentsRepository
       reports.push(structuredClone(report));
       results.set(key, reports);
     },
+    async pruneResults(before, limit) {
+      const old = [...results.entries()]
+        .flatMap(([key, reports]) => reports.map((report) => ({ key, at: report.computedAt })))
+        .filter((entry) => entry.at < before)
+        .sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1))
+        .slice(0, limit);
+      for (const { key, at } of old) {
+        results.set(
+          key,
+          (results.get(key) ?? []).filter((report) => report.computedAt !== at),
+        );
+      }
+      return old.length;
+    },
   };
 }

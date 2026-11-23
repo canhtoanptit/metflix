@@ -224,6 +224,25 @@ load (`Sec-Fetch-Mode: navigate`, or `Accept: text/html` from older clients); th
 Worker applies the same rule. `deploy/docker/web/test.sh` (`make k8s-test-web`) checks all of
 this against the image in a container.
 
+**The staff console** (`apps/admin`) is served by the same web image under `/admin/`, with its
+own index and policy: `/admin` redirects to `/admin/`; `/admin/assets/*` are `immutable` and a
+missing one is a `404` problem (never HTML, also as a page load); any other `/admin/*` page load
+gets the console's `index.html` (never the member app's), and `index.html` and `config.json` are
+`no-store`. `/admin/config.json` (`{issuer, clientId, scope}`) is written by the chart, not taken
+from the build: the issuer is the staff API's (`config.staff.issuer`, the in-chart Keycloak's
+realm), else outside production the development issuer at `/dev-idp/staff`; production without
+a staff issuer answers `503` with a problem saying so, as the Worker does. The console has its
+own CSP (`web.admin.contentSecurityPolicy`, the template `webflix.console.csp`): `connect-src
+'self'` plus the issuer's origin when it is another origin, `script-src 'self'`, no `https:`
+wildcard and none of the Stripe or map origins the member app may need; `frame-ancestors
+'none'`, `Referrer-Policy: no-referrer`, `Permissions-Policy` with `payment=()`. Both files are
+mounted from the `<release>-web-admin` ConfigMap (kept apart from the web ConfigMap, whose
+`add_header` lines the Cloudflare tooling parses), and its checksum rolls the web pods. Proved
+on the conformance variant: the console loaded in a headless Chromium through the gateway, the
+staff persona `staff-admin` signed in through the development issuer (Overview: "Signed in as
+Morgan Blake, with the role Admin"; Members loaded), no console error and no CSP violation;
+`make k8s-test-web` checks every rule above in a container.
+
 **The development stand-ins' prefixes.** `/dev-idp` and `/_pay` also go to the API, in every
 environment: outside production it serves the development OpenID issuer there and, with the
 fake provider, its payment form; in production it answers a 404 problem for both, as the
@@ -250,18 +269,50 @@ when its CRDs exist):
   it, and `%2F`/`%5C` are answered with a `307` to the unescaped path. The API itself answers
   `404` for such keys; nothing reaches a store either way.
 
-**Access logs and media tokens.** Signed media URLs carry the playback token in the path. The
-API logs the route pattern (`/media/:token/vod/…`). Envoy's access log is configured by the
-platform's `EnvoyProxy`, not by this chart: the kind one (`deploy/kind/gateway.yaml`) logs
-`/media/*` requests with the path replaced by `/media/[redacted]` (CEL `matches` select one of
-two JSON formats; the request id still correlates them). Measured: a real 199-character token
-appeared in 0 gateway log lines. On another gateway, do the same or drop the path for `/media`.
-
 **Client IP.** The API trusts `X-Forwarded-For` counted from the right
 (`config.trustedProxyHops`, default 1 = Envoy, which appends the peer address). Anything a
 client sends itself is ignored: 14 sign-in attempts through the gateway with
 `X-Forwarded-For: 1.2.3.N`, N different each time, gave 10 × 401 then 429. Add one hop per load
 balancer in front of the gateway.
+
+### Access logs
+
+Every log the chart produces is a container log on stdout (JSON lines), so what one holds is
+decided where it is written:
+
+- **Envoy** (the platform's `EnvoyProxy`, `deploy/kind/gateway.yaml`, not this chart): the path
+  **without its query string** (`%PATH(NQ)%`), method, status, flags, sizes, duration, upstream,
+  route and request id. Queries carry what members search for (`/api/v1/search?q=`), the
+  addresses staff look up (`/api/admin/v1/members?q=`), export download tokens and OpenID codes
+  and states; none of that is needed to operate a gateway. **No client address and no user
+  agent**: the request id correlates a line with the API's own, and the API decides what it
+  keeps (rate limits key on addresses in Valkey, with their expiry, and nothing logs them).
+  Signed media URLs carry the playback token in the path, so `/media/*` lines carry
+  `/media/[redacted]` instead (CEL `matches` select one of two JSON formats; measured earlier: a
+  real 199-character token appeared in 0 gateway lines). On another gateway, do the same.
+- **nginx** (web): `$uri` (the path without its query, after nginx's normalisation), status,
+  sizes, duration, request id; no address, no user agent.
+- **The API and workers**: the route pattern (`/media/:token/vod/…`), status, duration, request
+  id; no address, no user agent, no query.
+- **PostgreSQL**: statements slower than 1 s (`log_min_duration_statement`) **without their
+  parameter values** (`log_parameter_max_length=0`, and `…_on_error=0` for failed statements):
+  the statement text has only placeholders, so neither a slow member lookup nor a failed insert
+  writes an address or a token to the log. `SHOW` in the cluster: `1s`, `0`, `0`.
+
+Proved on the conformance variant (2026-11-23): a distinctive search word sent as
+`/api/v1/search?q=<word>` and an address looked up by staff (`/api/admin/v1/members?q=<address>`)
+appeared in **none** of the 24 containers' logs (16 408 lines: Envoy, web, API, workers,
+PostgreSQL, Valkey, Garage, the pipeline's Jobs); the gateway's line for the search reads
+`"path":"/api/v1/search"`, without a query, address or user agent.
+
+**Retention.** These are container logs: the kubelet rotates them (10 MiB × 5 files per
+container by default) and they go with the pod. A cluster's log pipeline (Loki, a cloud's
+agent) keeps them as long as it is told: keep them no longer than operating needs (days, not
+months), and never longer than the 13 months behaviour events are kept. Keycloak's own log
+(production configuration, not checked in a run here) records its login events through its
+logging listener, staff usernames and addresses included on failures; treat it as a staff
+security log with the same retention. Mailpit, on kind only, holds whole messages, reset links
+included, by design: never enable `mailcatcher` outside a test cluster.
 
 ### Shared state across replicas (Valkey)
 
@@ -407,6 +458,16 @@ the in-chart stores (add rules for external services). DNS egress allows port 53
 destination by default, which works with kube-dns pods and with NodeLocal DNSCache (a link-local
 address on the node); narrow it with `networkPolicy.dns.to`.
 
+**A missing environment fails closed.** `WEBFLIX_ENV` decides whether the development
+stand-ins (the issuer at `/dev-idp`, the fake provider's `/_pay`, the diagnostics routes) are
+mounted. The API and tools images set `WEBFLIX_ENV=production` themselves (`deploy/docker/Dockerfile`),
+so a container started without the chart's ConfigMap (a stray `docker run`, a Job written by
+hand, a ConfigMap that failed to mount) is production, never development; the chart always sets
+it from `config.environment`, and everything that wants development says so (the conformance
+variant's values, `deploy/kind/verify/pg-tls.sh`). The choice is the image default rather than a
+refusal to start, because production is the only safe reading of "nobody said" and the chart
+never leaves it unset.
+
 Credentials are never in values or ConfigMaps: the chart generates them on first install
 (`lookup`, kept across upgrades and on uninstall with `helm.sh/resource-policy: keep`, because
 the data stores initialise from them) or uses `existingSecret`s. Nothing secret is committed.
@@ -443,6 +504,7 @@ pipeline; `deploy/kind/values-conformance.yaml` is the conformance variant (§9.
 | `api.shutdownDelaySec` / `terminationGracePeriodSeconds` | 5 / 40 | grace ≥ delay + 30 |
 | `worker.replicas` / `worker.concurrency` | 2 / 4 | consumers share the queue |
 | `web.contentSecurityPolicy` | same-origin, `https:` for media/XHR (external HLS fallback) | mounted over the image's default |
+| `web.admin.{clientId,scope,contentSecurityPolicy}` | `webflix-admin`, `openid profile email`, the console's own policy | the staff console at `/admin/` (§3, Routing): its `config.json` and CSP; the staff issuer's origin is added to `connect-src` by the chart |
 | `seed.demo` / `seed.manifest` | `false` / `blob:manifests/media.json` | the documented demo account; the kind values turn it on |
 | `gateway.enabled` / `gateway.className` | `true` / `eg` | or `false` + `httpRoute.parentRefs` for a shared Gateway |
 | `gateway.tls.{enabled,secretName,certManager.issuer,redirectHttp}` | off | HTTPS listener, cert-manager annotation, 301 from HTTP |
@@ -454,10 +516,10 @@ pipeline; `deploy/kind/values-conformance.yaml` is the conformance variant (§9.
 | `metrics.serviceMonitor.enabled` | `false` | Prometheus Operator; `prometheus.io/*` annotations otherwise |
 | `image.registry`, `api.image.digest`, `web.image.digest` | | pin by digest in production |
 | `config.identity.{oidcProviders,google,apple,keycloak}` | unset: the application's defaults | consumer issuers (`WEBFLIX_OIDC_*`); client secrets and Apple's key through `secrets.envFrom` |
-| `config.email.{sender,from,smtp,http}` | `smtp` to the catcher with `mailcatcher.enabled`, else the application's (`memory`) | `WEBFLIX_EMAIL_*`, `WEBFLIX_SMTP_*` (host, port and `tls: none` derived for the catcher); the SMTP password and HTTP key through `secrets.envFrom` |
+| `config.email.{sender,from,smtp,http}` | `smtp` to the catcher with `mailcatcher.enabled`, else the application's (`memory`) | `WEBFLIX_EMAIL_*`, `WEBFLIX_SMTP_*` (host, port and `tls: none` derived for the catcher); the SMTP password and HTTP key through `secrets.envFrom`. `outbox` with `config.environment: production` (also through `config.extraEnv`) is refused at render: the API refuses to start with it (it stores every message, reset links included, and delivers nothing) |
 | `config.billing.{paymentProvider,graceSec,fake.*}` | unset: `none` in production (checkout answers `503 payments_not_configured`), `fake` elsewhere | `stripe` also adds Stripe.js's origins to the web app's CSP (§9.10); Stripe's keys through `secrets.envFrom` |
-| `config.events.{sink,consentMode,exportEvents,deletionCoolingOffSec,retentionDays,aggregatesRetentionDays,exportLinkTtlSec,release}` | `lake`, the app's, `batch`, …, `release` = the API image's tag | `WEBFLIX_EVENT_SINK`, `WEBFLIX_CONSENT_MODE`, `WEBFLIX_EXPORT_EVENTS`, …, `WEBFLIX_RELEASE` (server events' `app.version`) |
-| `config.recommendations.{store,defaultPolicy,exploreShare}` | `database`, the app's | `WEBFLIX_RECOMMENDATION_STORE`, `WEBFLIX_RECS_*` |
+| `config.events.{sink,consentMode,exportEvents,deletionCoolingOffSec,retentionDays,aggregatesRetentionDays,exportLinkTtlSec,exportTypicalSec,release}` | `sink` and `exportEvents`: `lake` and `batch` when the lake is looked after (`pipeline.enabled` with its erase, exportEvents and retain jobs, or `pipeline.external`), else `memory` and `inline`; the app's for the rest; `release` = the API image's tag | `WEBFLIX_EVENT_SINK`, `WEBFLIX_CONSENT_MODE`, `WEBFLIX_EXPORT_EVENTS`, …, `WEBFLIX_EXPORT_TYPICAL_SEC` (what the privacy page tells a member an export takes), `WEBFLIX_RELEASE` (server events' `app.version`). `lake` or `batch` with nothing to look after them is refused at render (§9.6). The two retention periods reach the pipeline's `retain` through the same ConfigMap |
+| `config.recommendations.{store,defaultPolicy,exploreShare}` | `database`, the app's (`defaultPolicy`: `rules` with `config.environment: production`, so the default kind release serves the rule engine to members no experiment assigns; the conformance variant, `development`, serves `learned`) | `WEBFLIX_RECOMMENDATION_STORE`, `WEBFLIX_RECS_*`. To serve learned pages in production (the default kind release included): `--set config.recommendations.defaultPolicy=learned` (or `deploy/kind/release.sh reapply --set …`); members then get the published run's pages, the rule engine where no run covers them |
 | `config.staff.{verifier,issuer,algorithms}` | `oidc` + the in-chart realm with `keycloak.enabled`, else the app's (`memory` in production: closed) | `WEBFLIX_STAFF_*`; the issuer must be https in production |
 | `secrets.appExistingSecret` | generated | `WEBFLIX_PSEUDONYM_KEY` (never replaced: kept on uninstall), and outside production `WEBFLIX_DEV_IDP_SECRET` and `WEBFLIX_PAYMENTS_FAKE_WEBHOOK_SECRET`, shared by every replica |
 | `secrets.envFrom` | `[]` | names of Secrets whose keys become environment variables (provider credentials) |
@@ -465,7 +527,9 @@ pipeline; `deploy/kind/values-conformance.yaml` is the conformance variant (§9.
 | `mailcatcher.enabled` | off | Mailpit (§9.5); local clusters only |
 | `pipeline.enabled`, `.image`, `.tools.image`, `.store`, `.staffApi.{url,tokenUrl,clientId,existingSecret}` | off; `webflix-recs`, `webflix-tools`; `s3://<bucket>`; the API's Service, Keycloak's or (outside production) the development issuer's token endpoint, `webflix-jobs` | §9.6; a production pipeline that cannot get a staff token refuses to render |
 | `pipeline.lake.{serialize,schedule,compactEveryMinutes,eraseEveryHours}` | `auto` (serialised with the in-chart Garage), `*/5 * * * *`, 60, 24 | the lake round (§9.7) |
-| `pipeline.jobs.{compact,erase,exportEvents,analyse,trainAndScore}.{enabled,schedule,graceMinutes}` | hourly at :20, daily, every 5 min (grace 15), daily, daily | the separate CronJobs with a store that honours conditional writes; with the lake round only `enabled` and the graces apply |
+| `pipeline.jobs.{compact,erase,exportEvents,retain,analyse,trainAndScore}.{enabled,schedule,graceMinutes}` | hourly at :20, daily, every 5 min (grace 15), daily at 03:50, daily, daily | the separate CronJobs with a store that honours conditional writes; with the lake round only `enabled` and the graces apply (retain runs once a day in the round) |
+| `pipeline.external` | `false` | `true` declares that your own scheduler runs erase, export-events and retain against the lake: the chart then allows `config.events.sink: lake` without its pipeline |
+| `pipeline.extraEnv` | `{}` | e.g. `WEBFLIX_RECS_GATE_CUTOFFS` (the publish gate's weekly backtests, default 3) |
 
 ### External managed services
 
@@ -555,6 +619,25 @@ store needs `externalS3.endpoint` and `forcePathStyle: true`.
 - **Dead letters:** `make k8s-valkey-cli` then `XRANGE webflix:{jobs}:dead - +`.
 - **Backups:** `pg_dump` from `make k8s-psql`; Valkey's AOF and Garage's data are on their PVCs
   (`Retain` on delete). The media bucket can always be re-uploaded from `.cache/media`.
+- **A restore brings erased members back.** A database backup is a copy of members as they
+  were: an account erased after the backup was taken comes back whole with a restore (address,
+  password hash, profiles, billing records, the audit entries that named it), and nothing in the
+  restored database says it was ever erased. Two cases repair themselves: a deletion requested
+  before the backup and completed after it is still pending in the restored database, and the
+  scheduler erases it again on its next tick (erasure is idempotent); and the lake is in the
+  bucket, not in the database backup, so its rewritten hours stay erased, while the pipeline's
+  erasure plan (`recs-work/erasure/plan.json`) keeps removing late events of the last 30 days'
+  pseudonymous keys. A deletion **requested after the backup** leaves nothing that survives the
+  restore (the worker's `privacy.account_erased` log line carries the request id, deliberately
+  not the account). So after restoring, before opening traffic, an operator must list the
+  deletions completed between the backup's time and the restore from records kept outside the
+  database (the support or legal log of requests, the payment provider's deleted customers,
+  retained logs), make each again through the product's deletion path, and let the next lake
+  round erase them. Keep backups only as long as that list can be rebuilt (a short rolling
+  window, encrypted, access-restricted), prefer point-in-time recovery to the latest moment, and
+  treat a restore to an older point as a privacy incident to be worked through. The app Secret
+  (`WEBFLIX_PSEUDONYM_KEY`) is not in the database backup and must be backed up on its own: with
+  a new key every subject key changes and the lake's erasures could no longer find anyone.
 
 | Symptom | Look at |
 | --- | --- |
@@ -575,10 +658,10 @@ store needs `externalS3.endpoint` and `forcePathStyle: true`.
 | S3 adapter against a stalled store | `pnpm --filter @webflix/adapters-node test` | never-answering store: every operation fails within its deadline as `service_unavailable`; a body stalled mid-transfer fails after the idle timeout; a slow reader is not mistaken for a stall |
 | Two API "replicas" in one process | `pnpm --filter @webflix/api test:services` | stream limit, revocation, rate limits, blob manifests, readiness vs dependency health, the ops listener |
 | Migrations after a rollback | `pnpm --filter @webflix/db test` (SQLite), `test:postgres` (PostgreSQL) | newer unknown migrations accepted with a warning; an unknown one in the middle, or a known one missing, refused |
-| Milestone 2 on PostgreSQL | `pnpm --filter @webflix/db test:postgres` | 350 of 350: every area's repository contract, the recommendation store, migrations from empty and from a populated milestone 1 schema, schema equivalence (§9.8) |
-| Chart | `make k8s-test` | `helm lint --strict` on 5 value sets (with the conformance variant); kubeconform (Kubernetes 1.37 + CRD schemas): 209 resources valid; 96 template tests (milestone 2: settings, the app Secret, the Stripe CSP and `Permissions-Policy`, the stand-ins' routes, the lake round, train-and-score's steps, the jobs' token source, Keycloak's realm and mode, the mail catcher) |
+| Milestone 2 on PostgreSQL | `pnpm --filter @webflix/db test:postgres` | 383 of 383 (2026-11-23, migrations to 0026): every area's repository contract (the admin log's erasure with `strpos` included), the recommendation store, migrations from empty and from a populated milestone 1 schema, schema equivalence (§9.8) |
+| Chart | `make k8s-test` | `helm lint --strict` on 5 value sets (with the conformance variant); kubeconform (Kubernetes 1.37 + CRD schemas): 214 resources valid; 117 template tests (milestone 2: settings, the app Secret, the Stripe CSP and `Permissions-Policy`, the stand-ins' routes, the lake round and its retain step, train-and-score's steps, the jobs' token source, Keycloak's realm and mode, the mail catcher, the console's config and CSP, the lake refused when nothing looks after it, the outbox refused in production, NOTES) |
 | In the cluster | `helm test webflix -n webflix` | ops `/readyz` 200 on `:4001` and 404 on the public port; plans, web shell, a missing asset 404 |
-| Web image | `make k8s-test-web` | hashed asset `immutable`; missing `.js`/`.css`/`.png` 404 `no-store` problem, never HTML (also as a page load); deep links get the shell |
+| Web image | `make k8s-test-web` | hashed asset `immutable`; missing `.js`/`.css`/`.png` 404 `no-store` problem, never HTML (also as a page load); deep links get the shell; the console under `/admin/`: its own index (also for deep links) and CSP, `no-store` index and `config.json`, immutable bundle, a missing `/admin/assets/*` a 404 (26 checks) |
 | TLS to PostgreSQL | `make k8s-test-pg-tls` | private CA refused without `tls.extraCaCerts`, accepted with it; plaintext refused; client certificate login |
 | Conformance, production configuration | `make smoke TARGET=k8s SMOKE_ARGS="--timeout 300000"` | 133 checks: 93 passed, 0 failed, 40 skipped (every milestone 1 check that can run passes; the milestone 2 skips and their reasons: §9.2). `media.invalid-key-paths` passes with Envoy refusing `%00` itself (400, §3 Routing) |
 | Conformance, the variant | `make k8s-up VARIANT=conformance`, then the same | twice on each of two databases: 116 / 118 and 117 / 115 passed of 133; the failures are two product defects (the billing confirmation racing its webhooks, experiments cached per replica), everything else passes (§9.2) |
@@ -669,13 +752,14 @@ kind cluster with two API replicas behind Envoy, PostgreSQL 19, Valkey streams a
 | --- | --- | --- |
 | Consumer sign-in | Google and Apple once their clients are configured (`config.identity`); none offered meanwhile (`identity.providers_not_offered`) | the development issuer at `/dev-idp/{google,apple}` (routed by the gateway), sealed with the app Secret's `WEBFLIX_DEV_IDP_SECRET`, single use through the claims table |
 | Staff issuer | Keycloak 26.8.2, realm `webflix` (§9.4) | the development issuer's staff realm (`/dev-idp/staff`) |
+| Staff console | `/admin/` from the web image; `config.json` names Keycloak's realm and the public client `webflix-admin` (§3, Routing) | the same, naming the development issuer; signed in as `staff-admin` in a headless Chromium |
 | Email | SMTP to Mailpit (§9.5) | the database outbox, read back by `GET /diagnostics/mailbox` from any replica |
 | Payments | none (`none`: `GET /billing/config` answers `{"provider":"none"}`, checkouts `503 payments_not_configured`) | the fake provider, state in PostgreSQL (compare-and-set per customer), its form at `/_pay` (routed) |
 | Webhooks, emails, event batches, exports, erasures, imports | jobs on the Valkey stream, consumed by the worker (1 replica; 2 in the variant) | the same |
 | Scheduler | the worker, every 60 s on kind (`config.schedulerIntervalSec`) | every 10 s |
 | Event lake | gzip NDJSON under `events/` in the bucket | the same |
-| Pipeline | CronJobs: the lake round every 5 min (erase, export-events, compact), analyse and train-and-score daily (§9.6) | the lake round every minute, export grace 1 min |
-| Recommendations, experiments | PostgreSQL | PostgreSQL |
+| Pipeline | CronJobs: the lake round every 5 min (erase, export-events, compact, and `retain` once a day), analyse and train-and-score daily (§9.6) | the lake round every minute, export grace 1 min |
+| Recommendations, experiments | PostgreSQL; members no experiment assigns get the rule engine (production's default policy) until `config.recommendations.defaultPolicy: learned` | PostgreSQL; `learned` by default (development) |
 | Security headers | the CSP without Stripe; with `config.billing.paymentProvider: stripe`, Stripe.js's origins (§9.10) | the same (no Stripe) |
 
 ### 9.2 The conformance variant
@@ -739,6 +823,27 @@ events of these runs were processed (at most two attempts each), none dead-lette
 are the right ones: probes not routed, every title packaged, and under relaxed limits the two
 checks that need the strict profile, which pass in run C. A strict run is practical now: the
 suite renews its tokens and no longer counts rate-limit waits against a check's timeout.
+
+**The web step, a first look** (2026-11-23, provisional: other owners' fixes were still landing,
+so the suite in the working tree ran ahead of the images at times; one node, the variant, five
+API replicas under load):
+
+| Run | Images | Checks | Passed | Failed | Skipped | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| G1 | built at the start of the round | 143 | 126 | 13 | 4 | 240 s |
+| G2 | rebuilt from the working tree mid-round (migrations to 0026, the pipeline's retain and erasure list) | 152 | 147 | 1 | 4 | 321 s |
+
+Nothing in either run failed because of Kubernetes. G1's thirteen: eleven contract mismatches
+(the suite's contracts had new fields, `email` on privacy requests, `kind`, `targetLabel` and
+`facts` on audit entries, and a route, `POST /privacy/exports/{id}/download`, that the images did
+not have yet), `staff.roles`' 500 on `GET /system/health` (the image's own response validation:
+its contract had the new `privacy` block while its operations did not fill it yet, a snapshot
+taken mid-change; the current tree fills it, and G2 passes), and `experiments.assignment` (the
+suite's probe race, finding K13). G2's one: `privacy.export-operator` expected `failed` after a
+failed export round while the server answered `processing`, which is what the suite's source
+expects now (it was being changed during the run). G2's logs: no `http.unhandled_error`, no
+`level: error`, no 5xx in the API's and the workers' logs of the window. The full runs wait for
+the security fixes.
 
 The earlier results, before the fixes:
 
@@ -844,7 +949,7 @@ since it holds the jobs client's secret and the demo staff's password):
 
 | Realm part | Value |
 | --- | --- |
-| `webflix-admin` | public client, code flow only, PKCE `S256`, redirect `{publicOrigin}/admin/auth/callback`, an audience mapper adding `webflix-admin-api` to access tokens |
+| `webflix-admin` | public client, code flow only, PKCE `S256`, redirect `{publicOrigin}/admin/auth/callback`, post-logout redirect `{publicOrigin}/admin/`, web origin `{publicOrigin}`, refresh tokens on, an audience mapper adding `webflix-admin-api` to access tokens |
 | roles | the client roles `support`, `billing`, `content`, `experiments`, `admin` of `webflix-admin` (tokens carry them as `resource_access["webflix-admin"].roles`) |
 | `webflix-jobs` | confidential client, service account only, the same audience mapper; its service account user holds `admin` and `experiments` |
 | demo staff (`keycloak.demoStaff`, kind) | `staff-support`, `staff-billing`, `staff-content`, `staff-experiments`, `staff-admin`, `staff-none`; one password in the `webflix-keycloak` Secret (`staff-password`) |
@@ -899,9 +1004,9 @@ development issuer, Keycloak; PostgreSQL and Valkey only for the importer). The 
 
 | CronJob | Schedule (kind) | Pod |
 | --- | --- | --- |
-| `webflix-recs-lake-round` | `*/5 * * * *` (every minute in the variant) | `lake_round.py`: `erase --keys api --confirm api` when keys are pending or daily, the export round, `compact` hourly (§9.7 for why one CronJob) |
+| `webflix-recs-lake-round` | `*/5 * * * *` (every minute in the variant) | `lake_round.py`: `erase --keys api --confirm api` when keys are pending or daily, the export round, `compact` hourly, `retain` daily (§9.7 for why one CronJob) |
 | `webflix-recs-analyse` | daily 04:30 | `analyse-experiments --definitions api`; the worker imports the results on its next tick (`experiments.import-results`) |
-| `webflix-recs-train-and-score` | daily 04:00 | init containers in order on one `/work`: the catalogue snapshot (tools image, `export-catalog.ts`) copied into the bucket, `train-and-score --phase prepare`, the rule engine (tools image, `rule-engine-rankings.ts`), `--phase finish`, `publish` (exit 3, the gate refusing, is not a failure: the served run stays; a young lake is exit 0, `nothing-to-train` then `nothing-to-publish`); then the importer (`node apps/api/src/recs.ts import`, a no-op when that run is served; "No recs/current.json", nothing ever published, is treated as success: below) |
+| `webflix-recs-train-and-score` | daily 04:00 | init containers in order on one `/work`: the catalogue snapshot (tools image, `export-catalog.ts`) copied into the bucket, `train-and-score --phase prepare`, the rule engine (tools image, `rule-engine-rankings.ts`), `--phase finish`, `publish` (exit 3, the gate refusing, is not a failure: the served run stays; a young lake is exit 0, `nothing-to-train` then `nothing-to-publish`); prepare and finish read the erasure list from the staff API with the service account (`--erasures api`, the default with `WEBFLIX_ADMIN_API_URL`) and exit 6, failing the Job, when it cannot be read or 500 or more erasures wait; then the importer (`node apps/api/src/recs.ts import`, a no-op when that run is served; "No recs/current.json", nothing ever published, is treated as success: below) |
 
 **Worker processes.** On the first conformance run an erase in the lake round hung for seven
 minutes with every process asleep on a futex: the pipeline's process pools forked (Python 3.13's
@@ -929,6 +1034,75 @@ deployment takes days (a young lake: `nothing-to-train`) and at smoke size never
 gate refuses). The chart treats exactly that answer as success (the step logs "nothing published
 yet: nothing to import" and exits 0), so the daily Job does not fail for an ordinary state;
 every other failure of the importer still fails the Job.
+
+**Nothing collects into a lake nobody looks after.** A lake that nothing erases keeps deleted
+members' events for ever, and one that nothing expires keeps everything past its retention.
+The chart therefore picks coherent defaults and refuses the incoherent explicit choices:
+`config.events.sink` and `config.events.exportEvents` default to `lake` and `batch` only when
+the lake is looked after, by the chart's pipeline with its erase, exportEvents and retain jobs
+on, or by a runner of the operator's own declared with `pipeline.external: true`; otherwise to
+`memory` (nothing stored) and `inline` (the export job reads the events itself). An explicit
+`lake` or `batch` without either fails the render, naming the three ways out. NOTES.txt says
+which it is: "collected into the lake (…); erased, exported and expired by age (retain, daily)
+by the pipeline's CronJobs", "… by your external runner (pipeline.external: make sure it runs all
+three)", or "not stored (memory: no pipeline to erase or expire a lake); data exports inline".
+
+**Retention in the lake round.** `webflix-recs retain` deletes activity older than
+`WEBFLIX_EVENTS_RETENTION_DAYS` (raw hours, compacted Parquet and manifests, quarantine, dataset
+rows, unpublished artefact versions) and totals older than `WEBFLIX_AGGREGATES_RETENTION_DAYS`.
+They are the product's own settings: `config.events.retentionDays` and
+`aggregatesRetentionDays` reach the API and the pipeline's pods through the one ConfigMap, and
+unset both sides default to 396 and 1 126 days. The lake round runs it last, once a day
+(`pipeline.jobs.retain`, on by default; its own CronJob when the lake is not serialised), with
+`WEBFLIX_RECS_LAKE_SERIALIZED=true` like the other lake steps. Its exit codes: 0, 2 (a bad
+setting), 10 (the store ignores conditional writes and nothing declared the scheduler the lock),
+75 (lake busy), 1; anything but 0 fails the round's Job, and the round tries again five minutes
+later because only a successful run is remembered. Proved on Garage (2026-11-23): the round's
+first run after the upgrade ran `retain` with the product's periods (396 / 1 126, the same the
+API's privacy terms state; `"lakeLease": "scheduler"`, 0.65 s, nothing old enough on a young
+lake). On the simulated lake (`sim/`, 21 days, 1 998 objects) with 14 and 10 days: a dry run
+listed 162 hours, 162 Parquet files, 308 raw objects, 5 dataset tables (19 272 rows) and deleted
+nothing; the real run deleted exactly that (2.9 s; 1 367 objects left, the oldest hour
+`dt=2026-11-09/hh=00`, the plan in `recs-work/retention/last-run.json` first); a rerun found
+nothing to delete.
+
+**A second line of defence in the bucket.** Garage implements S3 lifecycle configuration for
+`Expiration` by days with a prefix filter and `AbortIncompleteMultipartUpload`: in the cluster
+`PutBucketLifecycleConfiguration` with both (396 days on a probe prefix, 1 day for abandoned
+uploads) was accepted and read back as stored, and deleted again afterwards. It also accepted a
+rule with `Transitions`, which it does not implement, with the same `200`, so acceptance proves
+nothing about enforcement; expiry itself runs in Garage's background worker and was not observed
+within the run. Lifecycle ages objects by their write time, not by the hour they hold (compaction
+rewrites objects) and deletes manifests without regard to the hour's other files, so it is a
+backstop only: a rule on `events/` with a margin past the retention (for instance 30 days more)
+catches a `retain` that stopped running, and `AbortIncompleteMultipartUpload` is harmless. The
+chart does not install one; apply it with the bucket's owner's tools, and alert on the age of
+`recs-work/retention/last-run.json` instead of relying on it.
+
+**Erasures in train-and-score.** Nobody erased or newly restricted may be in a dataset: prepare
+reads the staff API's erasure list before building the dataset and finish reads it again before
+scoring, both with the jobs' service account (the CronJob's prepare and finish containers carry
+`WEBFLIX_ADMIN_API_URL`, `WEBFLIX_STAFF_TOKEN_URL`, `WEBFLIX_STAFF_CLIENT_ID` and the secret, like
+every pipeline container). Proved with the release's own train-and-score pod moved to the
+simulated lake (store `sim/`, `--as-of` the simulated end; 56 s): prepare called `GET
+/api/admin/v1/system/privacy/erasures` (200) at its start and left 3 keys out
+(`excludedAtStart`), the Node step ranked 235 profiles, finish called it again before scoring
+(`excludedAtScoring: 3`, status `scored`), and publish was refused by the gate (exit 3, expected
+at this size). On the product's young lake the CronJob's run read the list too (7 keys out) and
+ended `nothing-to-train`. With a wrong client secret prepare exits 6 ("POST …/token: HTTP 401")
+and the pod fails: the Job fails, as it should, until erase has run or the staff API answers.
+
+**The publish gate** needs backtests at rolling weekly cutoffs that all beat the rule engine
+(`WEBFLIX_RECS_GATE_CUTOFFS`, default 3; set it through `pipeline.extraEnv`). The rule engine's
+input now has one section per cutoff and its outputs go under `/work/train/<backtest run>/`, so
+prepare, the Node step and finish keep sharing the pod's `/work`; their command lines did not
+change. A lake younger than about 14 days ends `nothing-to-train` (exit 0); three cutoffs need
+about 28 days. A rerun of a cutoff already scored fails (finding K14, §9.11).
+
+**The demo run** (`make k8s-recs-demo`, `deploy/kind/recs-demo.sh`) labels its pages
+`demo:<run>`: after the rebuild the demo profile Alex's home answered `policy {"id":
+"demo:20261123-010138-de00de00"}` with Top Picks for Alex, the same on three requests (the run
+replaced the smoke pipeline's imported run, hence `REPLACE=1`).
 
 **At smoke size, every step as a Kubernetes workload** (`make k8s-pipeline-smoke`): a Job with
 the CronJobs' images runs the whole pipeline on a simulated lake (300 accounts, 21 days ending
@@ -1037,6 +1211,20 @@ only on SQLite and D1, passed its 18 contract tests on PostgreSQL too (a tempora
 not kept: its package belongs to billing). In the cluster, the migrations ran from empty on the
 in-chart PostgreSQL (revision 1) and again as no-ops on every later revision.
 
+**The web step's migrations on a database with data** (2026-11-23). A cluster brought up with
+the previous images (schema at 0017), given data by a subset of the conformance suite, then
+upgraded: the migrate Job applied `0018_admin_audit_request`, `0019_billing_next_invoice`,
+`0020_events_deletion_membership`, `0021_billing_client_secrets` and
+`0022_identity_access_proven` with the data kept (22 accounts, 10 memberships, 16 invoices, 16
+audit entries, 4 privacy requests before and after). After a conformance run had filled it
+further (112 accounts), a dump of that database restored into a scratch PostgreSQL 19 took
+`0023_admin_audit_privacy` to `0026_billing_amount_reasons` from the working tree, and then the
+rebuilt images' migrate Job applied the same four in the cluster: 0023's data rewrite masked the
+3 `member.searched` entries (`j***`) and cleared the 3 `privacy.erasures_confirmed` key lists,
+nothing else changed. `test:postgres` at 0026: 383 of 383, including the admin log's erasure
+whose `contains` is `strpos(lower(column), value) > 0` on PostgreSQL (the cases "erases a member
+from the log" and "deletes the dead letters that mention an erased member" ran on PostgreSQL).
+
 ### 9.9 Several replicas: what must be shared
 
 Every check of the conformance variant ran against two API replicas and two workers (§9.2).
@@ -1105,6 +1293,15 @@ outside; the table below it is the finding as first reported):
 | K11 | events (docs) | docs/BACKEND.md §3, "Download your data" | "until something runs the job (no deployment schedules it yet), a batch export stays processing" | Kubernetes schedules it now (the lake round) |
 | K12 | billing | `GET /billing/payment-method/setup/:id` → `getPaymentMethodSetup` → `completeSetup` → `providerCall` (`packages/core/src/areas/billing/service.ts`) | `500 internal_error` in `billing.dunning` in two of three runs after the fixes: the poll completes the card change while the same completion runs elsewhere (the worker on the setup's event, or another replica's poll); the fake answers `PaymentProviderError` `unavailable` "a request with this key is in flight" (`default-card-<setup>`), and it reaches the HTTP layer unhandled (log `http.unhandled_error`, request `smk-a64ed4-1550`) | "card changes record success last and polls retry": a poll that meets the completion in flight elsewhere answers the setup's current state (still processing), and the next poll sees it finished; a provider's `unavailable` should never be a 500 |
 
+**Found in the web step's round** (2026-11-23; reported, not patched here):
+
+| # | Owner | Where | Seen | The design calls for |
+| --- | --- | --- | --- | --- |
+| K13 | conformance suite | `tools/smoke/src/checks/experiments.ts` `awaitLive` | probes both experiments' assignments until the later of their two `statusChangeAt` instants, and right up to it: in G1 the profile probe left the suite 14 ms before the device experiment went live and reached the API (log 00:09:51.977Z) after the profile experiment had (its start answered at 00:08:51.956Z, 60 s ahead): "the profile's assignment before the start takes effect differs", `treatment`. The product did what it said. Only Kubernetes and Cloudflare run with a propagation delay, so only they can hit it | probe each experiment until its own instant, and stop a margin (the suite's `LIVE_MARGIN_MS`) before it |
+| K14 | recommendation pipeline | `train-and-score` in its split form (prepare, the Node rule engine, finish), `AlreadyScored` | a cutoff already scored leaves neither the engine input nor the state file: the Node step fails (`ENOENT /work/train/engine-input.ndjson`, exit 1) and, past it, finish fails (`FileNotFoundError /work/train/train-and-score.json`). Any second run of a day's cutoff hits it: the CronJob's retry after its import failed (`backoffLimit: 1`), or a run started by hand, so a failed import is not retried until the next day's cutoff. Shown with the release's own pod on the simulated lake | prepare answers an already scored cutoff the way it answers nothing to train: an empty engine input and a state saying `already-scored`, so the Node step and finish pass and publish and import run again |
+| K15 | personalisation (low) | the importer's cache invalidation (`RecommendationServing.invalidate`) in a one-shot process | the demo Job's first Valkey connection timed out (a new pod's first second, while the network policy is programmed; `connect ETIMEDOUT`), `cache.invalidate_failed` was logged as a warning and not retried; the import itself succeeded. Bounded: every replica rereads the model within `MODEL_MAX_AGE_MS` (30 s) | retry the invalidation briefly, or wait for Valkey before importing, as the API and worker pods do in their init container |
+| K16 | events / privacy (design) | restore of a database backup (§5) | an account whose deletion was requested after the backup comes back whole, and nothing that survives the restore names it (`privacy.account_erased` logs the request id, deliberately not the account) | keep a record of completed erasures that survives a restore without identifying anyone by itself (for instance subject keys alongside the pipeline's erasure plan in the bucket) and replay it after a restore |
+
 ### 9.12 Verified by running, and only reasoned about
 
 Run on this machine: everything in the tables above marked measured or proved (the two
@@ -1115,7 +1312,31 @@ TARGET=valkey OUTAGE_SEC=20` on it with this chart: every API pod Ready througho
 segments, artwork and browse kept working, heartbeats 503 with `Retry-After` within 148 ms, no
 restart, recovered by itself).
 
+In the web step's round (2026-11-23, one node, the conformance variant): the console through the
+gateway (curl and a headless Chromium sign-in, before and after the rebuild), `make k8s-test-web`
+(26 checks), the access-log proof (§3), PostgreSQL's logging settings read back, the migrations
+on data (§9.8) and `test:postgres`, `make k8s-recs-demo` (a `learned:` page for Alex on the first
+images, `demo:` after the rebuild), `make k8s-verify` (journey, jobs, rollout: 137 222 requests,
+0 failed, p99 48 ms), `make k8s-chaos` for Valkey and PostgreSQL, `make k8s-test-drift`, `make
+k8s-ownership`, `deploy/kind/verify/pg-tls.sh` on the API image (with `WEBFLIX_ENV=development`
+set by the script; the images themselves default to `production`, read back with `printenv`), `make
+k8s-pipeline-smoke` twice (311 and 315 s; erase of one simulated account now 163 s), the lake
+round's `retain` on the product's lake and on the simulated one (dry, real, again), the
+train-and-score pod reading the erasure list twice and failing closed (exit 6), the bucket's
+lifecycle probe, the two first-look conformance runs (§9.2). Not run in that round:
+`make k8s-outage`, `k8s-partition` and `k8s-spread` (they need three nodes), `rotation.ts`, and
+`make k8s-test-keycloak` and `k8s-test-smtp` (the production configuration, not the variant).
+
 Reasoned, not run:
+
+- **The console on the production configuration**: `config.json` names Keycloak's realm at
+  `https://webflix-keycloak:8443`, which a browser reaches only with the hosts entry, the
+  port-forward and the CA (§9.4); its CSP adds that origin to `connect-src`. The realm's
+  `webflix-admin` client was rendered and its import proved earlier; a browser sign-in through
+  Keycloak to the console was not run.
+- **Keycloak's own log** on failed staff logins (usernames, addresses), and whether a log
+  pipeline keeps container logs longer than the kubelet does: not checked here (§3, Access logs).
+- **Garage's lifecycle expiry** being enforced (accepted and stored, not observed deleting).
 
 - **Stripe as the provider on Kubernetes.** The chart renders Stripe's CSP and takes the keys
   through `secrets.envFrom`; no Stripe sandbox was created for this work, production refuses

@@ -15,7 +15,7 @@ import {
   TvIcon,
   toast,
 } from "@webflix/ui";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
 import { qk } from "../../../app/query/keys.ts";
@@ -52,10 +52,15 @@ export function AccountDevicesPage() {
   const [revoking, setRevoking] = useState<DeviceSession | null>(null);
   const [everywhere, setEverywhere] = useState(false);
 
+  const listRef = useRef<HTMLUListElement>(null);
+  const focusAfter = useRef<number | null>(null);
   const revoke = useMutation({
     mutationFn: (device: DeviceSession) => api().revokeDevice({ params: { id: device.id } }),
     meta: { silent: true },
     onMutate: async (device) => {
+      // Its row (and the button that opened the dialog) is about to go: focus goes to the row
+      // that takes its place once the dialog has closed (UX review 2.7).
+      focusAfter.current = sorted.findIndex((item) => item.id === device.id);
       setRevoking(null);
       return optimisticUpdate(queryClient, qk.account.devices(), (data) => {
         const list = data as DeviceSessionList;
@@ -142,7 +147,7 @@ export function AccountDevicesPage() {
             }
           />
         ) : (
-          <ul className="flex flex-col divide-y divide-line-subtle">
+          <ul ref={listRef} className="flex flex-col divide-y divide-line-subtle">
             {sorted.map((device) => {
               const Icon = DEVICE_ICONS[device.deviceType];
               return (
@@ -210,6 +215,15 @@ export function AccountDevicesPage() {
         title={`Sign out ${revoking?.label ?? "this device"}?`}
         description={`It will need to sign in again${hasPassword ? " with your email and password, or a provider you've linked" : ""}. Anything playing on it stops within about half a minute.`}
         confirmLabel="Sign out device"
+        onCloseAutoFocus={(event) => {
+          const index = focusAfter.current;
+          focusAfter.current = null;
+          if (index === null || index < 0) return;
+          event.preventDefault();
+          const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>("li button") ?? [];
+          const next = buttons[Math.min(index, buttons.length - 1)];
+          next?.focus();
+        }}
         onConfirm={() => {
           if (revoking) revoke.mutate(revoking);
         }}

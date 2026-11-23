@@ -32,11 +32,13 @@ only through a checkout at the payment provider (besides the seeded demo account
 shared and cannot change, and staff, who extend an existing membership). The suite signs up
 (`{email, password}`) and checks out with one of the fake provider's labelled test cards (a card
 of its own: the trial, nothing charged). A check that only needs an account (sign-in, profiles,
-PINs, browsing, rate limits) uses an account without a membership. On a deployment without the
-fake provider (production configuration: provider `none` or Stripe) no member can be made: the
-checks that need one skip with that reason ("needs a member account, and a member comes about
-only through a checkout…"). On a no-provider run that is 54 checks besides the 23 that drive the
-fake provider itself.
+PINs, privileges, My List, ratings, notifications, browsing, rate limits, experiment assignment)
+uses an account without a membership (`isolatedViewer(tag, { member: false })`, `bareSignup`).
+On a deployment without the fake provider (production configuration: provider `none` or Stripe)
+no member can be made: the checks that need one (they play, or bill) skip with that reason
+("needs a member account, and a member comes about only through a checkout…"). On a
+no-provider dev API that is 37 checks besides the 25 that drive the fake provider itself; 85
+pass there, 0 fail.
 
 ## Running it
 
@@ -114,7 +116,7 @@ Requirements are detected from outside, never assumed from the mode name:
 | Packaged media | starting playback yields a same-origin `/media/{token}/…` manifest (titles with preview clips or real artwork are tried first; at most 24 probes) | the `media.*` checks on segments, `plans.quality-cap`, `media.quality-cap` (which also needs a title with a rendition above 720p) |
 | External HLS fallback | starting playback yields an absolute third-party manifest URL | `media.external-fallback` |
 | Demo account | signing in as the documented demo account | `browse.demo-first-load`, `identity.demo-account-protected` |
-| Rate-limit profile | a concurrent burst of PIN attempts on a locked profile of a fresh account (`profile-pin` is keyed by account, so measuring it affects nobody else; locking the profile spent one unit, a password check, which is counted) compared with the documented values: strict 5/min, dev 60/min. `payment` (10 per 10 min), `auth-email` (10 per 15 min) and `playback-start` (60/min) are the same in both profiles | `ratelimit.strict-defaults`, `consistency.rate-limit-exact`, `plans.payment-budget`, `ratelimit.playback-start`, `ratelimit.auth-email` |
+| Rate-limit profile | a concurrent burst of PIN attempts on a locked profile of a fresh account (`profile-pin` is keyed by account, so measuring it affects nobody else; locking the profile spent one unit, a password check, which is counted) compared with the documented values: strict 5/min, dev 60/min. `payment` (10 per 10 min), `auth-email` (10 per 15 min), `playback-start` (60/min), `promotion` (10 per 10 min) and `billing` (30 per 10 min) are the same in both profiles, so their checks need no measurement (`--rate-limits promotion=…,billing=…` pins others) | `ratelimit.strict-defaults`, `consistency.rate-limit-exact`, `plans.payment-budget`, `ratelimit.playback-start`, `ratelimit.auth-email`, `billing.promo-budget`, `billing.provider-budget` |
 | Popularity diagnostics | `GET /titles/:id/popularity` answers (absent when `WEBFLIX_ENV=production`, which the OpenAPI document tells apart from a missing route) | `pipeline.credit-bounded`, `pipeline.popularity-view` |
 | Probes exposed | `/healthz` answers (k8s routing keeps probes internal: skipped there) | `ops.health` |
 | Development issuer | `GET /auth/providers` offers the provider and `/dev-idp/{provider}/.well-known/openid-configuration` answers; a start that redirects to a real issuer skips the journey | `identity.oidc.*`, `identity.password-reset.drops-identities`, `billing.member-journey` |
@@ -127,7 +129,7 @@ Requirements are detected from outside, never assumed from the mode name:
 | Labelled cards | the fake provider takes `<test card>:<label>`, a card of that kind with a fingerprint of its own (a card that never had a trial); a provider that refuses one skips the check with that reason | `billing.trial-*`, `billing.member-journey`, `billing.dunning`, and the spent card below |
 | Privacy terms | `GET /privacy/requests` → `terms`: the export mode (`inline` or `batch`) and its typical time, the cooling-off period (the erasure check skips above 60 s without creating a request); in batch mode the job's rounds and deferrals are read from the audit log | `privacy.export`, `privacy.export-operator`, `privacy.deletion.erasure` |
 | Service client | the staff realm's `webflix-jobs` client-credentials grant (published development secret) | `staff.service-account` |
-| Recommendation run | `GET /system/recommendations` (`activeModel`) | `experiments.recommendation-status` |
+| Recommendation run | `GET /system/recommendations` (`activeModel`; fresh while `expiresAt` is ahead; a demo run's id ends `-de00de00`) | `experiments.recommendation-status` (any run), `personalisation.consent` (a fresh one) |
 
 ## Effect on the target
 
@@ -155,7 +157,10 @@ Requirements are detected from outside, never assumed from the mode name:
   Use `--no-ip-exhaustion` if other people share that address.
 - Packaged-media checks keep one playback session alive with heartbeats for the duration of the
   run and stop it at the end.
-- Milestone 2 checks add about 45 accounts per run (most signed up without a card, a dozen
+- The per-account budgets (`promotion`, `billing`: ten minutes) are spent on accounts of the
+  checks' own (`billing.promo-budget`, `billing.provider-budget`), so nothing else is throttled
+  and a rerun starts afresh.
+- Milestone 2 checks add about 60 accounts per run (most signed up without a card, a dozen
   through the development issuer with typed addresses `smoke-<run>-…@smoke.webflix.test`), a
   customer at the fake provider for each checkout, and messages in the local mailbox for those
   addresses. Time passes only on each customer's own test clock, so no other account (the demo
@@ -189,13 +194,16 @@ Requirements are detected from outside, never assumed from the mode name:
 
 Observed runs, for telling a regression from the deployment's shape:
 
-- **Dev API configured for the whole suite** (below): every check passes but five Milestone 1
-  checks that cannot apply (no web build served, no external-fallback title, two strict-limit
-  checks under relaxed limits); about 3 minutes.
+- **Dev API configured for the whole suite** (below, the demo run imported): every check passes
+  but five Milestone 1 checks that cannot apply (no web build served, no external-fallback title,
+  two strict-limit checks under relaxed limits); about 3 minutes. Without the demo run,
+  `experiments.recommendation-status` and `personalisation.consent` skip too (no run served).
+  `privacy.export-operator`'s batch cases need `WEBFLIX_EXPORT_EVENTS=batch` (a second dev API).
 - **Local Worker** (`make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10`, 30 s cooling-off): the same,
   with `privacy.export` completed by the batch job loop.
 - **Kubernetes, production configuration** (Keycloak as the staff issuer, mail over SMTP to a
-  mail catcher, no payment provider): the Milestone 1 checks pass and the Milestone 2 ones skip,
+  mail catcher, no payment provider): the checks that play or bill skip (no member can be made),
+  the account-only ones pass, and the Milestone 2 ones skip,
   each with its reason (no development issuer, no mailbox, Keycloak tokens, a 14-day cooling-off,
   no read-back, and for billing: the deployment has no payment provider, `GET /billing/config`
   answering `none`). `billing.provider-config` runs there and asserts what a deployment without a
@@ -204,9 +212,19 @@ Observed runs, for telling a regression from the deployment's shape:
   routed through the gateway: correct). With several replicas, a checkout stranded by a race
   between the provider's webhook and the browser's confirmation is a product defect being fixed;
   experiment status changes now take effect at one stated instant (`statusChangeAt`), which the
-  assignment check waits for (docs/KUBERNETES.md §9.11).
+  assignment check waits for, probing each experiment only until 2 s before its own instant
+  (docs/KUBERNETES.md §9.11, K13).
 - Strict limits make a run long (about 16 minutes on the cluster): staff and job tokens (five
-  minutes) are renewed as they near expiry, so the late staff checks keep working.
+  minutes) are renewed as they near expiry, so the late staff checks keep working. The promo-code
+  and provider budgets are the same in both profiles and per account, so their checks behave
+  alike on strict and relaxed targets; the extra password resets and verification links of
+  `identity.oidc.prehijack` and `identity.oidc.address-change` spend the `email-send` budget
+  (strict: 10 per 15 minutes per address), where a strict run waits rather than fails.
+- **Batch exports** (Kubernetes, Cloudflare): `privacy.export` completes only through the
+  deployment's own `export-events` job (it skips naming the two fixes when none runs);
+  `privacy.export-operator` plays the job's part itself for one request of its own (deferred,
+  then failed: still listed, still one export at a time), racing a real job that might finish
+  that request first.
 
 ## What a deployment must provide for nothing to be skipped
 
@@ -226,7 +244,7 @@ suite detects; without it the named checks skip with this reason, never pass.
 | The fake provider's standing promo code (`WEBFLIX_PAYMENTS_FAKE_PROMOTIONS`, default `WEBFLIX50`), or `--promo-code` | the code the promo journey applies | `billing.promo-code.applied` |
 | Batch exports (`WEBFLIX_EXPORT_EVENTS=batch`, the default on Kubernetes and Cloudflare): the pipeline's `export-events` job running on a schedule shorter than `--export-wait` (5 minutes), with a grace that fits `--export-wait-max` (20 minutes; the job's own default grace is 15 minutes), posting to `POST /system/privacy/exports/results`. Locally on Cloudflare `make cf-dev CF_JOBS_EVERY=10` (or `make cf-export-events` by hand); on Node, `inline` where it is allowed | without a job a batch export never completes: the check skips naming both fixes; a job that runs and does not finish the export, or fails it, fails the check | `privacy.export` |
 | The development staff realm's service client `webflix-jobs` (client credentials, roles admin and experiments) | a job's token for the operator routes | `staff.service-account` |
-| An imported recommendation run (`make recs`, then `node apps/api/src/recs.ts import` on Node, `make cf-recs-import` on Cloudflare: the staff route refuses a run too large for one Worker invocation with `recommendation_import_too_large`) | the served model's status | `experiments.recommendation-status` |
+| An imported recommendation run (`make recs`, then `node apps/api/src/recs.ts import` on Node, `make cf-recs-import` on Cloudflare: the staff route refuses a run too large for one Worker invocation with `recommendation_import_too_large`), fresh for `personalisation.consent`; a demo run serves where no pipeline run is fresh (`node apps/api/src/recs.ts demo` on Node with the API's environment, `make k8s-recs-demo` on Kubernetes) | the served model's status; serving following consent and restriction | `experiments.recommendation-status`, `personalisation.consent` |
 | `WEBFLIX_CONSENT_MODE` | the consent check proves the configured mode only: run once per mode to prove all three (`opt-in` default, `opt-out`, `off`) | `privacy.events` and `privacy.kids-profile` skip in `off` |
 
 The local Worker under test: `make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10` with a 30 s
@@ -237,10 +255,14 @@ of your own):
 PORT=5750 WEBFLIX_PUBLIC_ORIGIN=http://localhost:5750 WEBFLIX_DATABASE_URL=sqlite:/tmp/smoke/webflix.sqlite \
   WEBFLIX_BLOB_DIR=/tmp/smoke/blobs WEBFLIX_DELETION_COOLING_OFF_SEC=10 WEBFLIX_SCHEDULER_INTERVAL_SEC=5 \
   node apps/api/src/main.ts serve
+# then, once it answers, a demo recommendation run (fresh for three days) so the learned-serving
+# checks run, with the same environment:
+WEBFLIX_DATABASE_URL=sqlite:/tmp/smoke/webflix.sqlite WEBFLIX_BLOB_DIR=/tmp/smoke/blobs \
+  node apps/api/src/recs.ts demo
 make smoke BASE_URL=http://localhost:5750
 ```
 
-## Check catalogue (143)
+## Check catalogue (152)
 
 `[c]` consistency fan-out · `[x]` exclusive (runs alone, last) · `[d]` demo account.
 
@@ -262,7 +284,9 @@ never do · `ops.asset-miss` the entry script is immutable JavaScript; missing `
 
 **identity (13)**: `identity.email-status` · `identity.signup` an account with no membership
 (`subscription`, `plan` and the card null, `membership.status` none), cookie attributes
-(HttpOnly, SameSite=Lax, Path=/, Secure + `__Host-` on https), duplicate email ·
+(HttpOnly, SameSite=Lax, Path=/, Secure + `__Host-` on https), duplicate email; with no profile
+yet `GET /account` answers (the account is its own holder), once a profile exists another device
+at the gate gets `profile_required` ·
 `identity.signup.card-data-refused` a sign-up or a plan change carrying a card is
 `validation_failed` and creates nothing, no answer echoes the card, `PUT /account/payment-method`
 is gone (404) ·
@@ -278,7 +302,7 @@ measures) · `identity.demo-account-protected` [d] `account.isDemo`; email, card
 refused with `demo_account_protected` · `identity.password-byte-limit` a password over 1024 bytes
 after NFKC is a `validation_failed` on `password` and creates nothing.
 
-**profiles (10)**: `profiles.crud` defaults, edit, partial settings, lowering vs raising the ceiling,
+**profiles (11)**: `profiles.crud` defaults, edit, partial settings, lowering vs raising the ceiling,
 delete, last profile · `profiles.five-profile-cap` · `profiles.kids` 7+ cap, password for loosening ·
 `profiles.kids-off-needs-password` the documented rule on its own · `profiles.maturity-filtering`
 7+ and 13+ profiles: browse, genres, search, detail, similar, episodes, playback, My List, ratings ·
@@ -290,7 +314,12 @@ switches and signs out · `privileges.gate-and-locked` at the gate a new profile
 while controls are in use; a locked profile needs its PIN (or the password) to be renamed,
 restricted or deleted · `privileges.account-holder` account routes answer `profile_required` at
 the gate and `unrestricted_profile_required` from a 13+ profile · `privileges.pin-locks-other-devices`
-a PIN set on one device sends another device on that profile back to the gate.
+a PIN set on one device sends another device on that profile back to the gate ·
+`privileges.no-profile` an account with no profile is its own holder at the gate: account,
+devices, identities and privacy requests answer; `PATCH /account` without the password is
+`password_required` (nothing changes), an export and a deletion `reauthentication_required` until
+a fresh proof (then accepted; the deletion kept); its first profile, a kids one, brings
+`profile_required` back at the gate and `unrestricted_profile_required` on the kids profile.
 
 **browse (16)**: `browse.views` billboard (null for new-popular), typed rows, ranks ·
 `browse.row-batches` cursors, no repeated rows, tampered cursor · `browse.row-pagination` next pages
@@ -391,7 +420,7 @@ a release with the final position: the title's views for the day move by exactly
 60 s to the elapsed time credited. Both read `GET /titles/:id/popularity` and skip in
 production.
 
-**identity, milestone 2 (11)**: `identity.oidc.google-signup` providers listed (public,
+**identity, milestone 2 (13)**: `identity.oidc.google-signup` providers listed (public,
 cacheable); the start is a code flow with S256 PKCE, state and nonce and the exact callback; an
 HttpOnly transaction cookie (`__Host-`, Secure on https); `signed-up` back at `returnTo`, a
 session for an account with no password, a verified address and membership `none`; the
@@ -419,14 +448,25 @@ session) proves it for 5 minutes and stands in for the password (a first passwor
 embedded JWK, wrong issuer, audience, expired, nonce, tampered state, PKCE mismatch, a code of
 another client, an unverified address) all `failed`, nobody signed in, no account created;
 Cancel is `cancelled` · `identity.verify-email` the link's token is in the fragment, single use,
-a forged one refused · `identity.oidc.auto-link` both sides verified: the Google sign-in links
-itself · `identity.password-reset` the same 204 for an unknown address, a single-use link, every
-device signed out, the old password refused, the address verified, a security alert ·
-`identity.password-reset.drops-identities` a reset drops an identity linked under another
-address; moved to that address and verified, the account is still `link-required` for the
-dropped identity, until the account holder links it on purpose.
+a forged one refused · `identity.oidc.auto-link` the address verified in the account's own
+session, both sides verified: the Google sign-in links itself (the honest path) ·
+`identity.oidc.prehijack` (security review H1) someone signs up with the owner's address and a
+password, proves it and links an Apple identity of their own; the owner opens the verification
+link signed out in another browser; Google with the address is `link-required` and signs nobody
+in; the owner's reset from the mailbox answers 200 with a session for that account, the set-up's
+session is refused, its password refused, its Apple identity gone (and signing in to something
+else); Google then signs in to the account · `identity.oidc.address-change` verified in its own
+session the account links Google; moved to a new address verified from a browser with no
+session, Google with the new address is `link-required` · `identity.password-reset` the same 204
+for an unknown address, a single-use link whose confirmation answers 200 with the session (the
+account, at the profile gate, the profiles listed, a session cookie) and signs that browser in,
+every other device signed out, the old password refused, the address verified, a security alert
+· `identity.password-reset.drops-identities` a reset drops an identity linked under another
+address; moved to that address and verified in the account's own session (the proof an
+automatic link needs is there), the account is still `link-required` for the dropped identity,
+until the account holder links it on purpose.
 
-**billing (18)**, the fake provider and its clock: `billing.provider-config` (every deployment)
+**billing (21)**, the fake provider and its clock: `billing.provider-config` (every deployment)
 `GET /billing/config` tells the truth: `none` answers `payments_not_configured` to checkout,
 confirmation, promo validation and card setup, serves no fake form or payment webhook, and
 leaves memberships `none`; a deployment advertising the fake must serve its form ·
@@ -451,6 +491,20 @@ the account, the next bill and the first bill after the trial at the full price 
 submission too, then the checkout completes · `billing.next-invoice` `membership.nextInvoice`:
 the plan's price at the trial's end, at the period's end once active, exactly the preview's
 renewal figure and date after a downgrade, null while cancelling, back after resuming ·
+`billing.amounts` `GET /billing/checkout` states `trialEligible` with no checkout open (true, then
+false once the account had a trial); amounts with their reasons add up as
+`amount + creditApplied + discount` = the price before them: the renewal (no reasons), a
+downgrade's preview (the new plan's remaining time, the unused time as credit) and its next
+renewal, the next invoice using the credit, and a restart's checkout, stated at
+`requires_setup` (the account can no longer have a trial) with the credit and the code; the
+downgrade's invoice is negative: a credit, nothing paid or due · `billing.promo-budget`
+(security review M1) the account's promo-code budget (10 per 10 minutes, both profiles) is spent
+by validations and checkouts with a code alike: then both answer 429 with `Retry-After`; the open
+checkout's own code answers 201 with the same checkout, a checkout without a code 201; another
+account looks codes up as usual · `billing.provider-budget` the checkout start, the card setup and
+the previews share the account's `billing` budget (30 per 10 minutes, both profiles, refill
+allowed for): spent, a preview and a card setup answer 429 with `Retry-After`; another account
+starts a checkout; 50 parallel polls of a card change and of a checkout all answer 200 ·
 `billing.promo-code.refused` an unknown code (`unknown`), at validation and checkout ·
 `billing.promo-code.applied` the standing `WEBFLIX50` (or `--promo-code`) quoted, the first
 payment asks exactly the quoted price and the invoice charges it · `billing.trial-converts` a
@@ -469,7 +523,7 @@ open invoice and playback returns · `billing.provider-events` [x] forged and un
 refused; with every event delivered twice, late and shuffled the membership is the provider's
 and each email went once; during an outage the checkout and a card change still complete.
 
-**privacy (10)**: `privacy.events` a batch accepted, read back with the client's ids, times,
+**privacy (11)**: `privacy.events` a batch accepted, read back with the client's ids, times,
 payloads and positions, stamped by the server (receipt time, pseudonymous 22-character subject
 keys, plan, consent); a client-supplied subject, two devices in a batch, 51 events, over 64 KiB
 refused; a signed-out device's own consent; read-back is per account · `privacy.kids-profile` client
@@ -479,10 +533,15 @@ kept · `privacy.consent` the configured mode (opt-in: withheld until granted, w
 grant wins; off: nothing), GPC detected, a kids profile cannot answer · `privacy.export` a fresh
 proof, one export at a time (two concurrent requests: exactly one), completed with a link
 (emailed), an attachment matching `DataExport` with the account, profiles, events, consents and
-each area's part; another account, a signed-out browser and a tampered token get nothing; the link
-lives as long as the terms say; the email links to the web app's page
-`{origin}/account/privacy/exports/{id}#token=…` (no query, the token in the fragment), whose token
-downloads the document through the API route. The mode comes from the terms: inline must finish
+each area's part (identity; billing with its `checkouts`, never a client secret, and
+`promotionCodes`; personalisation's `recommendationLists` and `personalisationWithdrawnAt`;
+admin's `staffAccess`, each item exactly `at` and `action`, staff reading the member included);
+the request's `email` pending, then `sent`; another account, a signed-out browser and a tampered
+token get nothing; another device of the account without a fresh proof is
+`reauthentication_required` in both forms (a bad token is `not_found` first), then downloads with
+`POST /privacy/exports/:id/download`, the token in the body; the link lives as long as the terms
+say; the email links to the web app's page `{origin}/account/privacy/exports/{id}#token=…` (no
+query, the token in the fragment), whose token downloads the document through the POST route. The mode comes from the terms: inline must finish
 within twice its typical time; in batch mode the pending entry is checked (the account's key, the retention window up to the
 request), then the check waits for the deployment's job as the audit log shows it (a round
 within `--export-wait`, then its deferral) · `privacy.export-operator` the operator's export
@@ -490,7 +549,8 @@ routes are admin only (four roles refused, a member's session unauthenticated); 
 document for an unknown request is recorded as `ignored` and creates nothing; one naming another
 request's file, the member's export document, a lake object, or a complete result without its
 checksum is `validation_failed`; in batch mode a `deferred` result keeps the export listed and
-`processing` ·
+`processing`, and so does a `failed` one (the job's next round retries it; a new export is
+`privacy_request_pending`; the give-up a day after the request is not observable in a run) ·
 `privacy.terms` `GET /privacy/requests` serves the terms (cooling-off, export link lifetime,
 export mode and typical time, retention), positive and coherent, the same for another account,
 not to a signed-out caller · `privacy.deletion` a fresh proof, one at a time, scheduled after the
@@ -501,19 +561,35 @@ period closes inside the cooling-off; keeping the account leaves it `ending` and
 at the period's close, and resuming renews again · `privacy.deletion.blocks-billing` while the
 deletion is scheduled, resume, a plan change, a new checkout and confirming one started before
 answer `409 account_deletion_scheduled` (the member cannot make it renew), a preview and a card
-change stay allowed, and keeping the account lifts the rule at once · `privacy.deletion.erasure` the account erased when the period ends (sessions end,
-the address is free).
+change stay allowed, and keeping the account lifts the rule at once · `privacy.deletion.emails`
+(privacy review M7) a member's deletion sends `account-deletion-scheduled` with its date and a
+link to `/account/privacy`, the request's `email` is `sent`; keeping sends
+`account-deletion-canceled`; the renewals it stopped send no `cancellation` email, an ordinary
+cancel afterwards does · `privacy.deletion.erasure` the account erased when the period ends
+(sessions end, sign-in refused, the address is free); with a staff token: staff read the member
+first, and afterwards `GET /system/health` `privacy.erasuresInProgress` returns to 0, `GET
+/audit?targetId=<the account>` is empty, and the staff entry remains with target `erased:…` (not
+the account id) and `targetLabel` "Erased member". While the erasure runs, a poll that sees
+`processing` asserts the account can be neither kept (`not_found`) nor asked again
+(`privacy_request_pending`); it usually lasts less than a poll, which the check notes.
 
-**staff (6)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
+**staff (7)**: `staff.roles` seven routes (one per role, and `/me`) for seven personas (each
 role, none, another client's admin): allowed exactly for the role and admin, otherwise
 `staff_role_required` naming the role; no token, a forged one, an ID token, a member's cookie
 are `unauthenticated`; a mutation without the client header is refused; a staff token opens no
 member route · `staff.refund` a partial refund, its retry answered with the same refund, the key
 with another amount or another staff member `staff_action_conflict`, refunded once on the
 invoice (the conflict names the first attempt's audit entry, `auditId`), the rest refunded,
-nothing more; both audited · `staff.support-audit` reading a member
-(no password hash), removing a PIN, recording consent, sending a reset (the email), signing out
-everywhere (both devices out): each audited with its request id, reason and actor ·
+nothing more; both audited with `facts.amount` and the member's address as `targetLabel` ·
+`staff.support-audit` reading a member (no password hash), removing a PIN, recording a consent
+withdrawal (a staff grant is `consent_grant_member_only` and changes nothing), sending a reset
+(the email), signing out everywhere (both devices out): each audited with its request id, reason
+and actor · `staff.audit-privacy` (privacy review L9, UX 2.17) a search by a full address leaves a
+`member.searched` read whose entry holds no address; a withdrawal is an action labelled with the
+member's address and its facts; reading `GET /audit` and the operator's export and erasure lists
+writes `audit.read`, `privacy.exports_listed`, `privacy.erasures_listed`; `kind=action` holds no
+read and `kind=read` reads only; `GET /system/health` `privacy` has its nine fields, the oldest
+given exactly when something waits ·
 `staff.console-reads` title search (by name, by ids in order, the unknown left out) and
 availability reads for the content role only; `GET /audit/mine` holds the caller's entries
 only, `before` null; `GET /audit?requestId=` exactly that request's entries ·
@@ -522,6 +598,14 @@ when deleted; both audited · `staff.service-account` the `webflix-jobs` client-
 gives an access token only, roles exactly admin and experiments, opening the operator routes; a
 wrong secret gets no token; a member's session opens no operator route and the job's token no
 member route.
+
+**personalisation (1)**: `personalisation.consent` (privacy review L1, pipeline L6) with a
+fresh model served (a demo run counts: `node apps/api/src/recs.ts demo`), a member who played a
+title gets the model's label (`learned:`/`neighbours:` of the run, `demo:` for a demo run);
+personalisation turned off, the page is `rules` with no Top Picks within 30 s and still 35 s
+later; turned on, the label is back within 30 s; under a demo run no page (the demo account's
+included) says `learned:` or `neighbours:`; the profile made kids gets `rules`. Skips without a
+fresh model, and with a trained model that contributes nothing to a new member's page.
 
 **experiments (2)**: `experiments.assignment` [x] two experiments the suite starts (profile and
 device units), live at the instant the staff API's answer states (`statusChangeAt`: null in dev,
@@ -611,7 +695,8 @@ Checks live in `src/checks/<area>.ts` and are registered in `src/checks/index.ts
   `agent.api.*` for the typed, validating client, `agent.fetch(path)` for raw requests (media,
   headers, malformed input). Agents refuse third-party origins.
 - Isolation: never mutate shared state. Use `ctx.env.signup(tag)` for account-level state (plans,
-  devices, profiles), `ctx.env.isolatedViewer(tag)` for per-profile state (library, playback),
+  devices, profiles; `bareSignup` when no membership is needed), `ctx.env.isolatedViewer(tag)`
+  for per-profile state (library, playback; `{ member: false }` when the check never plays),
   `ctx.env.browseViewer()` and `ctx.env.catalog()` only for reads, the demo account only for reads.
 - Assertions (`src/expect.ts`) carry expected/observed and the request: `succeeds`, `rejects`
   (narrows the problem extensions), `problem`, `status`, `header`, `equal`, `check`, `fail`.

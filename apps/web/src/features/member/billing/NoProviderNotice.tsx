@@ -32,7 +32,7 @@ export function NoProviderNotice({
       </Heading>
       <p className="max-w-prose type-body text-fg-muted">
         {children ??
-          "This Webflix isn't set up to take payments, so there's no way to pay for a membership on it. Nothing has been charged."}
+          "Webflix can't take payments right now, so there's no way to pay for a membership. Nothing has been charged."}
       </p>
       {action ? <div className="mt-2 flex flex-wrap justify-center gap-3">{action}</div> : null}
     </section>

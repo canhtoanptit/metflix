@@ -326,9 +326,41 @@ export function createCollector(
         eventIds: invalid.slice(0, 20),
       });
     }
-    if (valid.length === 0) return 0;
-    await eventSink.append(valid);
-    return valid.length;
+    const kept = await withoutErasedSubjects(valid);
+    if (kept.length === 0) return 0;
+    await eventSink.append(kept);
+    return kept.length;
+  }
+
+  /**
+   * An erased subject's events are never stored again (privacy review L6): a late replay of a
+   * dead-lettered append, or anything still in flight when an erasure starts. Every event of an
+   * account being erased goes; an event of a profile erased on its own (it became restricted)
+   * goes when it was received before that erasure was asked for. One read per batch.
+   */
+  async function withoutErasedSubjects(events: LakeEvent[]): Promise<LakeEvent[]> {
+    const subjects = new Set<string>();
+    for (const event of events) {
+      if (event.subject.account) subjects.add(event.subject.account);
+      if (event.subject.profile) subjects.add(event.subject.profile);
+    }
+    if (subjects.size === 0) return events;
+    const erased = new Map(
+      (await repos.events.erasuresOf([...subjects])).map((record) => [record.subjectKey, record]),
+    );
+    if (erased.size === 0) return events;
+    const kept = events.filter((event) => {
+      if (event.subject.account && erased.get(event.subject.account)?.kind === "account") {
+        return false;
+      }
+      const profile = event.subject.profile ? erased.get(event.subject.profile) : undefined;
+      if (!profile) return true;
+      return profile.accountKey === null && Date.parse(event.receivedAt) > profile.requestedAt;
+    });
+    if (kept.length < events.length) {
+      logger.info("events.erased_subject_dropped", { count: events.length - kept.length });
+    }
+    return kept;
   }
 
   return { ingest, emitServerEvent, stampServerEvent, writeLake };

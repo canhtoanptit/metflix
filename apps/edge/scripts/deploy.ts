@@ -9,9 +9,10 @@
  *   node scripts/deploy.ts media-key add|promote|retire [--dry-run] [--force]
  *   node scripts/deploy.ts bundle                   production bundle (no upload) + size report
  *
- * `deploy` = check the production config → provision → plan the secrets → stage assets → D1
- * migrations (remote) → media upload → seed → `wrangler deploy` (+ the secrets a first deploy
- * sets, the release name as WEBFLIX_RELEASE) → readiness check.
+ * `deploy` = check the production config (and that a lake has a declared runner of its jobs,
+ * lib/lake-jobs.ts) → provision (the R2 lifecycle rules behind retention included) → plan the
+ * secrets → stage assets → D1 migrations (remote) → media upload → seed → `wrangler deploy` (+
+ * the secrets a first deploy sets, the release name as WEBFLIX_RELEASE) → readiness check.
  * Every step is idempotent, so a failed run is fixed by running it again.
  *
  * `--dry-run` needs no account: it validates the production config, stages the assets,
@@ -43,6 +44,13 @@ import { unstable_readConfig } from "wrangler";
 import { type Env, loadEdgeConfig } from "../src/env.ts";
 import { stageAssets } from "./lib/assets.ts";
 import { routingForOrigin, writeProductionIds, writeProductionRouting } from "./lib/config.ts";
+import {
+  LAKE_JOBS_VARIABLE,
+  lakeJobsIssues,
+  lifecycleRules,
+  runnerChecklist,
+  workerRetention,
+} from "./lib/lake-jobs.ts";
 import {
   formatKeys,
   MEDIA_KEYS_SECRET,
@@ -155,6 +163,11 @@ async function provision(dryRun: boolean): Promise<void> {
     plan(
       `wrangler r2 bucket info ${wanted.bucket} → else: wrangler r2 bucket create ${wanted.bucket}`,
     );
+    for (const rule of retentionLifecycle()) {
+      plan(
+        `wrangler r2 bucket lifecycle remove ${wanted.bucket} --name ${rule.name} (if present), then add ${wanted.bucket} ${rule.name} ${rule.prefix} --expire-days ${rule.expireDays} --force`,
+      );
+    }
     for (const queue of wanted.queues) {
       const retention = wanted.deadLetterQueues.includes(queue)
         ? ` --message-retention-period-secs ${DEAD_LETTER_RETENTION_SEC}`
@@ -213,6 +226,30 @@ async function provision(dryRun: boolean): Promise<void> {
     say(`creating R2 bucket ${wanted.bucket}…`);
     await wrangler(["r2", "bucket", "create", wanted.bucket]);
   }
+  // Retention's second line of defence (lib/lake-jobs.ts): replaced every time, so a changed
+  // events period reaches the rule; the bucket's other rules are left alone.
+  for (const rule of retentionLifecycle()) {
+    await wrangler(["r2", "bucket", "lifecycle", "remove", wanted.bucket, "--name", rule.name], {
+      allowFailure: true,
+    });
+    await wrangler([
+      "r2",
+      "bucket",
+      "lifecycle",
+      "add",
+      wanted.bucket,
+      rule.name,
+      rule.prefix,
+      "--expire-days",
+      String(rule.expireDays),
+      "--force",
+    ]);
+  }
+  say(
+    `R2 lifecycle: ${retentionLifecycle()
+      .map((rule) => `${rule.prefix} after ${rule.expireDays} days`)
+      .join(", ")} (behind the pipeline's daily retain)`,
+  );
 
   // Queues (the dead-letter queue included: it must exist before the consumer references it).
   // Nothing consumes the dead-letter queue, so it keeps messages as long as Queues allows.
@@ -420,6 +457,39 @@ function checkProductionConfig(release: string, dryRun: boolean): void {
     if (!dryRun) throw new Error(`refusing to deploy: ${detail}`);
     say(`WARNING: a real deploy would stop here: ${detail}`);
   }
+  checkLakeJobs(config.vars as Record<string, unknown>, dryRun);
+}
+
+/**
+ * A lake needs a runner of its jobs (privacy review M2): without one, deleted members stay in
+ * R2, batch exports never finish and nothing enforces retention. Stops a real deploy; a
+ * declared runner gets its checklist printed.
+ */
+function checkLakeJobs(vars: Record<string, unknown>, dryRun: boolean): void {
+  const issues = lakeJobsIssues(vars);
+  if (issues.length > 0) {
+    const detail = `the event lake would have nobody to erase or expire it:\n  - ${issues.join("\n  - ")}`;
+    if (!dryRun) throw new Error(`refusing to deploy: ${detail}`);
+    say(`WARNING: a real deploy would stop here: ${detail}`);
+  }
+  if (vars.WEBFLIX_EVENT_SINK !== "lake") return;
+  say(
+    `lake jobs (${LAKE_JOBS_VARIABLE}=${String(vars[LAKE_JOBS_VARIABLE] || "<unset>")}): the runner needs and runs (docs/CLOUDFLARE.md §10.4):`,
+  );
+  for (const line of runnerChecklist({
+    vars,
+    bucket: readProductionConfig().bucket,
+    origin: productionOrigin(),
+  })) {
+    say(`  ${line}`);
+  }
+}
+
+/** The lifecycle rules for the production events period (the Worker's own value). */
+function retentionLifecycle() {
+  return lifecycleRules(
+    workerRetention(productionWranglerConfig().vars as Record<string, unknown>),
+  );
 }
 
 function readWorkerName(): string {

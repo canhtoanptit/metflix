@@ -26,13 +26,20 @@ export function PlanStep() {
   const config = useBillingConfig();
   const plans = useQuery(queries.plans());
   // A checkout in progress (on this device or another) preselects its plan.
-  const open = useQuery(queries.openCheckout());
+  const open = useQuery({
+    ...queries.openCheckout(),
+    // A deployment without payments has no checkout to read.
+    enabled: config.data !== undefined && config.data.provider !== "none",
+  });
   const [chosen, setChosen] = useState<PlanId | null>(
     () => search.plan ?? readDraft().planId ?? null,
   );
   const fallback = plans.data?.items.find((plan) => plan.highlighted)?.id ?? null;
   const selected = chosen ?? open.data?.checkout?.planId ?? membership.planId ?? fallback;
-  const trialDays = plans.data?.items.find((plan) => plan.trial)?.trial?.days ?? null;
+  // The server says whether this account can still have a trial (UX review 2.6).
+  const eligible = open.data?.trialEligible;
+  const trialDays =
+    eligible === false ? null : (plans.data?.items.find((plan) => plan.trial)?.trial?.days ?? null);
 
   const choose = (value: string) => {
     const planId = value as PlanId;
@@ -65,7 +72,9 @@ export function PlanStep() {
           title="Choose the plan that's right for you"
           description={
             trialDays
-              ? `New members get ${trialDays} days free (one trial per member and per card): cancel before it ends and you won't be charged. Every plan has the whole catalog and no ads.`
+              ? eligible
+                ? `Your first ${trialDays} days are free (one trial per card): cancel before they end and you won't be charged. Every plan has the whole catalog and no ads.`
+                : `New members get ${trialDays} days free (one trial per member and per card): cancel before it ends and you won't be charged. Every plan has the whole catalog and no ads.`
               : "Every plan has the whole catalog and no ads. Change or cancel anytime."
           }
         />

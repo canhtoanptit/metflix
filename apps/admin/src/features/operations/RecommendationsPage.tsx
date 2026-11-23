@@ -31,7 +31,7 @@ export function RecommendationsPage() {
     <>
       <PageHeader
         title="Recommendations"
-        description="The learned model members' home pages are ranked with. Where it has no fresh list for a profile, the rule engine ranks instead: that's cold start, not an error."
+        description="The learned model's lists, imported from the pipeline. Profiles no experiment assigns are ranked by the deployment's default: in production the rule engine, until an operator turns the learned model on (WEBFLIX_RECS_DEFAULT_POLICY); elsewhere the learned model. Where a profile has no fresh list, the rule engine ranks: that's cold start, not an error."
         actions={
           <>
             {model ? (
@@ -138,15 +138,22 @@ function LastImport({ status }: { status: RecommendationStatus }) {
   );
 }
 
-/** What an import request found, in words (`RecommendationImportAnswer.outcome`). */
+/**
+ * What an import request found, in words (`RecommendationImportAnswer.outcome`). A run queued
+ * under the name of the run already served is that run rewritten by the pipeline (an erasure
+ * removed rows from it): the import applies it in place.
+ */
 export function importOutcomeText(answer: RecommendationImportAnswer): string {
+  const run = answer.run ?? "(unnamed)";
   switch (answer.outcome) {
     case "queued":
-      return `Run ${answer.run ?? "(unnamed)"} is being imported. Members get it within a few minutes of the import finishing; Last import shows how it went.`;
+      return answer.run !== null && answer.activeModel?.run === answer.run
+        ? `Run ${run}, the one served, was published again with corrected content (the pipeline removes erased members from published runs). The import applies it in place and drops the lists it no longer holds; Last import shows how it went.`
+        : `Run ${run} is being imported. Lists of erased members and of profiles whose account withdrew consent are never written. Members get it within a few minutes of the import finishing; Last import shows how it went.`;
     case "nothing_published":
       return "Nothing to import: the pipeline hasn't published a run yet. Nothing changed.";
     case "already_served":
-      return `Run ${answer.run ?? "(unnamed)"} is already the one being served. Nothing changed.`;
+      return `Run ${run} is already served, exactly as published. Nothing changed.`;
     case "invalid":
       return `The published run${answer.run ? ` ${answer.run}` : ""} can't be imported: ${answer.detail ?? "its files don't check out"}. Nothing changed; the pipeline must publish a good run.`;
     case "no_artefact_store":
@@ -168,7 +175,7 @@ function ImportAction({
       onOpenChange={onOpenChange}
       scope="recommendations:import"
       title="Import the latest published run"
-      description="Imports the run the pipeline last published, if it is new. Members get it within a few minutes of the import finishing."
+      description="Imports the run the pipeline last published, if it differs from the one served (a new run, or the served run rewritten after an erasure). Members get it within a few minutes of the import finishing."
       confirmLabel="Import"
       audit={{ targetType: "recommendations", targetId: "served" }}
       run={({ reason, signal, headers }) =>

@@ -2,6 +2,7 @@ import type { RateLimiterObject, StreamGateObject } from "@webflix/adapters-clou
 import {
   ConfigError,
   type CoreConfig,
+  ENVIRONMENTS,
   loadCoreConfig,
   PBKDF2_DEFAULT_ITERATIONS,
   PBKDF2_MAX_ITERATIONS,
@@ -71,6 +72,15 @@ export interface EdgeConfig {
 
 const EdgeVars = z.object({
   WEBFLIX_MODE: z.literal("cloudflare"),
+  // Required here, never defaulted: `loadCoreConfig` reads an absent WEBFLIX_ENV as development,
+  // which on a deployed Worker would mount the development issuer (staff tokens anyone can mint),
+  // default to the fake payment provider and open the mailbox. wrangler.jsonc sets it in both
+  // sections (development locally, production in env.production); a Worker without it answers
+  // 503 config.invalid instead of running open.
+  WEBFLIX_ENV: z.enum(ENVIRONMENTS, {
+    error: () =>
+      "required on Cloudflare (development or production): absent, the Worker would run as development",
+  }),
   WEBFLIX_PASSWORD_ITERATIONS: z.coerce
     .number<string>()
     .int()

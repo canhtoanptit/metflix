@@ -5,7 +5,7 @@
  * browser would; a deployment without the stand-ins (production configuration, a real Google
  * client) skips these journeys with the reason.
  */
-import { type APIRequestContext, expect, type Page, test } from "@playwright/test";
+import { type APIRequestContext, expect, type Locator, type Page, test } from "@playwright/test";
 import { CLIENT_HEADERS, createProfile, selectProfile, sendPatiently } from "./api.ts";
 
 export type MemberIssuer = "google" | "apple";
@@ -132,4 +132,18 @@ export async function passwordAccount(
     request.post("/api/v1/auth/signup", { headers: CLIENT_HEADERS, data: { email, password } }),
   );
   expect(signup.status(), `sign up: ${await signup.text()}`).toBe(201);
+}
+
+/**
+ * Answer the issuer's page if it shows: with its own session from an earlier attempt in this
+ * browser, a provider signs straight back without asking (single sign-on), as Google does.
+ */
+export async function answerIssuerIfAsked(
+  page: Page,
+  answer: IssuerAnswer,
+  done: Locator,
+): Promise<void> {
+  const form = page.locator('form[data-dev-idp="sign-in"]');
+  await expect(form.or(done).first()).toBeVisible();
+  if (await form.isVisible()) await answerIssuer(page, answer);
 }

@@ -19,6 +19,7 @@ import { AUDIT_OUTCOMES, type AuditOutcome } from "@webflix/contracts";
 import { type ComponentType, lazy, type ReactElement, Suspense } from "react";
 import { useStaff } from "../access/staff.tsx";
 import { LoadingPage, NoPermission } from "../components/states.tsx";
+import { AUDIT_SHOW, type AuditShow } from "../features/operations/audit-filter.ts";
 import { NotFound, Shell } from "./Shell.tsx";
 
 /**
@@ -239,6 +240,11 @@ export interface AuditSearch {
   outcome?: AuditOutcome;
   /** The entries of the request sent with this `X-Request-Id` (an action whose outcome was unclear). */
   requestId?: string;
+  /**
+   * Which entries: `actions` (changes only), `all` (views of member data too) or `views`. Absent:
+   * actions, or everything when looking for a request's entry.
+   */
+  show?: AuditShow;
 }
 
 const text = (value: unknown, pattern: RegExp): string | undefined =>
@@ -254,6 +260,9 @@ export function parseAuditSearch(search: Record<string, unknown>): AuditSearch {
     actorId: text(search.actorId, /^[^\s]{1,255}$/),
     outcome,
     requestId: text(search.requestId, /^[A-Za-z0-9._-]{1,64}$/),
+    show: (AUDIT_SHOW as readonly string[]).includes(String(search.show))
+      ? (search.show as AuditShow)
+      : undefined,
   };
   // The router merges validated values over the raw URL: overwrite, never omit, a rejected one.
   return parsed;
@@ -273,11 +282,12 @@ export const auditRoute = createRoute({
 export interface ActivitySearch {
   outcome?: AuditOutcome;
   requestId?: string;
+  show?: AuditShow;
 }
 
 export function parseActivitySearch(search: Record<string, unknown>): ActivitySearch {
-  const { outcome, requestId } = parseAuditSearch(search);
-  return { outcome, requestId };
+  const { outcome, requestId, show } = parseAuditSearch(search);
+  return { outcome, requestId, show };
 }
 
 export const activityRoute = createRoute({

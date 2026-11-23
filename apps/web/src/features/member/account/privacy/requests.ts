@@ -51,6 +51,29 @@ export function scheduledDeletion(
   return request?.scheduledFor ? { ...request, scheduledFor: request.scheduledFor } : undefined;
 }
 
+/** A deletion whose erasure has started: it cannot be stopped, and the account is locked. */
+export function deletionInProgress(items: readonly PrivacyRequest[]): PrivacyRequest | undefined {
+  return items.find((item) => item.kind === "deletion" && item.status === "processing");
+}
+
+/**
+ * What the request's email will do, in a sentence (privacy review L10): promised only when one is
+ * on its way, and said plainly when the address cannot receive it. Null when there is nothing
+ * worth saying (no email for this request).
+ */
+export function exportEmailLine(request: PrivacyRequest, address: string): string | null {
+  switch (request.email) {
+    case "pending":
+      return `We'll email ${address} when it's ready.`;
+    case "sent":
+      return `We emailed ${address} when it was ready.`;
+    case "suppressed":
+      return `We can't email ${address} (earlier emails to it didn't arrive), so check back here.`;
+    default:
+      return null;
+  }
+}
+
 /**
  * The membership a kept account still has set to end (the member cancelled their deletion after
  * it stopped the renewals): offer to resume it.

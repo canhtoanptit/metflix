@@ -17,6 +17,7 @@ const copy = <T>(value: T): T => structuredClone(value);
 /** The identity area's own state, kept beside the milestone 1 store it extends. */
 interface IdentityState {
   emailVerifiedAt: Map<string, number>;
+  accessProvenAt: Map<string, number>;
   elevatedUntil: Map<string, number>;
   identities: Map<string, LinkedIdentityRecord>;
   tokens: Map<string, AccountTokenRecord>;
@@ -33,6 +34,7 @@ function stateOf(owner: object): IdentityState {
   if (!state) {
     state = {
       emailVerifiedAt: new Map(),
+      accessProvenAt: new Map(),
       elevatedUntil: new Map(),
       identities: new Map(),
       tokens: new Map(),
@@ -69,6 +71,7 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
     // The empty string is how storage says "no password" (accounts.password_hash is NOT NULL).
     passwordHash: account.passwordHash === "" ? null : account.passwordHash,
     emailVerifiedAt: s.emailVerifiedAt.get(account.id) ?? null,
+    accessProvenAt: s.accessProvenAt.get(account.id) ?? null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
   });
@@ -146,6 +149,7 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       if (account.emailVerifiedAt !== null) {
         s.emailVerifiedAt.set(account.id, account.emailVerifiedAt);
       }
+      if (account.accessProvenAt != null) s.accessProvenAt.set(account.id, account.accessProvenAt);
       sessions.set(session.id, copy(session));
       if (identity)
         s.identities.set(identityKey(identity.provider, identity.subject), copy(identity));
@@ -158,6 +162,7 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       if (!account) return;
       Object.assign(account, { email, updatedAt: now });
       s.emailVerifiedAt.delete(accountId);
+      s.accessProvenAt.delete(accountId);
     },
 
     async markEmailVerified(accountId, email, now) {
@@ -244,25 +249,28 @@ export function createMemoryIdentityRepository(store?: MemoryStore): IdentityRep
       return token ? copy(token) : null;
     },
 
-    async consumeVerificationToken(tokenHash, now) {
+    async consumeVerificationToken(tokenHash, now, sessionAccountId) {
       tick();
       const token = liveToken(tokenHash, "verify_email", now);
       if (!token) return null;
       token.usedAt = now;
       if (!s.emailVerifiedAt.has(token.accountId)) s.emailVerifiedAt.set(token.accountId, now);
+      if (sessionAccountId === token.accountId) s.accessProvenAt.set(token.accountId, now);
       return token.accountId;
     },
 
-    async completePasswordReset({ tokenHash, passwordHash, now }) {
+    async completePasswordReset({ tokenHash, passwordHash, now, session }) {
       tick();
       const token = liveToken(tokenHash, "reset_password", now);
       const account = token ? accounts.get(token.accountId) : undefined;
-      if (!token || !account) return null;
+      if (!token || !account || session.accountId !== account.id) return null;
       Object.assign(account, { passwordHash, updatedAt: now });
       if (!s.emailVerifiedAt.has(account.id)) s.emailVerifiedAt.set(account.id, now);
-      for (const [id, session] of sessions) {
-        if (session.accountId === account.id) sessions.delete(id);
+      s.accessProvenAt.set(account.id, now);
+      for (const [id, existing] of sessions) {
+        if (existing.accountId === account.id) sessions.delete(id);
       }
+      sessions.set(session.id, copy(session));
       const unlinked: OidcProvider[] = [];
       for (const identity of identitiesOf(account.id)) {
         if (identity.emailAtLink !== account.email) {

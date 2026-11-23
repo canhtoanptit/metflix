@@ -52,6 +52,12 @@ spec:
             - listen_addresses=*
             - -c
             - log_min_duration_statement=1000
+            # Slow statements are logged as text, never with their parameter values: those are
+            # what members search for and the addresses staff look up.
+            - -c
+            - log_parameter_max_length=0
+            - -c
+            - log_parameter_max_length_on_error=0
           env:
             - name: POSTGRES_DB
               value: {{ $c.database | quote }}

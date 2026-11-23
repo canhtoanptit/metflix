@@ -30,7 +30,7 @@ from webflix_recs.experiments.analysis import (
     unit_data,
 )
 from webflix_recs.experiments.synthetic import SyntheticDesign, generate, to_events, write_lake
-from webflix_recs.ids import DAY_MS, HOUR_MS
+from webflix_recs.ids import DAY_MS, HOUR_MS, iso_ms, parse_iso_ms
 from webflix_recs.storage import LocalStorage
 
 if TYPE_CHECKING:
@@ -105,9 +105,47 @@ def test_aa_is_flat_under_daily_peeking_and_naive_peeking_is_not() -> None:
         f"A/A over {seeds} seeds, 14 daily looks: "
         f"mSPRT {sequential / seeds:.3f}, naive {naive / seeds:.3f}"
     )
-    assert sequential / seeds <= ALPHA + margin
+    # The mixture test is conservative on this generator (about 1 in 600 over 1,000 seeds,
+    # measured in review). A bound at alpha would pass an estimator whose variance is half the
+    # truth (false positives 0.045 to 0.062); 0.02 does not.
+    assert sequential / seeds <= 0.02
     # Reading a fixed-horizon test at every look is what the protection exists for.
     assert naive / seeds > ALPHA + margin
+
+
+def _independent_always_valid_p(design: SyntheticDesign, seed: int) -> float:
+    """The primary metric's always-valid p from the same synthetic draw, computed here from the
+    unit values with plain numpy (Welch variance of the difference in means at each look, the
+    normal-mixture likelihood ratio with tau = MDE x the control mean, the running maximum)."""
+    drawn = generate(design, seed)
+    names = [name for name, _ in design.variants]
+    data = unit_data(
+        population(drawn.exposures, design.key, design.start_ms, design.end_ms, names),
+        drawn.outcomes,
+    )
+    looks = daily_looks(design.start_ms, design.end_ms)
+    values = look_metrics(data, looks)[design.primary_metric]
+    best = 0.0
+    for row in range(len(looks)):
+        arms = [values[row][(data.variant == arm) & ~np.isnan(values[row])] for arm in (0, 1)]
+        if min(len(arm) for arm in arms) < 2:
+            continue
+        v = sum(float(arm.var(ddof=1)) / len(arm) for arm in arms)
+        d = float(arms[1].mean() - arms[0].mean())
+        t2 = (design.mde * abs(float(arms[0].mean()))) ** 2
+        if v > 0 and t2 > 0:
+            best = max(best, 0.5 * math.log(v / (v + t2)) + d * d * t2 / (2 * v * (v + t2)))
+    return min(1.0, math.exp(-best))
+
+
+@pytest.mark.parametrize("effect", [0.0, 0.20])
+def test_the_always_valid_p_uses_the_right_variance(effect: float) -> None:
+    """A variance off by any factor (half, double) changes every look's likelihood ratio: the
+    report must match an independent computation, not merely stay under alpha in an A/A."""
+    design = SyntheticDesign(key="recs-variance", units=3000, effect=effect, mde=0.10)
+    for seed in (11, 12, 13):
+        reported = _primary(_analyse(design, seed))["sequential"]["alwaysValidP"]
+        assert reported == pytest.approx(_independent_always_valid_p(design, seed), rel=1e-9)
 
 
 def test_planted_effect_is_detected_at_the_computed_power() -> None:
@@ -523,3 +561,80 @@ def test_device_units_take_the_outcomes_of_the_profiles_signed_in_there(tmp_path
     means = analysed["metrics"]["qualified_plays"]["variants"]
     assert means["control"]["mean"] == 1.0 and means["treatment"]["mean"] == 3.0
     assert analysed["diagnostics"]["deviceProfileLinks"] == 40
+
+
+def test_a_grant_by_support_never_counts_as_analytics_consent(tmp_path: Path) -> None:
+    """An exposed unit whose account's latest analytics consent change is a grant by support is
+    not counted, though its events are stamped as consenting; a member's own later answer
+    counts again. The same holds for a signed-in device unit of that account."""
+    from helpers import make_event
+    from helpers import write_lake as write_events
+    from webflix_recs.experiments.analysis import read_lake
+
+    storage = LocalStorage(tmp_path)
+    start = 1_790_000_000_000
+    support, answered, own = "S" * 22, "M" * 22, "O" * 22
+    events = []
+    for account, sources in (
+        (support, ["support"]),
+        (answered, ["support", "settings"]),
+        (own, ["banner"]),
+    ):
+        for offset, source in enumerate(sources):
+            events.append(
+                make_event(
+                    "consent.change", start + offset * HOUR_MS, profile=None, account=account,
+                    purpose="analytics", granted=True, source=source,
+                )
+            )  # fmt: skip
+        events.append(
+            make_event(
+                "experiment.exposure", start + 3 * HOUR_MS, profile=account.lower(),
+                account=account, experimentKey="recs-x", variant="control", unitType="profile",
+            )
+        )  # fmt: skip
+    write_events(storage, events, "a")
+    lake, _, _ = read_lake(str(tmp_path), as_of_ms=start + DAY_MS)
+    exposures, _ = lake.frames_for("profile")
+    consenting = dict(zip(exposures["profile"], exposures["analytics"], strict=True))
+    assert consenting == {"s" * 22: False, "m" * 22: True, "o" * 22: True}
+    assert lake.support_grants["account"].to_list() == [support]
+
+
+def test_a_stopped_or_paused_experiments_window_ends_when_it_stopped() -> None:
+    """The latest status change bounds the window: completed or paused, the window ends when that
+    took effect (not at an absent `endsAt`, nor at a later one); a scheduled start starts it."""
+    from webflix_recs.experiments.definitions import normalise_definitions
+
+    base = _product_definition()
+    start = parse_iso_ms(base["registeredAt"])  # after startsAt: the window starts here
+    stop = iso_ms(start + 5 * DAY_MS)
+    answer = {
+        "items": [
+            {**base, "key": "done", "status": "completed", "endsAt": None,
+             "statusChangeAt": stop, "previousStatus": "running"},
+            {**base, "key": "held", "status": "paused", "endsAt": iso_ms(start + 9 * DAY_MS),
+             "statusChangeAt": stop, "previousStatus": "running"},
+            {**base, "key": "later", "status": "running", "statusChangeAt": stop,
+             "previousStatus": "draft"},
+            {**base, "key": "unknown", "status": "completed", "endsAt": None,
+             "statusChangeAt": None},
+        ]
+    }  # fmt: skip
+    normalised, skipped = normalise_definitions(answer)
+    mapped = {e["key"]: e for e in normalised["experiments"]}
+    assert mapped["done"]["endsAt"] == stop and mapped["held"]["endsAt"] == stop
+    assert mapped["later"]["startsAt"] == stop
+    assert [s["key"] for s in skipped] == ["unknown"]
+
+
+def test_secondary_metrics_are_judged_at_a_split_alpha() -> None:
+    design = SyntheticDesign(key="recs-x", units=2000)
+    report = _analyse(design, 3)
+    metrics = report["metrics"]
+    primary = metrics[report["primaryMetric"]]["comparisons"][0]["sequential"]["alpha"]
+    others = [m for m in metrics if m != report["primaryMetric"]]
+    assert others
+    for name in others:
+        alpha = metrics[name]["comparisons"][0]["sequential"]["alpha"]
+        assert alpha == pytest.approx(primary / len(others)), name

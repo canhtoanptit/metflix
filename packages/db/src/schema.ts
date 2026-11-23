@@ -29,6 +29,11 @@ export interface AccountsTable {
   updated_at: number;
   /** Milestone 2 (identity, 0002). */
   email_verified_at: number | null;
+  /**
+   * Identity, 0022: when every way in was last proven to be set up by the address's owner;
+   * automatic linking requires it (the migration says when it is set and cleared).
+   */
+  access_proven_at: number | null;
 }
 
 export interface SubscriptionsTable {

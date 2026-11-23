@@ -23,7 +23,11 @@ export interface EventsRepository {
   addConsent(record: ConsentRecord): Promise<void>;
   /**
    * The answer in force per purpose at `at` (epoch ms): the latest given at or before it, a tie
-   * going to the later id. At most one record per purpose; one round trip.
+   * going to the later id. At most one record per purpose; one round trip. A grant recorded by
+   * support (`source: "support"`, `granted: true`, from before staff could only withdraw) is
+   * never an answer in force: only the member can grant, so the answer before it applies (or
+   * the mode's default, Global Privacy Control and the opt-in prompt with it). It stays in the
+   * history (`listConsents`).
    */
   consentsAt(accountId: string, at: number): Promise<ConsentRecord[]>;
   /** Every answer of the account, oldest first (data export). */
@@ -58,10 +62,25 @@ export interface EventsRepository {
    */
   waitingExports(limit: number): Promise<PrivacyRequestRecord[]>;
   /**
-   * Exports whose job may be lost: `pending` or `processing` without a document, not updated
-   * since `before`, least recently updated first, at most `limit`.
+   * Exports whose job may be lost: `pending` or `processing` and not waiting for the pipeline
+   * (no document, or the finished one recorded before its email went out), not updated since
+   * `before`, least recently updated first, at most `limit`.
    */
   staleExports(before: number, limit: number): Promise<PrivacyRequestRecord[]>;
+  /**
+   * Exports still open (`pending` or `processing`, waiting for the pipeline or not) requested
+   * before `before`: to be given up. Oldest request first, at most `limit`.
+   */
+  overdueExports(before: number, limit: number): Promise<PrivacyRequestRecord[]>;
+  /**
+   * Deletions whose erasure is in progress (`processing`) and due to run again: `retryAt` at or
+   * before `now` (a failed attempt's backoff, or the lease of a run that never finished), or no
+   * `retryAt` at all (left `processing` before retries were recorded). Oldest erasure first, at
+   * most `limit`.
+   */
+  dueErasureRetries(now: number, limit: number): Promise<PrivacyRequestRecord[]>;
+  /** Deletions whose erasure is in progress (`processing`), oldest start first, at most `limit`. */
+  erasuresInProgress(limit: number): Promise<PrivacyRequestRecord[]>;
   /**
    * `scheduled` deletions whose membership renewals are still being stopped
    * (`membershipStep: "stopping"`): billing has not confirmed yet. Least recently updated first
@@ -86,6 +105,24 @@ export interface EventsRepository {
    * records of the accounts among them, are settled.
    */
   markErasuresCompacted(subjectKeys: readonly string[], at: number): Promise<void>;
+  /**
+   * Erasure records still unsettled for data known at `asOf` (epoch ms): pending, or compacted
+   * at or after `asOf`. Every kind (accounts, their profiles, profiles erased alone), ordered by
+   * subject key, those after `after` (keyset), at most `limit`. For the recommendation importer
+   * (personalisation's `withheldSubjects` seam): a run with data up to `asOf` may still carry
+   * these keys, and must not be stored for them.
+   */
+  erasuresUnsettledAt(
+    asOf: number,
+    after: string | null,
+    limit: number,
+  ): Promise<PrivacyErasureRecord[]>;
+  /**
+   * The erasure records, settled or not, of these subject keys (at most one each): what the lake
+   * writer checks before storing events, so a late replay never puts an erased subject's events
+   * back. One round trip per 90 keys.
+   */
+  erasuresOf(subjectKeys: readonly string[]): Promise<PrivacyErasureRecord[]>;
 
   /**
    * Playback sessions still open whose credit clock (`lastHeartbeatAt`, within a few seconds of
@@ -108,6 +145,33 @@ export interface EventsRepository {
    * still waiting in the event outbox go in the same batch.
    */
   deleteAccount(accountId: string): Promise<boolean>;
+  /**
+   * Erasure, its first step after identity's own part: nobody can use the account any more,
+   * whatever later step fails. One batch: every session ends, linked identities and pending
+   * tokens (verification, password reset) go, the password is cleared, the email address is
+   * replaced by `erased-{id}@erasure.invalid` (so no sign-in, reset or automatic link can find
+   * the account), and the account's rows waiting in the event outbox go. The second (and last)
+   * write the events area makes to identity's tables, for the same reason as `deleteAccount`.
+   * Idempotent; false when the account was gone. (The memory repository cannot reach identity's
+   * own memory state: there linked identities and tokens stay until the row is deleted.)
+   */
+  lockAccountForErasure(accountId: string, at: number): Promise<boolean>;
+
+  /**
+   * Retention (§6.3; H1 of the privacy review): delete finished export requests (`completed`,
+   * `failed`, `canceled`) asked for before `before`, never a deletion request (the record of
+   * the request is kept, D-M2-6). Returns how many went.
+   */
+  pruneFinishedExports(before: number): Promise<number>;
+  /** Retention: delete erasure records settled (compacted) before `before`. */
+  pruneSettledErasures(before: number): Promise<number>;
+  /** Retention: delete daily aggregates of days before `beforeDay` (`YYYY-MM-DD`). */
+  pruneAggregates(beforeDay: string): Promise<number>;
+}
+
+/** The address an account's email becomes while it is erased (no sign-in can find it). */
+export function erasedAddress(accountId: string): string {
+  return `erased-${accountId}@erasure.invalid`;
 }
 
 export type ConsentPurposeName = (typeof CONSENT_PURPOSES)[number];
@@ -149,10 +213,20 @@ export interface PrivacyRequestRecord {
   membershipStep: MembershipStep | null;
   /** Deletion, `ending`: when the membership ends (its period's close, as billing reported). */
   membershipEndsAt: number | null;
+  /** Deletion: when its erasure first started (null until then). */
+  startedAt: number | null;
+  /** Deletion: erasure attempts so far (null until the first). */
+  attempts: number | null;
+  /** Deletion in progress: when the sweep runs its erasure again (a backoff, or a run's lease). */
+  retryAt: number | null;
+  /** What the request's email did: `pending` (to be sent), `sent`, `suppressed`; null: none. */
+  emailStatus: EmailStatus | null;
 }
 
 export const MEMBERSHIP_STEPS = ["stopping", "ending", "none"] as const;
 export type MembershipStep = (typeof MEMBERSHIP_STEPS)[number];
+export const EMAIL_STATUSES = ["pending", "sent", "suppressed"] as const;
+export type EmailStatus = (typeof EMAIL_STATUSES)[number];
 
 export type PrivacyRequestPatch = Partial<
   Pick<
@@ -165,6 +239,10 @@ export type PrivacyRequestPatch = Partial<
     | "lastError"
     | "membershipStep"
     | "membershipEndsAt"
+    | "startedAt"
+    | "attempts"
+    | "retryAt"
+    | "emailStatus"
   >
 > & { updatedAt: number };
 

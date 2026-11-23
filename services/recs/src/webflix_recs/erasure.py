@@ -113,6 +113,13 @@ def _active(plan: dict[str, Any]) -> frozenset[str]:
     return frozenset(plan["subjects"])
 
 
+def subjects_to_exclude(storage: Storage, pending: Iterable[str] = ()) -> frozenset[str]:
+    """Every subject key a dataset or a scoring run must leave out when it starts: what the
+    product lists as pending erasure (an erased account and its profiles, a profile newly
+    restricted), and what this job's plan still holds (pending, or confirmed and watched)."""
+    return frozenset(pending) | frozenset(load_plan(storage)["subjects"])
+
+
 def unconfirmed(plan: dict[str, Any]) -> list[str]:
     """Keys to confirm: the ones the product gave and the profile keys discovered for them, not
     confirmed yet. The product records an erasure key for the account and for each of its

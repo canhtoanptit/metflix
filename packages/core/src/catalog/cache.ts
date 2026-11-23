@@ -88,14 +88,19 @@ export class TwoLevel<T, D> {
     return this.refresh();
   }
 
-  async invalidate(): Promise<void> {
+  /** Forgets the copy here and in the shared cache; false when the shared cache was not told. */
+  async invalidate(): Promise<boolean> {
     this.value = undefined;
-    await Promise.all([
+    return Promise.all([
       this.shared.delete(this.options.key()),
       this.stamped?.delete(this.options.key()),
-    ]).catch((error: unknown) => {
-      this.options.logger.warn("cache.invalidate_failed", { error: serializeError(error) });
-    });
+    ]).then(
+      () => true,
+      (error: unknown) => {
+        this.options.logger.warn("cache.invalidate_failed", { error: serializeError(error) });
+        return false;
+      },
+    );
   }
 
   private async refresh(): Promise<T> {
@@ -193,8 +198,8 @@ export class CatalogCache {
     return this.levels.get();
   }
 
-  invalidate(): Promise<void> {
-    return this.levels.invalidate();
+  async invalidate(): Promise<void> {
+    await this.levels.invalidate();
   }
 }
 
@@ -316,8 +321,8 @@ export class PopularityCache {
     return this.levels.get();
   }
 
-  invalidate(): Promise<void> {
-    return this.levels.invalidate();
+  async invalidate(): Promise<void> {
+    await this.levels.invalidate();
   }
 }
 
@@ -401,7 +406,7 @@ export class ShowcaseCache {
     return this.levels.get();
   }
 
-  invalidate(): Promise<void> {
-    return this.levels.invalidate();
+  async invalidate(): Promise<void> {
+    await this.levels.invalidate();
   }
 }

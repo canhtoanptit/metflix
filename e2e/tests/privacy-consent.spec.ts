@@ -73,7 +73,9 @@ test.describe("opt-in deployment", () => {
     await expect(prompt.getByRole("button", { name: "Don't allow" })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(prompt).toBeHidden();
-    await expect(page.getByText("Got it, nothing is recorded").first()).toBeVisible();
+    await expect(page.getByText("Your choice is saved", { exact: true }).first()).toBeVisible();
+    // The prompt is gone; focus is on the page it stood in front of (UX review 2.7).
+    await expect(page.locator("main")).toBeFocused();
 
     const consent = await consentOf(request);
     expect(consent.promptRequired).toBe(false);
@@ -241,11 +243,30 @@ test("turning everything off in Account drops what was waiting to be sent, at on
   await navigateInApp(page, "/account/privacy");
   const personalisation = page.getByRole("switch", { name: "Personalised recommendations" });
   const analytics = page.getByRole("switch", { name: "Improving Webflix" });
+  // The switch keeps focus while it saves, and is never disabled under the member's hand (UX
+  // review 2.7): the save is held for a moment so that state can be seen.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/privacy/consent", async (route) => {
+    if (route.request().method() === "PUT") await held;
+    await route.continue();
+  });
   await personalisation.click();
-  await analytics.click();
+  await expect(page.getByText("Saving…")).toBeVisible();
+  await expect(personalisation).toBeFocused();
+  await expect(personalisation).toBeEnabled();
+  release();
+  await expect(page.getByText("Saving…")).toHaveCount(0);
+  await page.unroute("**/api/v1/privacy/consent");
+  await expect(personalisation).toBeFocused();
   await expect(personalisation).toHaveAttribute("aria-checked", "false");
+  await analytics.focus();
+  await page.keyboard.press("Space");
   await expect(analytics).toHaveAttribute("aria-checked", "false");
-  await expect(page.getByText(/^You turned this off on/)).toHaveCount(2);
+  await expect(analytics).toBeFocused();
+  await expect(page.getByText(/^Turned off by you on /)).toHaveCount(2);
   // Nothing of the device is kept once nothing is collected.
   expect(await storedDeviceId(page)).toBeNull();
   await expectAccessible(page);
@@ -271,12 +292,16 @@ test("switching profile never sends one profile's waiting events as the other's"
   await expect(page.locator('section[aria-roledescription="carousel"]').first()).toBeVisible();
   await page.waitForTimeout(DWELL_MS);
   expect(sent).toEqual([]);
+  const device = await storedDeviceId(page);
+  expect(device).not.toBeNull();
 
   const switchedAt = Date.now();
   await navigateInApp(page, "/profiles");
   await page.getByRole("button", { name: "Robin" }).click();
   await expect(page.locator('section[aria-roledescription="carousel"]').first()).toBeVisible();
   await page.waitForTimeout(DWELL_MS);
+  // One account, one device: a profile switch keeps the device id.
+  expect(await storedDeviceId(page)).toBe(device);
   await leavePage(page);
 
   // Everything the server holds as Robin's happened on Robin's profile: Ana's waiting
@@ -294,7 +319,11 @@ test("switching profile never sends one profile's waiting events as the other's"
   }
 });
 
-test("signing out drops what was waiting to be sent", async ({ page, playwright, baseURL }) => {
+test("signing out drops what was waiting to be sent, and the next account gets a new device id", async ({
+  page,
+  playwright,
+  baseURL,
+}) => {
   test.setTimeout(90_000);
   const request = page.context().request;
   const mode = (await consentOf(request)).mode;
@@ -306,6 +335,8 @@ test("signing out drops what was waiting to be sent", async ({ page, playwright,
   await expect(page.locator('section[aria-roledescription="carousel"]').first()).toBeVisible();
   await page.waitForTimeout(DWELL_MS);
   expect(sent).toEqual([]);
+  const device = await storedDeviceId(page);
+  expect(device).not.toBeNull();
   await navigateInApp(page, "/logout");
   await expect(page.getByRole("heading", { name: /signed out/i })).toBeVisible();
   // Past the batch the member's impressions were waiting for.
@@ -324,4 +355,15 @@ test("signing out drops what was waiting to be sent", async ({ page, playwright,
   } finally {
     await other.dispose();
   }
+
+  // Another member signs in on this browser and says yes: their activity is not tied to the
+  // last member's device id (UX review 2.11, privacy review L4).
+  await createAccount(request, { tag: "signout-next" });
+  await answer(request, { analytics: true, personalisation: true });
+  await page.goto("/browse");
+  await expect(page.locator('section[aria-roledescription="carousel"]').first()).toBeVisible();
+  await page.waitForTimeout(DWELL_MS);
+  const next = await storedDeviceId(page);
+  expect(next).not.toBeNull();
+  expect(next).not.toBe(device);
 });

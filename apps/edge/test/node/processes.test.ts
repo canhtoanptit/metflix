@@ -5,6 +5,7 @@ import {
   type DevServerRecord,
   type ProcessFacts,
   validateRecord,
+  varOverrides,
 } from "../../scripts/lib/processes.ts";
 
 const EDGE = "/repo/apps/edge";
@@ -61,5 +62,26 @@ describe("stopping the dev server", () => {
     ]);
     expect(classifyListener(9, EDGE, python)).toMatchObject({ kind: "foreign", pid: 9 });
     expect(classifyListener(null, EDGE, python)).toEqual({ kind: "none" });
+  });
+});
+
+describe("the dev server's own variables", () => {
+  it("reads --var NAME:VALUE as wrangler does, so the jobs see what the Worker sees", () => {
+    expect(
+      varOverrides([
+        "--var",
+        "WEBFLIX_DELETION_COOLING_OFF_SEC:30",
+        "--var=WEBFLIX_EVENTS_RETENTION_DAYS:30",
+        "--var",
+        "WEBFLIX_PUBLIC_ORIGIN:http://localhost:8787",
+        "--ip",
+        "0.0.0.0",
+      ]),
+    ).toEqual({
+      WEBFLIX_DELETION_COOLING_OFF_SEC: "30",
+      WEBFLIX_EVENTS_RETENTION_DAYS: "30",
+      WEBFLIX_PUBLIC_ORIGIN: "http://localhost:8787",
+    });
+    expect(varOverrides(["--var"])).toEqual({});
   });
 });

@@ -1,8 +1,11 @@
 /**
  * What each role opens, mirroring the staff API's guard (`adminRoutes[*].staffRole`; `admin`
- * passes every check). The console hides what a role cannot use, in the navigation and when a
- * link is pasted, so no control is shown that the server can only refuse. The server stays the
- * authority: this is presentation, never protection.
+ * passes every check). The navigation lists only the areas a role opens (the overview names the
+ * others with the role each needs), and a pasted link to a screen it can't open says so and
+ * calls nothing. On a screen it can open, an action it can't use is shown unavailable with the
+ * role it needs (a support agent's view of billing actions), never as a control that sends a
+ * request only to be refused. The server stays the authority: this is presentation, never
+ * protection.
  */
 import type { AdminRouteName, StaffRole } from "@webflix/contracts";
 

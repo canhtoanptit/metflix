@@ -1,0 +1,37 @@
+{{- /*
+The staff console's serving settings, mounted over the web image's defaults (deploy/docker/web):
+its security headers (its own policy, never the member app's) and its config.json, the issuer
+and client it signs staff in with (apps/admin/server/console-config.ts), from the same values the
+staff API verifies tokens with. A separate ConfigMap from web/configmap.yaml, whose add_header
+lines the Cloudflare mode reads as the member app's headers.
+*/ -}}
+{{- $issuer := include "webflix.console.issuer" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "webflix.component" (list . "web-admin") }}
+  labels:
+    {{- include "webflix.labels" (list . "web") | nindent 4 }}
+data:
+  admin-security-headers.conf: |
+    add_header Content-Security-Policy {{ include "webflix.console.csp" . | quote }} always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+    {{- if .Values.gateway.tls.enabled }}
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    {{- end }}
+  admin-config.conf: |
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    {{- if $issuer }}
+    default_type application/json;
+    return 200 '{{ dict "issuer" $issuer "clientId" .Values.web.admin.clientId "scope" .Values.web.admin.scope | toJson }}';
+    {{- else }}
+    {{- /* Production without a staff issuer: the staff API admits nobody, and the console says so. */}}
+    default_type application/problem+json;
+    return 503 '{"type":"urn:webflix:problem:service_unavailable","title":"Service unavailable","status":503,"code":"service_unavailable","detail":"No staff issuer is configured (config.staff.issuer or keycloak.enabled): the staff console cannot sign anyone in."}';
+    {{- end }}

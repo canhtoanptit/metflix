@@ -239,6 +239,12 @@ export function describePaymentProviderContract(
       expect(invoice?.totalMinor).toBe(
         preview.lines.reduce((sum, line) => sum + line.amountMinor, 0),
       );
+      // The reasons add up: the new plan's remaining time, less the old plan's unused time.
+      const charged = preview.lines.reduce((sum, line) => sum + Math.max(0, line.amountMinor), 0);
+      expect(preview.amountDueMinor + preview.creditAppliedMinor + preview.discountMinor).toBe(
+        charged,
+      );
+      expect(preview.creditAppliedMinor).toBeGreaterThan(0);
     });
 
     it("previews a downgrade as a credit, not a charge", async () => {
@@ -250,6 +256,10 @@ export function describePaymentProviderContract(
       });
       expect(preview.amountDueMinor).toBe(0);
       expect(preview.creditMinor).toBeGreaterThan(0);
+      // All of the new plan's remaining time is paid by the old plan's unused time.
+      const charged = preview.lines.reduce((sum, line) => sum + Math.max(0, line.amountMinor), 0);
+      expect(preview.creditAppliedMinor).toBe(charged);
+      expect(preview.discountMinor).toBe(0);
     });
 
     it("previews the next invoice: the plan's price when a trial ends, less a downgrade's credit, none while cancelling", async () => {
@@ -268,6 +278,8 @@ export function describePaymentProviderContract(
         at: trial.trialEnd,
         amountMinor: h().prices.basic.amountMinor,
         currency: h().prices.basic.currency.toUpperCase(),
+        creditAppliedMinor: 0,
+        discountMinor: 0,
       });
       await h().provider.setCancelAtPeriodEnd(
         { subscriptionId: trial.id, cancelAtPeriodEnd: true },
@@ -289,14 +301,36 @@ export function describePaymentProviderContract(
         },
         key(),
       );
-      // Exactly what the plan change's preview said the next renewal would be.
+      // Exactly what the plan change's preview said the next renewal would be, and why.
+      const basic = h().prices.basic.amountMinor;
+      const used = Math.min(basic, preview.creditMinor);
       expect(await h().provider.previewNextInvoice(subscription.id)).toEqual({
         at: preview.nextRenewal?.at,
         amountMinor: preview.nextRenewal?.amountMinor,
         currency: h().prices.basic.currency.toUpperCase(),
+        creditAppliedMinor: used,
+        discountMinor: 0,
+      });
+      expect(preview.nextRenewal).toMatchObject({
+        amountMinor: basic - used,
+        creditAppliedMinor: used,
+        discountMinor: 0,
       });
       await h().provider.cancelNow({ subscriptionId: subscription.id }, key());
       expect(await h().provider.previewNextInvoice(subscription.id)).toBeNull();
+      // The credit stays the customer's: a new subscription's first invoice uses it.
+      expect(
+        await h().provider.previewFirstInvoice({
+          customerId: subscription.customerId,
+          priceLookupKey: h().prices.basic.lookupKey,
+          promotionId: null,
+        }),
+      ).toEqual({
+        amountMinor: basic - used,
+        currency: h().prices.basic.currency.toUpperCase(),
+        creditAppliedMinor: used,
+        discountMinor: 0,
+      });
     });
 
     it("cancels at the period end (still active) and undoes it; cancels now (ended)", async () => {
@@ -351,6 +385,21 @@ export function describePaymentProviderContract(
       ).toEqual({ valid: false, reason: "unknown" });
       if (!valid.valid) return;
       const { customer, setup } = await customerWithCard("visa");
+      const price = h().prices.basic.amountMinor;
+      const discount = Math.round(price * 0.5);
+      // Before any card: what the first invoice will charge with the code, and why.
+      expect(
+        await h().provider.previewFirstInvoice({
+          customerId: customer.id,
+          priceLookupKey: lookupKey,
+          promotionId: valid.promotionId,
+        }),
+      ).toEqual({
+        amountMinor: price - discount,
+        currency: h().prices.basic.currency.toUpperCase(),
+        creditAppliedMinor: 0,
+        discountMinor: discount,
+      });
       const created = await h().provider.createSubscription(
         {
           customerId: customer.id,
@@ -364,8 +413,8 @@ export function describePaymentProviderContract(
       const invoice = await h().provider.retrieveInvoice(created.latestInvoiceId ?? "");
       // Stripe rounds the discount, not the total: 50% off 799 is 799 - 400 = 399
       // (docs/STRIPE.md §7, observed).
-      const price = h().prices.basic.amountMinor;
-      expect(invoice?.amountDueMinor).toBe(price - Math.round(price * 0.5));
+      expect(invoice?.amountDueMinor).toBe(price - discount);
+      expect(invoice).toMatchObject({ discountMinor: discount, creditAppliedMinor: 0 });
       expect(await h().provider.validatePromotionCode({ code, priceLookupKey: lookupKey })).toEqual(
         {
           valid: false,

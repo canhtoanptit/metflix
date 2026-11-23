@@ -50,9 +50,16 @@ spec:
   shutdown:
     drainTimeout: 15s
     minDrainDuration: 5s
-  # Access logs, JSON on stdout. Signed media URLs carry the playback token in the path
-  # (/media/<token>/vod/...), so those requests are logged without their path: the request id
-  # correlates them with the API's log line, where the token is redacted.
+  # Access logs, JSON on stdout, kept to what operating the gateway needs. The path is logged
+  # without its query string (%PATH(NQ)%): queries carry what members search for
+  # (/api/v1/search?q=), the addresses staff look up (/api/admin/v1/members?q=), export download
+  # tokens and OpenID codes and states. No client address and no user agent: the request id
+  # correlates a line with the API's own log line, and the API decides what it keeps (rate limits
+  # key on addresses in Valkey, with their expiry). Signed media URLs carry the playback token in
+  # the path (/media/<token>/vod/...), so those requests are logged without their path at all.
+  # Retention: these are container logs, rotated by the kubelet (10 MiB × 5 files per container
+  # by default) and gone with the pod; a cluster's log pipeline must keep them no longer than
+  # their purpose needs (docs/KUBERNETES.md §3, "Access logs").
   telemetry:
     accessLog:
       settings:
@@ -61,7 +68,7 @@ spec:
           format:
             type: JSON
             json:
-              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              path: "%PATH(NQ)%"
               start_time: "%START_TIME%"
               method: "%REQ(:METHOD)%"
               protocol: "%PROTOCOL%"
@@ -72,8 +79,6 @@ spec:
               bytes_sent: "%BYTES_SENT%"
               duration: "%DURATION%"
               upstream_host: "%UPSTREAM_HOST%"
-              x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
-              user_agent: "%REQ(USER-AGENT)%"
               request_id: "%REQ(X-REQUEST-ID)%"
               route_name: "%ROUTE_NAME%"
           sinks:
@@ -96,8 +101,6 @@ spec:
               bytes_sent: "%BYTES_SENT%"
               duration: "%DURATION%"
               upstream_host: "%UPSTREAM_HOST%"
-              x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
-              user_agent: "%REQ(USER-AGENT)%"
               request_id: "%REQ(X-REQUEST-ID)%"
               route_name: "%ROUTE_NAME%"
           sinks:

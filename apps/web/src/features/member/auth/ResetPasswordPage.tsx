@@ -1,5 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useRouter } from "@tanstack/react-router";
+import { useMutation } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { ApiError, PASSWORD_RESET_TTL_SEC } from "@webflix/contracts";
 import {
   Button,
@@ -9,10 +9,12 @@ import {
   KeyIcon,
   MailIcon,
   PasswordField,
+  Spinner,
+  toast,
 } from "@webflix/ui";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
-import { sessionCache } from "../../../app/session/session.ts";
+import { useApplySession } from "../../../app/session/session.ts";
 import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberHeader } from "../shared/Chrome.tsx";
@@ -22,26 +24,30 @@ import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { validateNewPassword } from "../shared/validation.ts";
 import { DeadLink } from "./DeadLink.tsx";
 import { forgetLinkToken, looksLikeLinkToken, useLinkToken } from "./emailLink.ts";
-import { announceAuthChange } from "./oidc.ts";
+import { linkOfferPath, pendingLinkIntent } from "./linkIntent.ts";
+import { afterSignInPath, announceAuthChange, providerName } from "./oidc.ts";
+import { CARD_HEADING } from "./parts.tsx";
 
 const TOKEN_KEY = "webflix:reset-token";
 
 /**
  * The emailed reset link: choose a new password. Before the member saves, the page says what a
- * reset does besides changing the password, so nothing comes as a surprise: every device is
- * signed out (this one too), and Google or Apple sign-in linked under a different email address
- * is unlinked. A used, expired or altered link gets one honest screen (the server deliberately
- * does not tell them apart) with the way to a new one.
+ * reset does besides changing the password, so nothing comes as a surprise: every other device is
+ * signed out, and Google or Apple sign-in linked under a different email address is unlinked.
+ * Saving signs this device in (the server answers the session, as sign-in does): the member is
+ * told so and continues where sign-in goes, or to adding the provider they came here for
+ * (`link-required`). A used, expired or altered link gets one honest screen (the server
+ * deliberately does not tell them apart) with the way to a new one.
  */
 export function ResetPasswordPage() {
   const token = useLinkToken(TOKEN_KEY);
-  const queryClient = useQueryClient();
-  const router = useRouter();
+  const applySession = useApplySession();
+  const navigate = useNavigate();
   const [password, setPassword] = useState("");
+  const [wanted] = useState(() => pendingLinkIntent());
   const [checked, setChecked] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
   const alertRef = useRef<HTMLDivElement>(null);
-  const doneRef = useRef<HTMLHeadingElement>(null);
 
   const reset = useMutation({
     mutationFn: (newPassword: string) => {
@@ -50,12 +56,27 @@ export function ResetPasswordPage() {
       return api().confirmPasswordReset({ body: { token: token ?? "", newPassword } });
     },
     meta: { silent: true },
-    onSuccess: async () => {
+    onSuccess: async (session, newPassword) => {
       forgetLinkToken(TOKEN_KEY);
-      // Every device is signed out, this one included: forget the session here as well.
-      sessionCache.signOut(queryClient);
-      announceAuthChange("signed-out");
-      await router.invalidate();
+      // This device is signed in, every other one signed out; this browser's other tabs share
+      // the new session and move on by themselves.
+      await applySession(session);
+      announceAuthChange("signed-in");
+      toast.success("Password changed", {
+        description: "You're signed in here, and signed out everywhere else.",
+      });
+      const linking = pendingLinkIntent();
+      if (linking) {
+        // Reset to add a provider (`link-required`): the new password is the proof the offer needs.
+        await api()
+          .elevate({ body: { password: newPassword } })
+          .catch(() => {
+            // The offer asks for the proof itself if this did not take.
+          });
+        await navigate({ href: linkOfferPath(linking), replace: true });
+        return;
+      }
+      await navigate({ href: afterSignInPath(session, undefined), replace: true });
     },
     onError: (error) => {
       if (ApiError.is(error, "verification_token_invalid")) forgetLinkToken(TOKEN_KEY);
@@ -64,9 +85,6 @@ export function ResetPasswordPage() {
   useFocusOnError(reset.error, (error) =>
     ApiError.is(error, "validation_failed") ? passwordRef : alertRef,
   );
-  useEffect(() => {
-    if (reset.isSuccess) doneRef.current?.focus();
-  }, [reset.isSuccess]);
 
   if (!looksLikeLinkToken(token) || ApiError.is(reset.error, "verification_token_invalid")) {
     return (
@@ -76,33 +94,13 @@ export function ResetPasswordPage() {
     );
   }
 
+  // Signed in and on the way out: nothing to show for the moment it takes.
   if (reset.isSuccess) {
     return (
       <Frame>
-        <section
-          aria-labelledby="reset-done"
-          className="flex flex-col items-center gap-5 text-center"
-        >
-          <span className="grid size-14 place-items-center rounded-full bg-positive-subtle text-positive">
-            <CheckCircleIcon size="xl" />
-          </span>
-          <h1
-            id="reset-done"
-            ref={doneRef}
-            tabIndex={-1}
-            className="type-headline text-fg outline-none"
-          >
-            Your password is changed
-          </h1>
-          <p className="type-body-lg text-fg-muted">
-            You've been signed out on every device. Sign in with your new password to carry on.
-          </p>
-          <Button variant="accent" size="lg" fullWidth asChild className="mt-2">
-            <Link to="/login" search={{}}>
-              Sign in
-            </Link>
-          </Button>
-        </section>
+        <div className="grid min-h-60 place-items-center">
+          <Spinner size="lg" label="Signing you in" />
+        </div>
       </Frame>
     );
   }
@@ -126,7 +124,7 @@ export function ResetPasswordPage() {
         aria-labelledby="reset-heading"
         className="flex flex-col gap-4"
       >
-        <h1 id="reset-heading" className="type-headline mb-1 text-fg">
+        <h1 id="reset-heading" className={`${CARD_HEADING} mb-1`}>
           Choose a new password
         </h1>
         {failure ? (
@@ -138,14 +136,18 @@ export function ResetPasswordPage() {
           <p className="type-label text-fg">When you save it</p>
           <ul className="flex flex-col gap-3">
             <Effect icon={DevicesIcon}>
-              Every device signed in to your account is signed out, this one too. You'll sign in
-              again with the new password.
+              Every other device signed in to your account is signed out. You stay signed in here.
             </Effect>
             <Effect icon={KeyIcon}>
               Google or Apple sign-in linked under a different email address is unlinked. You can
               link it again in Account › Security.
             </Effect>
             <Effect icon={MailIcon}>We'll email you to confirm the change.</Effect>
+            {wanted ? (
+              <Effect icon={CheckCircleIcon}>
+                Then you'll be offered to add {providerName(wanted)} to the account.
+              </Effect>
+            ) : null}
           </ul>
         </div>
         <PasswordField

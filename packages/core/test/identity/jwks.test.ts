@@ -176,7 +176,7 @@ describe("createJwksKeySet", () => {
     expect(await refusal(warm.verify(token))).toBe("accepted");
   });
 
-  it("times out a slow issuer, shares one fetch between concurrent verifications, passes the resolver's error through", async () => {
+  it("times out a slow issuer, fetches for each concurrent verification on a cold cache, passes the resolver's error through", async () => {
     const current = await keyPair("k1");
     const { fetch, state } = issuer([current]);
     const token = parsed(await sign(current.privateKey, { kid: "k1" }));
@@ -196,9 +196,13 @@ describe("createJwksKeySet", () => {
       fetch,
       clock: new ManualClock(0),
     });
+    // No in-flight fetch is shared (on Workers one request may not await a promise another
+    // request settles, docs/CLOUDFLARE.md §2): with nothing trusted yet, each one fetches.
     const outcomes = await Promise.all([1, 2, 3, 4].map(() => refusal(shared.verify(token))));
     expect(outcomes).toEqual(["accepted", "accepted", "accepted", "accepted"]);
-    expect(state.fetches).toBe(1);
+    expect(state.fetches).toBe(4);
+    expect(await refusal(shared.verify(token))).toBe("accepted");
+    expect(state.fetches).toBe(4);
 
     const failing = createJwksKeySet({
       jwksUri: async () => {
@@ -208,5 +212,38 @@ describe("createJwksKeySet", () => {
       clock: new ManualClock(0),
     });
     await expect(failing.verify(token)).rejects.toThrow("discovery names another issuer");
+  });
+
+  it("refreshes a stale set once while concurrent verifications keep it, and refetches an unknown kid once, whoever asks", async () => {
+    const clock = new ManualClock(0);
+    const current = await keyPair("k1");
+    const next = await keyPair("k2");
+    const { fetch, state } = issuer([current]);
+    const keys = createJwksKeySet({
+      jwksUri: "https://issuer.test/jwks",
+      fetch,
+      clock,
+      cacheTtlSec: 60,
+      refetchCooldownSec: 10,
+    });
+    const token = parsed(await sign(current.privateKey, { kid: "k1" }));
+    expect(await refusal(keys.verify(token))).toBe("accepted");
+    expect(state.fetches).toBe(1);
+
+    state.delayMs = 20;
+    clock.advance(61_000); // stale: the first refreshes, the others use the trusted set meanwhile
+    const stale = await Promise.all([1, 2, 3, 4].map(() => refusal(keys.verify(token))));
+    expect(stale).toEqual(["accepted", "accepted", "accepted", "accepted"]);
+    expect(state.fetches).toBe(2);
+
+    state.keys = [current, next];
+    clock.advance(10_000); // past the cooldown: a rotated key is refetched, by one of them only
+    const rotated = parsed(await sign(next.privateKey, { kid: "k2" }));
+    const outcomes = await Promise.all([1, 2, 3, 4].map(() => refusal(keys.verify(rotated))));
+    expect(state.fetches).toBe(3);
+    expect(outcomes.filter((outcome) => outcome === "accepted")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === "unknown_kid:unknown_kid")).toHaveLength(3);
+    expect(await refusal(keys.verify(rotated))).toBe("accepted");
+    expect(state.fetches).toBe(3);
   });
 });

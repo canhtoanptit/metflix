@@ -77,7 +77,8 @@ ratings so the home page is full on first load.
 
   | Who is acting (the session's active profile) | Profiles | Account (details, plan, card, cancel, devices, sign out everywhere) |
   | --- | --- | --- |
-  | No profile (the gate) | Add: without proof while no parental controls are in use, else with `currentPassword`. Change or delete: an unlocked profile freely (loosening needs the password, below); a locked one with its `currentPin` or `currentPassword` | `profile_required` |
+  | No profile (the gate), the account has no profile at all (sign-up abandoned before the first) | Add the first one, without proof | Allowed: there are no parental controls to protect. The sensitive routes' own proofs apply unchanged (`currentPassword` or a fresh proof for `PATCH /account`; a fresh proof for `POST /privacy/export` and `POST /account/deletion`) |
+  | No profile (the gate), the account has profiles | Add: without proof while no parental controls are in use, else with `currentPassword`. Change or delete: an unlocked profile freely (loosening needs the password, below); a locked one with its `currentPin` or `currentPassword` | `profile_required` (choose a profile first) |
   | A kids profile | Switch to any profile (a locked one with its PIN). Change its own name, avatar and settings. Nothing else: `unrestricted_profile_required`, even with the password | `unrestricted_profile_required` |
   | A profile with a lowered ceiling (13+ …) | As at the gate | `unrestricted_profile_required` |
   | A profile without parental controls | As at the gate; its own locked profile without its PIN again | Allowed |
@@ -91,7 +92,10 @@ ratings so the home page is full on first load.
   `{currentPin?, currentPassword?}`. Every PIN or password check after sign-in counts against
   one per-account budget (`profile-pin`, below); a password sent where none is needed is ignored
   and costs nothing. Setting or changing a PIN signs every other device off that profile: their
-  next request answers `profile_required`.
+  next request answers `profile_required`. Whether an account has any profile is read in the
+  session lookup itself (only for a session at the gate), so the rule costs no extra query; an
+  account cannot get back to no profile (the last one cannot be deleted), and if it ever did, the
+  gate would manage it again, with nothing left to protect.
 - **Browse.** `GET /browse?view=home|series|movies|new-popular` returns the billboard (first
   batch only; null for new-popular) and 6 rows; follow `nextCursor` for more rows. Each row has
   its first 20 items (Top 10: all 10); follow the row's `nextCursor` with
@@ -172,7 +176,9 @@ ratings so the home page is full on first load.
   | `email-send` (milestone 2) | client address | 10/900 s | 120/60 s | `POST /auth/email-verification`, `POST /auth/password-reset` |
   | `email-send-recipient` (milestone 2) | recipient address | 5/900 s | 5/900 s | the same requests, charged by the handler once it knows the address |
   | `events` (milestone 2) | account (signed out: client address), and separately the batch's device | 120/60 s | 600/60 s | `POST /events` (each request charges both keys) |
-  | `promotion` (milestone 2) | account | 10/600 s | 10/600 s | `POST /billing/promotions/validate` |
+  | `promotion` (milestone 2) | account | 10/600 s | 10/600 s | every promo-code lookup, whichever route: `POST /billing/promotions/validate`, and `POST /billing/checkout` with a `promotionCode` other than the one the account's open checkout already carries (charged by the handler) |
+  | `billing` (milestone 2) | account | 30/600 s | 30/600 s | member requests that call the payment provider: `POST /billing/checkout`, `POST /billing/subscription/preview`, `POST /billing/payment-method/setup` |
+  | `billing-refresh` (milestone 2) | account | 1/2 s | 1/2 s | never refuses: a `GET /billing/checkout/:id` or `GET /billing/payment-method/setup/:id` within it answers from stored state (the client secret is stored with the checkout or card change) instead of reading the provider |
 
   The relaxed profile raises `auth`, `signup`, `email-lookup`, `profile-pin` and milestone 2's
   `oidc`, `email-send` and `events`, which the e2e
@@ -204,8 +210,17 @@ ratings so the home page is full on first load.
     ten minutes, `SameSite=None` for Apple's cross-site form post).
   - *Linking rule*: an issuer identity is keyed by (issuer, subject). It signs in to an existing
     account by address only when the issuer verified the address **and** the account verified
-    it (never the demo account); a new account is created only for an address the issuer
-    verified. `intent=link` needs an account holder holding a fresh proof
+    it **and** every way in to the account was set up by someone who proved control of that
+    address (never the demo account); a new account is created only for an address the issuer
+    verified. The proof (`accounts.access_proven_at`, security review H1) comes from a federated
+    sign-up with an issuer-verified address, a completed password reset, or the verification
+    link opened in a signed-in session of that same account. A link opened anywhere else (signed
+    out, another device, another account's session) verifies the address but proves nothing: it
+    shows who reads the mailbox, not who set the password. A password change or sign-in proves
+    nothing; an address change clears the proof. Without it a matching sign-in is
+    `link-required`: the member signs in and links from Account, or resets the password, which
+    signs everyone else out and drops identities linked under another address. Accounts that
+    existed before migration 0022 start unproven. `intent=link` needs an account holder holding a fresh proof
     (`reauthentication_required` otherwise) and an issuer-verified address; one identity per
     issuer per account. Unlinking needs a fresh proof and refuses the last way to sign in
     (`identity_last_sign_in_method`). A removed identity stays removed (finding M2-F5): an
@@ -225,9 +240,12 @@ ratings so the home page is full on first load.
   - *Email links* (`/verify-email#token=…`, `/reset-password#token=…`: the token is in the
     fragment, never sent to a server) are single-use, stored as SHA-256 hashes, 24 hours and 30
     minutes, and die if the address changes. `POST /auth/password-reset` always answers 204:
-    the lookup and the email happen in a job. A completed reset signs out every device, marks
-    the address verified, drops issuer identities linked under another address, and sends a
-    security alert. Email and password changes alert the (previous) address; a new address must
+    the lookup and the email happen in a job. A completed reset signs out every device, then
+    signs in the one that completed it (`POST /auth/password-reset/confirm` answers the session
+    and sets its cookies, as sign-in does), marks the address verified and the account's ways in
+    proven, drops issuer identities linked under another address, and sends a security alert. `POST /auth/email-verification/confirm` works
+    in any browser; sent with a session of the token's own account (the page's own `fetch`
+    carries the cookie) it also proves the ways in. Email and password changes alert the (previous) address; a new address must
     be verified again.
   - *Sign-up*: `POST /auth/signup {email, password}` (strict: nothing else) creates the account
     with no membership: `membership.status` `none`, `subscription` and `plan` null.
@@ -254,7 +272,7 @@ ratings so the home page is full on first load.
   (`410`), and cannot start again. Segments it already holds a token for stay fetchable until the
   token expires (DECISIONS.md D1); the player stops at the refused heartbeat, at most one
   heartbeat interval (30 s) later. Both need an account holder (§3, Privileges): from the gate
-  they answer `profile_required` and sign nobody out.
+  of an account that has profiles they answer `profile_required` and sign nobody out.
 - **Images** are `ImageSet` templates under `/cdn/...` with `?v=<hash>` (immutable caching).
   Without packaged media they 404; `dominantColor` is always set.
 - **Diagnostics** (not in production): `GET /titles/:id/popularity` returns a title's stored
@@ -283,21 +301,37 @@ ratings so the home page is full on first load.
   from a kids or restricted profile). A signed-out device sends its own banner answer as
   `EventBatch.consent`. `Sec-GPC: 1` is honoured as a withdrawal: in opt-out mode, for a purpose
   the member never answered explicitly, a `gpc` withdrawal is recorded (so server events stop
-  too); an explicit later grant wins.
+  too); an explicit later grant wins. **Only the member grants** (privacy review M4): staff
+  record a withdrawal through `PUT /members/:id/privacy/consent`, and a grant there answers
+  `403 consent_grant_member_only`. A support grant recorded before that rule is never the answer
+  in force (`consentsAt` skips it; it stays in the history and the export): the answer before it
+  applies, or the mode's default, with Global Privacy Control and the opt-in prompt. Every
+  recorded answer about personalisation (the member's, a GPC or support withdrawal) also calls
+  personalisation's seam `personalisationConsentChanged({ accountId, granted, at })`, so learned
+  lists stop from a withdrawal on (privacy review L1; personalisation implements it; a failure
+  there is logged and never fails the answer).
 - **Download your data.** `POST /privacy/export` needs a fresh account-holder proof
   (`reauthentication_required`: send the member through `POST /session/elevation`), one export
   at a time (`privacy_request_pending`), not on the demo account. The job builds one JSON
   document (account, profiles, devices, each profile's list, ratings, progress and history,
-  consents, privacy requests, every lake event of the account, and each area's own part under
-  `areas`: billing's membership and invoices, identity's sign-in methods) and emails the link
+  consents, privacy requests, every event the lake still holds for the account, whatever its age,
+  and each area's own part under `areas`: identity, billing, personalisation's stored lists,
+  admin's record of staff access; the notes describe exactly the parts present and say what is
+  held but not included) and emails the link
   through identity's `data-export-ready` template (the suppression list applies; the link stays
   listed either way); `GET /privacy/requests` lists it with `downloadUrl` until `expiresAt`.
   The link (`GET /privacy/exports/:id?token=`) works only for its account, signed in as the
-  account holder; it answers the document as an attachment. **The email links to the web app**,
+  account holder with a fresh account-holder proof (`reauthentication_required`, checked after
+  the token so a foreign or bad link stays `not_found`: privacy review L2); it answers the
+  document as an attachment. `POST /privacy/exports/:id/download` with `{ token }` is the same,
+  the token in the body so it never sits in a URL (L3); prefer it. **The email links to the web app**,
   not to that route: `{WEBFLIX_PUBLIC_ORIGIN}/account/privacy/exports/{requestId}#token={token}`
   (both URI-encoded; the same token as `downloadUrl`, in the fragment so the page load never
   sends it to a server, as identity's links do). That page asks the member to sign in as the
-  account holder, then downloads through `GET /api/v1/privacy/exports/{requestId}?token={token}`.
+  account holder, then downloads through `POST /api/v1/privacy/exports/{requestId}/download`
+  with that token. `PrivacyRequest.email` says what the request's email did: `pending` (it will
+  be sent), `sent`, `suppressed` (the address bounced or complained: say so instead of "we'll
+  email you", L10), or null.
   **The terms before asking**: `GET /privacy/requests` answers `{ items, terms }`, `terms` being
   `PrivacyTerms { deletionCoolingOffSec, exportLinkTtlSec, exportMode, exportTypicalSec,
   eventsRetentionDays, aggregatesRetentionDays }` from configuration (no database read).
@@ -309,7 +343,8 @@ ratings so the home page is full on first load.
   `batch` (k8s and Cloudflare): the job assembles everything else, keeps it as
   `privacy/exports/{id}.partial.json.gz` and leaves the request `processing`, listed by
   `services.events.staff.pendingExports(limit)` (`{ requests: [{ requestId, accountKey, from,
-  to }] }`, `from` = request time minus the raw retention, `to` = the request time;
+  to }] }`, `from` = the beginning (`1970-01-01T00:00:00.000Z`: everything the lake still
+  holds, H1), `to` = the request time;
   `GET /system/privacy/exports`) until a result is recorded. The pipeline's `export-events`
   (services/recs README, "Exports of members' events") writes the member's events under
   `privacy/export-events/{id}/`; `services.events.staff.recordExportResults(document)`
@@ -322,16 +357,39 @@ ratings so the home page is full on first load.
   conformance variant: docs/KUBERNETES.md §9.6), and on Cloudflare it runs outside Workers
   (`make cf-export-events`, `make cf-dev CF_JOBS_EVERY=…`). A lost or dead-lettered export job
   never blocks the member: the sweep republishes the job of an export untouched for 15 minutes
-  (pending, or processing and not yet waiting for its events) and fails it after a day, which
-  frees "one at a time".
+  (pending, or processing and not waiting for the pipeline). **Every export still open a day
+  after it was asked for is given up** (privacy review M1), waiting for the pipeline or not, a
+  `failed` result from the pipeline included: `failed`, every object of it deleted (the
+  partial copy, the pipeline's two, a finished copy), and the member can ask again. No object is
+  ever left without a record naming it: the finished document is recorded before its email goes
+  out, and the erasure deletes every export object of the account by name, whatever its record
+  says.
 - **Delete account.** `POST /account/deletion` (fresh proof, not the demo account) schedules
-  the erasure after `WEBFLIX_DELETION_COOLING_OFF_SEC`; `DELETE /account/deletion` cancels it
-  meanwhile. The erasure then lists the account's and profiles' pseudonymous keys for the lake's
-  compaction (`compact --erase`, `services.events.staff.pendingErasures`), runs every area's
-  `eraseAccountData`, frees the streams, deletes the account's export documents and the account
-  row (sessions, profiles and their library, membership, consents, linked identities and tokens
-  cascade); billing records and the record of the request itself are kept (D-M2-6). An open
-  export of the account is cancelled and its documents deleted. The erasure listing
+  the erasure after `WEBFLIX_DELETION_COOLING_OFF_SEC` and emails the member the date and how to
+  keep the account (template `account-deletion-scheduled`); `DELETE /account/deletion` (or staff,
+  `DELETE /members/:id/deletion`) cancels it meanwhile and emails that nothing will be deleted
+  (`account-deletion-canceled`) (privacy review M7). **The erasure** (privacy review H2) runs
+  its steps in an order that leaves the account unusable whatever fails: (1) the account's and
+  profiles' pseudonymous keys are listed for the lake's compaction (`compact --erase`,
+  `services.events.staff.pendingErasures`), and from then on the lake writer refuses every event
+  of the account; (2) identity's `eraseAccountData` (it forgets what is keyed by the address, so
+  it runs while the address is there); (3) the lock (`repos.events.lockAccountForErasure`, one
+  batch): every session ends, linked identities and pending tokens go, the password is cleared
+  and the address becomes `erased-{id}@erasure.invalid`, so no sign-in, reset or automatic link
+  finds it; the streams are freed; (4) every export object of the account, by name; (5) the other
+  areas' `eraseAccountData` that still need the account (personalisation's lists, admin's audit
+  marker); (6) the account row (profiles and their library, membership, consents cascade); (7)
+  billing's, the payment provider's customer, last. A failed attempt is recorded (`attempts`,
+  `lastError`) with its next time (1, 2, 4... minutes, at most an hour apart) and never thrown, so
+  the job is never dead-lettered: the sweep runs it again for as long as it takes (a run that
+  never finished is picked up after a 10-minute lease; one left `processing` before this rule
+  too). Operators see it: `services.events.staff.erasuresInProgress(limit)` (request, account,
+  started, `stuckForSec`, attempts, next attempt, last error), `GET /system/health`'s
+  `privacy.erasuresInProgress` and `oldestErasureInProgressAt`/`AgeSec`, and the log
+  `privacy.erasure_retry_scheduled` (an error once it has run an hour). The member's request is
+  `processing` from the first step: "we're deleting your account", no longer cancellable.
+  The record of the request itself is kept, and of billing only invoices, refunds and an
+  unlinked trial fingerprint (D-M2-6, docs/FOUNDATION.md). The erasure listing
   (`pendingErasures`) is every key not yet confirmed, the limit applied after that filter: an
   erased account's key (its profiles' keys ride on it and are settled when it is confirmed,
   since the lake's compaction drops an account's events by account key) and each restricted
@@ -360,6 +418,9 @@ ratings so the home page is full on first load.
   once. Staff actions (a complimentary period, a trial extension) are allowed: deliberate and
   audited. Milestone 1's mock membership (`services.account`) is not guarded: it charges
   nothing. So `renewing` during a scheduled deletion can only come from staff or the provider.
+  The seam answers true while the erasure is in progress too, and billing keeps its cancellation
+  email silent while it is true: it is already true when the deletion's own call to `cancel`
+  runs (the request is recorded first, and the sweep's retries only take `scheduled` ones).
 - **A profile that becomes restricted** (kids, or a maturity restriction): identity calls the
   seam `forgetProfileBehaviour({ accountId, profileId })`, which queues that profile's
   pseudonymous key for erasure (listed by `pendingErasures`, dropped by `compact --erase`, then
@@ -379,6 +440,30 @@ ratings so the home page is full on first load.
   with one `abandon` (`expired`) in the same batch. Playback start also refuses a title staff
   made unavailable (`not_found`, as its detail page answers), and answers `subscription_required`
   to an account without a membership.
+- **Retention** (§6.3; privacy review H1). Raw lake objects are the pipeline's to expire by age
+  and the platforms schedule it. The events area's sweep, at most once an hour, deletes finished
+  export requests asked for more than `WEBFLIX_EVENTS_RETENTION_DAYS` ago, erasure records
+  settled that long ago, and daily aggregates older than `WEBFLIX_AGGREGATES_RETENTION_DAYS`.
+  Kept: deletion requests (the record of the request, D-M2-6), consent history (the proof of
+  consent; it goes with the account), and the library's viewing history (the member's own
+  data, shown to them, deleted with the profile). Rows with a stated period elsewhere:
+  `experiment_results` (experiments area: reports computed more than
+  `WEBFLIX_AGGREGATES_RETENTION_DAYS` ago, deleted by `experiments.prune-results` on every
+  scheduler tick, oldest first, 200 a batch and at most 1,000 a run), the audit log (admin,
+  `WEBFLIX_AUDIT_RETENTION_DAYS`).
+- **An erased subject's events never come back** (privacy review L6): before storing a batch,
+  the lake writer looks its subject keys up in the erasure records (one read per batch) and drops
+  every event of an account being erased, and each event of a profile erased on its own that was
+  received before that erasure was asked for. A late dead-letter replay of `events.append` is
+  refused like any other.
+- **The pseudonym key** (privacy review L5), as it stands: every lake event's subject keys, the
+  erasure records, the export's and erasure's account keys, and serving's profile keys are
+  HMACs of the account and profile ids under `WEBFLIX_PSEUDONYM_KEY`. There is no rotation.
+  Rotating it (or losing it and setting a new one) cuts every earlier event off: an export no
+  longer finds them, an erasure lists keys the old events do not carry (they stay in the lake
+  until retention expires them), and serving finds no stored list for any profile until the next
+  model run. Keep it as long-lived as the lake, the same on every process, and backed up with the
+  secrets.
 - **The subject's plan** is billing's `currentPlan` (null without an entitled membership: never
   invented). The account behind an export or an erasure is read through identity's
   `getMemberIdentity`, so a member without a membership (sign-up without a card) can export,
@@ -396,6 +481,11 @@ ratings so the home page is full on first load.
   | Export needs a fresh proof, completes, is complete, is served only to its account | `core test/events/member-rights.test.ts`, `http test/events.test.ts` |
   | Deletion waits out its cooling-off period, removes what must go, keeps billing records, lists the subject for compaction | `member-rights.test.ts`, `db test/events-erasure.test.ts` |
   | Lake keys are the pipeline's pseudonyms | `core test/events/lake.test.ts`, `services/recs/tests/test_ingested_lake.py` |
+  | An erasure locks the account first, never strands, is retried with bounded backoff and visible to operators (H2) | `core test/events/privacy-review.test.ts`, `db test/events-erasure.test.ts` (the lock in SQL) |
+  | An export is given up after a day with every object of it; no object outlives its record (M1) | `privacy-review.test.ts` |
+  | Staff only withdraw consent; an old support grant is not in force (M4) | `privacy-review.test.ts`, the events repository contract |
+  | The export's notes are true of its parts (M6); deletion emails (M7); the email's status (L10) | `privacy-review.test.ts`, `packages/email` tests |
+  | A download needs a fresh proof (L2); personalisation is told of every answer (L1); erased subjects' events are refused (L6); the export holds everything still held, retention prunes (H1) | `privacy-review.test.ts`, `http test/events.test.ts` |
 
 ### The staff API (milestone 2 §8.3, `/api/admin/v1`)
 
@@ -435,11 +525,30 @@ For the admin console (`createAdminApiClient({ accessToken })`) and for operator
   as the change; member, billing, privacy and system actions are written before they run and
   settled after, so no such action exists without its entry. Reading a member's record, their
   privacy view or a member search is audited too (`member.viewed`, `member.privacy_viewed`,
-  `member.searched` with the query), before the data is returned. `requestId` filters by the
+  `member.searched` with the query's shape only, `j***@e***`: never an address typed), before
+  the data is returned; so is reading the log itself (`audit.read`, with the filters used) and
+  the operator lists (`privacy.erasures_listed`, `privacy.exports_listed`, counts only; an
+  erasure confirmation keeps how many keys, never which). `kind=action` lists the changes without
+  these reads (`AUDIT_READ_ACTIONS`), `kind=read` only the reads. Each entry carries `kind`,
+  `targetLabel` (the target in words, resolved when read and never stored: a member's current
+  address, `Erased member` once erased, a title's or collection's name) and `facts` (the
+  headline of an action derived from what it keeps: a refund's `amount`, a `planId`, `days`,
+  `when`, a `status`...). `requestId` filters by the
   `X-Request-Id` an action was sent with (the console sends its own, so an unanswered request
   is matched to its entry). Without the admin role, `GET /audit/mine` lists the caller's own
-  entries (same filters), `before` and `after` withheld except `after.error`: what an action on
-  a member held is not readable through it, even by someone whose role has since changed.
+  entries (same filters), `before`, `after` and `facts` withheld except the error code: what an
+  action on a member held is not readable through it, even by someone whose role has since
+  changed (members' addresses as labels only for a caller holding `support` or `admin`).
+- **Erasure and retention** (privacy review M5). When a member's account is erased, the audit
+  log keeps which staff member did what and when, and nothing that identifies the member: the
+  entries about them get one `erased:<id>` marker as their target and lose `before`, `after`
+  (but the error code), the free-text reason and any idempotency key; any other entry that
+  mentions the account id, its address, its profiles' or privacy requests' ids has them
+  replaced by that marker; dead letters that mention them are deleted (the admin area's part
+  of the events area's erasure, `eraseAccountData`). Entries older than
+  `WEBFLIX_AUDIT_RETENTION_DAYS` (396) are deleted by the scheduler's sweep. A member's data
+  export holds the record of staff access to the account as date and action only
+  (`areas.admin.staffAccess`: `[{ at, action }]`, no staff identity, no reason).
 - **Idempotency.** The billing actions (refund, cancel, extend a trial, complimentary period)
   require `idempotencyKey` (16-64 of `[A-Za-z0-9_-]`, a UUID fits): generate one per submitted
   form and send it again on every retry of that form. A retry of a request that succeeded answers
@@ -474,7 +583,11 @@ For the admin console (`createAdminApiClient({ accessToken })`) and for operator
   serves the previous model run again.
   Dead letters: the job processor records a job that fails its last attempt (the fifth, every
   queue's setting) in `job_dead_letters` in every mode; `POST /system/dead-letters/:id/replay`
-  publishes it again, once. `GET /system/health` probes the database, the cache and the
+  publishes it again, once. `GET /system/health` reports the privacy backlog (`privacy`:
+  `pendingErasures`, `oldestPendingErasureAt`, `oldestPendingErasureAgeSec`, `waitingExports`,
+  `oldestWaitingExportAt`, `oldestWaitingExportAgeSec`; counted up to 500 each): an age that
+  keeps growing means the pipeline's erase or export-events job is not running. It probes the
+  database, the cache and the
   recommendation store (2 s each) and counts dead letters; queue depth is null (no queue port
   reports it; Valkey's is on `/metrics`).
 
@@ -488,7 +601,7 @@ every problem listed). **Dev mode needs none.**
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `WEBFLIX_MODE` | `dev` (apps/api only; required elsewhere) | `dev`, `k8s` or `cloudflare` |
-| `WEBFLIX_ENV` | `development` | `production` requires real media token keys |
+| `WEBFLIX_ENV` | `development` (the Kubernetes API and tools images set `production`: a container without the chart's configuration is never development; docs/KUBERNETES.md §3, Security) | `production` requires real media token keys |
 | `WEBFLIX_PUBLIC_ORIGIN` | `http://localhost:5173` | Origin users load the app from; https makes cookies `Secure` and `__Host-` prefixed, and adds HSTS |
 | `WEBFLIX_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `WEBFLIX_MEDIA_TOKEN_KEYS` | dev-only key | `id:secret[,id:secret]` (secret ≥ 32 chars); the first signs, all verify (rotation). **Required in production; must be identical on every replica/Worker** |
@@ -518,7 +631,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_OIDC_<PROVIDER>_REPORTS_AUTH_TIME` | `false` (Keycloak `true`) | identity | Offer a fresh sign-in with that issuer as the account-holder proof (`Elevation.methods`). A proof is judged by `auth_time` alone and fails closed without it; leave `false` until the issuer's behaviour under `max_age=0` is checked (Google does not promise `auth_time`) |
 | `WEBFLIX_OIDC_TIMEOUT_MS` | `5000` | identity | Deadline of each call to an issuer (discovery, JWKS, token) |
 | `WEBFLIX_OIDC_JWKS_REFETCH_COOLDOWN_SEC` | `10` | identity | An ID token signed by an unknown key refetches the JWKS only when the last fetch is at least this old (`0`: always once) |
-| `WEBFLIX_EMAIL_SENDER` | `memory` | identity | `memory` (dev mailbox, one process), `smtp` (Node only: Mailpit on kind), `http` (an HTTP provider), `outbox` (the database outbox: D1 on local Cloudflare, every isolate sees it; also the database on Node). `memory` and `outbox` deliver nothing: production logs `identity.email_not_delivered` |
+| `WEBFLIX_EMAIL_SENDER` | `memory` | identity | `memory` (dev mailbox, one process), `smtp` (Node only: Mailpit on kind), `http` (an HTTP provider), `outbox` (the database outbox: D1 on local Cloudflare, every isolate sees it; also the database on Node; refused in production, both runtimes: it stores every body, live reset and verification links included). `memory` and `outbox` deliver nothing: production with `memory` logs `identity.email_not_delivered` |
 | `WEBFLIX_EMAIL_FROM` | `Webflix <no-reply@webflix.dev>` | identity | Sender of every message (`Name <address>` or an address) |
 | `WEBFLIX_EMAIL_HTTP_API_KEY`, `WEBFLIX_EMAIL_HTTP_URL`, `WEBFLIX_EMAIL_HTTP_PROVIDER` | unset, `https://api.resend.com/emails`, `resend` | identity | The `http` sender: Resend's REST API (bearer key, `Idempotency-Key`). Never logged |
 | `WEBFLIX_EMAIL_WEBHOOK_SECRET` | unset | identity | Verifies `POST /api/v1/webhooks/email/resend` (Svix-signed, five-minute tolerance); unset: the webhook answers `not_found` |
@@ -541,7 +654,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_EXPORT_EVENTS` | `inline` in dev; `batch` on k8s and Cloudflare | events | Where a data export's events come from (§3 "Download your data"). `inline`: the export job reads the account's events across the raw retention itself (small deployments: one job reads up to 13 months of hours). `batch`: the pipeline's `export-events` job extracts them and the result is recorded through `GET /system/privacy/exports` and `POST /system/privacy/exports/results`. `inline` is refused on Cloudflare (a Worker invocation cannot read the retention window). On Kubernetes the chart's pipeline runs `export-events` in its lake round every 5 minutes (docs/KUBERNETES.md §9.6) |
 | `WEBFLIX_RELEASE` | `dev` | events | `app.version` of server events (1-40 of `[A-Za-z0-9._+-]`): set it to the deployed release. The Helm chart sets the API image's tag (`config.events.release` overrides); the kind make fragment no longer exports a variable of this name (its Helm release name is `WEBFLIX_HELM_RELEASE`) |
 | `WEBFLIX_RECOMMENDATION_STORE` | `database` | personalisation | Where imported models live: `database` (SQLite in dev, PostgreSQL on k8s, D1 for everything on Cloudflare), `kv` (Cloudflare only: per-profile lists in Workers KV `RECS`, models and neighbours in D1; wrangler.jsonc sets it), `memory` (tests) |
-| `WEBFLIX_RECS_DEFAULT_POLICY` | `learned` | personalisation | Ranking policy of profiles no experiment assigns: `learned` (learned candidates where a fresh model has them, the rule engine elsewhere) or `rules` |
+| `WEBFLIX_RECS_DEFAULT_POLICY` | `rules` in production, else `learned` | personalisation | Ranking policy of profiles no experiment assigns: `learned` (learned candidates where a fresh model has them, the rule engine elsewhere) or `rules`. In production the learned model is turned on deliberately, once an experiment showed it beats the rule engine; an experiment's arms are unaffected |
 | `WEBFLIX_RECS_EXPERIMENT` | `recs.learned-vs-rules` | personalisation | The experiment that picks the policy: its control variant gets the rule engine, every other variant learned candidates |
 | `WEBFLIX_RECS_EXPLORE_SHARE` | `0.05` in production, else `0` | personalisation | Share of sessions (by session and UTC day) shown rows and items in random order (`BrowsePage.policy.explore`); 0 keeps local suites that assert row order deterministic |
 | `WEBFLIX_RECS_READ_TIMEOUT_MS` | `250` | personalisation | A recommendation-store read slower than this counts as unavailable: the page is the rule engine's, and the store is skipped for 30 s |
@@ -552,6 +665,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_STAFF_ISSUER` | unset: outside production `{WEBFLIX_PUBLIC_ORIGIN}/dev-idp/staff`, the development issuer's staff realm, read in process | admin | The exact staff issuer, e.g. a Keycloak realm `https://sso.example/realms/webflix` (https in production, no trailing slash). Required for `oidc` in production. Pointing the API at Keycloak is this variable only. The Helm chart's optional Keycloak (`keycloak.enabled`) sets it to its realm, `https://<release>-keycloak:8443/realms/webflix` by default (docs/KUBERNETES.md §9.4) |
 | `WEBFLIX_STAFF_AUDIENCE` / `WEBFLIX_STAFF_CLIENT_ID` | `webflix-admin-api` / `webflix-admin` | admin | The admin API's audience (`aud` must contain it); the client whose roles count (`resource_access.<client>.roles`) |
 | `WEBFLIX_STAFF_ALGORITHMS` | `RS256` | admin | Signature algorithms accepted on staff tokens (`RS256`, `ES256`, comma-separated), fixed here and never read from a token. Keycloak signs with RS256 by default |
+| `WEBFLIX_AUDIT_RETENTION_DAYS` | `396` (13 months) | admin | Audit entries older than this are deleted by the scheduler's sweep (at most 900 a tick). A year of staff activity for investigations (the payment industry asks for twelve months of audit trail) plus a month, and the same period as raw events, so no record of staff access to a member outlives the member's own activity by much |
 
 ### Node (`apps/api`)
 
@@ -591,6 +705,10 @@ them).
 
 The Worker reads the portable variables above as vars and secrets, plus its own
 `WEBFLIX_PASSWORD_ITERATIONS` and `WEBFLIX_EDGE_CACHE` (docs/CLOUDFLARE.md §6 and §3).
+`WEBFLIX_ENV` has no default on Cloudflare: a Worker without it answers `503 config.invalid`
+instead of running as development (docs/CLOUDFLARE.md §10.2). The staff console is served under
+`/admin/`, its `config.json` answered by the Worker from `WEBFLIX_STAFF_ISSUER` and
+`WEBFLIX_STAFF_CLIENT_ID`, under its own Content-Security-Policy.
 Milestone 2 binds a second KV namespace, `RECS`, for per-profile recommendation lists
 (`WEBFLIX_RECOMMENDATION_STORE=kv`); `make cf-provision` creates `webflix-recs` and writes its
 id. wrangler.jsonc sets, locally and in production: `WEBFLIX_EVENT_SINK=lake`, the email sender
@@ -625,12 +743,23 @@ by one invocation's KV budget: a run with more than 800 profile lists is refused
 recommendation_import_too_large`, naming `make cf-recs-import`, the importer outside the Worker).
 Other processes (the API replicas beside a CLI or a Kubernetes Job) serve the new run within
 30 s: no copy of the served model is used more than 30 s after its database read, whatever cache
-holds it (docs/RECOMMENDATIONS.md, "When a new run is served").
+holds it (docs/RECOMMENDATIONS.md, "When a new run is served"). The import is decided by content:
+the served run published again with another manifest digest (the pipeline's erasure rewrote it)
+is applied in place (`status: "rewritten"`, what it dropped removed); and no list is stored for a
+key the events area still lists as being erased, nor for a profile whose account withdrew
+personalisation (`withheldProfiles`; docs/RECOMMENDATIONS.md, "Privacy"). After a change the
+shared cache is told of the new model, retried three times over 3.5 s (a new pod's first Valkey
+connection can time out, finding K15); if it never answers, the run stays imported, every process
+serves it within the 30 s age bound, and the command exits **3** (`cacheInvalidated: false`).
+In a Worker a rewrite of the served run is sized by everything it does (lists written, removed
+keys times registered runs, pages of keys listed) against the invocation's KV budget, and a
+larger one is refused before anything is written, naming `make cf-recs-import`.
 
 `node apps/api/src/recs.ts demo [--replace] [--to <dir>]` publishes a demo run for the demo
 account's profiles into the mode's artefact store (version, then pointer, in the pipeline's
 format) and imports it with the same importer, checksums included: for a demo where no pipeline
-run is fresh. It is labelled as such (run id `*-de00de00`, manifest `code.demo: true`), refused
+run is fresh. It is labelled as such (run id `*-de00de00`, manifest `code.demo: true`, pages
+`demo:{run}`, no experiment exposure), refused
 while a fresh pipeline run is served unless `--replace`, and `--to` only writes it into a
 filesystem store. The local Worker's equivalent is `make cf-recs-import CF_RECS_DEMO=1`, the
 cluster's `make k8s-recs-demo` (docs/RECOMMENDATIONS.md, "A demo run").

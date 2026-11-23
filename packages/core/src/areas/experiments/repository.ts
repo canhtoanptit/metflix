@@ -31,6 +31,11 @@ export interface ExperimentsRepository {
   latestResults(key: string): Promise<ExperimentReport | null>;
   /** Stores a report (the analysis job's import); the same `computedAt` again replaces it. */
   saveResults(key: string, report: ExperimentReport): Promise<void>;
+  /**
+   * Retention (the aggregates period): deletes reports computed before `before` (epoch ms),
+   * oldest first, at most `limit` (bounded statements); returns how many went.
+   */
+  pruneResults(before: number, limit: number): Promise<number>;
 }
 
 export interface StoredExperiment {

@@ -12,6 +12,7 @@ import {
 } from "@webflix/ui";
 import { describeError } from "../../../app/query/errors.ts";
 import { useAuthenticatedSession } from "../../../app/session/session.ts";
+import { isUnfinishedSignup } from "../billing/membership.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatLongDate } from "../shared/format.ts";
 import { useIsDemoAccount } from "../shared/privileges.ts";
@@ -32,6 +33,8 @@ export function AccountOverviewPage() {
   const session = useAuthenticatedSession();
   const demo = useIsDemoAccount();
   const details = useAccountDetails();
+  // No profiles yet (sign-up not finished): profiles and their activity come once it is.
+  const unfinished = isUnfinishedSignup(session);
 
   return (
     <>
@@ -116,59 +119,74 @@ export function AccountOverviewPage() {
       />
 
       <AccountSection
-        title="Profiles"
-        description={`${session.profiles.length} of 5 profiles in use.`}
-        action={<SectionLink to="/profiles/manage">Manage profiles</SectionLink>}
-      >
-        <ul className="flex flex-col divide-y divide-line-subtle">
-          {session.profiles.map((profile) => (
-            <li key={profile.id}>
-              <Link
-                to="/profiles/$profileId/edit"
-                params={{ profileId: profile.id }}
-                className="focus-ring-inset group flex items-center gap-4 rounded-sm py-3"
-              >
-                <Avatar src={profile.avatar.imageUrl} name={profile.name} size="md" decorative />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="flex items-center gap-2 type-label text-fg">
-                    {profile.name}
-                    {profile.id === session.activeProfile?.id ? (
-                      <Badge tone="outline" size="sm">
-                        This profile
-                      </Badge>
-                    ) : null}
-                  </span>
-                  <span className="flex items-center gap-2 type-body-sm text-fg-muted">
-                    {profile.isKids ? (
-                      <>
-                        <KidsIcon size="xs" /> Kids ·{" "}
-                      </>
-                    ) : null}
-                    Maturity{" "}
-                    {profile.maturityCeiling === "ALL" ? "All ages" : profile.maturityCeiling}
-                    {profile.isLocked ? (
-                      <>
-                        {" "}
-                        · <LockIcon size="xs" /> Locked
-                      </>
-                    ) : null}
-                  </span>
-                </span>
-                <ChevronRightIcon
-                  size="md"
-                  className="text-fg-subtle transition-transform duration-fast group-hover:translate-x-0.5"
-                />
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </AccountSection>
-
-      <AccountSection
-        title="Viewing activity"
-        description="Titles a profile has watched. Remove anything you'd rather it forgot."
-        action={<SectionLink to="/account/activity">View activity</SectionLink>}
+        title="Privacy"
+        description="Choose how Webflix uses your activity, get a copy of your data, or delete your account."
+        action={<SectionLink to="/account/privacy">Manage privacy</SectionLink>}
       />
+
+      {unfinished ? null : (
+        <>
+          <AccountSection
+            title="Profiles"
+            description={`${session.profiles.length} of 5 profiles in use.`}
+            action={<SectionLink to="/profiles/manage">Manage profiles</SectionLink>}
+          >
+            <ul className="flex flex-col divide-y divide-line-subtle">
+              {session.profiles.map((profile) => (
+                <li key={profile.id}>
+                  <Link
+                    to="/profiles/$profileId/edit"
+                    params={{ profileId: profile.id }}
+                    className="focus-ring-inset group flex items-center gap-4 rounded-sm py-3"
+                  >
+                    <Avatar
+                      src={profile.avatar.imageUrl}
+                      name={profile.name}
+                      size="md"
+                      decorative
+                    />
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="flex items-center gap-2 type-label text-fg">
+                        {profile.name}
+                        {profile.id === session.activeProfile?.id ? (
+                          <Badge tone="outline" size="sm">
+                            This profile
+                          </Badge>
+                        ) : null}
+                      </span>
+                      <span className="flex items-center gap-2 type-body-sm text-fg-muted">
+                        {profile.isKids ? (
+                          <>
+                            <KidsIcon size="xs" /> Kids ·{" "}
+                          </>
+                        ) : null}
+                        Maturity{" "}
+                        {profile.maturityCeiling === "ALL" ? "All ages" : profile.maturityCeiling}
+                        {profile.isLocked ? (
+                          <>
+                            {" "}
+                            · <LockIcon size="xs" /> Locked
+                          </>
+                        ) : null}
+                      </span>
+                    </span>
+                    <ChevronRightIcon
+                      size="md"
+                      className="text-fg-subtle transition-transform duration-fast group-hover:translate-x-0.5"
+                    />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </AccountSection>
+
+          <AccountSection
+            title="Viewing activity"
+            description="Titles a profile has watched. Remove anything you'd rather it forgot."
+            action={<SectionLink to="/account/activity">View activity</SectionLink>}
+          />
+        </>
+      )}
     </>
   );
 }
@@ -182,7 +200,8 @@ function SectionLink({
     | "/account/devices"
     | "/profiles/manage"
     | "/account/activity"
-    | "/account/membership";
+    | "/account/membership"
+    | "/account/privacy";
   children: string;
 }) {
   return (

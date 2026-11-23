@@ -10,6 +10,7 @@ import { Button, ProviderMark, Skeleton } from "@webflix/ui";
 import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { queries } from "../../../app/query/queries.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
+import { rememberLinkIntent } from "./linkIntent.ts";
 import {
   FUNNEL_RESUME_PATH,
   federatedStartUrl,
@@ -197,7 +198,10 @@ export function useOutcomeFromUrl(enabled = true): ReturnedOutcome | null {
   useEffect(() => {
     if (!returned || cleared.current) return;
     cleared.current = true;
-    router.history.replace(pathWithout(router.state.location.href), router.history.location.state);
+    router.history.replace(
+      pathWithout(router.history.location.href),
+      router.history.location.state,
+    );
   }, [returned, router]);
   return returned;
 }
@@ -206,6 +210,8 @@ export interface OutcomeCopy {
   tone: "danger" | "info" | "accent";
   title: string;
   body: string;
+  /** A second paragraph: the other way through. */
+  more?: string;
 }
 
 /**
@@ -238,10 +244,16 @@ export function outcomeCopy(
             : `Nothing changed. Continue with ${name} again, or sign in with your email and password.`,
       };
     case "link-required":
+      // Security review H1: a provider attaches itself only to an account whose ways in its
+      // owner set up. Everyone else proves the account first: its password, or a reset of it.
       return {
         tone: "accent",
-        title: "You already have a Webflix account",
-        body: `A Webflix account already uses the email address of your ${name} account. To keep that account safe, we don't connect them automatically. Sign in the way you usually do, then link ${name} in Account › Security.`,
+        title: "An account already uses this address",
+        body:
+          context === "signup"
+            ? `The email address of your ${name} account belongs to a Webflix account, and ${name} can't be added to it automatically. Sign in to that account instead: you'll be offered to add ${name} right after.`
+            : `The email address of your ${name} account belongs to a Webflix account, and ${name} can't be added to it automatically. Sign in below with that account's password: you'll be offered to add ${name} right after.`,
+        more: "Don't know the password, or didn't create this account? Reset the password. The account becomes yours, and anyone else using it is signed out.",
       };
     case "failed":
     case "identity-in-use":
@@ -284,6 +296,11 @@ export function FederatedOutcomeNotice({
   useEffect(() => {
     ref.current?.focus();
   }, []);
+  // The member wanted this provider on their account: offer it once they have proved the
+  // account (signed in, or reset its password), wherever that happens.
+  useEffect(() => {
+    if (outcome === "link-required") rememberLinkIntent(provider);
+  }, [outcome, provider]);
   const name = providerName(provider, offered);
   const copy = outcomeCopy(outcome, name, context, error);
   if (!copy) return null;
@@ -311,6 +328,17 @@ export function FederatedOutcomeNotice({
       </Link>,
     );
   }
+  if (outcome === "link-required") {
+    actions.push(
+      <Link
+        key="reset"
+        to="/forgot-password"
+        className="focus-ring rounded-xs type-label text-fg underline underline-offset-2"
+      >
+        Reset the password
+      </Link>,
+    );
+  }
   return (
     <FormAlert
       ref={ref}
@@ -318,7 +346,14 @@ export function FederatedOutcomeNotice({
       title={copy.title}
       action={actions.length > 0 || extra ? [...actions, extra] : undefined}
     >
-      {copy.body}
+      {copy.more ? (
+        <>
+          <p>{copy.body}</p>
+          <p className="mt-2">{copy.more}</p>
+        </>
+      ) : (
+        copy.body
+      )}
     </FormAlert>
   );
 }

@@ -1,6 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { ApiError, type Plan, type PlanId } from "@webflix/contracts";
-import { Button, CheckCircleIcon, ErrorState, Skeleton, TextField } from "@webflix/ui";
+import { ApiError, type Checkout, type Money, type Plan, type PlanId } from "@webflix/contracts";
+import {
+  Button,
+  CheckCircleIcon,
+  cx,
+  ErrorState,
+  InfoIcon,
+  Skeleton,
+  TextField,
+} from "@webflix/ui";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
@@ -9,6 +17,7 @@ import { FormAlert } from "../shared/FormAlert.tsx";
 import { describeQuality, formatMoney, formatScreens } from "../shared/format.ts";
 import { markHandedOff } from "./checkoutMemory.ts";
 import {
+  type DeclineReason,
   describeDecline,
   describePromotionFailure,
   promotionAmount,
@@ -16,8 +25,15 @@ import {
 } from "./copy.ts";
 import { DeletionScheduledNotice, useScheduledDeletion } from "./deletion.tsx";
 import { NoProviderNotice } from "./NoProviderNotice.tsx";
+import { describeAmountReason } from "./outcome.ts";
 import { ProviderStep, useBillingConfig } from "./ProviderStep.tsx";
-import { type AppliedCode, useCheckoutStart } from "./useCheckoutStart.ts";
+import { describeTooMany } from "./retryAfter.ts";
+import {
+  type AppliedCode,
+  CodeStepError,
+  type DroppedCode,
+  useCheckoutStart,
+} from "./useCheckoutStart.ts";
 
 export interface CheckoutPaymentProps {
   planId: PlanId;
@@ -34,6 +50,8 @@ export interface CheckoutPaymentProps {
    * payment today leads; `signup`: a new member, whose trial most likely applies.
    */
   context?: "signup" | "restart";
+  /** A card was just declined at the confirming state: say so here (UX review 2.13). */
+  declinedBefore?: DeclineReason | "unknown" | null;
 }
 
 /**
@@ -48,6 +66,7 @@ export function CheckoutPayment({
   onConfirming,
   onConflict,
   context = "signup",
+  declinedBefore = null,
 }: CheckoutPaymentProps) {
   const session = useAuthenticatedSession();
   const config = useBillingConfig();
@@ -64,9 +83,10 @@ export function CheckoutPayment({
     if (state.kind === "conflict") onConflict();
   }, [state, onConfirming, onConflict]);
 
+  const declinedReason = checkout.declined ?? declinedBefore;
   useEffect(() => {
-    if (checkout.declined) declineRef.current?.focus();
-  }, [checkout.declined]);
+    if (declinedReason) declineRef.current?.focus();
+  }, [declinedReason]);
 
   if (config.data?.provider === "none") return <NoProviderNotice />;
   if (state.kind === "deletion")
@@ -110,8 +130,21 @@ export function CheckoutPayment({
     );
   }
 
-  const decline = checkout.declined ? describeDecline(checkout.declined) : null;
+  const decline = declinedReason
+    ? describeDecline(declinedReason === "unknown" ? null : declinedReason)
+    : null;
   const provider = config.data;
+  // The server says whether this account can still have a trial (an older API doesn't: then
+  // sign-up assumes one and a restart assumes none, and the words say "if").
+  const trial: Trial =
+    plan?.trial && checkout.trialEligible !== false
+      ? checkout.trialEligible === true
+        ? { days: plan.trial.days, certain: true }
+        : context === "signup"
+          ? { days: plan.trial.days, certain: false }
+          : null
+      : null;
+  const ready = state.kind === "ready" ? state.checkout : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -124,10 +157,14 @@ export function CheckoutPayment({
         plan={plan}
         applied={checkout.applied}
         changePlan={changePlan}
-        trialLikely={context === "signup"}
+        trial={trial}
+        checkout={ready}
+        mayStillHaveTrial={checkout.trialEligible === null && context === "restart"}
       />
       <PromoCode
         applied={checkout.applied}
+        dropped={checkout.dropped}
+        trial={trial}
         disabled={state.kind !== "ready"}
         onApply={checkout.applyCode}
         onRemove={checkout.removeCode}
@@ -140,7 +177,7 @@ export function CheckoutPayment({
           submitLabel={provider.provider === "stripe" ? "Start membership" : "Continue to payment"}
           onHandOff={() => markHandedOff(session.account.id, state.checkout.id, "setup")}
           onConfirmed={() => onConfirming(state.checkout.id, true)}
-          footnote={<FinePrint trialLikely={context === "signup"} />}
+          footnote={<FinePrint trial={trial} due={ready?.amountDue ?? null} />}
         />
       ) : (
         <div className="flex flex-col gap-4" aria-busy="true">
@@ -155,20 +192,58 @@ export function CheckoutPayment({
   );
 }
 
-/** The plan, and what is due today and after: from the server's prices, never computed here. */
+/** A free trial this checkout gets: `certain` when the server said the account can have one. */
+type Trial = { days: number; certain: boolean } | null;
+
+/**
+ * The plan, and what is due today and after: the server's amounts, never computed here. Without a
+ * trial the checkout already carries what is due today and why (the account's credit, the code's
+ * discount), so the amount is stated once, with its reason (UX review 2.2, 2.6).
+ */
 function CostSummary({
   plan,
   applied,
   changePlan,
-  trialLikely,
+  trial,
+  checkout,
+  mayStillHaveTrial,
 }: {
   plan: Plan | null;
   applied: AppliedCode | null;
   changePlan: ReactNode;
-  trialLikely: boolean;
+  trial: Trial;
+  checkout: Checkout | null;
+  /** An older API that doesn't say whether a returning member is due a trial. */
+  mayStillHaveTrial: boolean;
 }) {
-  const offeredTrial = plan?.trial?.days ?? null;
-  const trialDays = trialLikely ? offeredTrial : null;
+  let today: { amount: ReactNode; detail: string | null };
+  if (!plan) {
+    today = { amount: <Skeleton className="h-4 w-12" />, detail: null };
+  } else if (trial) {
+    today = {
+      amount: formatMoney({ amountMinor: 0, currency: plan.monthlyPrice.currency }),
+      detail: trial.certain
+        ? `Your ${trial.days}-day free trial starts today (one per card)`
+        : `${trial.days}-day free trial, if you haven't had a Webflix trial before`,
+    };
+  } else {
+    const due = checkout?.amountDue ?? null;
+    const reason = describeAmountReason(due, {
+      creditApplied: checkout?.creditApplied,
+      discount: checkout?.discount,
+      code: checkout?.promotion?.code ?? applied?.code,
+    });
+    today = {
+      amount: formatMoney(due ?? applied?.discountedPrice ?? plan.monthlyPrice),
+      detail: reason
+        ? reason
+        : mayStillHaveTrial && plan.trial
+          ? `${applied ? `With ${applied.code}. ` : ""}If you're due a free trial, it starts instead and nothing is charged today`
+          : applied
+            ? `With ${applied.code}`
+            : null,
+    };
+  }
   return (
     <section
       aria-label="Your plan"
@@ -193,33 +268,9 @@ function CostSummary({
         {changePlan}
       </div>
       <dl className="flex flex-col gap-3 px-4 py-4 sm:px-5">
+        <Row term="Due today" detail={today.detail} amount={today.amount} />
         <Row
-          term="Due today"
-          detail={
-            trialDays
-              ? `${trialDays}-day free trial, if you haven't had a Webflix trial before`
-              : offeredTrial
-                ? `${applied ? `With ${applied.code}. ` : ""}If you're due a free trial, it starts instead and nothing is charged today`
-                : applied
-                  ? `With ${applied.code}`
-                  : null
-          }
-          amount={
-            plan ? (
-              formatMoney(
-                trialDays
-                  ? { amountMinor: 0, currency: plan.monthlyPrice.currency }
-                  : applied
-                    ? applied.quote.discountedPrice
-                    : plan.monthlyPrice,
-              )
-            ) : (
-              <Skeleton className="h-4 w-12" />
-            )
-          }
-        />
-        <Row
-          term={trialDays ? "After the trial" : "Then"}
+          term={trial ? "After the trial" : "Then"}
           detail="Every month until you cancel"
           amount={
             plan ? `${formatMoney(plan.monthlyPrice)}/month` : <Skeleton className="h-4 w-20" />
@@ -250,14 +301,34 @@ function Row({
   );
 }
 
+/** What to tell the member when applying or removing a code failed. */
+function describeCodeFailure(failure: unknown): string {
+  const step = failure instanceof CodeStepError ? failure.step : "check";
+  const error = failure instanceof CodeStepError ? failure.error : failure;
+  if (ApiError.is(error, "promotion_code_invalid")) {
+    return describePromotionFailure(error.problem.promotionReason);
+  }
+  // Checking a code spends the promo-code budget; restarting the checkout may have met either.
+  return (
+    describeTooMany(error, step === "check" ? "codes" : "attempts") ??
+    describeError(error).description
+  );
+}
+
 /** An optional promo code: checked against the plan and quoted before it is applied. */
 function PromoCode({
   applied,
+  dropped,
+  trial,
   disabled,
   onApply,
   onRemove,
 }: {
   applied: AppliedCode | null;
+  /** A code the checkout carried that this plan can't take: said, not silently lost. */
+  dropped: DroppedCode | null;
+  /** A free trial costs nothing today: the code is not used (it stays the member's). */
+  trial: Trial;
   disabled: boolean;
   onApply: (code: string) => Promise<void>;
   onRemove: () => Promise<void>;
@@ -265,6 +336,7 @@ function PromoCode({
   const [open, setOpen] = useState(false);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
@@ -284,62 +356,95 @@ function PromoCode({
       setCode("");
       setOpen(false);
     } catch (failure) {
-      setError(
-        ApiError.is(failure, "promotion_code_invalid")
-          ? describePromotionFailure(failure.problem.promotionReason)
-          : ApiError.is(failure, "rate_limited")
-            ? `Too many codes tried. Try again in ${failure.problem.retryAfterSec} seconds.`
-            : describeError(failure).description,
-      );
+      setError(describeCodeFailure(failure));
       input.current?.focus();
     } finally {
       setBusy(false);
     }
   };
 
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    setRemoveError(null);
+    try {
+      await onRemove();
+    } catch (failure) {
+      setRemoveError(describeCodeFailure(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (applied) {
+    // With a trial that is certain, the code does nothing today: say that, in the info tone,
+    // instead of a green "applied" beside $0.00 (UX review 2.5).
+    const unused = trial?.certain === true;
     return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-positive/40 bg-positive-subtle px-4 py-3">
-        <p className="flex items-center gap-2 type-body-sm text-fg">
-          <CheckCircleIcon size="sm" className="text-positive" />
-          <span>
-            <span className="type-label">{applied.code}</span> applied:{" "}
-            {promotionAmount(applied.quote.promotion)} {promotionReach(applied.quote.promotion)} (
-            {formatMoney(applied.quote.discountedPrice)} instead of{" "}
-            {formatMoney(applied.quote.price)}). With a free trial it isn't used, and stays yours.
-          </span>
-        </p>
-        <Button
-          variant="ghost"
-          size="sm"
-          loading={busy}
-          disabled={disabled}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await onRemove();
-            } finally {
-              setBusy(false);
-            }
-          }}
+      <div className="flex flex-col gap-2">
+        <div
+          className={cx(
+            "flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3",
+            unused ? "border-line bg-surface-2" : "border-positive/40 bg-positive-subtle",
+          )}
         >
-          Remove<span className="sr-only"> promo code</span>
-        </Button>
+          <p className="flex items-center gap-2 type-body-sm text-fg">
+            {unused ? (
+              <InfoIcon size="sm" className="shrink-0 text-fg-muted" />
+            ) : (
+              <CheckCircleIcon size="sm" className="shrink-0 text-positive" />
+            )}
+            {unused ? (
+              <span>
+                <span className="type-label">{applied.code}</span> stays yours: your free trial
+                costs nothing, so the code applies only if this card has had a trial before.
+              </span>
+            ) : (
+              <span>
+                <span className="type-label">{applied.code}</span> applied:{" "}
+                {promotionAmount(applied.promotion)} {promotionReach(applied.promotion)}
+                {trial ? ". With a free trial it isn't used, and stays yours." : "."}
+              </span>
+            )}
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            loading={busy}
+            disabled={disabled}
+            onClick={() => void remove()}
+          >
+            Remove<span className="sr-only"> promo code</span>
+          </Button>
+        </div>
+        {removeError ? (
+          <p role="alert" className="type-body-sm text-danger">
+            We couldn't remove {applied.code}: {removeError} It's still applied.
+          </p>
+        ) : null}
       </div>
     );
   }
+  const droppedNotice = dropped ? (
+    <p role="status" className="type-body-sm text-fg-muted">
+      {dropped.code} isn't used with this plan: {describePromotionFailure(dropped.reason)}
+    </p>
+  ) : null;
   if (!open) {
     return (
-      <div>
-        <Button
-          variant="link"
-          onClick={() => {
-            setOpen(true);
-            requestAnimationFrame(() => input.current?.focus());
-          }}
-        >
-          Have a promo code?
-        </Button>
+      <div className="flex flex-col gap-2">
+        {droppedNotice}
+        <div>
+          <Button
+            variant="link"
+            onClick={() => {
+              setOpen(true);
+              requestAnimationFrame(() => input.current?.focus());
+            }}
+          >
+            Have a promo code?
+          </Button>
+        </div>
       </div>
     );
   }
@@ -368,12 +473,18 @@ function PromoCode({
   );
 }
 
-function FinePrint({ trialLikely }: { trialLikely: boolean }) {
+/**
+ * What happens around the provider's page. Without a trial it is two visits today (the card is
+ * saved, then the payment confirmed), so the first screen says so: no surprise second trip.
+ */
+function FinePrint({ trial, due }: { trial: Trial; due: Money | null }) {
   return (
     <p className="type-body-sm text-fg-subtle">
-      {trialLikely
-        ? "No free trial for this card or account? You'll see what's due today and confirm it before you pay. Cancel anytime in Account."
-        : "You'll see what's due today and confirm it before you pay. Cancel anytime in Account."}
+      {trial?.certain
+        ? "Cancel before the trial ends and nothing is charged. Cancel anytime in Account."
+        : trial
+          ? "No free trial for this card or account? You'll see what's due today and confirm it before you pay. Cancel anytime in Account."
+          : `After your card is saved, you'll come back here and confirm the ${due ? `${formatMoney(due)} ` : ""}payment on the same secure page. Nothing is charged until you do. Cancel anytime in Account.`}
     </p>
   );
 }

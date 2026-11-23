@@ -7,9 +7,13 @@ import type { AreaServices } from "../index.ts";
 import type { AreaModule, AreaSeams } from "../module.ts";
 import { createAuditTrail } from "./audit.ts";
 import { createDeadLetters, JOB_MAX_ATTEMPTS } from "./dead-letters.ts";
+import { createMemberData } from "./member-data.ts";
 import { createStaffOperations, type StaffOperations } from "./operations.ts";
 
-/** Turns audit entries nobody settled into `unknown` (published on every scheduler tick). */
+/**
+ * Every scheduler tick: audit entries nobody settled become `unknown`, and entries older than
+ * the retention period are deleted (a bounded batch per tick).
+ */
 export const auditSweepJob = defineJob("admin.audit-sweep", z.object({}));
 
 /**
@@ -42,11 +46,16 @@ export function createAdminService(
   const trail = createAuditTrail(deps);
   const deadLetters = createDeadLetters(deps);
   const operations = createStaffOperations(deps, options.areas, trail, deadLetters);
+  const memberData = createMemberData(deps, options.areas);
   return {
     ...operations,
+    // A member's rights (privacy review M5, M6): run by the events area's erasure and export.
+    eraseAccountData: memberData.eraseAccountData,
+    exportAccountData: memberData.exportAccountData,
     jobs: [
       handleJob(auditSweepJob, async () => {
         await trail.sweepPendingAudit();
+        await trail.enforceRetention();
       }),
     ],
     scheduled: () => [auditSweepJob.create({})],

@@ -169,9 +169,24 @@ export interface IdentityService extends AreaModule {
   /** The password proof. The request was already charged to `profile-pin` (request-scoped route). */
   elevate(auth: AuthContext, password: string): Promise<Elevation>;
   requestEmailVerification(auth: AuthContext, charge: ChargeRecipient): Promise<void>;
-  confirmEmailVerification(token: string): Promise<void>;
+  /**
+   * Follows a verification link. `auth` is the session the link was opened in, if any: a live
+   * session of the token's own account also proves the account's ways in (`accessProvenAt`), so
+   * Google or Apple may then link to it automatically; anywhere else the address is verified and
+   * nothing more.
+   */
+  confirmEmailVerification(token: string, auth: AuthContext | null): Promise<void>;
   requestPasswordReset(email: string, charge: ChargeRecipient): Promise<void>;
-  confirmPasswordReset(token: string, newPassword: string): Promise<void>;
+  /**
+   * Completes a reset from the emailed link: every device is signed out, then the one that
+   * completed it is signed in (the session it answers). The link proved the address and the
+   * new password is the clicker's: the session is theirs.
+   */
+  confirmPasswordReset(
+    token: string,
+    newPassword: string,
+    client: ClientInfo,
+  ): Promise<IssuedSession>;
   receiveEmailWebhook(
     provider: string,
     headers: { get(name: string): string | null },
@@ -423,10 +438,14 @@ export function createIdentityService(
    * Sign in, or sign up, with a verified issuer identity (§4.1). The linking rule:
    * - an identity already linked signs in to its account (keyed by issuer and subject only);
    * - otherwise an account with the asserted address is linked automatically only when the
-   *   issuer verified the address AND the account's address is verified (and it is not the
-   *   shared demo account) AND the identity was never removed from an account (unlinked by the
-   *   member, or dropped by a password reset); anything less is `link-required`: sign in first,
-   *   then link deliberately;
+   *   issuer verified the address AND the account's address is verified AND every way in to the
+   *   account was set up by someone who proved control of that address (`accessProvenAt`: a
+   *   federated sign-up, a password reset, or the verification link opened in a session of the
+   *   account; never a click from anywhere else, which proves who reads the mailbox but not who
+   *   set the password: security review H1) AND it is not the shared demo account AND the
+   *   identity was never removed from an account (unlinked by the member, or dropped by a
+   *   password reset); anything less is `link-required`: sign in first and link deliberately, or
+   *   reset the password (which evicts whatever someone else set up);
    * - with no such account, a new one is created (membership `none`), only for an address the
    *   issuer verified, so nobody can squat an address they do not control.
    */
@@ -457,6 +476,11 @@ export function createIdentityService(
       const automatic =
         identity.emailVerified && existing.emailVerifiedAt !== null && !isDemoAccount(existing.id);
       if (!automatic) throw new OidcFailure("link_not_automatic", "link-required");
+      // Whoever set up the account's password or identities must have proved the address: a
+      // verified address alone could be an owner's click on a link someone else asked for.
+      if (existing.accessProvenAt === null) {
+        throw new OidcFailure("access_unproven", "link-required");
+      }
       // An identity removed from an account (the member unlinked it, or a password reset dropped
       // it) never comes back by itself: only the deliberate, proven link (intent=link).
       if (await repos.identity.findRemoval(identity.provider, identity.subject)) {
@@ -496,6 +520,8 @@ export function createIdentityService(
           email: identity.email,
           passwordHash: null,
           emailVerifiedAt: now,
+          // Its only way in is this identity, for an address the issuer verified.
+          accessProvenAt: now,
           createdAt: now,
           updatedAt: now,
         },
@@ -904,13 +930,18 @@ export function createIdentityService(
       await jobs.publish(verificationEmailJob.create({ accountId: account.id }));
     },
 
-    async confirmEmailVerification(token) {
+    async confirmEmailVerification(token, auth) {
+      const sessionAccountId = auth?.session.accountId ?? null;
       const accountId = await repos.identity.consumeVerificationToken(
         await hashToken(token),
         clock.now(),
+        sessionAccountId,
       );
       if (accountId === null) throw new AppError("verification_token_invalid");
-      logger.info("identity.email_verified", { accountId });
+      logger.info("identity.email_verified", {
+        accountId,
+        accessProven: sessionAccountId === accountId,
+      });
     },
 
     async requestPasswordReset(email, charge) {
@@ -920,16 +951,19 @@ export function createIdentityService(
       await jobs.publish(passwordResetEmailJob.create({ email }));
     },
 
-    async confirmPasswordReset(token, newPassword) {
+    async confirmPasswordReset(token, newPassword, client) {
       const tokenHash = await hashToken(token);
       const live = await repos.identity.findLiveToken(tokenHash, "reset_password", clock.now());
       if (!live) throw new AppError("verification_token_invalid");
       requireNotDemo(live.accountId);
       const passwordHash = await passwords.hash(newPassword);
+      // Stored in the reset's own batch, after every other session of the account is gone.
+      const session = await sessions.newSession(live.accountId, client, true);
       const reset = await repos.identity.completePasswordReset({
         tokenHash,
         passwordHash,
         now: clock.now(),
+        session: session.record,
       });
       if (!reset) throw new AppError("verification_token_invalid");
       await streamGate.releaseAll(reset.accountId);
@@ -947,6 +981,7 @@ export function createIdentityService(
         detail,
         tokenHash.slice(0, 16),
       );
+      return sessions.issued(session);
     },
 
     async receiveEmailWebhook(provider, headers, body) {

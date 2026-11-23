@@ -287,6 +287,40 @@ export function describeRecommendationStoreContract(
       ).rejects.toThrow();
     });
 
+    it("lists a run's profile keys page by page, and records a rewritten version's digest", async () => {
+      const { store } = h();
+      const keys = Array.from({ length: 150 }, () => profileKey());
+      for (const run of ["run-a", "run-b"]) await store.beginImport(model(run));
+      await store.putProfileLists(
+        "run-a",
+        keys.map((key) => lists(key, "run-a")),
+      );
+      await store.putProfileLists("run-b", [lists(profileKey(), "run-b")]);
+      await store.activate("run-a", NOW);
+      const listed: string[] = [];
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page: { keys: string[]; cursor: string | null } = await store.profileKeys(
+          "run-a",
+          cursor,
+        );
+        listed.push(...page.keys);
+        cursor = page.cursor;
+        pages += 1;
+      } while (cursor !== null && pages < 100);
+      expect(new Set(listed)).toEqual(new Set(keys));
+      expect(listed).toHaveLength(150);
+      expect((await store.profileKeys("run-c", null)).keys).toEqual([]);
+      // The served run, rewritten in place: its digest changes, nothing else.
+      await store.recordManifest("run-a", "b".repeat(64));
+      expect(await store.activeModel()).toMatchObject({
+        run: "run-a",
+        status: "active",
+        manifestSha256: "b".repeat(64),
+      });
+    });
+
     it("does not serve expired lists (cold start, not an error)", async () => {
       const { store } = h();
       const key = profileKey();

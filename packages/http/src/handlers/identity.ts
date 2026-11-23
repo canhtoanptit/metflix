@@ -229,13 +229,24 @@ export function createIdentityHandlers(container: AppContainer): AreaHandlers<"i
     requestEmailVerification: async (_request, c) =>
       services.identity.requestEmailVerification(await account(c), chargeRecipient(c)),
 
-    confirmEmailVerification: ({ body }) => services.identity.confirmEmailVerification(body.token),
+    // Public: the link works in any browser. The session it was opened in, if any, decides
+    // whether the account's ways in are proven too (only a session of the token's own account).
+    confirmEmailVerification: async ({ body }, c) =>
+      services.identity.confirmEmailVerification(body.token, await resolveAuth(container, c)),
 
     requestPasswordReset: ({ body }, c) =>
       services.identity.requestPasswordReset(body.email, chargeRecipient(c)),
 
-    confirmPasswordReset: ({ body }) =>
-      services.identity.confirmPasswordReset(body.token, body.newPassword),
+    // Every device is signed out, then this one is signed in, as sign-in answers.
+    confirmPasswordReset: async ({ body }, c) => {
+      const issued = await services.identity.confirmPasswordReset(
+        body.token,
+        body.newPassword,
+        clientInfo(c),
+      );
+      issue(c, issued);
+      return issued.state;
+    },
 
     receiveEmailWebhook: ({ params, body }, c) =>
       services.identity.receiveEmailWebhook(params.provider, c.req.raw.headers, body),

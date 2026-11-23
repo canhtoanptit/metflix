@@ -1,4 +1,5 @@
 import {
+  type AmountPreview,
   type CatalogueEntry,
   type CatalogueSyncResult,
   type Clock,
@@ -17,7 +18,17 @@ import {
   systemClock,
 } from "@webflix/core";
 import { StripeApiError, StripeClient, type StripeObject } from "./client.ts";
-import { idOf, list, ms, toEvent, toInvoice, toSetup, toSubscription } from "./mapping.ts";
+import {
+  creditAppliedOf,
+  discountOf,
+  idOf,
+  list,
+  ms,
+  toEvent,
+  toInvoice,
+  toSetup,
+  toSubscription,
+} from "./mapping.ts";
 import { verifyStripeSignature } from "./webhook.ts";
 
 export interface StripePaymentProviderOptions {
@@ -211,6 +222,37 @@ export class StripePaymentProvider implements PaymentProvider {
       at,
       amountMinor: preview.amount_due,
       currency: String(preview.currency ?? "usd").toUpperCase(),
+      creditAppliedMinor: creditAppliedOf(preview),
+      discountMinor: discountOf(preview),
+    };
+  }
+
+  /**
+   * `POST /v1/invoices/create_preview` for a new subscription of the customer on this price
+   * (with the promotion code): the first invoice as Stripe would issue it, credit balance
+   * applied. A trial is decided later (at confirmation), so none is previewed.
+   */
+  async previewFirstInvoice(input: {
+    customerId: string;
+    priceLookupKey: string;
+    promotionId: string | null;
+  }): Promise<AmountPreview> {
+    const price = await this.price(input.priceLookupKey);
+    const preview = await this.client.post(
+      "/v1/invoices/create_preview",
+      {
+        customer: input.customerId,
+        subscription_details: { items: [{ price: price.id }] },
+        ...(input.promotionId ? { discounts: [{ promotion_code: input.promotionId }] } : {}),
+      },
+      // A preview changes nothing; a fresh key, so no cached answer is ever replayed.
+      `webflix-first-invoice-${input.customerId}-${crypto.randomUUID()}`,
+    );
+    return {
+      amountMinor: typeof preview.amount_due === "number" ? preview.amount_due : price.amount,
+      currency: String(preview.currency ?? price.currency).toUpperCase(),
+      creditAppliedMinor: creditAppliedOf(preview),
+      discountMinor: discountOf(preview),
     };
   }
 
@@ -245,17 +287,28 @@ export class StripePaymentProvider implements PaymentProvider {
     const total = typeof preview.total === "number" ? preview.total : 0;
     const amountDue = typeof preview.amount_due === "number" ? preview.amount_due : 0;
     const credit = Math.max(0, -total);
+    const charged = lines.reduce((sum, line) => sum + Math.max(0, line.amountMinor), 0);
+    const discount = discountOf(preview);
     const periodEnd = ms(item?.current_period_end);
+    const renewal = Math.max(0, price.amount - credit);
     return {
       currency: String(preview.currency ?? price.currency).toUpperCase(),
       amountDueMinor: amountDue,
+      // What the new plan's remaining time is short of: the old plan's unused time, and credit.
+      creditAppliedMinor: Math.max(0, charged - discount - amountDue),
+      discountMinor: discount,
       creditMinor: credit,
       lines,
       prorationDate: Math.floor(input.prorationDate / 1000) * 1000,
       nextRenewal:
         periodEnd === null
           ? null
-          : { at: periodEnd, amountMinor: Math.max(0, price.amount - credit) },
+          : {
+              at: periodEnd,
+              amountMinor: renewal,
+              creditAppliedMinor: price.amount - renewal,
+              discountMinor: 0,
+            },
     };
   }
 

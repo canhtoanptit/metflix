@@ -268,12 +268,17 @@ export function describeFederatedSignIn(
       ).items;
     }
 
-    async function verifyEmail(email: string): Promise<void> {
+    /**
+     * Follows the newest verification link sent to `email`, in `b`: the account's own signed-in
+     * browser proves its ways in (automatic linking may follow); any other browser (a fresh one
+     * by default) only verifies the address.
+     */
+    async function verifyEmail(email: string, b: Browser = browser()): Promise<void> {
       const message = (await mailbox(email)).findLast((item) => item.template === "verify-email");
       const link = message?.links.find((candidate) => candidate.includes("#token="));
       expect(link).toBeDefined();
       const token = new URL(link ?? "").hash.replace("#token=", "");
-      const confirmed = await browser().json("POST", "/auth/email-verification/confirm", { token });
+      const confirmed = await b.json("POST", "/auth/email-verification/confirm", { token });
       expect(confirmed.status).toBe(204);
     }
 
@@ -486,7 +491,7 @@ export function describeFederatedSignIn(
     describe("the linking rule (§4.1): no takeover by asserting an address", () => {
       it("links automatically only when both sides verified the address", async () => {
         const email = unique("victim");
-        await passwordAccount(email);
+        const member = await passwordAccount(email);
         // The account has not proved its address: an issuer asserting it, verified or not, is not enough.
         const attacker = browser();
         expect(
@@ -494,7 +499,8 @@ export function describeFederatedSignIn(
         ).toBe("link-required");
         expect((await session(attacker)).authenticated).toBe(false);
 
-        await verifyEmail(email);
+        // The member follows the link in the browser they signed up in.
+        await verifyEmail(email, member);
         const unverifiedAtIssuer = browser();
         expect(
           (await flow(unverifiedAtIssuer, "google", { email: { address: email, verified: false } }))
@@ -513,8 +519,7 @@ export function describeFederatedSignIn(
 
       it("emailUnverified, emailVerifiedAbsent: never sign in to an existing account by its address", async () => {
         const email = unique("verified-owner");
-        await passwordAccount(email);
-        await verifyEmail(email);
+        await verifyEmail(email, await passwordAccount(email));
         for (const fault of ["emailUnverified", "emailVerifiedAbsent"]) {
           const attacker = browser();
           const done = await flow(attacker, "google", {
@@ -561,6 +566,129 @@ export function describeFederatedSignIn(
           "link-required",
         );
         expect((await session(b)).authenticated).toBe(false);
+      });
+    });
+
+    describe("security review H1: no automatic link into an account someone else set up", () => {
+      it("a verification click without the account's session links nothing; a reset evicts the attacker", async () => {
+        const victimEmail = unique("prehijack-victim");
+        const attackerApple = unique("prehijack-attacker");
+        // The attacker signs up with the victim's address and plants their own Apple identity.
+        const attacker = await passwordAccount(victimEmail);
+        await becomeHolder(attacker);
+        await elevate(attacker);
+        expect(
+          (
+            await flow(
+              attacker,
+              "apple",
+              { email: { address: attackerApple, verified: true } },
+              { intent: "link" },
+            )
+          ).outcome,
+        ).toBe("linked");
+        // The victim follows the genuine verification link, signed out, in their own browser.
+        await verifyEmail(victimEmail);
+        // Continue with Google: not into the attacker's account.
+        const victim = browser();
+        const google = await flow(victim, "google", {
+          email: { address: victimEmail, verified: true },
+        });
+        expect(google.outcome).toBe("link-required");
+        expect((await session(victim)).authenticated).toBe(false);
+        expect(await identities(attacker)).toEqual(["apple"]);
+        // The landing page points the owner at a password reset, which makes the account theirs.
+        const recover = browser();
+        expect(
+          (await recover.json("POST", "/auth/password-reset", { email: victimEmail })).status,
+        ).toBe(204);
+        const reset = (await mailbox(victimEmail)).findLast(
+          (item) => item.template === "reset-password",
+        );
+        const token = new URL(
+          reset?.links.find((candidate) => candidate.includes("#token=")) ?? "",
+        ).hash.replace("#token=", "");
+        expect(
+          (
+            await recover.json("POST", "/auth/password-reset/confirm", {
+              token,
+              newPassword: "the owner's own passphrase",
+            })
+          ).status,
+        ).toBe(200);
+        // The owner is signed in here (at the profile gate: the account has a profile).
+        expect((await session(recover)).account?.email).toBe(victimEmail);
+        expect((await session(attacker)).authenticated).toBe(false);
+        expect(
+          (await browser().json("POST", "/auth/login", { email: victimEmail, password: PASSWORD }))
+            .status,
+        ).toBe(401);
+        expect(
+          (await flow(browser(), "apple", { email: { address: attackerApple, verified: true } }))
+            .outcome,
+        ).not.toBe("signed-in");
+        // Now Google links: every way in is the owner's.
+        const owner = browser();
+        expect(
+          (await flow(owner, "google", { email: { address: victimEmail, verified: true } }))
+            .outcome,
+        ).toBe("signed-in");
+        expect((await session(owner)).account?.email).toBe(victimEmail);
+      });
+
+      it("an address an account is moved to must be proven again before an issuer links to it", async () => {
+        // An account its owner proved (the link followed in their own session)...
+        const first = unique("mover");
+        const owner = await passwordAccount(first);
+        await verifyEmail(first, owner);
+        await becomeHolder(owner);
+        // ...moved to an address someone else reads, who clicks the link signed out.
+        const target = unique("moved-to");
+        expect(
+          (await owner.json("PATCH", "/account", { email: target, currentPassword: PASSWORD }))
+            .status,
+        ).toBe(200);
+        await verifyEmail(target);
+        expect(
+          (await flow(browser(), "google", { email: { address: target, verified: true } })).outcome,
+        ).toBe("link-required");
+        // The account's holder confirming a new address in their session proves it again.
+        const next = unique("moved-again");
+        expect(
+          (await owner.json("PATCH", "/account", { email: next, currentPassword: PASSWORD }))
+            .status,
+        ).toBe(200);
+        await verifyEmail(next, owner);
+        expect(
+          (await flow(browser(), "google", { email: { address: next, verified: true } })).outcome,
+        ).toBe("signed-in");
+      });
+    });
+
+    describe("an account with no profile yet", () => {
+      it("a Google-only account sets a password and asks for deletion from the gate, with a fresh proof", async () => {
+        const email = unique("gate-google");
+        const b = browser();
+        expect(
+          (await flow(b, "google", { email: { address: email, verified: true } })).outcome,
+        ).toBe("signed-up");
+        // No profile, no password: the account's pages answer; changes still need a fresh proof.
+        expect((await b.json("GET", "/account")).status).toBe(200);
+        expect((await b.json("PATCH", "/account", { newPassword: PASSWORD })).body?.code).toBe(
+          "password_required",
+        );
+        expect(
+          (
+            await flow(
+              b,
+              "google",
+              { email: { address: email, verified: true } },
+              { intent: "reauth" },
+            )
+          ).outcome,
+        ).toBe("reauthenticated");
+        expect((await b.json("PATCH", "/account", { newPassword: PASSWORD })).status).toBe(200);
+        expect((await b.json("POST", "/account/deletion")).status).toBe(202);
       });
     });
 
@@ -1021,11 +1149,15 @@ export function describeFederatedSignIn(
         const token = new URL(
           message?.links.find((link) => link.includes("#token=")) ?? "",
         ).hash.slice(7);
-        const done = await browser().json("POST", "/auth/password-reset/confirm", {
+        const resetter = browser();
+        const done = await resetter.json("POST", "/auth/password-reset/confirm", {
           token,
           newPassword: "a brand new passphrase",
         });
-        expect(done.status).toBe(204);
+        // Every device is signed out, then the one that completed the reset is signed in.
+        expect(done.status).toBe(200);
+        expect(done.body).toMatchObject({ authenticated: true, account: { email } });
+        expect((await session(resetter)).account?.email).toBe(email);
         expect((await session(device)).authenticated).toBe(false);
         expect(
           (await browser().json("POST", "/auth/login", { email, password: PASSWORD })).status,
@@ -1079,7 +1211,7 @@ export function describeFederatedSignIn(
               newPassword: "the owner's passphrase",
             })
           ).status,
-        ).toBe(204);
+        ).toBe(200);
         // The attacker's session and identity are both gone.
         expect((await session(attacker)).authenticated).toBe(false);
         const comeback = browser();

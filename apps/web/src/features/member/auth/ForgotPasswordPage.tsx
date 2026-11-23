@@ -13,6 +13,9 @@ import { formatCountdown } from "../shared/format.ts";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useCountdown, useRetryAfter } from "../shared/useRetryAfter.ts";
 import { normalizeEmail, validateEmail } from "../shared/validation.ts";
+import { pendingLinkIntent } from "./linkIntent.ts";
+import { providerName } from "./oidc.ts";
+import { CARD_HEADING, EmailText } from "./parts.tsx";
 
 const route = getRouteApi("/public/forgot-password");
 
@@ -39,6 +42,7 @@ export function ForgotPasswordPage() {
   const alertRef = useRef<HTMLDivElement>(null);
   const sentRef = useRef<HTMLHeadingElement>(null);
   const rate = useRetryAfter();
+  const [wanted] = useState(() => pendingLinkIntent());
 
   const request = useMutation({
     mutationFn: (address: string) => api().requestPasswordReset({ body: { email: address } }),
@@ -84,14 +88,13 @@ export function ForgotPasswordPage() {
                 id="sent-heading"
                 ref={sentRef}
                 tabIndex={-1}
-                className="type-headline text-fg outline-none"
+                className={`${CARD_HEADING} outline-none`}
               >
                 Check your email
               </h1>
               <p className="type-body-lg text-fg-muted">
-                If a Webflix account uses <span className="wrap-anywhere text-fg">{sentTo}</span>,
-                we've sent it a link to choose a new password. The link works once and expires in{" "}
-                {minutes} minutes.
+                If a Webflix account uses <EmailText>{sentTo}</EmailText>, we've sent it a link to
+                choose a new password. The link works once and expires in {minutes} minutes.
               </p>
               <p className="type-body text-fg-muted">
                 Didn't get it? Check your spam folder, and that the address is the one you sign in
@@ -141,7 +144,7 @@ export function ForgotPasswordPage() {
               aria-labelledby="forgot-heading"
               className="flex flex-col gap-4"
             >
-              <h1 id="forgot-heading" className="type-headline mb-1 text-fg">
+              <h1 id="forgot-heading" className={`${CARD_HEADING} mb-1`}>
                 Reset your password
               </h1>
               <p className="type-body text-fg-muted">
@@ -149,6 +152,12 @@ export function ForgotPasswordPage() {
                 password. Signed up with Google or Apple? The link sets a password for your account
                 too.
               </p>
+              {wanted ? (
+                <p className="type-body text-fg-muted">
+                  Once it's reset, you'll be signed in and offered to add {providerName(wanted)} to
+                  the account.
+                </p>
+              ) : null}
               {failure ? (
                 <FormAlert ref={alertRef} title={describeError(failure).title}>
                   {ApiError.is(failure, "rate_limited")

@@ -78,7 +78,7 @@ test("the browser's Global Privacy Control is a no for what the member never ans
   ).toHaveCount(2);
   await personalisation.click();
   await expect(personalisation).toHaveAttribute("aria-checked", "true");
-  await expect(page.getByText(/^You turned this on on/)).toBeVisible();
+  await expect(page.getByText(/^Turned on by you on /)).toBeVisible();
 
   await page.goto("/browse");
   await expect(page.locator('section[aria-roledescription="carousel"]').first()).toBeVisible();

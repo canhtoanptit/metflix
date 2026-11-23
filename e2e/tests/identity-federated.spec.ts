@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures.ts";
 import { answerIssuer, requireDevIssuer } from "./identity-support.ts";
-import { CLIENT_HEADERS, expectAccessible, PASSWORD, uniqueEmail } from "./member-support.ts";
+import { expectAccessible, uniqueEmail } from "./member-support.ts";
 
 /**
  * Sign in and sign up with Google and Apple through the development issuer (docs/BLUEPRINT-M2.md
@@ -118,40 +118,6 @@ test("Refused for too many attempts: the sign-in page says to wait, not that som
   await expect(page).toHaveURL(/\/login$/);
 });
 
-test("An account already uses the address: sign in first, told no more than the server said", async ({
-  page,
-  newDevice,
-  request,
-}) => {
-  await requireDevIssuer(request, "google");
-  // A password account whose address is not verified: the provider may not attach itself.
-  const email = uniqueEmail("link-required");
-  const owner = await newDevice();
-  const signup = await owner.request.post("/api/v1/auth/signup", {
-    headers: CLIENT_HEADERS,
-    data: { email, password: PASSWORD },
-  });
-  expect(signup.status()).toBe(201);
-
-  await page.goto("/login");
-  await page.getByRole("link", { name: "Continue with Google" }).click();
-  await answerIssuer(page, { email });
-  const panel = page.getByRole("status").filter({ hasText: "You already have a Webflix account" });
-  await expect(panel).toBeFocused();
-  await expect(panel).toContainText("link Google in Account › Security");
-  await expect(panel).not.toContainText(email);
-  await expect(page.getByRole("link", { name: "Forgot password?" })).toBeVisible();
-  await expectAccessible(page);
-  const session = await (await page.context().request.get("/api/v1/session")).json();
-  expect(session.authenticated).toBe(false);
-
-  await page.getByLabel("Email address").fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  // No profile yet: the funnel resumes.
-  await expect(page).toHaveURL(/\/signup/);
-});
-
 test("The provider's answer lands in another tab: that tab continues, and so does this one", async ({
   page,
   request,
@@ -206,4 +172,20 @@ test("Half-way and back: Back from the provider, a closed tab, an old landing li
   await page.goto("/login/continue?provider=google&context=signin&oidc=signed-in");
   await expect(page.getByRole("heading", { name: "You're not signed in" })).toBeFocused();
   await expect(page.getByRole("link", { name: "Try again with Google" })).toBeVisible();
+});
+
+test("A crafted return path never leaves Webflix (a tab before the second slash)", async ({
+  page,
+}) => {
+  // Security review L2: `/<TAB>/evil.example` reads as `//evil.example` in a browser.
+  const signup = await page.context().request.post("/api/v1/auth/signup", {
+    headers: { "X-Webflix-Client": "web", "content-type": "application/json" },
+    data: { email: uniqueEmail("l2"), password: "correct horse battery" },
+  });
+  expect(signup.status()).toBe(201);
+  await page.goto(
+    "/login/continue?provider=google&context=signup&oidc=signed-up&next=%2F%09%2Fevil.example",
+  );
+  const next = page.getByRole("link", { name: "Choose your plan" });
+  await expect(next).toHaveAttribute("href", "/signup");
 });

@@ -23,9 +23,9 @@ data:
   copy_objects.py: {{ .Files.Get "files/pipeline/copy_objects.py" | quote }}
 {{- $serialize := ternary .Values.objectStore.enabled $p.lake.serialize (eq (toString $p.lake.serialize) "auto") }}
 {{- if $serialize }}
-{{- if or $j.erase.enabled $j.exportEvents.enabled $j.compact.enabled }}
+{{- if or $j.erase.enabled $j.exportEvents.enabled $j.compact.enabled $j.retain.enabled }}
 ---
-{{- /* The lake round (files/pipeline/lake_round.py): erase, export-events, compact in order. */}}
+{{- /* The lake round (files/pipeline/lake_round.py): erase, export-events, compact, retain in order. */}}
 {{- $env := list
   (dict "name" "WEBFLIX_RECS_LAKE_SERIALIZED" "value" "true")
   (dict "name" "LAKE_ERASE" "value" (toString $j.erase.enabled))
@@ -36,6 +36,7 @@ data:
   (dict "name" "COMPACT_DELETE_SOURCES" "value" (toString $j.compact.deleteSources))
   (dict "name" "COMPACT_EVERY_MINUTES" "value" (toString ($p.lake.compactEveryMinutes | int)))
   (dict "name" "ERASE_EVERY_HOURS" "value" (toString ($p.lake.eraseEveryHours | int)))
+  (dict "name" "LAKE_RETAIN" "value" (toString $j.retain.enabled))
 }}
 {{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "lake-round" "command" (list "python" "/scripts/lake_round.py") "env" $env)) }}
 {{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "lake-round" "schedule" $p.lake.schedule "pod" $pod) }}
@@ -61,6 +62,12 @@ data:
 {{- $args := concat $root (list "export-events" "--grace-minutes" (toString ($j.exportEvents.graceMinutes | int))) }}
 {{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "export-events" "args" $args)) }}
 {{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "export-events" "schedule" $j.exportEvents.schedule "pod" $pod) }}
+{{- end }}
+{{- if $j.retain.enabled }}
+---
+{{- /* Deletion by age (the product's retention settings), taking the lake lease like the jobs above. */}}
+{{- $pod := printf "containers:\n%s" (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "retain" "args" (append $root "retain"))) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "retain" "schedule" $j.retain.schedule "pod" $pod) }}
 {{- end }}
 {{- end }}
 {{- if $j.analyse.enabled }}

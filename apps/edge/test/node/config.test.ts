@@ -142,6 +142,16 @@ describe("wrangler.jsonc", () => {
     expect(local.compatibility_flags).not.toContain("nodejs_compat");
   });
 
+  it("fails closed without WEBFLIX_ENV: an error, never development by default", () => {
+    // loadCoreConfig alone would read an absent WEBFLIX_ENV as development.
+    expect(() => composed(local, { WEBFLIX_ENV: "" })).toThrow(
+      /WEBFLIX_ENV: required on Cloudflare/,
+    );
+    expect(() => composed(production, { WEBFLIX_ENV: "" })).toThrow(/WEBFLIX_ENV/);
+    expect(local.vars.WEBFLIX_ENV).toBe("development");
+    expect(production.vars.WEBFLIX_ENV).toBe("production");
+  });
+
   it("declares the same secrets in both sections (secrets are not inherited)", async () => {
     expect([...(production.secrets?.required ?? [])].sort()).toEqual(
       [...(local.secrets?.required ?? [])].sort(),
@@ -212,6 +222,19 @@ describe("static assets routing", () => {
   });
 });
 
+describe("the lake jobs", () => {
+  it("get the retention periods the Worker composes, in both sections", async () => {
+    const { workerRetention } = await import("../../scripts/lib/lake-jobs.ts");
+    for (const config of [local, production]) {
+      const { events } = composed(config).core;
+      expect(workerRetention(config.vars as Record<string, string>)).toEqual({
+        eventsDays: events.rawRetentionDays,
+        aggregatesDays: events.aggregateRetentionDays,
+      });
+    }
+  });
+});
+
 describe("observability", () => {
   it("keeps media tokens out of platform logs: no invocation logs, no traces", () => {
     // Both record the full request URL; tokens live in /media/{token}/... paths.
@@ -219,6 +242,18 @@ describe("observability", () => {
       expect(config.observability?.logs?.invocation_logs).toBe(false);
       expect(config.observability?.traces?.enabled).toBe(false);
       expect(config.observability?.logs?.enabled).toBe(true);
+    }
+  });
+
+  it("sends nothing anywhere else: no Logpush, no Tail Workers", () => {
+    // Logpush and tail consumers receive every invocation's trace, request URL included; the
+    // only record is our own access log (path without the query, tokens redacted).
+    for (const config of [local, production]) {
+      expect(config.logpush ?? false).toBe(false);
+      expect(config.tail_consumers ?? []).toEqual([]);
+      expect(
+        (config as { streaming_tail_consumers?: unknown[] }).streaming_tail_consumers ?? [],
+      ).toEqual([]);
     }
   });
 });

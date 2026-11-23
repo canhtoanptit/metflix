@@ -7,7 +7,7 @@ import {
   type PlanChangePreview,
   type PlanId,
 } from "@webflix/contracts";
-import { Button, ErrorState, RadioCard, RadioGroup, Skeleton, toast } from "@webflix/ui";
+import { Button, ErrorState, RadioCard, RadioGroup, Skeleton } from "@webflix/ui";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
@@ -19,9 +19,17 @@ import {
   isDeletionScheduled,
   useScheduledDeletion,
 } from "../billing/deletion.tsx";
+import { focusPageHeading } from "../billing/focus.ts";
 import { NoProviderNotice } from "../billing/NoProviderNotice.tsx";
 import { useBillingConfig } from "../billing/ProviderStep.tsx";
+import {
+  describeAppliedPlanChange,
+  describeCreditKept,
+  describePlanChange,
+} from "../billing/planChange.ts";
 import { patiently } from "../billing/polling.ts";
+import { useRetryAfter } from "../billing/retryAfter.ts";
+import { membershipToast } from "../billing/toasts.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { describeQuality, formatLongDate, formatMoney, formatScreens } from "../shared/format.ts";
 import { PlanSummary, PlanSummarySkeleton } from "../shared/PlanSummary.tsx";
@@ -175,7 +183,12 @@ function PlanChooser({
   const unchanged = selected.id === current.id;
   const [preview, setPreview] = useState<PlanChangePreview | null>(null);
   const [previewError, setPreviewError] = useState<unknown>(null);
+  const [previewErrorAt, setPreviewErrorAt] = useState<number | null>(null);
+  // Refused for asking too often: "Try again" waits out `Retry-After` (counted down).
+  const retryIn = useRetryAfter(previewError, previewErrorAt);
   const [refreshed, setRefreshed] = useState(false);
+  /** Bumped by "Try again" after a preview that failed (a 429 or a 503 included). */
+  const [previewAttempt, setPreviewAttempt] = useState(0);
   const alertRef = useRef<HTMLDivElement>(null);
   const flight = useSingleFlight();
 
@@ -188,12 +201,16 @@ function PlanChooser({
     let cancelled = false;
     patiently(() => api().previewPlanChange({ body: { planId: selected.id } })).then(
       (next) => !cancelled && setPreview(next),
-      (error: unknown) => !cancelled && setPreviewError(error),
+      (error: unknown) => {
+        if (cancelled) return;
+        setPreviewError(error);
+        setPreviewErrorAt(Date.now());
+      },
     );
     return () => {
       cancelled = true;
     };
-  }, [selected.id, unchanged, demo]);
+  }, [selected.id, unchanged, demo, previewAttempt]);
 
   const repreview = async () => {
     const next = await patiently(() => api().previewPlanChange({ body: { planId: selected.id } }));
@@ -221,15 +238,16 @@ function PlanChooser({
     onSuccess: async (membership, shown) => {
       if (!membership) return;
       applyMembership(queryClient, membership);
-      const charged = shown.amountDue.amountMinor > 0;
-      toast.success(`You're now on ${membership.plan.name}`, {
-        description: charged
-          ? `${formatMoney(shown.amountDue)} was charged to your card.`
-          : shown.nextRenewal
-            ? `Your next payment is ${formatMoney(shown.nextRenewal.amount)} on ${formatLongDate(shown.nextRenewal.at)}.`
-            : `${formatScreens(membership.plan.maxStreams)}, up to ${describeQuality(membership.plan)}.`,
-      });
+      membershipToast(
+        `You're now on ${membership.plan.name}`,
+        describeAppliedPlanChange(shown, {
+          current,
+          next: membership.plan,
+          trialing: view.membership.status === "trialing",
+        }),
+      );
       await navigate({ to: "/account/membership" });
+      focusPageHeading("Membership");
     },
   });
 
@@ -307,8 +325,14 @@ function PlanChooser({
           <FormAlert
             title="We couldn't work out the cost of this change"
             action={
-              <Button variant="outline" size="sm" onClick={() => setSelectedId(current.id)}>
-                Keep my plan
+              // Keeping the current plan is the page's own button below.
+              <Button
+                variant="accent"
+                size="sm"
+                disabled={retryIn > 0}
+                onClick={() => setPreviewAttempt((value) => value + 1)}
+              >
+                {retryIn > 0 ? `Try again in ${retryIn}s` : "Try again"}
               </Button>
             }
           >
@@ -340,7 +364,7 @@ function PlanChooser({
         ) : (
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" size="lg" asChild>
-              <Link to="/account/membership">Cancel</Link>
+              <Link to="/account/membership">Keep {current.name}</Link>
             </Button>
             <Button
               type="submit"
@@ -366,7 +390,10 @@ function PlanChooser({
   );
 }
 
-/** The server's preview, line by line: exactly what the change invoices. */
+/**
+ * The server's preview in Webflix's words (UX review 2.3): what is paid today and why, the next
+ * payment and why, then what changes. The provider's own line items are folded away as detail.
+ */
 function PreviewSummary({
   preview,
   current,
@@ -381,6 +408,8 @@ function PreviewSummary({
   trialing: boolean;
 }) {
   const due = preview.amountDue.amountMinor > 0;
+  const wording = describePlanChange(preview, { current, next, trialing });
+  const creditKept = describeCreditKept(preview);
   return (
     <section
       aria-label={`Switching to ${next.name}`}
@@ -388,27 +417,15 @@ function PreviewSummary({
       role="status"
     >
       <h2 className="type-title text-fg">Switching to {next.name}</h2>
-      {preview.lines.length > 0 ? (
-        <dl className="flex flex-col gap-2 type-body-sm">
-          {preview.lines.map((line, index) => (
-            <div key={`${line.description}-${index}`} className="flex justify-between gap-4">
-              <dt className="text-fg-muted">{line.description}</dt>
-              <dd className="text-fg tabular-nums">{formatSignedMoney(line.amount)}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
+      <div className="flex flex-col gap-2 type-body text-fg">
+        <p>{wording.today}</p>
+        {wording.next ? <p>{wording.next}</p> : null}
+      </div>
       <dl className="flex flex-col gap-2 border-t border-line-subtle pt-3">
         <div className="flex justify-between gap-4">
           <dt className="type-label text-fg">{due ? "Charged today" : "To pay today"}</dt>
           <dd className="type-label text-fg tabular-nums">{formatMoney(preview.amountDue)}</dd>
         </div>
-        {preview.credit.amountMinor > 0 ? (
-          <div className="flex justify-between gap-4 type-body-sm">
-            <dt className="text-fg-muted">Credit kept for your next payments</dt>
-            <dd className="text-fg tabular-nums">{formatMoney(preview.credit)}</dd>
-          </div>
-        ) : null}
         {preview.nextRenewal ? (
           <div className="flex justify-between gap-4 type-body-sm">
             <dt className="text-fg-muted">
@@ -425,11 +442,9 @@ function PreviewSummary({
             {card ? `${card} is charged` : "Your card is charged"} {formatMoney(preview.amountDue)}{" "}
             when you confirm.
           </li>
-        ) : (
-          <li>Nothing is charged when you confirm.</li>
-        )}
+        ) : null}
         <li>
-          The change takes effect when you confirm: {formatScreens(next.maxStreams)}, up to{" "}
+          It takes effect when you confirm: {formatScreens(next.maxStreams)}, up to{" "}
           {describeQuality(next)}.
         </li>
         {next.maxStreams < current.maxStreams ? (
@@ -439,8 +454,32 @@ function PreviewSummary({
             right now, the most recent streams will stop.
           </li>
         ) : null}
-        <li>After that, {formatMoney(next.monthlyPrice)} a month, less any credit.</li>
       </ul>
+      {preview.lines.length > 0 || creditKept ? (
+        <details className="group type-body-sm">
+          <summary className="focus-ring w-fit cursor-pointer rounded-xs py-1 type-label text-fg-muted hover:text-fg">
+            How this is worked out
+          </summary>
+          <dl className="mt-2 flex flex-col gap-2">
+            {preview.lines.map((line, index) => (
+              <div key={`${line.description}-${index}`} className="flex justify-between gap-4">
+                <dt className="text-fg-muted">{line.description}</dt>
+                <dd className="text-fg tabular-nums">
+                  {line.amount.amountMinor < 0
+                    ? `${formatMoney({ amountMinor: -line.amount.amountMinor, currency: line.amount.currency })} credit`
+                    : formatSignedMoney(line.amount)}
+                </dd>
+              </div>
+            ))}
+            {creditKept ? (
+              <div className="flex justify-between gap-4 border-t border-line-subtle pt-2">
+                <dt className="text-fg-muted">Credit kept for your next payments</dt>
+                <dd className="text-fg tabular-nums">{formatMoney(preview.credit)} credit</dd>
+              </div>
+            ) : null}
+          </dl>
+        </details>
+      ) : null}
     </section>
   );
 }
@@ -456,8 +495,8 @@ function RestartChooser({ details, plans }: { details: AccountDetails; plans: Pl
       <>
         <AccountHeading title="Restart your membership" />
         <NoProviderNotice>
-          This Webflix isn't set up to take payments, so a membership can't be restarted on it right
-          now. Your profiles, My List and viewing activity are still here.
+          Webflix can't take payments right now, so a membership can't be restarted. Your profiles,
+          My List and viewing activity are still here.
         </NoProviderNotice>
       </>
     );
@@ -466,11 +505,17 @@ function RestartChooser({ details, plans }: { details: AccountDetails; plans: Pl
   const selected = (plans.find((plan) => plan.id === selectedId) ??
     details.plan ??
     plans[0]) as Plan;
+  // Never a member (an unfinished sign-up): starting one is sign-up's payment step.
+  const first = membershipOfDetails(details).membership.status === "none";
   return (
     <>
       <AccountHeading
-        title="Restart your membership"
-        description="Pick a plan and you're back. Your profiles, My List and history are waiting."
+        title={first ? "Choose your plan" : "Restart your membership"}
+        description={
+          first
+            ? "Pick a plan, then add your payment method to start watching."
+            : "Pick a plan and you're back. Your profiles, My List and history are waiting."
+        }
       />
       <form
         noValidate
@@ -479,7 +524,11 @@ function RestartChooser({ details, plans }: { details: AccountDetails; plans: Pl
         onSubmit={(event) => {
           event.preventDefault();
           if (demo) return;
-          void navigate({ to: "/account/membership/checkout", search: { plan: selected.id } });
+          void navigate(
+            first
+              ? { to: "/signup/payment", search: { plan: selected.id } }
+              : { to: "/account/membership/checkout", search: { plan: selected.id } },
+          );
         }}
       >
         <RadioGroup
@@ -497,7 +546,7 @@ function RestartChooser({ details, plans }: { details: AccountDetails; plans: Pl
         </RadioGroup>
         <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <Button variant="outline" size="lg" asChild>
-            <Link to="/account/membership">Cancel</Link>
+            <Link to="/account/membership">Back to membership</Link>
           </Button>
           <Button type="submit" variant="accent" size="lg" disabled={demo}>
             Continue with {selected.name}
@@ -527,10 +576,12 @@ function LegacyPlanChooser({ details, plans }: { details: MemberDetails; plans: 
     meta: { silent: true },
     onSuccess: async (membership) => {
       applyMembership(queryClient, membership);
-      toast.success(`You're now on ${membership.plan.name}`, {
-        description: `${formatScreens(membership.plan.maxStreams)}, up to ${describeQuality(membership.plan)}.`,
-      });
+      membershipToast(
+        `You're now on ${membership.plan.name}`,
+        `${formatScreens(membership.plan.maxStreams)}, up to ${describeQuality(membership.plan)}.`,
+      );
       await navigate({ to: "/account/membership" });
+      focusPageHeading("Membership");
     },
   });
   useFocusOnError(change.error, () => alertRef);
@@ -594,7 +645,7 @@ function LegacyPlanChooser({ details, plans }: { details: MemberDetails; plans: 
         ) : (
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" size="lg" asChild>
-              <Link to="/account/membership">Cancel</Link>
+              <Link to="/account/membership">Keep {details.plan.name}</Link>
             </Button>
             <Button type="submit" variant="accent" size="lg" loading={change.isPending}>
               Switch to {selected.name}

@@ -12,7 +12,7 @@ import { API, browseAll, CSRF, cardsOfPage, maturityRank, unique } from "./util.
 /** Shared by the kids and PIN checks; a keeper profile means neither ever deletes the last one. */
 function profilesAccount(env: Environment): Promise<TestAccount> {
   return env.once("account:profiles-with-keeper", async () => {
-    const account = await env.signup("profiles");
+    const account = await env.bareSignup("profiles");
     await env.createProfile(account.agent, { name: "Keeper" });
     return account;
   });

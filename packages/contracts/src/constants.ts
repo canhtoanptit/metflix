@@ -413,6 +413,21 @@ export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
  * again on every retry of it, so a retried request never acts twice (a UUID fits).
  */
 export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+/**
+ * Audit entries that record a staff member reading something (no change was made): what
+ * `AuditQuery.kind` = `read` selects and `action` leaves out.
+ */
+export const AUDIT_READ_ACTIONS = [
+  "member.viewed",
+  "member.searched",
+  "member.privacy_viewed",
+  "audit.read",
+  "privacy.erasures_listed",
+  "privacy.exports_listed",
+] as const;
+export const AUDIT_ENTRY_KINDS = ["action", "read"] as const;
+/** The target label of an entry whose member was erased (`target.id` is `erased:<id>`). */
+export const ERASED_MEMBER_LABEL = "Erased member";
 
 // --- Email (§8.2) -----------------------------------------------------------------------------
 export const EMAIL_TEMPLATES = [
@@ -427,5 +442,7 @@ export const EMAIL_TEMPLATES = [
   "new-sign-in",
   "security-change",
   "data-export-ready",
+  "account-deletion-scheduled",
+  "account-deletion-canceled",
 ] as const;
 export const EMAIL_SUPPRESSION_REASONS = ["bounce", "complaint", "manual"] as const;

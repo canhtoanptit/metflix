@@ -8,12 +8,22 @@ import { AccountHeading } from "../AccountLayout.tsx";
 import { ConsentSection } from "./ConsentSection.tsx";
 import { DeletionSection } from "./DeletionSection.tsx";
 import { ExportSection } from "./ExportSection.tsx";
-import { privacyRequestsQuery, scheduledDeletion } from "./requests.ts";
+import { deletionInProgress, privacyRequestsQuery, scheduledDeletion } from "./requests.ts";
 
 export function AccountPrivacyPage() {
   const requests = useQuery(privacyRequestsQuery());
+  const items = requests.data?.items ?? [];
+  // The account is being erased: nothing else on the page can work any more, so it says only that.
+  if (deletionInProgress(items)) {
+    return (
+      <>
+        <AccountHeading title="Privacy" />
+        <DeletionSection />
+      </>
+    );
+  }
   // A deletion waiting to happen is the most important thing here: it comes first.
-  const scheduled = requests.data ? scheduledDeletion(requests.data.items) !== undefined : false;
+  const scheduled = scheduledDeletion(items) !== undefined;
   return (
     <>
       <AccountHeading

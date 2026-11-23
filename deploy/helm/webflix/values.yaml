@@ -110,14 +110,18 @@ config:
       retriesExhausted: ""
   events:
     # WEBFLIX_EVENT_SINK: lake (gzip NDJSON under events/ in the bucket, read by the pipeline)
-    # or memory (nothing kept).
-    sink: lake
+    # or memory (nothing kept). Empty: lake when something erases, exports and expires the lake
+    # (pipeline.enabled with its erase, exportEvents and retain jobs, or pipeline.external),
+    # memory otherwise. The chart refuses to render a lake nothing looks after: erased members'
+    # events would stay in it, and everything else past its retention, for ever.
+    sink: ""
     # WEBFLIX_CONSENT_MODE: opt-in | opt-out | off. Empty: opt-in.
     consentMode: ""
     # WEBFLIX_EXPORT_EVENTS: batch (the pipeline's export-events job reads the member's events:
     # pipeline.jobs.exportEvents) or inline (the export job reads up to 13 months of hours
-    # itself: small deployments only).
-    exportEvents: batch
+    # itself: small deployments only). Empty: batch with the pipeline (or pipeline.external),
+    # inline otherwise; batch without either is refused (every export would stay processing).
+    exportEvents: ""
     # WEBFLIX_DELETION_COOLING_OFF_SEC (default 14 days), the retention of raw events and
     # aggregates in days (396 / 1126), and the life of a data export's link (7 days).
     deletionCoolingOffSec: null
@@ -126,6 +130,10 @@ config:
     exportLinkTtlSec: null
     # WEBFLIX_RELEASE, the app.version of server events. Empty: the API image's tag.
     release: ""
+    # WEBFLIX_EXPORT_TYPICAL_SEC: what the privacy page tells a member to expect for a data
+    # export. null: the application's (30 minutes in batch mode: the export job every 5 minutes
+    # and its 15 minutes' grace).
+    exportTypicalSec: null
   experiments:
     # WEBFLIX_EXPERIMENTS_PROPAGATION_SEC: how far ahead a staff status change takes effect, so
     # every replica's cached definitions agree from that instant. null: 60 s on Kubernetes.
@@ -133,7 +141,13 @@ config:
   recommendations:
     # WEBFLIX_RECOMMENDATION_STORE: database (PostgreSQL) or memory.
     store: database
-    # WEBFLIX_RECS_DEFAULT_POLICY: learned | rules; WEBFLIX_RECS_EXPLORE_SHARE: 0..1.
+    # WEBFLIX_RECS_DEFAULT_POLICY: learned | rules, the policy of members no experiment assigns.
+    # Empty: the application's, `rules` with config.environment production (the learned model is
+    # turned on deliberately, after an experiment showed it beats the rule engine), `learned`
+    # otherwise. To serve the learned model to everyone in production (the default kind release
+    # runs as production), set `learned` here and `helm upgrade`: members get the published
+    # run's pages from then on, and the rule engine wherever no run covers them. An experiment's
+    # arms are unaffected. WEBFLIX_RECS_EXPLORE_SHARE: 0..1.
     defaultPolicy: ""
     exploreShare: null
   staff:
@@ -279,6 +293,19 @@ web:
     img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob: https:;
     connect-src 'self' https:; worker-src 'self' blob:; manifest-src 'self';
     object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+  # The staff console (apps/admin, in the web image under /admin/): its settings and its own
+  # policy, stricter than the member app's (requests to this origin and the staff issuer only;
+  # none of the media, Stripe or Maps origins above). The chart adds the staff issuer's origin to
+  # connect-src when it is not this origin (Keycloak); /admin/config.json names that issuer
+  # (config.staff.issuer, keycloak.enabled, or outside production the development issuer at
+  # /dev-idp/staff) and answers 503 in production when none is configured.
+  admin:
+    clientId: webflix-admin
+    scope: openid profile email
+    contentSecurityPolicy: >-
+      default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self';
+      object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
   resources:
     requests:
       cpu: 50m
@@ -336,6 +363,10 @@ seed:
 
 pipeline:
   enabled: false
+  # true: something outside this chart (your own scheduler) runs erase, export-events and the
+  # lake's expiry against this bucket, so the lake sink and batch exports may be used without
+  # pipeline.enabled. You are then answerable for it running.
+  external: false
   image:
     repository: webflix-recs
     tag: ""
@@ -409,6 +440,15 @@ pipeline:
       enabled: true
       schedule: "*/5 * * * *"
       graceMinutes: 15
+    # Retention: `webflix-recs retain` deletes activity older than config.events.retentionDays
+    # (raw hours, compacted hours, quarantine, dataset rows, unpublished artefact versions) and
+    # totals older than config.events.aggregatesRetentionDays: the product's own settings, which
+    # reach the pipeline's pods through the same ConfigMap as the API's (one place; unset, both
+    # sides default to 396 and 1126 days). Last step of the lake round, once a day; its own
+    # CronJob on `schedule` when the lake is not serialised.
+    retain:
+      enabled: true
+      schedule: "50 3 * * *"
     # Experiment results from the lake; the worker imports them on its next tick.
     analyse:
       enabled: true

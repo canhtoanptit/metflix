@@ -29,8 +29,8 @@ CF_DEV_FLAGS ?=
 # CF_CRON_EVERY=<seconds> fires it that often instead (conformance runs want a tick of 30 s or less).
 CF_CRON ?= on
 CF_CRON_EVERY ?=
-# CF_JOBS_EVERY=<seconds>: cf-dev also runs the pipeline's privacy jobs (erase, export-events)
-# against the server when something is pending (docs/CLOUDFLARE.md §10.4). Off by default.
+# CF_JOBS_EVERY=<seconds>: cf-dev also runs the pipeline's lake jobs against the server: erase
+# and export-events when something is pending, retain once a day (docs/CLOUDFLARE.md §10.4). Off by default.
 CF_JOBS_EVERY ?=
 # The export job's grace in minutes: production waits 15 for in-flight events; locally the
 # request is listed only after the product assembled it, so 0 is safe (docs/CLOUDFLARE.md §10.4).
@@ -44,7 +44,7 @@ CF_RELEASE_FLAG := $(if $(CF_RELEASE),--release $(CF_RELEASE),)
 cf_say = printf '\033[36m[cf]\033[0m %s\n' "$(1)"
 
 .PHONY: cf-dev cf-prepare cf-install cf-secrets cf-web cf-assets cf-migrate cf-data cf-seed \
-	cf-lake-pull cf-recs-push cf-recs-import cf-recs-status cf-export-events cf-erase cf-compact \
+	cf-lake-pull cf-recs-push cf-recs-import cf-recs-status cf-export-events cf-erase cf-compact cf-retain \
 	cf-media cf-status cf-stop cf-reset cf-cron cf-test cf-check cf-bundle cf-startup \
 	cf-provision cf-deploy cf-deploy-dry-run cf-tail
 
@@ -72,13 +72,13 @@ cf-secrets:
 # The SPA build is turbo-cached. A web build broken by work in progress does not block the
 # Worker: the last successful build is served (with a warning).
 cf-web:
-	@$(call cf_say,building the web app)
-	@if ! $(PNPM) turbo run build --filter=@webflix/web --output-logs=errors-only; then \
-		if [ -f apps/web/dist/index.html ]; then \
-			$(call cf_say,WARNING: web build failed; serving the previous build from apps/web/dist); \
+	@$(call cf_say,building the web app and the staff console)
+	@if ! $(PNPM) turbo run build --filter=@webflix/web --filter=@webflix/admin --output-logs=errors-only; then \
+		if [ -f apps/web/dist/index.html ] && [ -f apps/admin/dist/index.html ]; then \
+			$(call cf_say,WARNING: a build failed; serving the previous builds from apps/web/dist and apps/admin/dist); \
 		else exit 1; fi; fi
 
-cf-assets: cf-web ## Stage the SPA, API docs bundle and _headers as Workers static assets
+cf-assets: cf-web ## Stage the SPA, the staff console (/admin/), API docs bundle and _headers as Workers static assets
 	@$(CF_OPS) assets --out $(abspath $(CF_ASSETS))
 
 cf-migrate: ## Apply D1 migrations to the local database
@@ -143,6 +143,9 @@ cf-erase: ## (dev server up) pending erasures: erase on the local R2, written ba
 
 cf-compact: ## (dev server up) compact the local lake's closed hours and write them back (CF_COMPACT_NOW=<iso>)
 	@$(CF_OPS) jobs compact $(CF_INSTANCE) --store $(abspath $(CF_RECS_STORE)) --grace-minutes $(CF_JOBS_GRACE) $(if $(CF_COMPACT_NOW),--now $(CF_COMPACT_NOW),)
+
+cf-retain: ## (dev server up) delete what the Worker's retention periods no longer cover, store and R2 (CF_RETAIN_NOW=<iso>, CF_RETAIN_DRY_RUN=1)
+	@$(CF_OPS) jobs retain $(CF_INSTANCE) --store $(abspath $(CF_RECS_STORE)) $(if $(CF_RETAIN_NOW),--now $(CF_RETAIN_NOW),) $(if $(CF_RETAIN_DRY_RUN),--dry-run,)
 
 cf-test: ## Adapter contract suites and Worker tests, inside workerd
 	$(PNPM) --filter @webflix/adapters-cloudflare --filter @webflix/edge test

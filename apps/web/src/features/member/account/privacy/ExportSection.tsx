@@ -3,6 +3,11 @@
  * wait as long as it takes, download it from here or from the email. The wait is a wait, not a
  * spinner the member must watch: the request lives on the server, the page says what is
  * happening and that they can leave, and looks again on its own, less often as time passes.
+ *
+ * Every sentence is the server's fact: the typical wait and how long a copy stays are the
+ * deployment's terms; an email is promised only when one is on its way (`email`); an export that
+ * is not ready a day after it was asked for is given up (`failed`), and the member can ask again.
+ * The download sends its token in the request's body, after a fresh proof (privacy review L2, L3).
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -12,17 +17,20 @@ import {
   type PrivacyTerms,
 } from "@webflix/contracts";
 import { Button, CheckCircleIcon, ErrorState, Skeleton, Spinner, toast } from "@webflix/ui";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../../../app/api.ts";
 import { describeError } from "../../../../app/query/errors.ts";
 import { useAuthenticatedSession } from "../../../../app/session/session.ts";
+import { BusyButton } from "../../../../app/telemetry/BusyButton.tsx";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../../shared/FormAlert.tsx";
 import { formatDateTime, formatLongDate, formatRelativeTime } from "../../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../../shared/privileges.ts";
 import { AccountSection } from "../AccountLayout.tsx";
-import { saveDataExport } from "./download.ts";
+import { saveDataExport, tokenOf } from "./download.ts";
+import { focusAfterDialogs } from "./focus.ts";
 import {
+  exportEmailLine,
   exportStage,
   formatPeriod,
   formatRetention,
@@ -33,13 +41,15 @@ import {
 } from "./requests.ts";
 
 const WHAT_IS_INCLUDED =
-  "Your account and profiles, My List, ratings and viewing history, signed-in devices, privacy choices, membership and invoices, and the activity Webflix recorded.";
+  "Your account and profiles, My List, ratings and viewing history, signed-in devices, privacy choices, membership and invoices, the recommendation lists made for your profiles, when our staff looked at your account, and the activity Webflix recorded.";
 
 export function ExportSection() {
   const session = useAuthenticatedSession();
   const demo = useIsDemoAccount();
   const queryClient = useQueryClient();
   const requests = useQuery(privacyRequestsQuery());
+  const statusRef = useRef<HTMLDivElement>(null);
+  const [focusStatus, setFocusStatus] = useState(false);
   const identity = useConfirmIdentity({
     id: "export-data",
     purpose: "download your data",
@@ -60,8 +70,10 @@ export function ExportSection() {
           : current,
       );
       toast.success("We're preparing your data", {
-        description: `We'll email ${session.account.email} when it's ready.`,
+        description: exportEmailLine(created, session.account.email) ?? undefined,
       });
+      // The button is gone: focus moves to what is happening now (UX review 2.7).
+      setFocusStatus(true);
     },
     onError: (error) => {
       if (error instanceof IdentityNotConfirmed) return;
@@ -80,16 +92,21 @@ export function ExportSection() {
   const stage = requests.data ? exportStage(requests.data.items) : null;
   const terms = requests.data?.terms;
   useAnnounceReady(stage?.stage ?? null);
+  useEffect(() => {
+    if (!focusStatus) return;
+    setFocusStatus(false);
+    focusAfterDialogs(() => statusRef.current);
+  });
 
   const requestButton = (label: string, variant: "primary" | "outline" = "primary") => (
-    <Button
+    <BusyButton
       variant={variant}
-      loading={request.isPending}
+      busy={request.isPending}
       disabled={demo}
       onClick={() => request.mutate()}
     >
       {label}
-    </Button>
+    </BusyButton>
   );
 
   return (
@@ -111,14 +128,27 @@ export function ExportSection() {
           }
         />
       ) : stage?.stage === "preparing" && terms ? (
-        <Preparing request={stage.request} email={session.account.email} terms={terms} />
+        <Preparing
+          ref={statusRef}
+          request={stage.request}
+          email={session.account.email}
+          terms={terms}
+        />
       ) : stage?.stage === "ready" ? (
         <div className="flex flex-col gap-4">
-          <FormAlert tone="positive" icon={CheckCircleIcon} title="Your data is ready">
-            Prepared {formatDateTime(stage.request.completedAt ?? stage.request.requestedAt)}. The
-            download works until{" "}
-            {formatLongDate(stage.request.expiresAt ?? stage.request.requestedAt)}, here or from the
-            email we sent you.
+          <FormAlert
+            ref={statusRef}
+            tone="positive"
+            icon={CheckCircleIcon}
+            title="Your data is ready"
+          >
+            Prepared {formatDateTime(stage.request.completedAt ?? stage.request.requestedAt)}. You
+            can download it here
+            {stage.request.email === "sent" ? " or from the email we sent you" : ""} until{" "}
+            {formatLongDate(stage.request.expiresAt ?? stage.request.requestedAt)}.
+            {stage.request.email === "suppressed"
+              ? ` We couldn't email ${session.account.email}: earlier emails to it didn't arrive.`
+              : ""}
           </FormAlert>
           <div className="flex flex-wrap items-center gap-3">
             <DownloadButton request={stage.request} />
@@ -126,20 +156,19 @@ export function ExportSection() {
           </div>
           <p className="type-body-sm text-fg-subtle">
             One file (JSON) that other services and tools can read. Keep it somewhere safe: it holds
-            your personal details.
+            your personal details. You'll be asked to confirm it's you before it downloads.
           </p>
         </div>
       ) : (
         <div className="flex flex-col gap-4">
           {stage?.stage === "failed" ? (
             <FormAlert title="We couldn't prepare your last copy">
-              Nothing was sent. Ask again: it usually works the second time, and if it doesn't,
-              contact us.
+              Nothing was sent. You can ask again.
             </FormAlert>
           ) : stage?.stage === "expired" ? (
             <FormAlert tone="info" title="Your last copy has expired">
               {stage.request.expiresAt
-                ? `Its link stopped working on ${formatLongDate(stage.request.expiresAt)}. `
+                ? `You could download it until ${formatLongDate(stage.request.expiresAt)}. `
                 : ""}
               Ask for a new one whenever you like.
             </FormAlert>
@@ -150,11 +179,16 @@ export function ExportSection() {
             </FormAlert>
           ) : terms ? (
             <p className="type-body-sm text-fg-muted">
-              It usually takes {typicalWait(terms)}. We'll email{" "}
-              <span className="text-fg">{session.account.email}</span> when it's ready, and the
-              download will be here too, for {formatPeriod(terms.exportLinkTtlSec)}. It includes the
-              activity recorded in the last {formatRetention(terms.eventsRetentionDays)}. You'll be
-              asked to confirm it's you first.
+              It usually takes {typicalWait(terms)}
+              {terms.exportMode === "batch"
+                ? "; if it isn't ready a day after you ask, it stops and you can ask again"
+                : ""}
+              . When it's ready, the download will be here for{" "}
+              {formatPeriod(terms.exportLinkTtlSec)}, and we'll also email{" "}
+              <span className="text-fg">{session.account.email}</span> (unless earlier emails to it
+              didn't arrive). It includes the activity Webflix still holds, at most{" "}
+              {formatRetention(terms.eventsRetentionDays)}. You'll be asked to confirm it's you
+              first.
             </p>
           ) : null}
           <div>{requestButton(stage?.stage === "none" ? "Ask for my data" : "Ask again")}</div>
@@ -166,19 +200,24 @@ export function ExportSection() {
 }
 
 function Preparing({
+  ref,
   request,
   email,
   terms,
 }: {
+  ref: React.Ref<HTMLDivElement>;
   request: PrivacyRequest;
   email: string;
   terms: PrivacyTerms;
 }) {
   const slow = Date.now() - Date.parse(request.requestedAt) > slowAfterMs(terms);
+  const emailLine = exportEmailLine(request, email);
   return (
     <div
+      ref={ref}
+      tabIndex={-1}
       role="status"
-      className="flex items-start gap-4 rounded-lg border border-line bg-surface-2 px-4 py-4"
+      className="flex items-start gap-4 rounded-lg border border-line bg-surface-2 px-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-fg"
     >
       <Spinner size="md" label={null} className="mt-0.5" />
       <div className="flex min-w-0 flex-col gap-1">
@@ -186,10 +225,9 @@ function Preparing({
         <p className="type-body-sm text-fg-muted">
           You asked {formatRelativeTime(request.requestedAt)}.{" "}
           {slow
-            ? "It's taking longer than usual, but it will finish."
+            ? "It's taking longer than usual. If it isn't ready a day after you asked, it stops and you can ask again."
             : `It usually takes ${typicalWait(terms)}.`}{" "}
-          We'll email <span className="text-fg">{email}</span> when it's ready. You don't need to
-          stay on this page.
+          {emailLine ? `${emailLine} ` : ""}You don't need to stay on this page.
         </p>
       </div>
     </div>
@@ -197,34 +235,35 @@ function Preparing({
 }
 
 /**
- * The export's signed link: a plain download (the server answers it as an attachment, and the
- * browser streams it). Mock mode has no server behind the link, so it asks the mock API and
- * saves what it answers.
+ * The finished export, downloaded through `POST /privacy/exports/:id/download` (the token in the
+ * body) once the member has confirmed it's them; saved from what the server answers.
  */
 function DownloadButton({ request }: { request: PrivacyRequest & { downloadUrl: string } }) {
-  if (__WEBFLIX_MOCK__) {
-    return (
-      <Button
-        variant="primary"
-        onClick={() => {
-          const token = new URL(request.downloadUrl, window.location.origin).searchParams.get(
-            "token",
-          );
-          void saveDataExport(request.id, token ?? "").catch(() =>
-            toast.error("We couldn't download your data", { description: "Please try again." }),
-          );
-        }}
-      >
-        Download your data
-      </Button>
-    );
-  }
+  const identity = useConfirmIdentity({
+    id: "export-download",
+    purpose: "download your data",
+    // Back from confirming at a provider: the member asked for the file, so fetch it.
+    onResume: () => download.mutate(),
+  });
+  const download = useMutation({
+    mutationFn: () =>
+      identity.run(() => saveDataExport(request.id, tokenOf(request.downloadUrl) ?? "")),
+    meta: { silent: true },
+    onSuccess: () => toast.success("Your download has started"),
+    onError: (error) => {
+      if (error instanceof IdentityNotConfirmed) return;
+      toast.error("We couldn't download your data", {
+        description: describeMemberError(error).description,
+      });
+    },
+  });
   return (
-    <Button variant="primary" asChild>
-      <a href={request.downloadUrl} download>
+    <>
+      <BusyButton variant="primary" busy={download.isPending} onClick={() => download.mutate()}>
         Download your data
-      </a>
-    </Button>
+      </BusyButton>
+      {identity.prompt}
+    </>
   );
 }
 

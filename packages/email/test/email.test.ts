@@ -44,7 +44,33 @@ const SAMPLES: { [T in keyof EmailTemplateData]: EmailTemplateData[T] } = {
     manageUrl: "https://webflix.test/account",
   },
   "data-export-ready": { link: "https://webflix.test/export/1", expiresAt: AT },
+  "account-deletion-scheduled": {
+    scheduledFor: AT,
+    keepUrl: "https://webflix.test/account/privacy",
+  },
+  "account-deletion-canceled": { manageUrl: "https://webflix.test/account" },
 };
+
+describe("the account deletion emails", () => {
+  it("say when the account will be deleted and how to keep it; then that nothing will be", () => {
+    const scheduled = renderEmail("account-deletion-scheduled", {
+      scheduledFor: AT,
+      keepUrl: "https://webflix.test/account/privacy",
+    });
+    expect(scheduled.subject).toBe("Your Webflix account will be deleted");
+    expect(scheduled.text).toContain("22 November 2026, 14:05 UTC");
+    expect(scheduled.text).toContain("Keep my account");
+    expect(emailLinks(scheduled)).toEqual(["https://webflix.test/account/privacy"]);
+    // Never the cancellation email's promise: access ends at the erasure, no restart.
+    expect(scheduled.text).not.toMatch(/keep watching|restart/i);
+    const canceled = renderEmail("account-deletion-canceled", {
+      manageUrl: "https://webflix.test/account",
+    });
+    expect(canceled.subject).toBe("Your Webflix account will not be deleted");
+    expect(canceled.text).toContain("nothing will be deleted");
+    expect(emailLinks(canceled)).toEqual(["https://webflix.test/account"]);
+  });
+});
 
 describe("templates", () => {
   it("render every template to a one-line subject, HTML and text, in our own brand", () => {

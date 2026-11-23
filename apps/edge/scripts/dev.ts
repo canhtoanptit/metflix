@@ -33,6 +33,7 @@ import {
   processCommand,
   processCwd,
   validateRecord,
+  varOverrides,
 } from "./lib/processes.ts";
 
 const EDGE_DIR = join(import.meta.dirname, "..");
@@ -71,6 +72,7 @@ async function start(options: {
     cwd: EDGE_DIR,
     state: options.state,
     startedAt: new Date().toISOString(),
+    vars: varOverrides(options.extra),
   };
   const recordPath = join(options.state, RECORD);
   writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);

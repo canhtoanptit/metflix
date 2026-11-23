@@ -8,6 +8,7 @@ import { useIsDemoAccount } from "../shared/privileges.ts";
 import { AccountHeading, AccountSection } from "./AccountLayout.tsx";
 import { InvoiceList } from "./InvoicesPage.tsx";
 import {
+  alertActionOf,
   MembershipAlert,
   MembershipBadge,
   MembershipFacts,
@@ -58,8 +59,16 @@ function MembershipDetails({ details }: { details: AccountDetails }) {
   // While a deletion is scheduled, billing refuses to start or change the membership: those
   // actions are not offered (the alert above says why). Replacing the card still works.
   const deletion = useScheduledDeletion(!demo);
+  // The alert above leads with the one action that resolves it (update the card when a payment
+  // failed, restart when it ended): the row below doesn't offer the same thing twice.
+  const alertAction = deletion ? null : alertActionOf(details);
+  const offeredAbove = (href: string) => alertAction?.kind === "link" && alertAction.href === href;
   const canChangeCard =
-    !legacy && ["trialing", "active", "past_due", "suspended"].includes(membership.status);
+    !legacy &&
+    ["trialing", "active", "past_due", "suspended"].includes(membership.status) &&
+    !offeredAbove("/account/membership/payment");
+  const canRestart = membership.status === "canceled" && !deletion && !alertAction;
+  const actions = !demo && ((running && !deletion) || canChangeCard || canRestart || cancellable);
 
   return (
     <>
@@ -72,14 +81,14 @@ function MembershipDetails({ details }: { details: AccountDetails }) {
       <AccountSection title="Your membership" action={<MembershipBadge details={details} />}>
         <MembershipAlert details={details} readOnly={demo} />
         <MembershipFacts details={details} />
-        {demo ? null : (
+        {!actions ? null : (
           <div className="flex flex-wrap gap-3 border-t border-line-subtle pt-5">
             {running && !deletion ? (
               <Button variant="outline" size="sm" iconAfter={ChevronRightIcon} asChild>
                 <Link to="/account/membership/plan">Change plan</Link>
               </Button>
             ) : null}
-            {membership.status === "canceled" && !deletion ? (
+            {canRestart ? (
               <Button variant="accent" size="sm" asChild>
                 <Link to="/account/membership/plan">Restart membership</Link>
               </Button>

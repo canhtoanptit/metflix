@@ -46,6 +46,9 @@ function createPaymentProvider(context: AreaContext): PaymentProvider {
           logger: context.logger.child({ component: "payments-fake" }),
           retriesExhausted: settings.retriesExhausted,
           promotions: settings.promotions,
+          // No promise shared between requests on Workers (docs/CLOUDFLARE.md §2): the fake's
+          // compare-and-set on D1 keeps concurrent operations correct without its in-memory queues.
+          inProcessQueues: false,
           delivery:
             settings.delivery === "unruly"
               ? { mode: "unruly", duplicateRate: 0.2, maxDelayMs: 2_000 }

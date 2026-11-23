@@ -6,6 +6,9 @@
  * (`member.viewed`, `member.privacy_viewed`, `member.searched`). Those reads never refetch on
  * their own (no focus or interval refetch, long stale time): the log records what a person
  * looked at, not how often a tab regained focus. They refresh after an action, or when asked.
+ * Reading the audit log and the operators' erasure and export lists is audited too
+ * (`audit.read`, `privacy.erasures_listed`, `privacy.exports_listed`): those load when their
+ * page opens, and never on focus or reconnect.
  */
 import { queryOptions } from "@tanstack/react-query";
 import type { AuditQuery, BrowseView, OwnAuditQuery } from "@webflix/contracts";
@@ -13,6 +16,12 @@ import { staffApi } from "./client.ts";
 
 const AUDITED_READ = {
   staleTime: Number.POSITIVE_INFINITY,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+} as const;
+
+/** An audited list an operator reads when they open its page (fresh then, never behind their back). */
+const AUDITED_LIST = {
   refetchOnWindowFocus: false,
   refetchOnReconnect: false,
 } as const;
@@ -128,16 +137,19 @@ export const queries = {
       queryKey: qk.erasures(),
       queryFn: ({ signal }) =>
         staffApi().listPendingErasures({ query: { limit: 500 } }, { signal }),
+      ...AUDITED_LIST,
     }),
   exports: () =>
     queryOptions({
       queryKey: qk.exports(),
       queryFn: ({ signal }) => staffApi().listPendingExports({ query: { limit: 500 } }, { signal }),
+      ...AUDITED_LIST,
     }),
   audit: (query: AuditQuery) =>
     queryOptions({
       queryKey: qk.audit(query),
       queryFn: ({ signal }) => staffApi().listAuditLog({ query }, { signal }),
+      ...AUDITED_LIST,
     }),
   ownAudit: (query: OwnAuditQuery) =>
     queryOptions({

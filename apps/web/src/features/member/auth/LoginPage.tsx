@@ -21,12 +21,14 @@ import {
   FederatedOutcomeNotice,
   useOutcomeFromUrl,
 } from "./FederatedButtons.tsx";
+import { linkOfferPath, pendingLinkIntent } from "./linkIntent.ts";
 import {
   afterSignInPath,
   federatedStartUrl,
   signInReturnPath,
   useAuthChangeElsewhere,
 } from "./oidc.ts";
+import { CARD_HEADING } from "./parts.tsx";
 
 const route = getRouteApi("/guest/login");
 
@@ -74,8 +76,20 @@ export function LoginPage() {
         setSubmitted(false);
       }
     },
-    onSuccess: async (session) => {
+    onSuccess: async (session, body) => {
       await applySession(session);
+      // Signed in to add a provider (`link-required`): the password just typed is also the
+      // account-holder proof, so the offer on Security needs one click, not the password again.
+      const linking = pendingLinkIntent();
+      if (linking) {
+        await api()
+          .elevate({ body: { password: body.password } })
+          .catch(() => {
+            // The offer asks for the proof itself if this did not take.
+          });
+        await navigate({ href: linkOfferPath(linking), replace: true });
+        return;
+      }
       await navigate({ href: afterSignInPath(session, search.redirect), replace: true });
     },
   });
@@ -159,7 +173,7 @@ export function LoginPage() {
         className="relative z-(--z-raised) flex flex-1 justify-center px-gutter pb-16 pt-4 sm:pt-10"
       >
         <div className="flex w-full max-w-form flex-col gap-4 md:self-start md:rounded-2xl md:border md:border-line-subtle md:bg-canvas/85 md:p-12 md:shadow-xl md:backdrop-blur-md">
-          <h1 id="sign-in-heading" className="type-headline mb-2 text-fg">
+          <h1 id="sign-in-heading" className={`${CARD_HEADING} mb-2`}>
             Sign in
           </h1>
           {returned && !error ? (

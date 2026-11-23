@@ -5,9 +5,9 @@ The pipeline's lake lease (services/recs, `lease.py`) is a create-only `PutObjec
 create-only write overwrites the first, 16 concurrent writers all "win", the lease is granted
 twice), and its maintainers say conditional writes do not fit its replication model; the
 pipeline now probes for that and refuses (exit 10) unless WEBFLIX_RECS_LAKE_SERIALIZED=true
-says the scheduler is the lock. So with the in-chart store the three jobs that rewrite hours
-(erase, export-events, compact) never run as separate CronJobs: this one round runs them in
-order in one pod with that variable set, and its CronJob's `concurrencyPolicy: Forbid` is the
+says the scheduler is the lock. So with the in-chart store the jobs that rewrite the lake
+(erase, export-events, compact, retain) never run as separate CronJobs: this one round runs them
+in order in one pod with that variable set, and its CronJob's `concurrencyPolicy: Forbid` is the
 mutual exclusion the lease cannot give.
 
 Per round, each step only when it has something to do:
@@ -15,6 +15,8 @@ Per round, each step only when it has something to do:
                     (the plan's watched keys: late arrivals of erased members)
   2. export-events  pending data exports (requests from and results to the staff API)
   3. compact        the last compaction older than COMPACT_EVERY_MINUTES
+  4. retain         deletion by age (WEBFLIX_EVENTS_RETENTION_DAYS and
+                    WEBFLIX_AGGREGATES_RETENTION_DAYS, the product's settings), once a day
 
 When each step last ran is kept in the bucket (recs-work/k8s/lake-round.json); this job is its
 only writer. Exit status: 0, or the first failing step's code (each step still runs; failed
@@ -46,7 +48,7 @@ def enabled(name: str) -> bool:
 def run(args: list[str]) -> int:
     started = time.monotonic()
     code = subprocess.run(args, check=False).returncode  # noqa: S603 - fixed commands
-    log("lake_round.step", command=next((a for a in args if a in {"erase", "export-events", "compact"}), args[0]),
+    log("lake_round.step", command=next((a for a in args if a in {"erase", "export-events", "compact", "retain"}), args[0]),
         code=code, seconds=round(time.monotonic() - started, 2))
     return code
 
@@ -90,6 +92,13 @@ def main() -> int:
             codes.append(code)
             if code == 0:
                 state["compact"] = now
+
+    if enabled("LAKE_RETAIN"):
+        if now - state.get("retain", 0) >= 24 * 3600:
+            code = run([*recs, "retain"])
+            codes.append(code)
+            if code == 0:
+                state["retain"] = now
 
     put_json(store, STATE_KEY, state)
     # 8: some exports failed; they stay listed and the next round tries them again.

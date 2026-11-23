@@ -21,12 +21,13 @@ export const MEMBERSHIP: Status<MembershipState["status"]> = {
   canceled: { label: "Ended", tone: "outline" },
 };
 
+/** Why a member can or can't watch, to follow "Yes" or "No:" (lower case). */
 export const ENTITLEMENT: Record<MemberDetail["entitlement"]["reason"], string> = {
-  entitled: "Can watch",
-  no_membership: "No membership",
-  payment_pending: "Waiting for the first payment",
-  suspended: "Suspended",
-  ended: "Membership ended",
+  entitled: "a running membership",
+  no_membership: "no membership",
+  payment_pending: "waiting for the first payment",
+  suspended: "the membership is suspended",
+  ended: "the membership ended",
 };
 
 export const SUSPENDED_REASON: Record<NonNullable<MembershipState["suspendedReason"]>, string> = {

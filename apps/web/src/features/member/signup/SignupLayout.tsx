@@ -21,8 +21,8 @@ function stepIndexOf(pathname: string): number {
 }
 
 /**
- * Chrome of the sign-up flow: wordmark, a way out (sign in, or sign out once the account
- * exists, which is from step 2 on), a segmented progress bar and a narrow content column.
+ * Chrome of the sign-up flow: wordmark, a way out (sign in; once the account exists, which is
+ * from step 2 on, Account and sign out), a segmented progress bar and a narrow content column.
  */
 export function SignupLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -36,12 +36,22 @@ export function SignupLayout() {
         className="border-b border-line-subtle"
         action={
           accountExists ? (
-            <Link
-              to="/logout"
-              className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
-            >
-              Sign out
-            </Link>
+            // The account's settings are open before sign-up is finished (Security, Privacy,
+            // Membership): a way there, and back here from its notice.
+            <nav aria-label="Your account" className="flex items-center gap-5">
+              <Link
+                to="/account"
+                className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+              >
+                Account
+              </Link>
+              <Link
+                to="/logout"
+                className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+              >
+                Sign out
+              </Link>
+            </nav>
           ) : (
             <Link
               to="/login"

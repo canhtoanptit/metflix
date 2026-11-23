@@ -5,15 +5,15 @@ release:
 set:
   secrets.generateWithoutCluster: true
 tests:
-  - it: sets only what is configured, plus the lake sink, batch exports and the release
+  - it: keeps no lake that nothing erases (memory and inline exports without the pipeline), and sets the release
     template: configmap.yaml
     asserts:
       - equal:
           path: data.WEBFLIX_EVENT_SINK
-          value: lake
+          value: memory
       - equal:
           path: data.WEBFLIX_EXPORT_EVENTS
-          value: batch
+          value: inline
       - equal:
           path: data.WEBFLIX_RELEASE
           value: 0.1.0
@@ -141,3 +141,155 @@ tests:
       - equal:
           path: spec.rules[4].matches[0].path.value
           value: /
+
+  - it: gives the staff console its own policy, without the member app's media, Stripe or Maps origins
+    template: web/admin.yaml
+    set:
+      config.billing.paymentProvider: stripe
+    asserts:
+      - matchRegex:
+          path: data["admin-security-headers.conf"]
+          pattern: "connect-src 'self'; "
+      - notMatchRegex:
+          path: data["admin-security-headers.conf"]
+          pattern: "https:[; ]|stripe|googleapis"
+  - it: lets the console reach Keycloak, the staff issuer, and names it in config.json
+    template: web/admin.yaml
+    set:
+      keycloak.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["admin-security-headers.conf"]
+          pattern: "connect-src 'self' https://webflix-keycloak:8443;"
+      - matchRegex:
+          path: data["admin-config.conf"]
+          pattern: 'return 200 ''\{"clientId":"webflix-admin","issuer":"https://webflix-keycloak:8443/realms/webflix","scope":"openid profile email"\}'''
+  - it: signs staff in with the development issuer outside production
+    template: web/admin.yaml
+    set:
+      config.environment: development
+    asserts:
+      - matchRegex:
+          path: data["admin-config.conf"]
+          pattern: '"issuer":"/dev-idp/staff"'
+  - it: says the console cannot sign anyone in when production has no staff issuer
+    template: web/admin.yaml
+    asserts:
+      - matchRegex:
+          path: data["admin-config.conf"]
+          pattern: "return 503 "
+  - it: mounts the console's settings over the web image's defaults
+    template: web/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: admin
+            mountPath: /etc/nginx/admin-config.conf
+            subPath: admin-config.conf
+            readOnly: true
+
+  - it: collects into the lake, with batch exports, when the pipeline looks after it
+    template: configmap.yaml
+    set:
+      pipeline.enabled: true
+      config.environment: development
+    asserts:
+      - equal:
+          path: data.WEBFLIX_EVENT_SINK
+          value: lake
+      - equal:
+          path: data.WEBFLIX_EXPORT_EVENTS
+          value: batch
+  - it: refuses a lake nothing erases
+    # Helm reports the first template that fails; the API and worker pods include the ConfigMap.
+    template: worker/deployment.yaml
+    set:
+      config.events.sink: lake
+    asserts:
+      - failedTemplate:
+          errorPattern: "nothing would ever erase deleted members' events"
+  - it: accepts a lake an external runner looks after, as the operator declares
+    template: configmap.yaml
+    set:
+      config.events.sink: lake
+      pipeline.external: true
+    asserts:
+      - equal:
+          path: data.WEBFLIX_EVENT_SINK
+          value: lake
+  - it: refuses a lake when the pipeline's erase job is off
+    template: worker/deployment.yaml
+    set:
+      pipeline.enabled: true
+      pipeline.jobs.erase.enabled: false
+      config.environment: development
+      config.events.sink: lake
+    asserts:
+      - failedTemplate:
+          errorPattern: "nothing would ever erase deleted members' events"
+  - it: tells in NOTES who erases, exports and expires the lake
+    template: NOTES.txt
+    set:
+      pipeline.enabled: true
+      config.environment: development
+    asserts:
+      - matchRegexRaw:
+          pattern: "collected into the lake \\(s3://webflix-media, events/\\); erased, exported and expired by age \\(retain, daily\\) by the pipeline's CronJobs"
+  - it: refuses a lake when retention is off and nothing else expires it
+    template: worker/deployment.yaml
+    set:
+      pipeline.enabled: true
+      pipeline.jobs.retain.enabled: false
+      config.environment: development
+      config.events.sink: lake
+    asserts:
+      - failedTemplate:
+          errorPattern: "erase, exportEvents and retain jobs"
+  - it: keeps no lake by default when retention is off
+    template: configmap.yaml
+    set:
+      pipeline.enabled: true
+      pipeline.jobs.retain.enabled: false
+      config.environment: development
+    asserts:
+      - equal:
+          path: data.WEBFLIX_EVENT_SINK
+          value: memory
+  - it: tells in NOTES that no events are stored without the pipeline
+    template: NOTES.txt
+    asserts:
+      - matchRegexRaw:
+          pattern: "Events +not stored \\(memory: no pipeline to erase or expire a lake\\); data exports inline"
+  - it: refuses the email outbox in production, which the API would refuse at startup
+    # Helm reports the first template that fails; the API and worker pods include the ConfigMap.
+    template: worker/deployment.yaml
+    set:
+      config.email.sender: outbox
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.email.sender=outbox is refused in production"
+  - it: refuses it through config.extraEnv too
+    template: worker/deployment.yaml
+    set:
+      config.extraEnv.WEBFLIX_EMAIL_SENDER: outbox
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.email.sender=outbox is refused in production"
+  - it: keeps the outbox outside production (the conformance variant)
+    template: configmap.yaml
+    set:
+      config.environment: development
+      config.email.sender: outbox
+    asserts:
+      - equal:
+          path: data.WEBFLIX_EMAIL_SENDER
+          value: outbox
+  - it: refuses batch exports nothing would finish
+    # Helm reports the first template that fails; the API and worker pods include the ConfigMap.
+    template: worker/deployment.yaml
+    set:
+      config.events.exportEvents: batch
+    asserts:
+      - failedTemplate:
+          errorPattern: "every data export would stay processing"

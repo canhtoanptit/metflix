@@ -28,6 +28,7 @@ import type { AreaModule } from "../module.ts";
 import { privacyEraseJob, privacyExportJob } from "./jobs.ts";
 import type { OtherAreas } from "./neighbours.ts";
 import {
+  type EmailStatus,
   type MembershipStep,
   PARTIAL_EXPORT_SUFFIX,
   type PrivacyRequestRecord,
@@ -101,6 +102,88 @@ const GIVE_UP_EXPORT_AFTER_MS = 24 * 3600_000;
 const EXPORT_TOKEN_PURPOSE = "privacy-export";
 /** Deletions whose renewals are still being stopped, retried per sweep (provider calls). */
 const MEMBERSHIP_RETRY_BATCH = 10;
+/** An erasure run's lease: one that never finished (a lost job) is run again after it. */
+const ERASURE_LEASE_MS = 10 * 60_000;
+/** An erasure that failed runs again after 1, 2, 4... minutes, never more than an hour apart. */
+const ERASURE_BACKOFF_BASE_MS = 60_000;
+const ERASURE_BACKOFF_MAX_MS = 60 * 60_000;
+/** An erasure running this long is logged as an error on every attempt (operators alert on it). */
+const ERASURE_STUCK_AFTER_MS = 60 * 60_000;
+/** Retention runs at most once an hour (per the shared cache), from the sweep. */
+const RETENTION_MARKER = "events:retention:last-run";
+const RETENTION_EVERY_SEC = 3600;
+
+/** What each area's part of an export holds (`areas.<name>`), told in the notes when present. */
+const AREA_PARTS: Record<string, string> = {
+  identity:
+    "areas.identity: your sign-in methods (whether a password is set, linked accounts), email verification, your profiles with their settings and avatars, and your signed-in devices.",
+  billing:
+    "areas.billing: your membership, invoices and refunds, and the card on file as Webflix stores it (its brand, last four digits and expiry).",
+  personalisation:
+    "areas.personalisation: the recommendation lists stored for your profiles (recommendationLists), and when you turned personalised recommendations off.",
+  admin:
+    "areas.admin: the record of Webflix staff access to your account (staffAccess: the date and the action of each, never who or why).",
+};
+
+/**
+ * The export's notes: true of the document they come with, whatever parts the areas add (each
+ * area's part is described only when it is there; what is held but not in it is said).
+ */
+export function exportNotes(areaNames: readonly string[], rawRetentionDays: number): string[] {
+  const present = [...new Set(areaNames)].sort();
+  const notes = [
+    `Behaviour events are stored under pseudonymous keys derived from your account and profile ids. Those listed are every event Webflix still holds for your account; each is deleted ${rawRetentionDays} days after it was received.`,
+    `Each part of Webflix adds what it holds about you under areas.<name>: ${present.length > 0 ? present.join(", ") : "none"}.`,
+    ...present.flatMap((name) => {
+      const part = AREA_PARTS[name];
+      return part ? [part] : [];
+    }),
+    "Your full card number and security code are held only by the payment provider, never by Webflix. Webflix stores a card's brand, last four digits and expiry, and keeps invoices and payment records for as long as the law requires.",
+  ];
+  if (!present.includes("personalisation")) {
+    notes.push(
+      "Webflix also stores recommendation lists computed for your profiles; this copy does not include them.",
+    );
+  }
+  if (!present.includes("admin")) {
+    notes.push(
+      "Webflix also keeps a record of staff access to your account; this copy does not include it.",
+    );
+  }
+  return notes;
+}
+
+/** How long the erasure waits before its next attempt (bounded exponential backoff). */
+export function erasureBackoffMs(attempts: number): number {
+  return Math.min(ERASURE_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), ERASURE_BACKOFF_MAX_MS);
+}
+
+/**
+ * Privacy work not done yet, for operators (`staff.privacyBacklog`, `GET /system/health`): each
+ * counted up to the limit, with the time of the oldest (epoch ms; null when none).
+ */
+export interface PrivacyBacklog {
+  /** Subject keys waiting for the pipeline's erase job (oldest: when it was asked for). */
+  pendingErasures: { count: number; oldestAt: number | null };
+  /** Batch exports waiting for the pipeline's `export-events` (oldest: the request). */
+  waitingExports: { count: number; oldestAt: number | null };
+  /** Account erasures started and not finished (oldest: when it started): one stuck shows here. */
+  erasuresInProgress: { count: number; oldestAt: number | null };
+}
+
+/** An erasure in progress, for operators (`staff.erasuresInProgress`). */
+export interface ErasureInProgress {
+  requestId: string;
+  accountId: string;
+  scheduledFor: string | null;
+  startedAt: string | null;
+  /** How long since it started. */
+  stuckForSec: number;
+  attempts: number;
+  /** When the sweep runs it again (a backoff, or the lease of a run in progress). */
+  retryAt: string | null;
+  lastError: string | null;
+}
 
 /**
  * The web app's page the export email links to: `{origin}{EXPORT_LANDING_PATH}/{id}#token=…`.
@@ -256,6 +339,7 @@ export function createPrivacy(
           ? toIsoString(record.expiresAt)
           : null,
       membership: membershipView(record, options.live ?? null, now),
+      email: record.emailStatus ?? null,
     };
   }
 
@@ -332,12 +416,13 @@ export function createPrivacy(
 
   // --- Export -------------------------------------------------------------------------------
 
-  /** The receipt window of an export's events: the raw retention up to the request. */
+  /**
+   * The receipt window of an export's events: everything the lake still holds up to the
+   * request, from its very beginning (retention expires lake objects by age; the export never
+   * stops at a configured period while older events are still held).
+   */
   function eventsWindow(record: PrivacyRequestRecord): { fromMs: number; toMs: number } {
-    return {
-      fromMs: record.requestedAt - config.events.rawRetentionDays * DAY_MS,
-      toMs: record.requestedAt,
-    };
+    return { fromMs: 0, toMs: record.requestedAt };
   }
 
   /**
@@ -455,16 +540,11 @@ export function createPrivacy(
       })),
       events: [],
       areas,
-      notes: [
-        "Behaviour events are stored under pseudonymous keys derived from your account and profile ids; the ones listed are every event the event lake holds for your account within its retention period.",
-        "Your membership and invoices are under areas.billing, your sign-in methods and email verification under areas.identity.",
-        "Payment card details are held by the payment provider, never by Webflix; invoices and payment records are kept by Webflix and the provider for as long as the law requires.",
-        "Recommendations are computed from the data above and are not stored as separate personal data.",
-      ],
+      notes: exportNotes(Object.keys(areas), config.events.rawRetentionDays),
     };
   }
 
-  async function sendExportEmail(record: PrivacyRequestRecord, to: string): Promise<void> {
+  async function sendExportEmail(record: PrivacyRequestRecord, to: string): Promise<EmailStatus> {
     // The web app's page, which can ask the member to sign in first (the email is usually
     // opened later, elsewhere). The token rides in the fragment, like identity's links: never
     // sent to a server by the page load, never in an access log or a Referer.
@@ -480,9 +560,71 @@ export function createPrivacy(
     if (!outcome.sent) {
       // The address bounced or complained before: the export is still listed with its link.
       logger.info("privacy.export_email_suppressed", { requestId: record.id });
+      return "suppressed";
     }
+    return "sent";
   }
 
+  /**
+   * STAND-IN until identity's service answers it (needs from identity: a method such as
+   * `isEmailSuppressed(address)`): whether an address bounced or complained before, read the way
+   * identity's own `sendTemplatedEmail` reads it. So the web is told the truth before the email
+   * is due (privacy review L10).
+   */
+  async function addressSuppressed(address: string): Promise<boolean> {
+    return deps.repos.identity.isSuppressed(address);
+  }
+
+  /** The account's address (identity's service); null when the account is gone. */
+  async function addressOf(accountId: string): Promise<string | null> {
+    return otherAreas()
+      .identity.getMemberIdentity(accountId)
+      .then((member) => member.account.email)
+      .catch((error: unknown) => {
+        if (error instanceof AppError && error.code === "not_found") return null;
+        throw error;
+      });
+  }
+
+  /**
+   * One of a deletion's emails (privacy review M7): through identity's templates and
+   * suppression list, at most once per key. A delivery error queues it as identity's email job
+   * instead (retried there): `pending`. Never fails the member's request: a failure to queue
+   * is logged and answers null.
+   */
+  async function sendDeletionEmail(
+    accountId: string,
+    request:
+      | {
+          template: "account-deletion-scheduled";
+          data: { scheduledFor: string; keepUrl: string };
+          key: string;
+        }
+      | { template: "account-deletion-canceled"; data: { manageUrl: string }; key: string },
+  ): Promise<EmailStatus | null> {
+    try {
+      const to = await addressOf(accountId);
+      if (!to) return null;
+      const email = { to, template: request.template, idempotencyKey: request.key } as const;
+      try {
+        const outcome = await sendTemplatedEmail(deps, { ...email, data: request.data } as never);
+        return outcome.sent ? "sent" : "suppressed";
+      } catch (error) {
+        logger.warn("privacy.deletion_email_queued", {
+          template: request.template,
+          error: serializeError(error),
+        });
+        await otherAreas().identity.sendEmail({ ...email, data: request.data } as never);
+        return "pending";
+      }
+    } catch (error) {
+      logger.error("privacy.deletion_email_failed", {
+        template: request.template,
+        error: serializeError(error),
+      });
+      return null;
+    }
+  }
   const finalKey = (id: string) => `${PRIVATE_DOCUMENT_PREFIX}exports/${id}.json.gz`;
   const partialKey = (id: string) =>
     `${PRIVATE_DOCUMENT_PREFIX}exports/${id}${PARTIAL_EXPORT_SUFFIX}`;
@@ -491,6 +633,18 @@ export function createPrivacy(
     manifest: `${PRIVATE_DOCUMENT_PREFIX}export-events/${id}/manifest.json`,
   });
   const nameOf = (key: string) => key.slice(PRIVATE_DOCUMENT_PREFIX.length);
+
+  /** Every object an export can leave behind, by name: none survives its request's end. */
+  const exportObjectKeys = (id: string) => [
+    finalKey(id),
+    partialKey(id),
+    pipelineKeys(id).events,
+    pipelineKeys(id).manifest,
+  ];
+
+  async function deleteExportObjects(id: string): Promise<void> {
+    for (const key of exportObjectKeys(id)) await eventSink.deleteDocument(key);
+  }
 
   /** Batch mode: assembled, its partial document stored, waiting for the pipeline's result. */
   function isWaitingForEvents(record: PrivacyRequestRecord): boolean {
@@ -524,13 +678,28 @@ export function createPrivacy(
     await eventSink.deleteDocument(finalKey(record.id));
     const key = await eventSink.putDocument(nameOf(finalKey(record.id)), await gzipJson(finished));
     const expiresAt = clock.now() + config.events.exportLinkTtlSec * 1000;
-    await sendExportEmail({ ...record, exportBlobKey: key, expiresAt }, document.account.email);
+    // The record points at the document before anything else can fail (the email): no path
+    // leaves a document that no record names. The partial copy, if any, is the batch caller's.
+    const recorded = await repos.events.transitionPrivacyRequest(record.id, ["processing"], {
+      exportBlobKey: key,
+      updatedAt: clock.now(),
+    });
+    if (!recorded) {
+      // Finished or cancelled meanwhile (the account's erasure): nothing may stay behind.
+      await eventSink.deleteDocument(key);
+      return false;
+    }
+    const emailStatus = await sendExportEmail(
+      { ...record, exportBlobKey: key, expiresAt },
+      document.account.email,
+    );
     const completed = await repos.events.transitionPrivacyRequest(record.id, ["processing"], {
       status: "completed",
       exportBlobKey: key,
       expiresAt,
       completedAt: clock.now(),
       lastError: null,
+      emailStatus,
       updatedAt: clock.now(),
     });
     if (completed) {
@@ -556,6 +725,8 @@ export function createPrivacy(
         await finishExport(record, document, await inlineEvents(record));
         return;
       }
+      // A finished copy an earlier attempt left (its email failed) goes: the partial replaces it.
+      await eventSink.deleteDocument(finalKey(record.id));
       await eventSink.deleteDocument(partialKey(record.id));
       const key = await eventSink.putDocument(
         nameOf(partialKey(record.id)),
@@ -690,7 +861,85 @@ export function createPrivacy(
 
   // --- Deletion and erasure ------------------------------------------------------------------
 
-  /** The `privacy.erase` job: everything that must go goes; billing records stay (D-M2-6). */
+  /**
+   * The erasure's steps (§6.3; privacy review H2), each safe to run again, in the order that
+   * keeps the account unusable whatever fails: the erasure keys (from then on nothing new is
+   * stored for it), identity's own part (it still needs the address), the lock (no session, no
+   * sign-in, no reset, no link), every export object, the other areas' parts that need the
+   * account (personalisation's lists by profile), the account row, and last the remote one: the
+   * payment provider's customer (billing keeps its link without a foreign key).
+   */
+  async function eraseAccount(accountId: string): Promise<void> {
+    const areas = otherAreas();
+    // 1. The keys first: a retry after the account row is gone still has them, and the lake
+    // writer refuses every event of a listed account from now on.
+    const profiles = await areas.identity
+      .getMemberIdentity(accountId)
+      .then((member) => member.profiles)
+      .catch((error: unknown) => {
+        if (error instanceof AppError && error.code === "not_found") return [];
+        throw error;
+      });
+    const accountKey = await keys.account(accountId);
+    const now = clock.now();
+    await repos.events.addErasures([
+      {
+        subjectKey: accountKey,
+        kind: "account",
+        accountKey: null,
+        requestedAt: now,
+        compactedAt: null,
+      },
+      // The account's key covers its profiles: listed under it, settled with it.
+      ...(await Promise.all(
+        profiles.map(async (profile) => ({
+          subjectKey: await keys.profile(profile.id),
+          kind: "profile" as const,
+          accountKey,
+          requestedAt: now,
+          compactedAt: null,
+        })),
+      )),
+    ]);
+    // 2. Identity's part: what is keyed by the address (its outbox, a suppression). It reads the
+    // address from the account row, which the lock replaces: so it runs first (it fails only
+    // when the database does, and then nobody can sign in either).
+    await areas.identity.eraseAccountData?.(accountId);
+    // 3. Locked: every session ends; no password, linked identity, token or address finds it.
+    await repos.events.lockAccountForErasure(accountId, clock.now());
+    await deps.streamGate.releaseAll(accountId);
+    // 4. Every export object of the account, by name, whether or not a record points at it;
+    // an export still in progress ends here (there will be nothing to send it to).
+    for (const request of await repos.events.listPrivacyRequests(accountId)) {
+      if (request.kind !== "export") continue;
+      await deleteExportObjects(request.id);
+      const open = request.status === "pending" || request.status === "processing";
+      if (request.exportBlobKey === null && !open) continue;
+      await repos.events.transitionPrivacyRequest(request.id, [request.status], {
+        ...(open ? { status: "canceled" as const } : {}),
+        exportBlobKey: null,
+        updatedAt: clock.now(),
+      });
+    }
+    // 5. The other areas' parts that still need the account (its profiles).
+    for (const [name, module] of Object.entries(areas) as [string, AreaModule][]) {
+      if (name === "identity" || name === "billing") continue;
+      await module.eraseAccountData?.(accountId);
+    }
+    // 6. The row: sessions, profiles and their library, membership, consents, linked
+    // identities and tokens cascade (billing records and this request are kept, D-M2-6).
+    await repos.events.deleteAccount(accountId);
+    // 7. Remote: the provider forgets the member (never charged again).
+    await areas.billing.eraseAccountData?.(accountId);
+  }
+
+  /**
+   * The `privacy.erase` job. Claims the deletion (`processing`, with a lease), runs the steps;
+   * a failure is recorded with the next attempt's time (bounded backoff) and never thrown, so
+   * the job is not dead-lettered: the sweep runs it again, for as long as it takes, and an
+   * operator sees it (`staff.erasuresInProgress`, the `privacy.erasure_retry_scheduled` log,
+   * an error once it has run an hour).
+   */
   async function runErasure(requestId: string): Promise<void> {
     const record = await repos.events.getPrivacyRequest(requestId);
     if (record?.kind !== "deletion") return;
@@ -698,105 +947,160 @@ export function createPrivacy(
     if (record.status === "scheduled" && (record.scheduledFor ?? Number.POSITIVE_INFINITY) > now) {
       return; // not due: the cooling-off period is still running
     }
+    if (record.status !== "scheduled" && record.status !== "processing") return;
     if (isDemoAccount(record.accountId)) return;
+    const startedAt = record.startedAt ?? now;
+    const attempts = (record.attempts ?? 0) + 1;
     const claimed = await repos.events.transitionPrivacyRequest(
       requestId,
       ["scheduled", "processing"],
-      { status: "processing", updatedAt: now },
+      {
+        status: "processing",
+        startedAt,
+        attempts,
+        retryAt: now + ERASURE_LEASE_MS,
+        updatedAt: now,
+      },
     );
     if (!claimed) return; // cancelled, or completed by another delivery
-    const accountId = record.accountId;
     try {
-      // Erasure keys first: a retry after the account row is gone still has them.
-      // The profiles through identity's service; on a retry after the account row went, none
-      // are left and their keys were recorded by the earlier attempt.
-      const profiles = await otherAreas()
-        .identity.getMemberIdentity(accountId)
-        .then((member) => member.profiles)
-        .catch((error: unknown) => {
-          if (error instanceof AppError && error.code === "not_found") return [];
-          throw error;
-        });
-      const accountKey = await keys.account(accountId);
-      await repos.events.addErasures([
-        {
-          subjectKey: accountKey,
-          kind: "account",
-          accountKey: null,
-          requestedAt: now,
-          compactedAt: null,
-        },
-        // The account's key covers its profiles: listed under it, settled with it.
-        ...(await Promise.all(
-          profiles.map(async (profile) => ({
-            subjectKey: await keys.profile(profile.id),
-            kind: "profile" as const,
-            accountKey,
-            requestedAt: now,
-            compactedAt: null,
-          })),
-        )),
-      ]);
-      for (const module of Object.values(otherAreas()) as AreaModule[]) {
-        await module.eraseAccountData?.(accountId);
-      }
-      await deps.streamGate.releaseAll(accountId);
-      for (const request of await repos.events.listPrivacyRequests(accountId)) {
-        // An export still in progress ends here: there will be nothing to send it to.
-        const open =
-          request.kind === "export" &&
-          (request.status === "pending" || request.status === "processing");
-        if (request.exportBlobKey === null && !open) continue;
-        if (request.exportBlobKey !== null) await eventSink.deleteDocument(request.exportBlobKey);
-        await repos.events.transitionPrivacyRequest(request.id, [request.status], {
-          ...(open ? { status: "canceled" as const } : {}),
-          exportBlobKey: null,
-          updatedAt: clock.now(),
-        });
-      }
-      await repos.events.deleteAccount(accountId);
+      await eraseAccount(record.accountId);
       await repos.events.transitionPrivacyRequest(requestId, ["processing"], {
         status: "completed",
         completedAt: clock.now(),
         lastError: null,
+        retryAt: null,
         updatedAt: clock.now(),
       });
-      logger.info("privacy.account_erased", { requestId, profiles: profiles.length });
+      logger.info("privacy.account_erased", { requestId, attempts });
     } catch (error) {
+      const at = clock.now();
+      const retryInMs = erasureBackoffMs(attempts);
       await repos.events
         .transitionPrivacyRequest(requestId, ["processing"], {
           lastError: String((error as Error)?.message ?? error).slice(0, 500),
-          updatedAt: clock.now(),
+          retryAt: at + retryInMs,
+          updatedAt: at,
         })
         .catch(() => undefined);
-      throw error;
+      const stuckForSec = Math.round((at - startedAt) / 1000);
+      const fields = {
+        requestId,
+        attempts,
+        stuckForSec,
+        retryInSec: Math.round(retryInMs / 1000),
+        error: serializeError(error),
+      };
+      if (at - startedAt >= ERASURE_STUCK_AFTER_MS) {
+        logger.error("privacy.erasure_retry_scheduled", fields);
+      } else {
+        logger.warn("privacy.erasure_retry_scheduled", fields);
+      }
+    }
+  }
+
+  /** Privacy work not done yet, counted up to `limit` each, with the oldest of each. */
+  async function privacyBacklog(limit: number): Promise<PrivacyBacklog> {
+    const [erasures, exports, running] = await Promise.all([
+      repos.events.pendingErasures(limit),
+      repos.events.waitingExports(limit),
+      repos.events.erasuresInProgress(limit),
+    ]);
+    const first = running[0];
+    return {
+      pendingErasures: { count: erasures.length, oldestAt: erasures[0]?.requestedAt ?? null },
+      waitingExports: { count: exports.length, oldestAt: exports[0]?.requestedAt ?? null },
+      erasuresInProgress: {
+        count: running.length,
+        oldestAt: first ? (first.startedAt ?? first.scheduledFor ?? first.updatedAt) : null,
+      },
+    };
+  }
+
+  /** Erasures in progress, for operators. */
+  async function erasuresInProgress(limit: number): Promise<ErasureInProgress[]> {
+    const now = clock.now();
+    return (await repos.events.erasuresInProgress(limit)).map((record) => ({
+      requestId: record.id,
+      accountId: record.accountId,
+      scheduledFor: record.scheduledFor === null ? null : toIsoString(record.scheduledFor),
+      startedAt: record.startedAt === null ? null : toIsoString(record.startedAt),
+      stuckForSec: Math.max(
+        0,
+        Math.round((now - (record.startedAt ?? record.scheduledFor ?? record.updatedAt)) / 1000),
+      ),
+      attempts: record.attempts ?? 0,
+      retryAt: record.retryAt === null ? null : toIsoString(record.retryAt),
+      lastError: record.lastError,
+    }));
+  }
+
+  /**
+   * Retention (§6.3; privacy review H1), at most once an hour: finished export requests and
+   * settled erasure records older than the raw retention, daily aggregates older than theirs.
+   * The lake's objects are the pipeline's to expire; deletion requests are kept (D-M2-6).
+   */
+  async function enforceRetention(now: number): Promise<void> {
+    if (await deps.cache.get(RETENTION_MARKER)) return;
+    await deps.cache.set(RETENTION_MARKER, String(now), { ttlSec: RETENTION_EVERY_SEC });
+    const rawCutoff = now - config.events.rawRetentionDays * DAY_MS;
+    const aggregateDay = toIsoString(now - config.events.aggregateRetentionDays * DAY_MS).slice(
+      0,
+      10,
+    );
+    const exports = await repos.events.pruneFinishedExports(rawCutoff);
+    const erasures = await repos.events.pruneSettledErasures(rawCutoff);
+    const aggregates = await repos.events.pruneAggregates(aggregateDay);
+    if (exports + erasures + aggregates > 0) {
+      logger.info("events.retention_enforced", { exports, erasures, aggregates });
     }
   }
 
   /** The `privacy.sweep` job (every scheduler tick): due erasures, lost and expired exports. */
   async function sweep(): Promise<void> {
     const now = clock.now();
+    // Due deletions, and erasures due to run again (a failed attempt's backoff, or a lost run's
+    // lease): each leased before it is queued, so the next tick does not queue it twice.
     const due = await repos.events.dueDeletions(now, SWEEP_BATCH);
-    if (due.length > 0) {
+    const retries = await repos.events.dueErasureRetries(now, SWEEP_BATCH);
+    const leased: PrivacyRequestRecord[] = [];
+    for (const record of retries) {
+      const leasedNow = await repos.events.transitionPrivacyRequest(record.id, ["processing"], {
+        retryAt: now + ERASURE_LEASE_MS,
+        updatedAt: now,
+      });
+      if (leasedNow) leased.push(record);
+    }
+    const erasures = [...due, ...leased];
+    if (erasures.length > 0) {
       await jobs.publishBatch(
-        due.map((record) => privacyEraseJob.create({ requestId: record.id })),
+        erasures.map((record) => privacyEraseJob.create({ requestId: record.id })),
       );
     }
-    // Exports whose job was lost or dead-lettered: queued again, and given up after a day so
-    // the member is never left unable to ask again.
+    // Exports open for longer than the documented day, waiting for the pipeline or not: given
+    // up, every object of theirs deleted, so the member can ask again.
+    for (const record of await repos.events.overdueExports(
+      now - GIVE_UP_EXPORT_AFTER_MS,
+      SWEEP_BATCH,
+    )) {
+      await deleteExportObjects(record.id);
+      const givenUp = await repos.events.transitionPrivacyRequest(
+        record.id,
+        ["pending", "processing"],
+        {
+          status: "failed",
+          exportBlobKey: null,
+          lastError: record.lastError ?? "the export did not complete in time; ask for a new one",
+          updatedAt: now,
+        },
+      );
+      if (givenUp) logger.warn("privacy.export_given_up", { requestId: record.id });
+    }
+    // Exports whose job was lost or dead-lettered (not waiting for the pipeline): queued again.
     for (const record of await repos.events.staleExports(
       now - RECOVER_EXPORT_AFTER_MS,
       SWEEP_BATCH,
     )) {
-      if (record.requestedAt < now - GIVE_UP_EXPORT_AFTER_MS) {
-        await repos.events.transitionPrivacyRequest(record.id, ["pending", "processing"], {
-          status: "failed",
-          lastError: "the export did not complete in time; ask for a new one",
-          updatedAt: now,
-        });
-        logger.warn("privacy.export_given_up", { requestId: record.id });
-        continue;
-      }
       if (
         await repos.events.transitionPrivacyRequest(record.id, [record.status], { updatedAt: now })
       ) {
@@ -816,6 +1120,7 @@ export function createPrivacy(
         updatedAt: now,
       });
     }
+    await enforceRetention(now);
   }
 
   return {
@@ -824,6 +1129,9 @@ export function createPrivacy(
     async requestExport(auth: AuthContext): Promise<PrivacyRequest> {
       guardRequester(auth);
       await requireFreshProof(auth);
+      // Whether the "ready" email can reach the member, told now (privacy review L10).
+      const address = await addressOf(auth.session.accountId);
+      const suppressed = address !== null && (await addressSuppressed(address));
       const now = clock.now();
       const record: PrivacyRequestRecord = {
         id: ids.next(),
@@ -839,6 +1147,10 @@ export function createPrivacy(
         updatedAt: now,
         membershipStep: null,
         membershipEndsAt: null,
+        startedAt: null,
+        attempts: null,
+        retryAt: null,
+        emailStatus: suppressed ? "suppressed" : "pending",
       };
       if (!(await repos.events.createPrivacyRequest(record))) {
         throw new AppError("privacy_request_pending");
@@ -889,6 +1201,9 @@ export function createPrivacy(
       const record = await repos.events.getPrivacyRequest(requestId);
       if (!record || record.accountId !== auth.session.accountId) throw notFound();
       if (!downloadable(record, clock.now()) || record.exportBlobKey === null) throw notFound();
+      // The account holder, freshly proven (privacy review L2): checked after the token, so a
+      // foreign or tampered link still answers not found.
+      await requireFreshProof(auth);
       const bytes = await eventSink.getDocument(record.exportBlobKey);
       if (!bytes) throw notFound();
       return DataExport.parse(await gunzipJson(bytes));
@@ -912,6 +1227,10 @@ export function createPrivacy(
         updatedAt: now,
         membershipStep: "stopping",
         membershipEndsAt: null,
+        startedAt: null,
+        attempts: null,
+        retryAt: null,
+        emailStatus: null,
       };
       // Recorded first, whatever billing answers next; then the renewals stop (or the sweep
       // keeps trying until they do).
@@ -925,7 +1244,25 @@ export function createPrivacy(
         });
         return record;
       });
-      return present(stored, { withLink: false });
+      // Then the email saying so, with the date and how to keep the account (M7). Billing's
+      // cancellation email stays silent: the deletion was recorded before its cancel ran.
+      const emailStatus = await sendDeletionEmail(record.accountId, {
+        template: "account-deletion-scheduled",
+        data: {
+          scheduledFor: toIsoString(record.scheduledFor ?? now),
+          keepUrl: `${config.publicOrigin}/account/privacy`,
+        },
+        key: `privacy-deletion-scheduled:${record.id}`,
+      });
+      if (emailStatus !== null) {
+        await repos.events
+          .transitionPrivacyRequest(record.id, ["scheduled", "canceled"], {
+            emailStatus,
+            updatedAt: clock.now(),
+          })
+          .catch(() => undefined);
+      }
+      return present({ ...stored, emailStatus }, { withLink: false });
     },
 
     /** Cancel the account's deletion while its cooling-off period runs; false when none. */
@@ -934,10 +1271,19 @@ export function createPrivacy(
         (record) => record.kind === "deletion" && record.status === "scheduled",
       );
       if (!open) return false;
-      return repos.events.transitionPrivacyRequest(open.id, ["scheduled"], {
+      const canceled = await repos.events.transitionPrivacyRequest(open.id, ["scheduled"], {
         status: "canceled",
         updatedAt: clock.now(),
       });
+      if (canceled) {
+        // Nothing will be deleted, whoever kept it: the member, or support at their request.
+        await sendDeletionEmail(accountId, {
+          template: "account-deletion-canceled",
+          data: { manageUrl: `${config.publicOrigin}/account` },
+          key: `privacy-deletion-canceled:${open.id}`,
+        });
+      }
+      return canceled;
     },
 
     runExport,
@@ -945,6 +1291,8 @@ export function createPrivacy(
     sweep,
     pendingExports,
     recordExportResults,
+    erasuresInProgress,
+    privacyBacklog,
   };
 }
 

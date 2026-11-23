@@ -130,18 +130,25 @@ export function createAdminHandlers(container: AppContainer): AdminHandlers {
       admin.system.importRecommendations(await staff(c), body.reason),
     rollbackRecommendations: async ({ body }, c) =>
       admin.system.rollbackRecommendations(await staff(c), body.reason),
-    listPendingErasures: ({ query }) => admin.privacy.pendingErasures(query.limit ?? 100),
+    listPendingErasures: async ({ query }, c) =>
+      admin.privacy.pendingErasures(await staff(c), query.limit ?? 100),
     confirmErasures: async ({ body }, c) => {
       await admin.privacy.confirmErasures(await staff(c), body.subjectKeys, body.reason);
     },
-    listPendingExports: ({ query }) => admin.privacy.pendingExports(query.limit ?? 100),
+    listPendingExports: async ({ query }, c) =>
+      admin.privacy.pendingExports(await staff(c), query.limit ?? 100),
     recordExportResults: async ({ body }, c) => {
       const { reason, ...document } = body;
       await admin.privacy.recordExportResults(await staff(c), document, reason);
     },
 
-    listAuditLog: ({ query }) => admin.audit.list(query),
+    listAuditLog: async ({ query }, c) => admin.audit.list(await staff(c), query),
     // Any staff member: their own entries only (the caller is the actor, whatever is asked).
-    listOwnAuditLog: async ({ query }, c) => admin.audit.listOwn(await staff(c), query),
+    listOwnAuditLog: async ({ query }, c) => {
+      const identity = await requireStaff(container, c);
+      // Members' current addresses as labels only for whom may read members now.
+      const memberLabels = identity.roles.includes("support") || identity.roles.includes("admin");
+      return admin.audit.listOwn(await staff(c), query, { memberLabels });
+    },
   };
 }

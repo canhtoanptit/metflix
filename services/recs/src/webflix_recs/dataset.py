@@ -16,8 +16,9 @@ Rules, in order (each one counted in the dataset manifest):
 5. Eligibility. Every event flagged `restricted` is dropped. A profile whose *latest* event is
    restricted (now a kids or capped profile), or whose account's latest consent stamp (on any
    event of the account, `consent.change` included) lacks `personalisation`, is dropped
-   entirely, history included. Signed-out events and events at the profile gate (no profile)
-   are dropped.
+   entirely, history included. A grant by support never counts: an account whose latest
+   personalisation `consent.change` is one is not consenting (consent.py). Signed-out events
+   and events at the profile gate (no profile) are dropped.
 6. Tables (Parquet, `recs-work/datasets/{id}/`): `playback`, `actions`, `impressions` (with
    play labels), `profiles`, `accounts`; every row keeps `received_at` so later stages can
    rebuild any earlier knowledge cutoff from one dataset.
@@ -34,6 +35,8 @@ from typing import Any
 import polars as pl
 
 from webflix_recs import schemas as ev
+from webflix_recs.consent import per_batch as consent_per_batch
+from webflix_recs.consent import resolve as resolve_consent
 from webflix_recs.ids import DAY_MS, iso_ms
 from webflix_recs.lake import read_events
 from webflix_recs.storage import Storage, get_json, put_json
@@ -78,10 +81,26 @@ def event_key(event_id: str) -> tuple[int, int]:
     return int(hexed[:16], 16), int(hexed[16:], 16)
 
 
-def _slim(frame: pl.DataFrame, as_of_ms: int, titles: tuple[str, ...]) -> dict[str, pl.DataFrame]:
-    """Runs in the reader processes: keep what was known at `as_of_ms`, split the flat events
-    by use and keep only the needed columns, in compact types."""
+def _slim(
+    frame: pl.DataFrame,
+    as_of_ms: int,
+    titles: tuple[str, ...],
+    excluded: frozenset[str] = frozenset(),
+) -> dict[str, pl.DataFrame]:
+    """Runs in the reader processes: keep what was known at `as_of_ms`, drop every event of a
+    subject pending erasure (an erased account or profile, a profile newly restricted), split the
+    flat events by use and keep only the needed columns, in compact types."""
     frame = frame.filter(pl.col("received_at") < as_of_ms)
+    before = frame.height
+    if excluded:
+        wanted = list(excluded)
+        frame = frame.filter(
+            ~(
+                pl.col("account").is_in(wanted).fill_null(False)
+                | pl.col("profile").is_in(wanted).fill_null(False)
+            )
+        )
+    pending = before - frame.height
     restricted = pl.col("restricted").fill_null(False)
     state = (
         frame.filter(pl.col("profile").is_not_null())
@@ -97,16 +116,9 @@ def _slim(frame: pl.DataFrame, as_of_ms: int, titles: tuple[str, ...]) -> dict[s
         )
     )
     # Consent belongs to the account: its latest stamp on any event of the account (including
-    # account-level events such as consent.change and billing, which carry no profile).
-    consent = (
-        frame.filter(pl.col("account").is_not_null())
-        .sort("received_at")
-        .group_by("account")
-        .agg(
-            pl.col("received_at").max().alias("latest_received"),
-            pl.col("consent_personalisation").last().alias("latest_personalisation"),
-        )
-    )
+    # account-level events such as consent.change and billing, which carry no profile), and
+    # whether its latest change was a grant by support, which never counts (consent.py).
+    consent = consent_per_batch(frame, "consent_personalisation", "personalisation")
     # Clock offsets of client devices: median (occurredAt - receivedAt) per device in this batch,
     # ignoring gaps of 12 hours or more (offline delays, not clock error).
     skew = (
@@ -130,7 +142,7 @@ def _slim(frame: pl.DataFrame, as_of_ms: int, titles: tuple[str, ...]) -> dict[s
         "state": state,
         "consent": consent,
         "skew": skew,
-        "unknown": pl.DataFrame({"titles": [unknown]}),
+        "unknown": pl.DataFrame({"titles": [unknown], "pending": [pending]}),
         "playback": keep.filter(pl.col("type").is_in(list(ev.PLAYBACK_TYPES))).select(
             *_COMMON,
             pl.col("type").cast(_PLAYBACK),
@@ -226,6 +238,7 @@ def build_dataset(
     workers: int = 1,
     write: bool = True,
     log: Any = print,
+    excluded: frozenset[str] = frozenset(),
 ) -> DatasetResult:
     from webflix_recs.catalog import load_catalog  # noqa: PLC0415
 
@@ -235,7 +248,7 @@ def build_dataset(
         location,
         until_ms=as_of_ms + 3_600_000,
         workers=workers,
-        transform=functools.partial(_slim, as_of_ms=as_of_ms, titles=titles),
+        transform=functools.partial(_slim, as_of_ms=as_of_ms, titles=titles, excluded=excluded),
     )
     names = ("state", "consent", "skew", "unknown", "playback", "actions", "impressions", "billing")
     parts: dict[str, list[pl.DataFrame]] = {name: [] for name in names}
@@ -251,15 +264,12 @@ def build_dataset(
         "read": read_stats.to_dict(),
         "hours": hours,
         "unknownTitlesDropped": int(frames["unknown"]["titles"].sum()),
+        "pendingErasureEventsDropped": int(frames["unknown"]["pending"].sum()),
+        "pendingErasureSubjects": len(excluded),
     }
 
     # Latest state per profile and consent per account across all batches (rule 5).
-    consent = (
-        frames["consent"]
-        .sort("latest_received")
-        .group_by("account")
-        .agg(pl.col("latest_personalisation").last())
-    )
+    consent = resolve_consent(frames["consent"]).rename({"granted": "latest_personalisation"})
     state = (
         frames["state"]
         .sort("latest_received")
@@ -296,7 +306,7 @@ def build_dataset(
     counts["skewedDevicesCorrected"] = offsets.height
     stale: dict[str, int] = {}
     late: dict[str, int] = {}
-    excluded: dict[str, int] = {}
+    ineligible: dict[str, int] = {}
     for name in ("playback", "actions", "impressions"):
         frame = _event_time(frames[name], None if name == "playback" else offsets)
         too_old = (pl.col("received_at") - pl.col("event_time")) > STALE_AFTER_MS
@@ -309,11 +319,11 @@ def build_dataset(
         frame = frame.join(eligible_keys, on="profile", how="semi").with_columns(
             pl.col("title").cast(pl.String).alias("title_id")
         )
-        excluded[name] = before - frame.height
+        ineligible[name] = before - frame.height
         frames[name] = frame.drop("title", "occurred_at")
     counts["staleDropped"] = stale
     counts["lateAccepted"] = late
-    counts["ineligibleDropped"] = excluded
+    counts["ineligibleDropped"] = ineligible
 
     playback = (
         frames.pop("playback")

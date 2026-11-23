@@ -20,8 +20,9 @@ import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatLongDate, formatMoney } from "../shared/format.ts";
 import { clearHandOff, handOffOf, markHandedOff } from "./checkoutMemory.ts";
 import { type DeclineReason, describeDecline, promotionAmount, promotionReach } from "./copy.ts";
-import { DELETION_BODY, deletionTitle, useScheduledDeletion } from "./deletion.tsx";
+import { deletionBody, deletionTitle, useScheduledDeletion } from "./deletion.tsx";
 import { HrefLink } from "./HrefLink.tsx";
+import { describeAmountReason, describeOutcome, membershipOutcome } from "./outcome.ts";
 import { ProviderStep, useBillingConfig } from "./ProviderStep.tsx";
 import { patiently, usePoll } from "./polling.ts";
 import { StatusPanel } from "./StatusPanel.tsx";
@@ -76,6 +77,8 @@ export interface CheckoutConfirmationProps {
   planHref: string;
   /** Where to go once the membership is active. */
   next: { label: string; onContinue: () => void };
+  /** A new member's first payment, or a returning member's restart (never "first payment"). */
+  context?: "signup" | "restart";
 }
 
 /**
@@ -94,6 +97,7 @@ export function CheckoutConfirmation({
   paymentHref,
   planHref,
   next,
+  context = "signup",
 }: CheckoutConfirmationProps) {
   const session = useAuthenticatedSession();
   const accountId = session.account.id;
@@ -279,6 +283,7 @@ export function CheckoutConfirmation({
       return (
         <FirstPayment
           checkout={phase.checkout}
+          context={context}
           notice={phase.notice}
           selfPath={selfPath}
           planHref={planHref}
@@ -299,7 +304,13 @@ export function CheckoutConfirmation({
           actions={
             <>
               <Button variant="accent" size="lg" asChild>
-                <HrefLink href={phase.planId ? paymentHref(phase.planId) : planHref}>
+                <HrefLink
+                  href={
+                    phase.planId
+                      ? `${paymentHref(phase.planId)}&declined=${phase.reason ?? "unknown"}`
+                      : planHref
+                  }
+                >
                   Use another card
                 </HrefLink>
               </Button>
@@ -426,7 +437,7 @@ function DeletionPanel() {
         </Button>
       }
     >
-      <p>{DELETION_BODY} Nothing was charged.</p>
+      <p>{deletionBody(null, deletion?.scheduledFor)}</p>
     </StatusPanel>
   );
 }
@@ -437,6 +448,7 @@ type FirstPaymentNotice = "not-yet" | "not-completed" | null;
 
 function FirstPayment({
   checkout,
+  context,
   notice,
   selfPath,
   planHref,
@@ -444,6 +456,7 @@ function FirstPayment({
   onPaidInPlace,
 }: {
   checkout: Checkout;
+  context: "signup" | "restart";
   notice: FirstPaymentNotice;
   selfPath: string;
   planHref: string;
@@ -454,6 +467,13 @@ function FirstPayment({
   const plans = useQuery(queries.plans());
   const plan = plans.data?.items.find((candidate) => candidate.id === checkout.planId) ?? null;
   const due = checkout.amountDue;
+  const restart = context === "restart";
+  // Why it is that amount: "$7.99 less your $4.98 credit" (the account's credit, the code).
+  const reason = describeAmountReason(due, {
+    creditApplied: checkout.creditApplied,
+    discount: checkout.discount,
+    code: checkout.promotion?.code,
+  });
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     heading.current?.focus({ preventScroll: true });
@@ -471,11 +491,16 @@ function FirstPayment({
           tabIndex={-1}
           className="type-headline text-fg outline-none"
         >
-          Confirm your first payment
+          {restart
+            ? plan
+              ? `Restart ${plan.name}`
+              : "Restart your membership"
+            : "Confirm your first payment"}
         </h1>
         <p className="type-body-lg text-fg-muted">
-          There's no free trial this time: this account or card has had one before. Your membership
-          starts as soon as the payment is confirmed.
+          {restart
+            ? "Your card is saved. Now confirm the payment on our payment provider's secure page and you're back straight away: your profiles, My List and viewing activity are all still here."
+            : "Your card is saved, but there's no free trial this time: this card has had one before. Confirm the first payment and your membership starts."}
         </p>
       </header>
       {notice === "not-yet" ? (
@@ -502,10 +527,13 @@ function FirstPayment({
           <dt className="flex min-w-0 flex-col gap-0.5">
             <span className="type-label text-fg">Due today</span>
             <span className="type-body-sm text-fg-muted">
-              {plan ? `${plan.name} plan, first month` : "First month"}
-              {checkout.promotion
-                ? `, with ${checkout.promotion.code} (${promotionAmount(checkout.promotion)} ${promotionReach(checkout.promotion)})`
-                : ""}
+              {reason
+                ? reason
+                : `${plan ? `${plan.name} plan, ` : ""}${restart ? "one month" : "first month"}${
+                    checkout.promotion
+                      ? `, with ${checkout.promotion.code} (${promotionAmount(checkout.promotion)} ${promotionReach(checkout.promotion)})`
+                      : ""
+                  }`}
             </span>
           </dt>
           <dd className="shrink-0 type-label text-fg tabular-nums">
@@ -555,13 +583,25 @@ function Welcome({
   checkout: Checkout;
   next: { label: string; onContinue: () => void };
 }) {
-  const { membership } = useMembership();
+  const membershipView = useMembership();
+  const { membership } = membershipView;
   const plans = useQuery(queries.plans());
   const plan = plans.data?.items.find((candidate) => candidate.id === checkout.planId) ?? null;
   const trialEnds = checkout.trial?.endsAt ?? membership.trialEndsAt;
   // The next bill as the provider previews it (exact: discounts and credit included).
   const upcoming = membership.nextInvoice ?? null;
   const code = checkout.promotion?.code ?? null;
+  // What was paid and why, and the next payment and why, as Membership will say them.
+  const paidReason = describeAmountReason(checkout.amountDue, {
+    creditApplied: checkout.creditApplied,
+    discount: checkout.discount,
+    code,
+  });
+  const nextCharge = upcoming
+    ? describeOutcome(
+        membershipOutcome(membershipView, { monthlyPrice: plan?.monthlyPrice ?? null }),
+      ).charge
+    : null;
   let body: ReactNode;
   if (checkout.trial) {
     body = (
@@ -586,12 +626,13 @@ function Welcome({
       <>
         <p>
           {checkout.amountDue ? `You paid ${formatMoney(checkout.amountDue)} today` : "Paid"}
-          {code && checkout.promotionOutcome === "applied" ? `, with your code ${code}.` : "."}
+          {paidReason ? ` (${paidReason})` : ""}
+          {code && checkout.promotionOutcome === "applied" && !checkout.discount
+            ? `, with your code ${code}.`
+            : "."}
         </p>
-        {upcoming ? (
-          <p>
-            Your next payment is {formatMoney(upcoming.amount)} on {formatLongDate(upcoming.at)}.
-          </p>
+        {nextCharge ? (
+          <p>{nextCharge}</p>
         ) : membership.currentPeriodEnd ? (
           <p>Your membership renews on {formatLongDate(membership.currentPeriodEnd)}.</p>
         ) : null}

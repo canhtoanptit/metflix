@@ -68,7 +68,7 @@ test("cancel with a clear end date, then keep the membership", async ({ page }) 
   expect(session.subscription.status).toBe("active");
 });
 
-test("change email and password with the current password", async ({ page, newDevice }) => {
+test("change email and password, confirming it's you once", async ({ page, newDevice }) => {
   const account = await createAccount(page.context().request, { tag: "security" });
   // Another signed-in device, which a password change signs out.
   const other = await newDevice();
@@ -79,24 +79,33 @@ test("change email and password with the current password", async ({ page, newDe
 
   await page.goto("/account/security");
   await expectAccessible(page);
+  // One way to prove it is the account holder (UX review 3.3): "Confirm it's you", not a field.
   const email = page.getByRole("form", { name: "Change email" });
+  await expect(email.getByLabel("Current password")).toHaveCount(0);
   const next = uniqueEmail("renamed");
   await email.getByLabel("New email address").fill(next);
-  await email.getByLabel("Current password").fill("wrong-password-1");
   await email.getByRole("button", { name: "Update email" }).click();
-  await expect(email.getByLabel("Current password")).toHaveAccessibleDescription(/isn't right/);
-  await email.getByLabel("Current password").fill(PASSWORD);
-  await email.getByRole("button", { name: "Update email" }).click();
+  const prompt = page.getByRole("dialog", { name: "Confirm it's you" });
+  await expect(prompt).toContainText("To change your email");
+  await prompt.getByLabel("Webflix password").fill("wrong-password-1");
+  await prompt.getByRole("button", { name: "Confirm" }).click();
+  await expect(prompt.getByLabel("Webflix password")).toHaveAccessibleDescription(/isn't right/);
+  await prompt.getByLabel("Webflix password").fill(PASSWORD);
+  await prompt.getByRole("button", { name: "Confirm" }).click();
   await expect(page.getByText(`You sign in with ${next}.`)).toBeVisible();
+  // Focus comes back to the form's button, not the page.
+  await expect(email.getByRole("button", { name: "Update email" })).toBeFocused();
 
+  // The proof still holds (five minutes): the password changes without asking again.
   const password = page.getByRole("form", { name: "Change password" });
-  await password.getByLabel("Current password").fill(PASSWORD);
+  await expect(password.getByLabel("Current password")).toHaveCount(0);
   await password.getByLabel("New password").fill("short");
   await password.getByRole("button", { name: "Change password" }).click();
   await expect(password.getByLabel("New password")).toHaveAccessibleDescription(/at least 8/);
   await password.getByLabel("New password").fill("a brand new passphrase");
   await password.getByRole("button", { name: "Change password" }).click();
-  await expect(password.getByLabel("Current password")).toHaveValue("");
+  await expect(password.getByLabel("New password")).toHaveValue("");
+  await expect(prompt).toHaveCount(0);
 
   const otherSession = await (await other.request.get("/api/v1/session")).json();
   expect(otherSession.authenticated).toBe(false);

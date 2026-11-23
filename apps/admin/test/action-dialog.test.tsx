@@ -96,6 +96,11 @@ describe("ActionDialog", () => {
     expect(run.mock.calls[0]?.[0].headers["X-Request-Id"]).toMatch(/^[0-9a-f-]{36}$/);
     await act(async () => resolve("ref-1"));
     expect(await screen.findByText("Refunded (ref-1).")).toBeInTheDocument();
+    // Done leads straight to the entry this one send wrote (your actions, without admin).
+    expect(screen.getByRole("link", { name: "See it in your actions" })).toHaveAttribute(
+      "href",
+      `/activity?requestId=${run.mock.calls[0]?.[0].headers["X-Request-Id"]}`,
+    );
   });
 
   it("after a refusal, nothing changed, and the corrected form is a new intention (new key)", async () => {
@@ -130,6 +135,11 @@ describe("ActionDialog", () => {
     await screen.findByText("Refunded (ref-3).");
     const [first, second] = run.mock.calls.map(([context]) => context.idempotencyKey);
     expect(second).toBe(first);
+    // Two sends of one key: either may have written the entry, so the link doesn't guess.
+    expect(screen.getByRole("link", { name: "See it in your actions" })).toHaveAttribute(
+      "href",
+      "/activity?",
+    );
   });
 
   it("an unknown outcome offers no second attempt and is still there after closing", async () => {

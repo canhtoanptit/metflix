@@ -73,7 +73,8 @@ test.describe("the demo profile Alex", () => {
       "no Top Picks for Alex: import a recommendation run that holds this profile (services/recs, node apps/api/src/recs.ts import)",
     );
     if (!picks) return;
-    expect(server.policy?.id).toMatch(/^learned:/);
+    // A trained run's page, or the demo run's (docs/RECOMMENDATIONS.md, "A demo run").
+    expect(server.policy?.id).toMatch(/^(learned|demo):/);
     await expect(page.locator("main")).toHaveAttribute("data-policy", server.policy?.id ?? "");
 
     const slider = row(page, picks.title);

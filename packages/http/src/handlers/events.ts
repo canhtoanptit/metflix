@@ -70,6 +70,12 @@ export function createEventsHandlers(container: AppContainer): AreaHandlers<"eve
       return document;
     },
 
+    fetchDataExport: async ({ params, body }, c) => {
+      const document = await services.events.downloadExport(await holder(c), params.id, body.token);
+      c.header("Content-Disposition", `attachment; filename="webflix-data-${params.id}.json"`);
+      return document;
+    },
+
     listPrivacyRequests: async (_request, c) =>
       services.events.listPrivacyRequests(await holder(c)),
 

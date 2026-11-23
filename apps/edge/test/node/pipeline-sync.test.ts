@@ -114,4 +114,23 @@ describe("the round trips' mirror", () => {
     await mirror.push([{ prefix: "recs/", mode: "overlay" }]);
     expect(log).toEqual(["put recs/v=served/profiles/part-00000.parquet"]);
   });
+
+  it("deletes from R2 what the job deleted under an overlay, never the store's own unpushed runs", async () => {
+    // Retention expires old artefact versions and experiment results that R2 holds.
+    const { dir, log, r2, store } = await setup();
+    await r2.put("recs/v=old/manifest.json", bytes("expired"));
+    await r2.put("recs/v=current/manifest.json", bytes("served"));
+    await store.put("recs/v=unpushed/manifest.json", bytes("local work"));
+    const mirror = new Mirror(r2, store, dir);
+    await mirror.load();
+    await mirror.pull([{ prefix: "recs/", mode: "overlay" }]);
+    await store.delete(["recs/v=old/manifest.json", "recs/v=unpushed/manifest.json"]);
+    log.length = 0;
+    expect(await mirror.push([{ prefix: "recs/", mode: "overlay" }])).toMatchObject({
+      uploaded: 0,
+      deleted: 1,
+    });
+    expect(log).toEqual(["delete recs/v=old/manifest.json"]);
+    expect(await text(r2, "recs/v=current/manifest.json")).toBe("served");
+  });
 });

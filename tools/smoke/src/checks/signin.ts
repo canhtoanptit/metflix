@@ -834,14 +834,198 @@ export const signinChecks: CheckDefinition[] = [
     },
   },
   {
+    id: "identity.oidc.prehijack",
+    area: "identity",
+    title:
+      "An account set up before its owner verified the address is never joined by Google: a verification link opened outside the account's session leaves Google at link-required; a reset from the mailbox signs the owner in and evicts the set-up (its session, its password, the Apple identity it linked); then Google signs in",
+    needs: [needs.mailbox, needs.googleIssuer, needs.appleIssuer],
+    timeoutMs: 180_000,
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      // Someone else signs up with the owner's address and a password of their own, proves the
+      // password and links an Apple identity under an address of their own (security review H1).
+      const planted = await env.bareSignup("prehijack");
+      const address = planted.email;
+      const accountId = planted.session.account.id;
+      await succeeds(
+        () => planted.agent.api.elevate({ body: { password: planted.password } }),
+        "POST /session/elevation (the set-up's password)",
+      );
+      const appleAddress = env.email("prehijack-apple");
+      expectOutcome(
+        await signIn(
+          env,
+          planted.agent,
+          "apple",
+          { email: { address: appleAddress } },
+          { intent: "link", returnTo: "/account" },
+        ),
+        "linked",
+        "the set-up links its own Apple identity",
+      );
+
+      // The owner opens the genuine verification email: no session, another browser.
+      const [verify] = await awaitMail(ctx, planted.agent, address, "verify-email");
+      check(verify, "no verification email");
+      const owner = ctx.agent("prehijack-owner");
+      await succeeds(
+        () =>
+          owner.api.confirmEmailVerification({
+            body: { token: linkToken(verify, "/verify-email") },
+          }),
+        "POST /auth/email-verification/confirm (the owner, signed out)",
+      );
+      equal(
+        (await signedIn(planted.agent, "the set-up after the verification")).account.emailVerified,
+        true,
+        "the address is verified",
+      );
+      // Continue with Google, issuer-verified address: not joined to what someone else set up.
+      const google = ctx.agent("prehijack-google");
+      const joined = await signIn(env, google, "google", { email: { address } });
+      expectOutcome(
+        joined,
+        "link-required",
+        "Google with the address of an account whose ways in were set up before the owner verified it",
+      );
+      await signedOut(google, "after link-required");
+      equal(
+        (await succeeds(() => planted.agent.api.listIdentities(), "GET /account/identities")).items
+          .map((item) => item.provider)
+          .join(","),
+        "apple",
+        "the account's identities after the refused Google sign-in",
+      );
+
+      // The owner recovers the account from the mailbox: signed in by the reset itself.
+      status(
+        await owner.fetch(`${API}/auth/password-reset`, {
+          method: "POST",
+          headers: CSRF,
+          body: { email: address },
+        }),
+        204,
+        "POST /auth/password-reset",
+      );
+      const [reset] = await awaitMail(ctx, owner, address, "reset-password");
+      check(reset, "no reset email");
+      const newPassword = `${env.password}-owner`;
+      const recovered = await succeeds(
+        () =>
+          owner.api.confirmPasswordReset({
+            body: { token: linkToken(reset, "/reset-password"), newPassword },
+          }),
+        "POST /auth/password-reset/confirm",
+      );
+      equal(recovered.account.id, accountId, "the account the reset signed in to");
+      equal((await signedIn(owner, "the owner after the reset")).account.email, address, "email");
+      // What the set-up left is gone: its session, its password, its Apple identity.
+      await signedOut(planted.agent, "the set-up's session after the reset");
+      await rejects(
+        () =>
+          env
+            .knownDevice(planted, ctx.agent("prehijack-old-password"))
+            .api.login({ body: { email: address, password: planted.password } }),
+        "invalid_credentials",
+        "the set-up's password after the reset",
+      );
+      equal(
+        (
+          await succeeds(
+            () => owner.api.listIdentities(),
+            "GET /account/identities (the owner, no profile yet)",
+          )
+        ).items.length,
+        0,
+        "identities after the reset (the Apple identity linked under another address is dropped)",
+      );
+      const apple = ctx.agent("prehijack-apple-later");
+      await signIn(env, apple, "apple", { email: { address: appleAddress } });
+      const appleState = await succeeds(() => apple.api.getSession(), "GET /session (Apple)");
+      check(
+        !appleState.authenticated || appleState.account.id !== accountId,
+        "the dropped Apple identity still signs in to the owner's account",
+        { observed: JSON.stringify(appleState).slice(0, 300) },
+      );
+      // The reset proved the ways in: Google now links itself.
+      const again = ctx.agent("prehijack-google-again");
+      expectOutcome(
+        await signIn(env, again, "google", { email: { address } }),
+        "signed-in",
+        "Google after the owner's reset",
+      );
+      equal((await signedIn(again, "Google after the reset")).account.id, accountId, "account");
+    },
+  },
+  {
+    id: "identity.oidc.address-change",
+    area: "identity",
+    title:
+      "An address change clears the proof of an account's ways in: verified in its own session the account links Google, moved to a new address verified from another browser it answers link-required",
+    needs: [needs.mailbox, needs.googleIssuer],
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const account = await env.bareSignup("address-change");
+      const accountId = account.session.account.id;
+      const [first] = await awaitMail(ctx, account.agent, account.email, "verify-email");
+      check(first, "no verification email");
+      await succeeds(
+        () =>
+          account.agent.api.confirmEmailVerification({
+            body: { token: linkToken(first, "/verify-email") },
+          }),
+        "verify the address in the account's own session",
+      );
+      // Before the move the proof stands: Google with the address links itself.
+      const before = ctx.agent("address-change-before");
+      expectOutcome(
+        await signIn(env, before, "google", { email: { address: account.email } }),
+        "signed-in",
+        "Google with the address verified in the account's session",
+      );
+      equal((await signedIn(before, "before the move")).account.id, accountId, "account");
+      // Moved to a new address, verified from a browser with no session.
+      const moved = env.email("address-change-moved");
+      await succeeds(
+        () =>
+          account.agent.api.updateAccount({
+            body: { email: moved, currentPassword: account.password },
+          }),
+        "PATCH /account {email}",
+      );
+      const [second] = await awaitMail(ctx, account.agent, moved, "verify-email");
+      check(second, "no verification email for the new address");
+      await succeeds(
+        () =>
+          ctx
+            .agent("address-change-elsewhere")
+            .api.confirmEmailVerification({ body: { token: linkToken(second, "/verify-email") } }),
+        "verify the new address from another browser",
+      );
+      equal(
+        (await signedIn(account.agent, "after the move")).account.emailVerified,
+        true,
+        "the new address is verified",
+      );
+      const after = ctx.agent("address-change-after");
+      expectOutcome(
+        await signIn(env, after, "google", { email: { address: moved } }),
+        "link-required",
+        "Google with the new address (verified outside the account's session)",
+      );
+      await signedOut(after, "after link-required");
+    },
+  },
+  {
     id: "identity.password-reset",
     area: "identity",
     title:
-      "Reset a password: the same answer for unknown addresses, a single-use emailed link, every device signed out, the old password refused, a security alert",
+      "Reset a password: the same answer for unknown addresses, a single-use emailed link that signs in the browser completing it (at the profile gate) and signs every other device out, the old password refused, a security alert",
     needs: [needs.mailbox],
     async run(ctx: CheckContext) {
       const env = ctx.env;
       const account = await env.bareSignup("reset");
+      await env.holder(account);
       const other = await env.login(account, "reset-other-device");
       const anonymous = ctx.agent("reset-request");
       const request = (email: string) =>
@@ -860,10 +1044,32 @@ export const signinChecks: CheckDefinition[] = [
       check(message, "no reset email");
       const token = linkToken(message, "/reset-password");
       const newPassword = `${env.password}-reset`;
-      await succeeds(
-        () => anonymous.api.confirmPasswordReset({ body: { token, newPassword } }),
-        "POST /auth/password-reset/confirm",
+      const confirmed = await anonymous.fetch(`${API}/auth/password-reset/confirm`, {
+        method: "POST",
+        headers: CSRF,
+        body: { token, newPassword },
+      });
+      status(confirmed, 200, "POST /auth/password-reset/confirm (answers the session)");
+      const answered = confirmed.json<AuthenticatedSession>();
+      equal(answered.authenticated, true, "the reset's answer: authenticated");
+      equal(answered.account?.id, account.session.account.id, "the reset's answer: account");
+      equal(answered.activeProfile, null, "the reset's answer: at the profile gate");
+      check(
+        answered.profiles?.length === 1,
+        "the reset's answer does not list the profiles to choose from",
+        { observed: JSON.stringify(answered.profiles ?? null) },
       );
+      check(
+        confirmed.headers
+          .getSetCookie()
+          .map(parseSetCookie)
+          .some((cookie) => cookie !== null && isSessionCookieName(cookie.name)),
+        "the reset set no session cookie",
+        { exchange: confirmed.exchange },
+      );
+      const here = await signedIn(anonymous, "the browser that completed the reset");
+      equal(here.account.id, account.session.account.id, "the account signed in by the reset");
+      equal(here.activeProfile, null, "the reset's browser starts at the profile gate");
       await signedOut(account.agent, "the sign-up device after the reset");
       await signedOut(other, "another device after the reset");
       await rejects(
@@ -947,12 +1153,14 @@ export const signinChecks: CheckDefinition[] = [
       );
       const [verify] = await awaitMail(ctx, anonymous, intruder, "verify-email");
       check(verify, "no verification email for the new address");
+      // In the account's own session: the proof an automatic link needs is there, so what keeps
+      // the dropped identity out is the drop itself.
       await succeeds(
         () =>
-          anonymous.api.confirmEmailVerification({
+          device.api.confirmEmailVerification({
             body: { token: linkToken(verify, "/verify-email") },
           }),
-        "verify the new address",
+        "verify the new address in the account's session",
       );
       const evicted = ctx.agent("recover-intruder");
       const after = await signIn(env, evicted, "google", { email: { address: intruder } });

@@ -203,6 +203,13 @@ export function loadIdentityConfig(input: AreaConfigInput): AreaConfigResult<Ide
     "memory",
     issues,
   );
+  if (emailSender === "outbox" && input.environment === "production") {
+    // The outbox keeps every message with its body, so a database reader would hold live reset
+    // and verification links; and it delivers nothing (security review L4).
+    issues.push(
+      "WEBFLIX_EMAIL_SENDER=outbox: refused in production (it stores every message's body, live reset and verification links included, and delivers nothing); use http or smtp",
+    );
+  }
   const emailFrom = input.vars.WEBFLIX_EMAIL_FROM ?? "Webflix <no-reply@webflix.dev>";
   if (parseMailbox(emailFrom) === null) {
     issues.push("WEBFLIX_EMAIL_FROM: expected an address or Name <address> on one line");

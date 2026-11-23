@@ -321,7 +321,7 @@ export const hardeningChecks: CheckDefinition[] = [
     area: "browse",
     title: "Browse batches serve every row once when the plan changes between them",
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("batches-stable");
+      const viewer = await ctx.env.isolatedViewer("batches-stable", { member: false });
       const api = viewer.agent.api;
       const first = await succeeds(() => api.getBrowse({ query: { view: "home" } }), "batch 1");
       const picks = first.rows

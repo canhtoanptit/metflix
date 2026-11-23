@@ -119,7 +119,7 @@ export const billingRoutes = {
     auth: "account",
     summary: "Start (or restart) a membership: step one, confirm a card",
     description:
-      "From the sign-up flow (at the profile gate) or from an unrestricted profile; a restricted profile answers `unrestricted_profile_required` (checked by the handler). Answers `requires_setup` with the client secret the provider's form confirms. Trial eligibility (one per account and per card) is decided at confirmation.",
+      "From the sign-up flow (at the profile gate) or from an unrestricted profile; a restricted profile answers `unrestricted_profile_required` (checked by the handler). Answers `requires_setup` with the client secret the provider's form confirms. Trial eligibility (one per account and per card) is decided at confirmation. Limited per account (`billing`); a request with a `promotionCode` also counts against the account's `promotion` budget, the one `POST /billing/promotions/validate` spends.",
     body: StartCheckoutBody,
     response: Checkout,
     successStatus: 201,
@@ -132,6 +132,7 @@ export const billingRoutes = {
       "account_deletion_scheduled",
       "service_unavailable",
     ],
+    rateLimit: "billing",
     examples: { request: { planId: "standard" } },
   }),
   getOpenCheckout: defineRoute({
@@ -152,6 +153,8 @@ export const billingRoutes = {
     area: "billing",
     auth: "account",
     summary: "Where a checkout stands",
+    description:
+      "Poll it while the provider decides. Never refused for polling too often: the provider is read at most once per account every two seconds (`billing-refresh`), and a poll in between answers from stored state.",
     params: IdParams,
     response: Checkout,
     errors: ["not_found", "service_unavailable"],
@@ -185,7 +188,7 @@ export const billingRoutes = {
     auth: "account-holder",
     summary: "Preview a plan change: what is charged or credited now",
     description:
-      "Apply exactly this preview with `PUT /account/subscription` and its `previewToken` (same proration date).",
+      "Apply exactly this preview with `PUT /account/subscription` and its `previewToken` (same proration date). Limited per account (`billing`).",
     body: PlanChangePreviewBody,
     response: PlanChangePreview,
     errors: [
@@ -194,6 +197,7 @@ export const billingRoutes = {
       "demo_account_protected",
       "service_unavailable",
     ],
+    rateLimit: "billing",
     examples: { request: { planId: "premium" } },
   }),
   setupPaymentMethod: defineRoute({
@@ -204,7 +208,7 @@ export const billingRoutes = {
     auth: "account-holder",
     summary: "Replace the card: get a setup the provider's form confirms",
     description:
-      "The provider's event makes the confirmed card the default; a `past_due` membership's open invoice is then paid explicitly.",
+      "The provider's event makes the confirmed card the default; a `past_due` membership's open invoice is then paid explicitly. Limited per account (`billing`).",
     response: PaymentMethodSetup,
     successStatus: 201,
     errors: [
@@ -213,6 +217,7 @@ export const billingRoutes = {
       "payments_not_configured",
       "service_unavailable",
     ],
+    rateLimit: "billing",
   }),
   getPaymentMethodSetup: defineRoute({
     method: "GET",
@@ -221,6 +226,8 @@ export const billingRoutes = {
     area: "billing",
     auth: "account-holder",
     summary: "Where a card replacement stands",
+    description:
+      "Poll it after the provider's form. Never refused for polling too often: the provider is read at most once per account every two seconds (`billing-refresh`), and a poll in between answers from stored state.",
     params: IdParams,
     response: PaymentMethodSetup,
     errors: ["not_found", "service_unavailable"],

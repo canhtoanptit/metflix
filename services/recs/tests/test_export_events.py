@@ -267,3 +267,31 @@ def test_a_window_that_is_not_hour_aligned_is_exact(tmp_path: Path) -> None:
     # compacted ones received in the first minutes.
     assert len(received) == 3
     assert all(iso_ms(request.from_ms) <= r < iso_ms(request.to_ms) for r in received)
+
+
+def test_an_unbounded_window_exports_everything_still_held(tmp_path: Path) -> None:
+    """The product asks from 1970-01-01 (retention, not the request, bounds an export): every
+    event of the account still in the lake comes back, an hour 500 days old included, and the
+    lake is listed once, not walked hour by hour from 1970."""
+    storage = _lake(tmp_path)
+    old = H0 - 500 * 24 * HOUR_MS
+    write_lake(storage, [make_event("title.open", old + 7, account=A, profile=PA)], "old")
+    now = H0 + 5 * HOUR_MS
+    (request,) = parse_requests(
+        {
+            "requests": [
+                {
+                    "requestId": "r-all",
+                    "accountKey": A,
+                    "from": "1970-01-01T00:00:00.000Z",
+                    "to": iso_ms(now - HOUR_MS),
+                }
+            ]
+        }
+    )
+    outcome = export_events(str(tmp_path), [request], now_ms=now, log=lambda _: None)
+    assert outcome.results[0]["status"] == "complete"
+    events = [orjson.loads(line) for line in _lines(storage, "r-all")]
+    # 7 in hours 0 and 1 (as above), 1 in hour 3, 1 from 500 days before.
+    assert len(events) == 9 and old <= parse_iso_ms(events[0]["receivedAt"]) < old + HOUR_MS
+    assert outcome.hours == 4

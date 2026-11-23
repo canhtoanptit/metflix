@@ -80,6 +80,55 @@ describe("the Worker as configured for production", () => {
     expect(response.status).toBe(401);
   });
 
+  it("tells the staff console that no staff issuer is configured, instead of a development one", async () => {
+    const response = await get("/admin/config.json");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.text).toContain("WEBFLIX_STAFF_ISSUER");
+  });
+
+  it("points the staff console at the configured staff issuer and client", async () => {
+    const configured = {
+      ...production,
+      WEBFLIX_STAFF_VERIFIER: "oidc",
+      WEBFLIX_STAFF_ISSUER: "https://sso.example.com/realms/webflix",
+      WEBFLIX_STAFF_CLIENT_ID: "webflix-console",
+    } as Env;
+    const response = await handleFetch(
+      new Request(`${ORIGIN}/admin/config.json`),
+      configured,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      issuer: "https://sso.example.com/realms/webflix",
+      clientId: "webflix-console",
+      scope: "openid profile email",
+    });
+    // The console may connect to that issuer, and to nothing else beyond this origin (production
+    // runs Stripe: none of Stripe's origins reach the console).
+    const page = await handleFetch(
+      new Request(`${ORIGIN}/admin/members/m-1`, { headers: { "Sec-Fetch-Mode": "navigate" } }),
+      configured,
+      createExecutionContext(),
+    );
+    const policy = page.headers.get("Content-Security-Policy") ?? "";
+    expect(policy).toContain("connect-src 'self' https://sso.example.com;");
+    expect(policy).not.toMatch(/stripe|googleapis|https:;|https: /);
+    await page.body?.cancel();
+  });
+
+  it("refuses to run at all when WEBFLIX_ENV is missing, instead of running as development", async () => {
+    const { WEBFLIX_ENV: _unset, ...rest } = production;
+    const response = await handleFetch(
+      new Request(`${ORIGIN}/dev-idp/google/.well-known/openid-configuration`),
+      rest as Env,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("config.invalid");
+  });
+
   it("keeps the mailbox and the diagnostics surfaces closed", async () => {
     expect((await get("/api/v1/diagnostics/mailbox?to=a%40example.test")).status).toBe(404);
   });

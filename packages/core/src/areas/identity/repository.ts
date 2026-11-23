@@ -46,13 +46,14 @@ export interface IdentityRepository {
    * `UniqueViolationError("identity")`.
    */
   createAccount(input: {
-    account: IdentityAccount;
+    account: NewIdentityAccount;
     session: SessionRecord;
     identity: LinkedIdentityRecord | null;
   }): Promise<void>;
   /**
-   * The address changes and is no longer verified, in one statement. Outstanding email tokens for
-   * the old address stop working (they are bound to the address they were sent to). Throws
+   * The address changes and is no longer verified, nor its ways in proven (`accessProvenAt`: they
+   * were set up for the old address), in one statement. Outstanding email tokens for the old
+   * address stop working (they are bound to the address they were sent to). Throws
    * `UniqueViolationError("email")`.
    */
   changeEmail(accountId: string, email: string, now: number): Promise<void>;
@@ -118,22 +119,33 @@ export interface IdentityRepository {
   ): Promise<AccountTokenRecord | null>;
   /**
    * Email verification, atomically: consumes the live `verify_email` token and marks the address
-   * verified. The account it verified, or null when the token is unknown, used, expired or no
-   * longer for the account's address.
+   * verified. When the link was opened in a live session of that same account
+   * (`sessionAccountId` is the token's account), the account's ways in are also proven
+   * (`accessProvenAt`); from anywhere else, they are not (a click proves who reads the mailbox,
+   * not who set the password). The account it verified, or null when the token is unknown, used,
+   * expired or no longer for the account's address.
    */
-  consumeVerificationToken(tokenHash: string, now: number): Promise<string | null>;
+  consumeVerificationToken(
+    tokenHash: string,
+    now: number,
+    sessionAccountId: string | null,
+  ): Promise<string | null>;
   /**
    * Password reset, atomically: consumes the live `reset_password` token and every other open
-   * reset token of the account, sets the new password hash, marks the address verified (the
-   * link proved it), signs out every device, and unlinks the issuer identities linked under an
-   * address other than the account's, recording them as removed (a takeover planted before the
-   * owner proved the address does not survive, nor come back by itself). The account, or null when the token is unknown, used, expired or no longer
-   * for the account's address (then nothing changes).
+   * reset token of the account, sets the new password hash, marks the address verified and the
+   * account's ways in proven (the link proved the address, and the reset leaves only what its
+   * owner holds: their new password and identities linked under that address), signs out every
+   * device and then signs in the one that completed it (`session`, for the token's account), and
+   * unlinks the issuer identities linked under an address other than the account's, recording
+   * them as removed (a takeover planted before the owner proved the address does not survive,
+   * nor come back by itself). The account, or null when the token is unknown, used, expired or
+   * no longer for the account's address (then nothing changes and no session exists).
    */
   completePasswordReset(input: {
     tokenHash: string;
     passwordHash: string;
     now: number;
+    session: SessionRecord;
   }): Promise<{ accountId: string; email: string; unlinked: OidcProvider[] } | null>;
 
   // --- Email: outbox and suppressions (§8.2) ---------------------------------------------------
@@ -187,9 +199,22 @@ export interface IdentityAccount {
    */
   passwordHash: string | null;
   emailVerifiedAt: number | null;
+  /**
+   * When it was last established that every way in (the password, the issuer identities) was set
+   * up by someone who proved control of the current address: a federated sign-up with an address
+   * the issuer verified, a completed password reset, or the verification link opened in a session
+   * of the account. Null otherwise, and cleared when the address changes. Automatic linking
+   * (§4.1) requires it; a verification click from anywhere else does not set it.
+   */
+  accessProvenAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
+
+/** A new account: `accessProvenAt` defaults to null (nothing proven yet). */
+export type NewIdentityAccount = Omit<IdentityAccount, "accessProvenAt"> & {
+  accessProvenAt?: number | null;
+};
 
 export interface LinkedIdentityRecord {
   provider: OidcProvider;

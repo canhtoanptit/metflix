@@ -1,13 +1,21 @@
 import type { AccountDetails } from "@webflix/contracts";
-import { Badge, Button, Skeleton, toast } from "@webflix/ui";
+import { Badge, Button, Skeleton } from "@webflix/ui";
 import type { ReactNode } from "react";
+import { useSession } from "../../../app/session/session.ts";
 import {
   DeletionScheduledNotice,
   isDeletionScheduled,
   useScheduledDeletion,
 } from "../billing/deletion.tsx";
+import { focusWhenReady } from "../billing/focus.ts";
 import { HrefLink } from "../billing/HrefLink.tsx";
-import { describeStanding, type MembershipAction } from "../billing/membership.ts";
+import {
+  describeStanding,
+  isUnfinishedSignup,
+  type MembershipAction,
+} from "../billing/membership.ts";
+import { describeOutcome, describeReduction, membershipOutcome } from "../billing/outcome.ts";
+import { membershipToast } from "../billing/toasts.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { describeQuality, formatLongDate, formatMoney, formatScreens } from "../shared/format.ts";
 import { describeMemberError } from "../shared/privileges.ts";
@@ -30,8 +38,8 @@ export function MembershipBadge({ details }: { details: AccountDetails }) {
 
 /**
  * What needs the member's attention, with the one action that resolves it: a payment that
- * failed (still watching, until when), a membership on hold, one that is ending or has ended.
- * Nothing when all is well.
+ * failed (still watching, until when), a membership on hold, one that is ending or has ended, a
+ * scheduled deletion (watching until it, nothing more charged). Nothing when all is well.
  */
 export function MembershipAlert({
   details,
@@ -41,19 +49,32 @@ export function MembershipAlert({
   /** The demo account: say what is so, offer no change. */
   readOnly?: boolean;
 }) {
-  const { notice } = describeStanding(membershipOfDetails(details));
+  const view = membershipOfDetails(details);
+  const { notice } = describeStanding(view);
+  const unfinished = isUnfinishedSignup(useSession());
   const deletion = useScheduledDeletion(!readOnly);
   const resume = useResumeMembership({
-    onSuccess: () =>
-      toast.success("Your membership will continue", {
-        description: "Nothing changes: keep watching.",
-      }),
+    onSuccess: (_membership, fresh) => {
+      // The page's own words for what happens next ("Your next payment is ..."), and focus on
+      // the membership's heading: the notice that held the button is gone.
+      const charge = fresh
+        ? describeOutcome(membershipOutcome(fresh.view, priceOf(fresh.details))).charge
+        : null;
+      membershipToast("Your membership will continue", charge ?? undefined);
+      focusWhenReady(
+        () =>
+          document.getElementById("account-your-membership") ??
+          document.getElementById("account-membership"),
+      );
+    },
   });
   // A scheduled deletion stops the renewals and refuses every change: say that instead.
   if (deletion || isDeletionScheduled(resume.error)) {
-    return <DeletionScheduledNotice scheduledFor={deletion?.scheduledFor} />;
+    return <DeletionScheduledNotice scheduledFor={deletion?.scheduledFor} view={view} />;
   }
   if (!notice) return null;
+  // Not started yet, in an unfinished sign-up: the account pages' own notice offers the way on.
+  if (unfinished && ["none", "incomplete"].includes(view.membership.status)) return null;
   return (
     <FormAlert
       tone={notice.tone}
@@ -76,6 +97,16 @@ export function MembershipAlert({
       ) : null}
     </FormAlert>
   );
+}
+
+/** The plan's price, for `membershipOutcome` (what a payment is before credit and discounts). */
+export function priceOf(details: AccountDetails) {
+  return { monthlyPrice: details.plan?.monthlyPrice ?? null };
+}
+
+/** Whether the alert above the facts carries this membership's notice (and its action). */
+export function alertActionOf(details: AccountDetails): MembershipAction | null {
+  return describeStanding(membershipOfDetails(details)).notice?.action ?? null;
 }
 
 function NoticeAction({
@@ -102,67 +133,35 @@ function NoticeAction({
 }
 
 /**
- * Plan, dates and card, as the server has them. Amounts are the plan's price from the server;
- * the next billing date is the provider's period end, never computed here.
+ * Plan, the next payment and card, as the server has them (`membershipOutcome`: the amount the
+ * provider will charge and why it is below the plan's price). When the alert above says when the
+ * membership ends or what is owed, the facts don't repeat it (UX review 3.11).
  */
 export function MembershipFacts({ details }: { details: AccountDetails }) {
-  const { membership, entitlement } = membershipOfDetails(details);
+  const view = membershipOfDetails(details);
+  const { membership } = view;
   const { plan, paymentMethod } = details;
-  // The next bill as the provider previews it: discounts and credit included, so exact.
-  const next = membership.nextInvoice ?? null;
+  const deletion = useScheduledDeletion();
+  const outcome = membershipOutcome(view, { ...priceOf(details), deletion });
   const hasPlan = membership.status !== "none";
-  const date = (iso: string | null) => (iso ? formatLongDate(iso) : "Not set");
 
-  let when: { term: string; value: ReactNode } | null = null;
-  switch (membership.status) {
-    case "trialing":
-      when = membership.cancelAtPeriodEnd
-        ? { term: "Free trial ends", value: date(membership.trialEndsAt) }
-        : {
-            term: "First payment",
-            value: (
-              <>
-                {next ? formatMoney(next.amount) : plan ? formatMoney(plan.monthlyPrice) : null} on{" "}
-                {date(next?.at ?? membership.trialEndsAt)}
-                <span className="block type-body-sm text-fg-muted">When your free trial ends</span>
-              </>
-            ),
-          };
-      break;
-    case "active":
-      when = membership.cancelAtPeriodEnd
-        ? { term: "Membership ends", value: date(entitlement.until ?? membership.currentPeriodEnd) }
-        : next
-          ? { term: "Next payment", value: `${formatMoney(next.amount)} on ${date(next.at)}` }
-          : { term: "Next billing date", value: date(membership.currentPeriodEnd) };
-      break;
-    case "past_due":
-      when = {
-        term: "Watching until",
-        value: (
-          <>
-            {date(membership.graceEndsAt ?? entitlement.until)}
-            <span className="block type-body-sm text-fg-muted">
-              Then paused, unless the payment has gone through
-            </span>
-          </>
-        ),
-      };
-      break;
-    case "suspended":
-      when = { term: "Watching", value: "Paused until the payment goes through" };
-      break;
-    case "canceled":
-      when = membership.currentPeriodEnd
-        ? { term: "Membership ended", value: date(membership.currentPeriodEnd) }
-        : null;
-      break;
-    case "incomplete":
-      when = { term: "First payment", value: "Waiting for confirmation" };
-      break;
-    case "none":
-      when = null;
-      break;
+  let when: { term: string; value: ReactNode; detail?: string } | null = null;
+  const charge = outcome.nextCharge;
+  if (charge) {
+    const first = charge.kind === "trial_converts";
+    const why = describeReduction(charge.creditApplied, charge.discount);
+    when = {
+      term: first ? "First payment" : "Next payment",
+      value: `${formatMoney(charge.amount)} on ${formatLongDate(charge.at)}`,
+      detail: [
+        first ? "When your free trial ends" : null,
+        why && plan ? `${formatMoney(plan.monthlyPrice)} less ${why}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  } else if (membership.status === "canceled" && membership.currentPeriodEnd) {
+    when = { term: "Membership ended", value: formatLongDate(membership.currentPeriodEnd) };
   }
 
   return (
@@ -186,6 +185,7 @@ export function MembershipFacts({ details }: { details: AccountDetails }) {
         <div>
           <dt className="type-caption text-fg-subtle">{when.term}</dt>
           <dd className="type-body text-fg">{when.value}</dd>
+          {when.detail ? <dd className="type-body-sm text-fg-muted">{when.detail}</dd> : null}
         </div>
       ) : null}
       <div>

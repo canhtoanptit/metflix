@@ -92,28 +92,39 @@ async function assignment(
 }
 
 /**
- * Until `liveAt` nobody may be assigned (assignment follows the previous status everywhere: an
- * assignment now means an instance went live early); the probes are repeated while waiting.
- * Then a short margin for clocks, and the caller expects the assignment on the first request.
+ * Until its own `liveAt` nobody may be assigned to an experiment (assignment follows the previous
+ * status everywhere: an assignment before it means an instance went live early). Each experiment
+ * is probed only until its own instant less the clock tolerance, and an answer that arrives
+ * within that tolerance of the instant counts as neither early nor late. Then the suite waits
+ * out the tolerance after the last instant, and the caller expects the assignment on the first
+ * request.
  */
 async function awaitLive(
   ctx: CheckContext,
-  liveAt: number,
-  probes: { what: string; probe: () => Promise<string | undefined> }[],
+  probes: { what: string; liveAt: number; probe: () => Promise<string | undefined> }[],
 ): Promise<void> {
   let rounds = 0;
-  while (Date.now() < liveAt) {
-    for (const { what, probe } of probes) {
+  for (;;) {
+    const open = probes.filter((item) => Date.now() < item.liveAt - LIVE_MARGIN_MS);
+    if (open.length === 0) break;
+    for (const { what, liveAt, probe } of open) {
       const early = await probe();
-      equal(early, undefined, `${what} before the start takes effect (statusChangeAt)`);
+      if (Date.now() >= liveAt - LIVE_MARGIN_MS) continue; // within the tolerance of the instant
+      equal(
+        early,
+        undefined,
+        `${what} before the start takes effect (statusChangeAt ${new Date(liveAt).toISOString()})`,
+      );
     }
     rounds += 1;
-    await ctx.sleep(Math.min(2_000, Math.max(0, liveAt - Date.now())));
+    const next = Math.min(...open.map((item) => item.liveAt - LIVE_MARGIN_MS)) - Date.now();
+    await ctx.sleep(Math.min(2_000, Math.max(0, next)));
   }
-  await ctx.sleep(LIVE_MARGIN_MS);
+  const last = Math.max(...probes.map((item) => item.liveAt));
+  await ctx.sleep(Math.max(0, last + LIVE_MARGIN_MS - Date.now()));
   if (rounds > 0) {
     ctx.note(
-      `the start took effect at statusChangeAt (${rounds} probe rounds before it: none assigned)`,
+      `the starts took effect at statusChangeAt (${rounds} probe rounds before them, each experiment probed until ${LIVE_MARGIN_MS} ms before its own instant: none assigned)`,
     );
   }
 }
@@ -138,15 +149,20 @@ export const experimentChecks: CheckDefinition[] = [
       const profileKey = `smoke.profile-${run}`;
       const deviceKey = `smoke.device-${run}`;
       // The units, ready before the experiments start, so the time before they are live is probed.
-      const viewer = await ctx.env.isolatedViewer("experiments");
+      const viewer = await ctx.env.isolatedViewer("experiments", { member: false });
       const visitor = ctx.agent("experiments-visitor");
       const firstDevice = `smk-${run}-device-0`;
       const profileExperiment = await runningExperiment(ctx, api, profileKey, "profile");
       const deviceExperiment = await runningExperiment(ctx, api, deviceKey, "device");
-      await awaitLive(ctx, Math.max(profileExperiment.liveAt, deviceExperiment.liveAt), [
-        { what: "the profile's assignment", probe: () => assignment(viewer.agent, profileKey) },
+      await awaitLive(ctx, [
+        {
+          what: "the profile's assignment",
+          liveAt: profileExperiment.liveAt,
+          probe: () => assignment(viewer.agent, profileKey),
+        },
         {
           what: "the device's assignment",
+          liveAt: deviceExperiment.liveAt,
           probe: () => assignment(visitor, deviceKey, firstDevice),
         },
       ]);
@@ -297,8 +313,8 @@ export const experimentChecks: CheckDefinition[] = [
       // A profile with no history: the model never saw it and has nothing for it, so the page
       // is the rule engine's, labelled `rules` (never `learned:` or `neighbours:`), the same
       // page another new profile gets.
-      const cold = await ctx.env.isolatedViewer("recs-cold");
-      const twin = await ctx.env.isolatedViewer("recs-cold-twin");
+      const cold = await ctx.env.isolatedViewer("recs-cold", { member: false });
+      const twin = await ctx.env.isolatedViewer("recs-cold-twin", { member: false });
       const page = await succeeds(
         () => cold.agent.api.getBrowse({ query: { view: "home" } }),
         "GET /browse (a new profile)",
@@ -333,4 +349,165 @@ export const experimentChecks: CheckDefinition[] = [
       ctx.note(`serving run ${model.run}, expires ${model.expiresAt}`);
     },
   },
+  {
+    id: "personalisation.consent",
+    area: "personalisation",
+    title:
+      "Serving follows consent and restriction: with a fresh model served, a member who turns personalisation off gets the rule engine's page (rules, no Top Picks) within 30 s and keeps it, and the model's label back within 30 s of turning it on; a demo run is never labelled learned or neighbours; a profile made kids gets rules",
+    needs: [needs.staffIssuer, needs.fakePayments],
+    timeoutMs: 300_000,
+    async run(ctx: CheckContext) {
+      const admin = await staffClient(ctx, "admin");
+      const status = await succeeds(
+        () => admin.getRecommendationStatus(),
+        "GET /system/recommendations",
+      );
+      const model = status.activeModel;
+      if (!model || Date.parse(model.expiresAt) <= Date.now()) {
+        ctx.skip(
+          `no fresh recommendation model is served (GET /system/recommendations: ${model ? `run ${model.run} expired at ${model.expiresAt}` : "activeModel null"}): serving a model needs a fresh pipeline run imported (make recs, then node apps/api/src/recs.ts import on Node, make cf-recs-import on Cloudflare), or for a demo node apps/api/src/recs.ts demo (labelled demo:…, fresh for three days)`,
+        );
+      }
+      const demo = model.run.endsWith(DEMO_RUN_SUFFIX);
+      const modelLabels = demo
+        ? [`demo:${model.run}`]
+        : [`learned:${model.run}`, `neighbours:${model.run}`];
+      const account = await ctx.env.signup("personalisation", { plan: "standard" });
+      const agent = await ctx.env.holder(account);
+      const consent = await succeeds(() => agent.api.getConsent(), "GET /privacy/consent");
+      if (consent.mode === "off") {
+        ctx.skip("the consent mode is off (WEBFLIX_CONSENT_MODE): there is no answer to withdraw");
+      }
+      const answer = (granted: boolean) =>
+        succeeds(
+          () =>
+            agent.api.updateConsent({
+              body: { purpose: "personalisation", granted, source: "settings" },
+            }),
+          `PUT /privacy/consent (personalisation ${granted ? "on" : "off"})`,
+        );
+      const seen = new Set<string>();
+      const page = async (what: string) => {
+        const current = await succeeds(
+          () => agent.api.getBrowse({ query: { view: "home" } }),
+          `GET /browse (${what})`,
+        );
+        const id = current.policy?.id ?? "(no policy)";
+        seen.add(id);
+        return {
+          id,
+          topPicks: current.rows.some((row) => row.kind === "top-picks"),
+        };
+      };
+      const shows = (what: string, wanted: (state: { id: string; topPicks: boolean }) => boolean) =>
+        ctx.eventually(
+          what,
+          async () => {
+            const current = await page(what);
+            return wanted(current)
+              ? { done: true, value: current }
+              : {
+                  done: false,
+                  observed: `${current.id}${current.topPicks ? " with Top Picks" : ""}`,
+                };
+          },
+          { timeoutMs: 30_000, intervalMs: 1_000 },
+        );
+      await answer(true);
+      // A recent play gives the model something of its own to add (the neighbours of the title).
+      const { cards } = await ctx.env.catalog();
+      const title = cards.find((card) => card.type === "movie");
+      check(title, "the catalogue has no movie");
+      const played = await succeeds(
+        () => agent.api.createPlaybackSession({ body: { titleId: title.id } }),
+        "POST /playback/sessions",
+      );
+      await succeeds(
+        () =>
+          agent.api.sendHeartbeat({
+            params: { id: played.id },
+            body: { positionSec: 300, durationSec: played.durationSec, state: "playing" },
+          }),
+        "a heartbeat five minutes in",
+      );
+      await succeeds(
+        () => agent.api.endPlaybackSession({ params: { id: played.id } }),
+        "stop playback",
+      );
+      const labelled = async (what: string) => {
+        try {
+          return await shows(what, (state) => modelLabels.includes(state.id));
+        } catch (error) {
+          if (demo) throw error;
+          // A trained model may know nothing of the title played: nothing to withdraw then.
+          ctx.skip(
+            `the served model (${model.run}) contributes nothing to a new member's page after a play (the page stays ${[...seen].join(", ")}): the withdrawal cannot be told apart from the rule engine's page`,
+          );
+        }
+      };
+      await labelled(`the page names the served model (${modelLabels.join(" or ")})`);
+
+      // Turned off: the rule engine's page at once, and it stays so.
+      await answer(false);
+      const off = await shows(
+        "the rule engine's page after turning personalisation off (rules, no Top Picks)",
+        (state) => state.id === "rules" && !state.topPicks,
+      );
+      ctx.note(`rules ${Math.round(off.elapsedMs / 1000)} s after turning personalisation off`);
+      const holdUntil = Date.now() + 35_000;
+      while (Date.now() < holdUntil) {
+        await ctx.sleep(5_000);
+        const current = await page("personalisation off");
+        check(
+          current.id === "rules" && !current.topPicks,
+          "the model came back while personalisation is off",
+          {
+            expected: "rules, no Top Picks",
+            observed: `${current.id}, Top Picks ${current.topPicks}`,
+          },
+        );
+      }
+      // Turned on again: the model's label is back.
+      await answer(true);
+      await shows("the served model's label after turning personalisation on again", (state) =>
+        modelLabels.includes(state.id),
+      );
+
+      // A demo run is not a trained model: no page says learned or neighbours.
+      if (demo) {
+        const demoViewer = await ctx.env.demo();
+        const viewer = demoViewer.available ? demoViewer.viewer : undefined;
+        if (viewer) {
+          const demoPage = await succeeds(
+            () => viewer.agent.api.getBrowse({ query: { view: "home" } }),
+            "GET /browse (the demo account)",
+          );
+          seen.add(demoPage.policy?.id ?? "(no policy)");
+        }
+        const misleading = [...seen].filter((id) => /^(learned|neighbours):/.test(id));
+        check(misleading.length === 0, "a demo run is labelled as a trained model", {
+          expected: `demo:${model.run} (or rules)`,
+          observed: misleading.join(", "),
+        });
+      }
+
+      // A profile made kids: the rule engine's page, whatever the model holds.
+      const session = await succeeds(() => agent.api.getSession(), "GET /session");
+      const profileId = session.authenticated ? session.activeProfile?.id : undefined;
+      check(profileId, "no active profile");
+      await succeeds(
+        () => agent.api.updateProfile({ params: { id: profileId }, body: { isKids: true } }),
+        "PATCH /profiles/:id {isKids: true}",
+      );
+      const kids = await page("the profile made kids");
+      equal(kids.id, "rules", "the policy of a profile made kids");
+      equal(kids.topPicks, false, "Top Picks on a profile made kids");
+      ctx.note(
+        `model ${model.run}${demo ? " (a demo run)" : ""}; labels seen: ${[...seen].join(", ")}`,
+      );
+    },
+  },
 ];
+
+/** The run id suffix of a demo recommendation run (`node apps/api/src/recs.ts demo`). */
+const DEMO_RUN_SUFFIX = "-de00de00";

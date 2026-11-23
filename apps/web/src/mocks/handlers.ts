@@ -161,10 +161,14 @@ function standingOfSession(state: MockState) {
   return standingOf(state.profiles.find((candidate) => candidate.id === state.activeProfileId));
 }
 
-/** Account management (`auth: "account-holder"`): an active profile without parental controls. */
+/**
+ * Account management (`auth: "account-holder"`): an active profile without parental controls,
+ * or, at the gate, an account with no profiles yet (sign-up not finished).
+ */
 function requireAccountHolder(state: MockState): void {
   requireAccount(state);
   const standing = standingOfSession(state);
+  if (standing === "gate" && state.profiles.length === 0) return;
   if (standing === "gate") throw new MockProblem("profile_required");
   if (standing !== "unrestricted") throw new MockProblem("unrestricted_profile_required");
 }
@@ -877,10 +881,10 @@ export const handlers: MockHandlers = {
     identity.hasPassword = true;
     identity.emailVerified = true;
     identity.elevatedUntil = null;
-    // Every device is signed out, this one too.
-    state.signedIn = false;
+    // Every other device is signed out; this one is signed in, at the profile gate.
+    state.signedIn = true;
     state.activeProfileId = null;
-    persist(state, null);
+    return persist(state, authenticated(state));
   },
 
   getBrowse: ({ query }, state) => {

@@ -81,6 +81,16 @@ export interface PaymentProvider {
    * paused or never started.
    */
   previewNextInvoice(subscriptionId: string): Promise<NextInvoicePreview | null>;
+  /**
+   * The first invoice a new subscription on this price would get now, before any card: the
+   * price, less the promotion's discount and the customer's credit (UX review 2.2: a restart says
+   * what it charges and why before the provider's form). Changes nothing.
+   */
+  previewFirstInvoice(input: {
+    customerId: string;
+    priceLookupKey: string;
+    promotionId: string | null;
+  }): Promise<AmountPreview>;
   /** Invoiced immediately (`always_invoice`); pass the preview's `prorationDate`. */
   changePlan(
     input: { subscriptionId: string; priceLookupKey: string; prorationDate: number },
@@ -223,6 +233,10 @@ export interface ProviderInvoice {
   nextPaymentAttempt: number | null;
   hostedUrl: string | null;
   pdfUrl: string | null;
+  /** The discount taken off this invoice (0 when none). */
+  discountMinor: number;
+  /** The customer's credit this invoice used (0 when none; a negative total adds credit). */
+  creditAppliedMinor: number;
 }
 
 export interface ProviderRefund {
@@ -233,22 +247,43 @@ export interface ProviderRefund {
   status: "pending" | "succeeded" | "failed";
 }
 
-export interface NextInvoicePreview {
-  /** Provider time (epoch ms). */
-  at: number;
+/**
+ * An amount with why it is below its price: `amountMinor + creditAppliedMinor + discountMinor`
+ * is the price before the customer's credit and discounts.
+ */
+export interface AmountPreview {
   amountMinor: number;
   currency: string;
+  /** The customer's credit it uses (for a plan change: also the unused time of the old plan). */
+  creditAppliedMinor: number;
+  discountMinor: number;
+}
+
+export interface NextInvoicePreview extends AmountPreview {
+  /** Provider time (epoch ms). */
+  at: number;
 }
 
 export interface ProrationPreview {
   currency: string;
   /** Charged when applied (0 when the change is a credit). */
   amountDueMinor: number;
+  /**
+   * Why `amountDueMinor` is below the new plan's remaining time: the old plan's unused time and
+   * the customer's credit (`creditAppliedMinor`), and a discount (`discountMinor`).
+   */
+  creditAppliedMinor: number;
+  discountMinor: number;
   /** Credited to the customer when the change is a downgrade (0 otherwise). */
   creditMinor: number;
   lines: { description: string; amountMinor: number }[];
   prorationDate: number;
-  nextRenewal: { at: number; amountMinor: number } | null;
+  nextRenewal: {
+    at: number;
+    amountMinor: number;
+    creditAppliedMinor: number;
+    discountMinor: number;
+  } | null;
 }
 
 export type PromotionFailureReason = (typeof PROMOTION_FAILURE_REASONS)[number];

@@ -242,6 +242,19 @@ describe("recommendation import answers", () => {
     expect(
       importOutcomeText({ ...status, outcome: "invalid", run: "r9", detail: "bad checksum" }),
     ).toContain("bad checksum");
+    // The served run published again with other content (an erasure): applied in place.
+    const served = {
+      activeModel: {
+        run: "r9",
+        asOf: "2026-11-22T00:00:00.000Z",
+        expiresAt: "2026-11-25T00:00:00.000Z",
+        importedAt: "2026-11-22T04:10:00.000Z",
+      },
+      lastImport: null,
+    };
+    expect(importOutcomeText({ ...served, outcome: "queued", run: "r9", detail: null })).toMatch(
+      /published again with corrected content/,
+    );
   });
 });
 

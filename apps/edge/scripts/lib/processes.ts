@@ -12,6 +12,22 @@ export interface DevServerRecord {
   cwd: string;
   state: string;
   startedAt: string;
+  /** The `--var NAME:VALUE` overrides it passed to `wrangler dev` (the jobs need the same). */
+  vars?: Record<string, string>;
+}
+
+/** `--var NAME:VALUE` (or `--var=NAME:VALUE`) among wrangler's flags, as wrangler reads them. */
+export function varOverrides(flags: readonly string[]): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (let index = 0; index < flags.length; index += 1) {
+    const flag = flags[index] ?? "";
+    const value =
+      flag === "--var" ? flags[++index] : flag.startsWith("--var=") ? flag.slice(6) : null;
+    if (!value) continue;
+    const separator = value.indexOf(":");
+    if (separator > 0) vars[value.slice(0, separator)] = value.slice(separator + 1);
+  }
+  return vars;
 }
 
 function run(command: string, args: string[]): string | null {

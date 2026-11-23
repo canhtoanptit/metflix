@@ -12,10 +12,11 @@
  */
 import { Link, useRouterState } from "@tanstack/react-router";
 import type { ConsentState } from "@webflix/contracts";
-import { Button, CloseIcon, cx, IconButton, Switch, toast } from "@webflix/ui";
-import { type RefObject, useId, useLayoutEffect, useRef, useState } from "react";
+import { CloseIcon, cx, IconButton, Switch, toast } from "@webflix/ui";
+import { type RefObject, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { BusyButton, focusMainContent } from "./BusyButton.tsx";
 import { useAnswerConsent } from "./consent.ts";
-import { PURPOSE_COPY, PURPOSE_ORDER, WHAT_IS_RECORDED } from "./copy.ts";
+import { KEPT_AFTER_REFUSAL, PURPOSE_COPY, PURPOSE_ORDER, WHAT_IS_RECORDED } from "./copy.ts";
 import type { PromptKind } from "./PrivacyShell.tsx";
 import { browserGpc, effectivePurposes, type Purposes } from "./policy.ts";
 
@@ -41,18 +42,38 @@ export function ConsentPrompt({
   );
   const lift = useBottomBarLift(panelRef);
   useReservedSpace(panelRef, lift);
+  const chooseRef = useRef<HTMLButtonElement>(null);
+  const choicesRef = useRef<HTMLFieldSetElement>(null);
+  // Focus follows what the member opened or closed (UX review 2.7): the first switch when the
+  // choices open, the button that opened them when they close.
+  const [moveFocus, setMoveFocus] = useState<"choices" | "choose" | null>(null);
+  useEffect(() => {
+    if (moveFocus === "choices")
+      choicesRef.current?.querySelector<HTMLElement>('[role="switch"]')?.focus();
+    if (moveFocus === "choose") chooseRef.current?.focus();
+    if (moveFocus) setMoveFocus(null);
+  }, [moveFocus]);
+
+  /** The prompt is going: focus moves to the page it stood in front of. */
+  const finish = (reason: "answered" | "later" | "acknowledged") => {
+    onDone(reason);
+    focusMainContent();
+  };
 
   const save = async (answers: Purposes) => {
+    if (pending !== null) return;
     try {
       await answer(answers, "banner");
     } catch {
       return; // shown below; the prompt stays
     }
     const any = answers.analytics || answers.personalisation;
-    toast.success(any ? "Thanks, your choice is saved" : "Got it, nothing is recorded", {
-      description: "You can change this any time in Account › Privacy.",
+    toast.success(any ? "Thanks, your choice is saved" : "Your choice is saved", {
+      description: any
+        ? "You can change this any time in Account › Privacy."
+        : `${KEPT_AFTER_REFUSAL} You can change this any time in Account › Privacy.`,
     });
-    onDone("answered");
+    finish("answered");
   };
 
   const ask = kind === "ask";
@@ -84,8 +105,10 @@ export function ConsentPrompt({
               variant="ghost"
               size="sm"
               className="absolute end-2 top-2 sm:end-3 sm:top-3"
-              disabled={busy}
-              onClick={() => onDone(ask ? "later" : "acknowledged")}
+              aria-disabled={busy || undefined}
+              onClick={() => {
+                if (!busy) finish(ask ? "later" : "acknowledged");
+              }}
             />
             <p className="max-w-prose type-body-sm text-fg-muted">
               {ask ? "With your permission, Webflix records " : "Webflix records "}
@@ -103,62 +126,67 @@ export function ConsentPrompt({
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 md:shrink-0 md:flex-nowrap">
               {ask ? (
                 <>
-                  <Button
+                  <BusyButton
                     variant="primary"
                     className={equal}
-                    loading={busy && pending?.analytics === true}
-                    disabled={busy}
+                    busy={busy}
                     onClick={() => save({ analytics: true, personalisation: true })}
                   >
                     Allow
-                  </Button>
-                  <Button
+                  </BusyButton>
+                  <BusyButton
                     variant="primary"
                     className={equal}
-                    loading={busy && pending?.analytics === false}
-                    disabled={busy}
+                    busy={busy}
                     onClick={() => save({ analytics: false, personalisation: false })}
                   >
                     Don't allow
-                  </Button>
+                  </BusyButton>
                 </>
               ) : (
                 <>
-                  <Button
+                  <BusyButton
                     variant="primary"
                     className={equal}
-                    disabled={busy}
-                    onClick={() => onDone("acknowledged")}
+                    busy={busy}
+                    onClick={() => finish("acknowledged")}
                   >
                     Keep it on
-                  </Button>
-                  <Button
+                  </BusyButton>
+                  <BusyButton
                     variant="primary"
                     className={equal}
-                    loading={busy}
+                    busy={busy}
                     onClick={() => save({ analytics: false, personalisation: false })}
                   >
                     Turn it off
-                  </Button>
+                  </BusyButton>
                 </>
               )}
-              <Button
+              <BusyButton
+                ref={chooseRef}
                 variant="link"
                 size="sm"
                 aria-expanded={false}
-                disabled={busy}
-                onClick={() => setChoosing(true)}
-                className="w-full md:w-auto"
+                busy={busy}
+                onClick={() => {
+                  setChoosing(true);
+                  setMoveFocus("choices");
+                }}
+                className="min-h-6 w-full md:w-auto"
               >
                 Choose for each use
-              </Button>
+              </BusyButton>
             </div>
           )}
         </div>
 
         {choosing ? (
           <>
-            <fieldset className="grid gap-4 rounded-lg bg-surface-1 p-4 md:grid-cols-2 md:gap-8">
+            <fieldset
+              ref={choicesRef}
+              className="grid gap-4 rounded-lg bg-surface-1 p-4 md:grid-cols-2 md:gap-8"
+            >
               <legend className="sr-only">Choose for each use</legend>
               {PURPOSE_ORDER.map((purpose) => (
                 <Switch
@@ -166,26 +194,29 @@ export function ConsentPrompt({
                   label={PURPOSE_COPY[purpose].label}
                   description={PURPOSE_COPY[purpose].description}
                   checked={choices[purpose]}
-                  disabled={busy}
-                  onCheckedChange={(checked) =>
-                    setChoices((current) => ({ ...current, [purpose]: checked }))
-                  }
+                  onCheckedChange={(checked) => {
+                    if (!busy) setChoices((current) => ({ ...current, [purpose]: checked }));
+                  }}
                 />
               ))}
             </fieldset>
             <div className="flex flex-wrap items-center gap-3">
-              <Button variant="primary" loading={busy} onClick={() => save(choices)}>
+              <BusyButton variant="primary" busy={busy} onClick={() => save(choices)}>
                 Save choices
-              </Button>
-              <Button
+              </BusyButton>
+              <BusyButton
                 variant="link"
                 size="sm"
                 aria-expanded={true}
-                disabled={busy}
-                onClick={() => setChoosing(false)}
+                busy={busy}
+                className="min-h-6"
+                onClick={() => {
+                  setChoosing(false);
+                  setMoveFocus("choose");
+                }}
               >
                 Back
-              </Button>
+              </BusyButton>
             </div>
           </>
         ) : null}

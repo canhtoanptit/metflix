@@ -99,6 +99,28 @@ describe("SPA security headers: Kubernetes (Helm) and Cloudflare (_headers) agre
     expect(stripe).toMatch(/(?:^|; )script-src 'self' https:\/\/js\.stripe\.com /);
   });
 
+  it("gives the staff console its own policy: this origin and its staff issuer, nothing else", async () => {
+    const block = (file: string, rule: string) =>
+      file
+        .split(`\n${rule}\n`)[1]
+        ?.split("\n\n")[0]
+        ?.split("\n")
+        .map((line) => line.trim()) ?? [];
+    // After the member app's `/*` rule, which a detach can only undo when it comes first.
+    const local = await headersFile("local");
+    expect(local.indexOf("\n/admin/*\n")).toBeGreaterThan(local.indexOf("\n/*\n"));
+    const console_ = block(local, "/admin/*");
+    expect(console_[0]).toBe("! Content-Security-Policy");
+    expect(console_[1]).toContain("connect-src 'self';");
+    // Production runs Stripe for the member app; none of it reaches the console.
+    const production = block(
+      await headersFile("production", "stripe", "https://sso.example.com/realms/webflix"),
+      "/admin/*",
+    );
+    expect(production[1]).toContain("connect-src 'self' https://sso.example.com;");
+    expect(production.join(" ")).not.toMatch(/stripe|googleapis|https:;|https: /);
+  });
+
   it("starts a missing directive from default-src and never duplicates a source", () => {
     expect(
       addCspSources("default-src 'self'; img-src 'self' data:", {

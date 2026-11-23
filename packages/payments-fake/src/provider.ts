@@ -1,4 +1,5 @@
 import {
+  type AmountPreview,
   type CatalogueEntry,
   type CatalogueSyncResult,
   type Clock,
@@ -95,6 +96,14 @@ export interface FakePaymentProviderOptions {
    * one): never expiring, never exhausted, valid for every plan. Stored on first redemption.
    */
   promotions?: readonly FakePromotionSeed[];
+  /**
+   * Queue same-customer operations and webhook pumps on in-memory promises (default true). It
+   * only saves pointless compare-and-set retries; correctness never depends on it. False on
+   * Workers, where one request may not await a promise another request settles
+   * (docs/CLOUDFLARE.md §2): concurrent writers then retry on the compare-and-set, and one that
+   * keeps losing gets `unavailable`, as from a real provider.
+   */
+  inProcessQueues?: boolean;
 }
 
 /** A standing promo code: a percentage (1-100) or a fixed amount in minor units. */
@@ -173,6 +182,9 @@ interface InvoiceData {
   secret: string | null;
   pendingCard: FakeCardChoice | null;
   lines: { description: string; amountMinor: number }[];
+  /** The promotion's discount, and the customer's credit used (absent on older documents). */
+  discountMinor?: number;
+  creditAppliedMinor?: number;
 }
 
 interface RefundData extends ProviderRefund {
@@ -319,7 +331,7 @@ class WorkingSet {
  *   restarts, and safe to share: every operation reads its state, computes, then commits with a
  *   compare-and-set on what it read, starting over when another process or isolate committed
  *   first (finding K2). Operations on one customer are also queued in process, which only saves
- *   pointless retries.
+ *   pointless retries (not on Workers: `inProcessQueues: false`).
  * - **Its own payment form** (form.ts, `/_pay/*`): card data in local modes goes to the fake,
  *   never to the API.
  */
@@ -334,6 +346,7 @@ export class FakePaymentProvider implements PaymentProvider {
   private readonly defaultDelivery: DeliveryPolicy;
   private readonly seededPromotions: ReadonlyMap<string, PromotionData>;
   private readonly locks = new Map<string, Promise<void>>();
+  private readonly inProcessQueues: boolean;
   private receiver: WebhookReceiver | undefined;
   private pumping: Promise<unknown> | undefined;
   private sequence = 0;
@@ -347,6 +360,7 @@ export class FakePaymentProvider implements PaymentProvider {
     this.retryDays = options.retryDays ?? [3, 5, 8];
     this.retriesExhausted = options.retriesExhausted ?? "cancel";
     this.defaultDelivery = options.delivery ?? { mode: "orderly" };
+    this.inProcessQueues = options.inProcessQueues ?? true;
     this.seededPromotions = new Map(
       (options.promotions ?? []).map((seed) => {
         const code = seed.code.toUpperCase();
@@ -397,31 +411,59 @@ export class FakePaymentProvider implements PaymentProvider {
     });
   }
 
+  /**
+   * Like Stripe's `DELETE /v1/customers/:id` (no idempotency key there: deleting is idempotent by
+   * itself, a gone customer is fine): its subscriptions end, its cards and card setups go, and
+   * only what a provider keeps as the financial record stays, the invoices and refunds (without
+   * their client secrets) and the subscriptions they were for, under a customer stub that names
+   * no one (privacy review M5). Its event log, test clock and the idempotency records of its
+   * requests (one held its email; the keys held the Webflix account id) are forgotten too.
+   */
   async deleteCustomer(input: { customerId: string }, call: ProviderCall): Promise<void> {
-    return this.idempotent("deleteCustomer", input, call, () =>
-      this.mutate(input.customerId, (set) => {
-        const customer = set.get<CustomerData & { deleted?: boolean }>(
-          "customer",
-          input.customerId,
-        );
-        if (!customer || customer.deleted) return undefined;
+    const owner = await this.mutate(input.customerId, (set) => {
+      const customer = set.get<CustomerData & { deleted?: boolean }>("customer", input.customerId);
+      if (!customer) return null;
+      const accountId = customer.accountId;
+      if (!customer.deleted) {
         for (const subscription of set.all<SubscriptionData>("subscription")) {
           if (!["canceled", "incomplete_expired"].includes(subscription.status)) {
             this.end(set, subscription, call);
           }
         }
-        // The cards go; the invoices stay (billing records are kept).
-        for (const method of set.all<MethodData>("payment_method")) {
-          set.put("payment_method", method.id, null, { ...method, customerId: "deleted" });
-        }
-        customer.deleted = true;
-        customer.defaultPaymentMethodId = null;
-        customer.email = "";
-        set.touch("customer", customer.id);
         this.emit(set, "customer.deleted", { customerId: customer.id }, call);
-        return undefined;
-      }),
-    );
+      }
+      for (const subscription of set.all<SubscriptionData>("subscription")) {
+        if (subscription.defaultPaymentMethodId !== null) {
+          subscription.defaultPaymentMethodId = null;
+          set.touch("subscription", subscription.id);
+        }
+      }
+      for (const invoice of set.all<InvoiceData>("invoice")) {
+        if (invoice.secret !== null || invoice.pendingCard !== null) {
+          invoice.secret = null;
+          invoice.pendingCard = null;
+          set.touch("invoice", invoice.id);
+        }
+      }
+      if (!customer.deleted || customer.accountId !== "" || customer.email !== "") {
+        customer.deleted = true;
+        customer.accountId = "";
+        customer.email = "";
+        customer.defaultPaymentMethodId = null;
+        customer.balanceMinor = 0;
+        set.touch("customer", customer.id);
+      }
+      return accountId;
+    });
+    if (owner === null) return;
+    const traces = await this.store.byCustomer(input.customerId, [
+      "payment_method",
+      "setup",
+      "event",
+      "delivery",
+    ]);
+    await this.store.delete(traces.map((document) => ({ kind: document.kind, id: document.id })));
+    await this.store.forget(input.customerId, [input.customerId, owner]);
   }
 
   async createSetup(input: { customerId: string }, call: ProviderCall): Promise<ProviderSetup> {
@@ -542,6 +584,7 @@ export class FakePaymentProvider implements PaymentProvider {
           lines: [
             { description: `${price.productName} (${price.lookupKey})`, amountMinor: amount },
           ],
+          discountMinor: trial ? 0 : price.amountMinor - amount,
         });
         subscription.latestInvoiceId = invoice.id;
         set.put("subscription", id, customer.id, subscription);
@@ -591,14 +634,40 @@ export class FakePaymentProvider implements PaymentProvider {
       if (!["trialing", "active", "past_due"].includes(subscription.status)) return null;
       const price = this.activePrice(set, subscription.priceLookupKey);
       const customer = set.require<CustomerData>("customer", subscription.customerId, "customer");
+      // The full price (promotions apply to the first invoice only), less any credit.
+      const credit = Math.min(price.amountMinor, Math.max(0, -customer.balanceMinor));
       return {
         at:
           subscription.status === "trialing"
             ? (subscription.trialEnd ?? subscription.currentPeriodEnd)
             : subscription.currentPeriodEnd,
-        // The full price (promotions apply to the first invoice only), less any credit.
-        amountMinor: Math.max(0, price.amountMinor + Math.min(0, customer.balanceMinor)),
+        amountMinor: price.amountMinor - credit,
         currency: price.currency,
+        creditAppliedMinor: credit,
+        discountMinor: 0,
+      };
+    });
+  }
+
+  /** What `createSubscription` would invoice first, without a trial: price, code, credit. */
+  async previewFirstInvoice(input: {
+    customerId: string;
+    priceLookupKey: string;
+    promotionId: string | null;
+  }): Promise<AmountPreview> {
+    return this.mutate(input.customerId, (set) => {
+      const customer = set.require<CustomerData>("customer", input.customerId, "customer");
+      const price = this.activePrice(set, input.priceLookupKey);
+      const promotion = input.promotionId
+        ? (set.all<PromotionData>("promotion").find((p) => p.id === input.promotionId) ?? null)
+        : null;
+      const total = this.discounted(price.amountMinor, promotion);
+      const credit = Math.min(total, Math.max(0, -customer.balanceMinor));
+      return {
+        amountMinor: total - credit,
+        currency: price.currency,
+        creditAppliedMinor: credit,
+        discountMinor: price.amountMinor - total,
       };
     });
   }
@@ -643,6 +712,8 @@ export class FakePaymentProvider implements PaymentProvider {
         customer.balanceMinor = preview.balanceAfterMinor;
         set.touch("customer", customer.id);
         invoice.amountDueMinor = preview.amountDueMinor;
+        // The credit the customer had, used by the charge (the unused time is a line of its own).
+        invoice.creditAppliedMinor = Math.max(0, total - preview.amountDueMinor);
         this.markPaid(set, invoice, call);
         subscription.priceLookupKey = input.priceLookupKey;
         subscription.latestInvoiceId = invoice.id;
@@ -936,6 +1007,7 @@ export class FakePaymentProvider implements PaymentProvider {
    * delivery the receiver refuses stays pending and is retried on the next pump.
    */
   async deliverPending(): Promise<{ delivered: number; pending: number }> {
+    if (!this.inProcessQueues) return this.pump();
     // One pump at a time in this process, in call order: orderly delivery stays in order.
     const run = (this.pumping ?? Promise.resolve()).then(() => this.pump());
     const settled = run.then(
@@ -1458,6 +1530,7 @@ export class FakePaymentProvider implements PaymentProvider {
   }
 
   private async withLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    if (!this.inProcessQueues) return run();
     const previous = this.locks.get(key) ?? Promise.resolve();
     let release = () => {};
     const current = new Promise<void>((resolve) => {
@@ -1753,19 +1826,26 @@ export class FakePaymentProvider implements PaymentProvider {
       );
     }
     const total = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+    const charged = lines.reduce((sum, line) => sum + Math.max(0, line.amountMinor), 0);
     // The customer's credit pays first; a negative total becomes credit.
     const combined = total + customer.balanceMinor;
     const amountDue = Math.max(0, combined);
     const balanceAfter = Math.min(0, combined);
+    const renewal = Math.max(0, next.amountMinor + balanceAfter);
     return {
       currency: next.currency,
       amountDueMinor: amountDue,
+      // The old plan's unused time and the credit the customer had: what `charged` is short of.
+      creditAppliedMinor: Math.max(0, charged - amountDue),
+      discountMinor: 0,
       creditMinor: Math.max(0, -total),
       lines,
       prorationDate: input.prorationDate,
       nextRenewal: {
         at: subscription.currentPeriodEnd,
-        amountMinor: Math.max(0, next.amountMinor + balanceAfter),
+        amountMinor: renewal,
+        creditAppliedMinor: next.amountMinor - renewal,
+        discountMinor: 0,
       },
       balanceAfterMinor: balanceAfter,
     };
@@ -1816,13 +1896,15 @@ export class FakePaymentProvider implements PaymentProvider {
       periodStart: number | null;
       periodEnd: number | null;
       lines: { description: string; amountMinor: number }[];
+      discountMinor?: number;
     },
   ): InvoiceData {
     const customer = set.require<CustomerData>("customer", subscription.customerId, "customer");
     let due = Math.max(0, input.totalMinor);
+    let used = 0;
     if (input.billingReason !== "subscription_update" && due > 0 && customer.balanceMinor < 0) {
       // Credit from a downgrade pays (part of) the next invoice.
-      const used = Math.min(due, -customer.balanceMinor);
+      used = Math.min(due, -customer.balanceMinor);
       customer.balanceMinor += used;
       due -= used;
       set.touch("customer", customer.id);
@@ -1849,6 +1931,8 @@ export class FakePaymentProvider implements PaymentProvider {
       secret: null,
       pendingCard: null,
       lines: input.lines,
+      discountMinor: input.discountMinor ?? 0,
+      creditAppliedMinor: used,
     };
     set.put("invoice", invoice.id, customer.id, invoice);
     return invoice;
@@ -2008,6 +2092,8 @@ function publicInvoice(invoice: InvoiceData): ProviderInvoice {
     nextPaymentAttempt: invoice.nextPaymentAttempt,
     hostedUrl: null,
     pdfUrl: null,
+    discountMinor: invoice.discountMinor ?? 0,
+    creditAppliedMinor: invoice.creditAppliedMinor ?? 0,
   };
 }
 

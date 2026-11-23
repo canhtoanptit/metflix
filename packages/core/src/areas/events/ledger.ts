@@ -1,4 +1,5 @@
 import type { ConsentState } from "@webflix/contracts";
+import { serializeError } from "../../ports/logger.ts";
 import type { ServiceDependencies } from "../../services/context.ts";
 import type { ServerEventInput } from "../module.ts";
 import {
@@ -9,16 +10,26 @@ import {
 } from "./consent.ts";
 import type { ConsentPurposeName, ConsentRecord, ConsentSourceName } from "./repository.ts";
 
+/** What personalisation is told after an answer about its purpose (`AreaSeams`). */
+export interface PersonalisationConsentChange {
+  accountId: string;
+  granted: boolean;
+  at: number;
+}
+
 /**
  * Consent per account (§6.3): every answer is kept and the latest stamp wins; each recorded
  * answer emits a `consent.change` server event, so a member who withdraws and never comes back
- * still leaves the training data (the pipeline uses the account's latest stamp).
+ * still leaves the training data (the pipeline uses the account's latest stamp). An answer about
+ * personalisation also tells the personalisation area (`personalisationConsentChanged`), which
+ * stops serving learned lists from a withdrawal on.
  */
 export function createConsentLedger(
   deps: ServiceDependencies,
   emit: (event: ServerEventInput) => Promise<void>,
+  personalisationChanged: (change: PersonalisationConsentChange) => Promise<void> = async () => {},
 ) {
-  const { repos, clock, ids, config } = deps;
+  const { repos, clock, ids, config, logger } = deps;
   const mode = () => config.events.consentMode;
 
   async function append(
@@ -42,6 +53,16 @@ export function createConsentLedger(
       accountId,
       profileId: null,
     });
+    if (purpose === "personalisation") {
+      // Never fails the answer: it is recorded, and serving reads it again on the next change.
+      await personalisationChanged({ accountId, granted, at: record.createdAt }).catch(
+        (error: unknown) => {
+          logger.error("events.personalisation_consent_not_told", {
+            error: serializeError(error),
+          });
+        },
+      );
+    }
     return record;
   }
 

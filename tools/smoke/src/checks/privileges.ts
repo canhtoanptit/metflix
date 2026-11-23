@@ -24,7 +24,7 @@ interface Household {
 }
 
 async function household(env: Environment, tag: string): Promise<Household> {
-  const account = await env.signup(tag, { plan: "standard" });
+  const account = await env.bareSignup(tag);
   const parent = await env.createProfile(account.agent, { name: "Parent" });
   const kids = await env.createProfile(account.agent, { name: "Kid", isKids: true });
   const locked = await lockedProfile(env, account, "Private");
@@ -182,7 +182,7 @@ export const privilegeChecks: CheckDefinition[] = [
     title:
       "Account management needs an active profile without parental controls: refused at the gate and from a 13+ profile",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("priv-holder", { plan: "standard" });
+      const account = await ctx.env.bareSignup("priv-holder");
       const teen = await ctx.env.createProfile(account.agent, {
         name: "Teen",
         maturityCeiling: "13+",
@@ -211,12 +211,101 @@ export const privilegeChecks: CheckDefinition[] = [
     },
   },
   {
+    id: "privileges.no-profile",
+    area: "profiles",
+    title:
+      "An account with no profile is its own account holder at the gate: its account, devices, identities and privacy requests; a change needs the password, an export or a deletion a fresh proof; its first profile (a kids one included) ends that",
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const account = await env.bareSignup("no-profile");
+      const agent = account.agent;
+      const details = await succeeds(() => agent.api.getAccount(), "GET /account (no profile)");
+      equal(details.account.email, account.email, "GET /account: the account's email");
+      const sessions = await succeeds(
+        () => agent.api.listDevices(),
+        "GET /account/sessions (no profile)",
+      );
+      check(
+        sessions.items.some((item) => item.current),
+        "GET /account/sessions lacks the current device",
+        { observed: JSON.stringify(sessions.items).slice(0, 300) },
+      );
+      const identities = await succeeds(
+        () => agent.api.listIdentities(),
+        "GET /account/identities (no profile)",
+      );
+      equal(identities.hasPassword, true, "GET /account/identities: hasPassword");
+      const requests = await succeeds(
+        () => agent.api.listPrivacyRequests(),
+        "GET /privacy/requests (no profile)",
+      );
+      equal(requests.items.length, 0, "GET /privacy/requests: requests of a new account");
+
+      // Each route's own proof still applies.
+      await rejects(
+        () => agent.api.updateAccount({ body: { email: env.email("no-profile-moved") } }),
+        "password_required",
+        "PATCH /account {email} without the password",
+      );
+      equal(
+        (await succeeds(() => agent.api.getAccount(), "GET /account")).account.email,
+        account.email,
+        "the address after the refused change",
+      );
+      await rejects(
+        () => agent.api.requestDataExport(),
+        "reauthentication_required",
+        "POST /privacy/export without a fresh proof",
+      );
+      await rejects(
+        () => agent.api.requestAccountDeletion(),
+        "reauthentication_required",
+        "POST /account/deletion without a fresh proof",
+      );
+      await succeeds(
+        () => agent.api.elevate({ body: { password: account.password } }),
+        "POST /session/elevation",
+      );
+      await succeeds(() => agent.api.requestDataExport(), "POST /privacy/export with the proof");
+      const deletion = await succeeds(
+        () => agent.api.requestAccountDeletion(),
+        "POST /account/deletion with the proof",
+      );
+      await succeeds(() => agent.api.cancelAccountDeletion(), "DELETE /account/deletion (keep)");
+      equal(deletion.status, "scheduled", "the deletion's status");
+
+      // The first profile, a kids one, ends it: the gate asks for a profile again.
+      const kids = await env.createProfile(agent, { name: "Kid", isKids: true });
+      await rejects(
+        () => agent.api.getAccount(),
+        "profile_required",
+        "GET /account at the gate once a profile exists",
+      );
+      await rejects(
+        () => agent.api.listDevices(),
+        "profile_required",
+        "GET /account/sessions at the gate once a profile exists",
+      );
+      await env.selectProfile(agent, kids.id);
+      await rejects(
+        () => agent.api.getAccount(),
+        "unrestricted_profile_required",
+        "GET /account from the kids profile",
+      );
+      await rejects(
+        () => agent.api.listPrivacyRequests(),
+        "unrestricted_profile_required",
+        "GET /privacy/requests from the kids profile",
+      );
+    },
+  },
+  {
     id: "privileges.pin-locks-other-devices",
     area: "profiles",
     title:
       "Setting a PIN sends every other device on that profile back to the gate; devices on other profiles keep going",
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("priv-unbind", { plan: "standard" });
+      const account = await ctx.env.bareSignup("priv-unbind");
       const holder = await ctx.env.holder(account);
       const shared = await ctx.env.createProfile(holder, { name: "Shared" });
       const tablet = await ctx.env.login(account, "priv-unbind-tablet");
@@ -251,7 +340,7 @@ export const privilegeChecks: CheckDefinition[] = [
       "Password checks after sign-in (PATCH /profiles) are limited per account and share the PIN budget",
     timeoutMs: 240_000,
     async run(ctx: CheckContext) {
-      const account = await ctx.env.signup("priv-oracle", { plan: "standard" });
+      const account = await ctx.env.bareSignup("priv-oracle");
       const kids = await ctx.env.createProfile(account.agent, { name: "Kid", isKids: true });
       const locked = await lockedProfile(ctx.env, account, "Locked");
       const agent = ctx.agent("priv-oracle", { retryOn429: false });

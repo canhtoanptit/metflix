@@ -63,9 +63,10 @@ describe("the words for an attempt that came back signed out", () => {
       }
     }
     expect(outcomeCopy("signed-in", "Google", "signin")).toBeNull();
-    expect(outcomeCopy("link-required", "Apple", "signin")?.body).toContain(
-      "link Apple in Account › Security",
-    );
+    const linkRequired = outcomeCopy("link-required", "Apple", "signin");
+    expect(linkRequired?.body).toContain("Apple can't be added to it automatically");
+    expect(linkRequired?.body).toContain("you'll be offered to add Apple right after");
+    expect(linkRequired?.more).toContain("Reset the password");
   });
 
   it("return paths stay same-origin, and an unfinished sign-up resumes the funnel", () => {
@@ -96,7 +97,7 @@ describe("the sign-in landing", () => {
 
   it("link-required asks the member to sign in first, naming the provider, not the address", async () => {
     renderIdentity("/login?oidc=link-required&provider=apple", "anonymous");
-    const panel = (await screen.findByText("You already have a Webflix account")).closest(
+    const panel = (await screen.findByText("An account already uses this address")).closest(
       "[role=status]",
     ) as HTMLElement;
     expect(panel).toHaveTextContent("your Apple account");
@@ -222,9 +223,75 @@ describe("emailed links", () => {
         },
       }),
     });
+    // Opened signed out: verified, with no promise about providers (security review H1).
+    expect(
+      await screen.findByRole("heading", { name: "The email address is verified" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/sign in and add them in Account › Security/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Reset its password" })).toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("opened in its own account's session, it says Google or Apple can sign in too", async () => {
+    renderIdentity(`/verify-email#token=${"c".repeat(43)}`, "account", {
+      identity: { emailVerified: false },
+    });
     expect(
       await screen.findByRole("heading", { name: "Your email is verified" }),
     ).toBeInTheDocument();
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/you can now sign in with it as well/)).toBeInTheDocument();
+  });
+
+  it("opened in another, already verified account's session, it says so", async () => {
+    renderIdentity(`/verify-email#token=${"d".repeat(43)}`, "account", {
+      identity: { emailVerified: true },
+    });
+    expect(
+      await screen.findByRole("heading", { name: "That email address is verified" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/different Webflix account/)).toBeInTheDocument();
+    expect(screen.queryByText(/you can now sign in with it as well/)).toBeNull();
+  });
+
+  it("a reset signs this device in, says so, and goes where sign-in goes", async () => {
+    const user = userEvent.setup();
+    const { router } = renderIdentity(`/reset-password#token=${"b".repeat(43)}`, "anonymous");
+    await user.type(
+      await screen.findByLabelText("New password", { exact: true }),
+      "a brand new passphrase",
+    );
+    await user.click(screen.getByRole("button", { name: "Save new password" }));
+    expect(
+      (await screen.findAllByText("You're signed in here, and signed out everywhere else.")).length,
+    ).toBeGreaterThan(0);
+    await waitFor(() => expect(locationOf(router)).toMatch(/^\/profiles/));
+  });
+});
+
+describe("link-required, the password way", () => {
+  it("signing in offers the provider on Security, with the password as the proof", async () => {
+    const user = userEvent.setup();
+    const elevate = vi.fn();
+    const { router } = renderIdentity("/login?oidc=link-required&provider=google", "anonymous", {
+      overrides: (base) => ({
+        elevate: (...args: Parameters<ApiClient["elevate"]>) => {
+          elevate(args[0]?.body.password);
+          return base.elevate(...args);
+        },
+      }),
+    });
+    expect(await screen.findByText("An account already uses this address")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Email address"), "demo@webflix.dev");
+    await user.type(screen.getByLabelText("Password", { exact: true }), "webflix-demo");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    // The account has profiles: Who's watching? first, saying what comes next.
+    expect(
+      await screen.findByText("Choose your profile, then add Google to your account."),
+    ).toBeInTheDocument();
+    expect(elevate).toHaveBeenCalledWith("webflix-demo");
+    await user.click(screen.getByRole("button", { name: /^Mara/ }));
+    const offer = await screen.findByRole("alertdialog", { name: "Add Google to your account?" });
+    expect(offer).toHaveTextContent("You tried to sign in with Google");
+    await waitFor(() => expect(locationOf(router)).toBe("/account/security"));
   });
 });

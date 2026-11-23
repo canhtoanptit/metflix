@@ -66,6 +66,47 @@ def _instant(text: str | None, default: int | None = None) -> int:
     return parse_iso_ms(text)
 
 
+def _pending_source(args: argparse.Namespace) -> Any:
+    """`--erasures`: where the keys pending erasure come from when a dataset is built or a run
+    scored. `api` (the default when WEBFLIX_ADMIN_API_URL is set), a file, or `none`; the
+    erasure plan's keys are honoured in every case (erasure.subjects_to_exclude). Returns a
+    function that fetches them, called when the work starts (and again before scoring)."""
+    from webflix_recs.erasure import parse_keys  # noqa: PLC0415
+
+    spec = getattr(args, "erasures", None) or (
+        "api" if os.environ.get("WEBFLIX_ADMIN_API_URL") else "none"
+    )
+    if spec == "none":
+        return list
+    if spec == "api":
+        from webflix_recs.admin_api import LIST_LIMIT, AdminApi, AdminApiError  # noqa: PLC0415
+
+        api = AdminApi.from_environment()
+
+        def fetch() -> list[str]:
+            keys = api.pending_erasures(LIST_LIMIT)
+            if len(keys) >= LIST_LIMIT:
+                # One page holds at most LIST_LIMIT keys: more may be pending, and a subject
+                # beyond the page would be trained on. Refuse until `erase` has worked the
+                # list down.
+                raise AdminApiError(
+                    f"{len(keys)} erasures pending, as many as one page lists: run `erase` first "
+                    "(a dataset or scoring run must leave out every pending subject)"
+                )
+            return keys
+
+        return fetch
+    text = sys.stdin.read() if spec == "-" else Path(spec).read_text()
+    keys = parse_keys(text)
+    return lambda: keys
+
+
+def _excluded(args: argparse.Namespace, storage: Any) -> frozenset[str]:
+    from webflix_recs.erasure import subjects_to_exclude  # noqa: PLC0415
+
+    return subjects_to_exclude(storage, _pending_source(args)())
+
+
 # --- commands -----------------------------------------------------------------------------------
 
 
@@ -86,6 +127,8 @@ def cmd_simulate(args: argparse.Namespace) -> dict[str, Any]:
         experiments=tuple(ExperimentSpec.parse(text) for text in args.experiment)
         if args.experiment
         else None,
+        learned_store=args.learned_store,
+        learned_run=args.learned_run,
     )
     storage = open_storage(args.store)
     catalog = load_catalog(storage)
@@ -281,12 +324,32 @@ def cmd_export_events(args: argparse.Namespace) -> dict[str, Any]:
     return summary
 
 
+def cmd_retain(args: argparse.Namespace) -> dict[str, Any]:
+    from webflix_recs.retention import Periods, retain  # noqa: PLC0415
+
+    periods = Periods.from_environment()
+    outcome = retain(
+        args.store,
+        periods=periods,
+        now_ms=_instant(args.now, int(time.time() * 1000)),
+        dry_run=args.dry_run,
+        log=_log,
+    )
+    return {
+        "command": "retain",
+        "eventsDays": periods.events_days,
+        "aggregatesDays": periods.aggregates_days,
+        **outcome.to_dict(),
+    }
+
+
 def cmd_build_dataset(args: argparse.Namespace) -> dict[str, Any]:
     from webflix_recs.dataset import build_dataset  # noqa: PLC0415
     from webflix_recs.storage import open_storage  # noqa: PLC0415
 
     storage = open_storage(args.store)
     as_of = _instant(args.as_of, int(time.time() * 1000))
+    excluded = _excluded(args, storage)
     result = build_dataset(
         args.store,
         storage,
@@ -294,6 +357,7 @@ def cmd_build_dataset(args: argparse.Namespace) -> dict[str, Any]:
         as_of_ms=as_of,
         workers=_workers(args.workers),
         log=_log,
+        excluded=excluded,
     )
     manifest = result.manifest
     return {
@@ -302,6 +366,7 @@ def cmd_build_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "asOf": manifest["asOf"],
         "rows": manifest["rows"],
         "counts": manifest["counts"],
+        "excludedSubjects": len(excluded),
         "seconds": manifest["seconds"],
     }
 
@@ -397,6 +462,11 @@ def cmd_evaluate(args: argparse.Namespace) -> dict[str, Any]:
         log=_log,
     )
     key = store_evaluation(storage, report)
+    if args.work is None:
+        # The default scratch directory: nothing in it is needed once the report is stored.
+        import shutil  # noqa: PLC0415
+
+        shutil.rmtree(work, ignore_errors=True)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
@@ -412,8 +482,8 @@ def cmd_evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_score(args: argparse.Namespace) -> dict[str, Any]:
-    from webflix_recs.artefacts import gate_summary as summary  # noqa: PLC0415
-    from webflix_recs.artefacts import passing_evaluation, score  # noqa: PLC0415
+    from webflix_recs import gate  # noqa: PLC0415
+    from webflix_recs.artefacts import score  # noqa: PLC0415
     from webflix_recs.catalog import load_catalog  # noqa: PLC0415
     from webflix_recs.dataset import load_dataset  # noqa: PLC0415
     from webflix_recs.storage import open_storage  # noqa: PLC0415
@@ -423,15 +493,25 @@ def cmd_score(args: argparse.Namespace) -> dict[str, Any]:
     catalog = load_catalog(storage)
     models, manifest = load_run(storage, args.run)
     dataset = load_dataset(storage, args.dataset or manifest["data"]["datasetId"])
-    evaluation = passing_evaluation(storage, manifest["recipeHash"])
+    # The gate decision that belongs to this run: the backtests of its recipe at its own
+    # rolling cutoffs, as evaluated in the store now (gate.py).
+    decision = gate.decide(
+        storage,
+        run=manifest["run"],
+        recipe=manifest["recipeHash"],
+        as_of_ms=int(manifest["data"]["asOfMs"]),
+        count=gate.gate_cutoffs_setting(args.gate_cutoffs),
+    )
+    excluded = _excluded(args, storage)
     result = score(
         storage,
         catalog,
         dataset,
         models,
         manifest,
-        evaluation=summary(evaluation) if evaluation else None,
+        evaluation=gate.manifest_evaluation(decision),
         log=_log,
+        excluded=excluded,
     )
     return {
         "command": "score",
@@ -439,6 +519,15 @@ def cmd_score(args: argparse.Namespace) -> dict[str, Any]:
         "version": f"recs/v={result.run}/",
         "counts": result.manifest["counts"],
         "files": len(result.manifest["files"]),
+        "excludedSubjects": len(excluded),
+        "gate": {
+            "passed": decision["passed"],
+            "decision": gate.decision_key(decision["recipeHash"], decision["run"]),
+            "cutoffs": [
+                {"cutoff": c["cutoff"], "passed": c["passed"], "difference": c.get("difference")}
+                for c in decision["cutoffs"]
+            ],
+        },
     }
 
 
@@ -534,6 +623,7 @@ def cmd_analyse_experiments(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_train_and_score(args: argparse.Namespace) -> dict[str, Any]:
+    from webflix_recs.gate import gate_cutoffs_setting  # noqa: PLC0415
     from webflix_recs.jobs import AlreadyScored, closed_as_of, train_and_score  # noqa: PLC0415
 
     as_of = (
@@ -552,11 +642,13 @@ def cmd_train_and_score(args: argparse.Namespace) -> dict[str, Any]:
             keep_datasets=args.keep_datasets,
             bootstrap=args.bootstrap,
             workers=_workers(args.workers),
+            gate_cutoffs=gate_cutoffs_setting(args.gate_cutoffs),
+            pending=_pending_source(args),
             log=_log,
         )
     except AlreadyScored as done:
         _log(str(done))
-        return {"command": "train-and-score", "status": "already-scored", "asOf": iso_ms(as_of)}
+        return {"command": "train-and-score", **done.summary}
     return {"command": "train-and-score", **summary}
 
 
@@ -616,8 +708,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--experiment",
         action="append",
-        help="key[:effect=0.1][:variants=control=50,treatment=50] (repeatable)",
+        help="key[:effect=0.1][:variants=control=50,treatment=50][:served=learned][:start=DAY] "
+        "(repeatable); served=learned serves the treatment arm the run of --learned-run",
     )
+    p.add_argument(
+        "--learned-store", help="store holding the run a served=learned experiment serves"
+    )
+    p.add_argument("--learned-run", help="that run's id (its version recs/v={run}/)")
     p.set_defaults(handler=cmd_simulate)
 
     p = sub.add_parser(
@@ -686,10 +783,25 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--now", help="the job's instant (default: now)")
     p.set_defaults(handler=cmd_export_events)
 
+    p = sub.add_parser(
+        "retain",
+        help="delete what the retention periods no longer cover (WEBFLIX_EVENTS_RETENTION_DAYS, "
+        "WEBFLIX_AGGREGATES_RETENTION_DAYS, the product's settings)",
+    )
+    p.add_argument("--now", help="the job's instant (default: now)")
+    p.add_argument("--dry-run", action="store_true", help="report what would go; delete nothing")
+    p.set_defaults(handler=cmd_retain)
+
     p = sub.add_parser("build-dataset", help="lake -> interaction tables (Parquet)")
     p.add_argument("--dataset", required=True, help="dataset id")
     p.add_argument(
         "--as-of", help="knowledge cutoff: only events received before it (default: now)"
+    )
+    p.add_argument(
+        "--erasures",
+        help="keys pending erasure to leave out (erased accounts, newly restricted profiles): "
+        "`api` (GET /api/admin/v1/system/privacy/erasures; the default when WEBFLIX_ADMIN_API_URL "
+        "is set), a file, or none; the erasure plan's keys are always left out",
     )
     p.set_defaults(handler=cmd_build_dataset)
 
@@ -733,13 +845,26 @@ def parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="only write the rule engine's input (DIR/engine-input.ndjson) for a separate Node "
         "step, then stop; evaluate afterwards with --external rule-engine=DIR/rule-engine.ndjson "
-        "--external rule-engine-home=DIR/rule-engine-home.ndjson",
+        "--external rule-engine-home=DIR/rule-engine-home.ndjson "
+        "--external learned-home=DIR/learned-home.ndjson",
     )
     p.set_defaults(handler=cmd_evaluate)
 
     p = sub.add_parser("score", help="write a complete artefact version for a run (manifest last)")
     p.add_argument("--run", required=True)
     p.add_argument("--dataset", help="default: the run's dataset")
+    p.add_argument(
+        "--erasures",
+        help="keys pending erasure to leave out (erased accounts, newly restricted profiles): "
+        "`api` (GET /api/admin/v1/system/privacy/erasures; the default when WEBFLIX_ADMIN_API_URL "
+        "is set), a file, or none; the erasure plan's keys are always left out",
+    )
+    p.add_argument(
+        "--gate-cutoffs",
+        type=int,
+        help="backtests the gate requires, at the run's cutoff minus 7, 14, ... days (default: "
+        "WEBFLIX_RECS_GATE_CUTOFFS, else 3)",
+    )
     p.set_defaults(handler=cmd_score)
 
     p = sub.add_parser(
@@ -796,6 +921,18 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--params", help="JSON file of parameter overrides")
     p.add_argument("--keep-datasets", type=int, default=3)
     p.add_argument("--bootstrap", type=int, default=1000)
+    p.add_argument(
+        "--erasures",
+        help="keys pending erasure to leave out (erased accounts, newly restricted profiles): "
+        "`api` (GET /api/admin/v1/system/privacy/erasures; the default when WEBFLIX_ADMIN_API_URL "
+        "is set), a file, or none; the erasure plan's keys are always left out",
+    )
+    p.add_argument(
+        "--gate-cutoffs",
+        type=int,
+        help="backtests the gate requires, at the run's cutoff minus 7, 14, ... days (default: "
+        "WEBFLIX_RECS_GATE_CUTOFFS, else 3)",
+    )
     p.set_defaults(handler=cmd_train_and_score)
     return root
 
@@ -804,9 +941,13 @@ def _exit_code(error: Exception) -> int | None:
     from webflix_recs.admin_api import AdminApiError  # noqa: PLC0415
     from webflix_recs.erasure import ErasureIncomplete  # noqa: PLC0415
     from webflix_recs.evaluation.rule_engine import RuleEngineUnavailable  # noqa: PLC0415
+    from webflix_recs.gate import GateConfigError  # noqa: PLC0415
     from webflix_recs.lease import LakeBusy, LeaseUnsupported  # noqa: PLC0415
     from webflix_recs.parallel import WorkerStalled  # noqa: PLC0415
+    from webflix_recs.retention import RetentionConfigError  # noqa: PLC0415
 
+    if isinstance(error, RetentionConfigError | GateConfigError):
+        return 2
     if isinstance(error, LakeBusy):
         return EXIT_LAKE_BUSY
     if isinstance(error, LeaseUnsupported):

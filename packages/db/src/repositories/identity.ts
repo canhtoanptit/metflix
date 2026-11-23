@@ -169,6 +169,31 @@ export function createSessionRepository(database: Database): SessionRepository {
         .leftJoin("avatars as av", "av.id", "p.avatar_id")
         .selectAll("s")
         .select(PROFILE_JOIN_COLUMNS)
+        // Whether the account has any profile, asked only at the gate (no profile bound): the
+        // account holder's test for an account with none. Same statement, no extra round trip.
+        .select((eb) =>
+          eb
+            .case()
+            .when("p.id", "is not", null)
+            .then(1)
+            .else(
+              eb
+                .case()
+                .when(
+                  eb.exists(
+                    eb
+                      .selectFrom("profiles as any_p")
+                      .select("any_p.id")
+                      .whereRef("any_p.account_id", "=", "s.account_id"),
+                  ),
+                )
+                .then(1)
+                .else(0)
+                .end(),
+            )
+            .end()
+            .as("account_has_profiles"),
+        )
         .where("s.token_hash", "=", tokenHash)
         .where("s.expires_at", ">", now)
         .executeTakeFirst();
@@ -176,6 +201,7 @@ export function createSessionRepository(database: Database): SessionRepository {
       return {
         session: toSession(row),
         profile: row.p_id === null ? null : toProfile(row as ProfileJoinRow),
+        accountHasProfiles: Number(row.account_has_profiles) === 1,
       };
     },
 

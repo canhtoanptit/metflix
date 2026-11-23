@@ -107,6 +107,19 @@ class D1Driver implements Driver {
   async destroy(): Promise<void> {}
 }
 
+/**
+ * SQLite's adapter, except that D1 takes concurrent queries. With `supportsMultipleConnections`
+ * false, Kysely's RuntimeDriver puts one promise lock in front of every query of the isolate, and
+ * on Workers one request may not await a promise another request settles (docs/CLOUDFLARE.md §2):
+ * a request cancelled while it held that lock stalled every later query of the isolate. Safe: the
+ * connection holds no state of its own and D1 has no interactive transactions.
+ */
+class D1Adapter extends SqliteAdapter {
+  override get supportsMultipleConnections(): boolean {
+    return true;
+  }
+}
+
 /** Kysely dialect over a D1 binding (SQLite SQL). */
 export class D1Dialect implements Dialect {
   private readonly binding: D1DatabaseLike;
@@ -116,7 +129,7 @@ export class D1Dialect implements Dialect {
   }
 
   createAdapter() {
-    return new SqliteAdapter();
+    return new D1Adapter();
   }
 
   createDriver(): Driver {

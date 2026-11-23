@@ -16,6 +16,7 @@
  *   (`member.viewed`, `member.privacy_viewed`, `member.searched` with the query): the entry is
  *   written before the data is returned, so data never leaves without one.
  */
+
 import type {
   AdminPlan,
   AdminPlanList,
@@ -49,6 +50,7 @@ import type {
   TitleAvailability,
   TitleAvailabilityList,
 } from "@webflix/contracts";
+import { ERASED_MEMBER_LABEL } from "@webflix/contracts";
 import { AppError } from "../../errors.ts";
 import { toIsoString } from "../../ports/clock.ts";
 import type { ServiceDependencies } from "../../services/context.ts";
@@ -63,6 +65,7 @@ import {
 import type { AvailabilityChange, CollectionDesign } from "../personalisation/service.ts";
 import { type AuditTrail, asJson, type StaffContext, staffAction } from "./audit.ts";
 import type { DeadLetters } from "./dead-letters.ts";
+import { privacyBacklog } from "./privacy-backlog.ts";
 
 const HEALTH_PROBE_TIMEOUT_MS = 2000;
 
@@ -93,9 +96,9 @@ export interface StaffOperations {
       input: { purpose: ConsentPurposeName; granted: boolean; reason: string },
     ): Promise<ConsentState>;
     cancelDeletion(context: StaffContext, accountId: string, reason: string): Promise<void>;
-    pendingErasures(limit: number): Promise<PendingErasures>;
+    pendingErasures(context: StaffContext, limit: number): Promise<PendingErasures>;
     confirmErasures(context: StaffContext, subjectKeys: string[], reason: string): Promise<void>;
-    pendingExports(limit: number): Promise<PendingExports>;
+    pendingExports(context: StaffContext, limit: number): Promise<PendingExports>;
     recordExportResults(
       context: StaffContext,
       document: ExportResultsDocument,
@@ -213,11 +216,20 @@ export interface StaffOperations {
     rollbackRecommendations(context: StaffContext, reason: string): Promise<RecommendationStatus>;
   };
   audit: {
-    list(query: AuditQuery): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
+    /** The whole log (admin), its reading audited: it holds what staff did to members. */
+    list(
+      context: StaffContext,
+      query: AuditQuery,
+    ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
     /** The caller's own entries, `before`/`after` withheld (see `AuditTrail.listOwn`). */
+    /**
+     * The caller's own entries, `before`/`after` withheld (see `AuditTrail.listOwn`); members'
+     * addresses as target labels only when `memberLabels` (the caller may read members now).
+     */
     listOwn(
       context: StaffContext,
       query: Omit<AuditQuery, "actorId">,
+      options: { memberLabels: boolean },
     ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
   };
 }
@@ -228,6 +240,20 @@ export type ExportResultsDocument = Omit<ExportResultsBody, "reason">;
 /** Request ids only: the pattern holds no `/`, `?` or `:`, so no link can pass as one. */
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const requestIds = (ids: readonly string[]) => ids.filter((id) => REQUEST_ID.test(id));
+
+/**
+ * A member search as the audit log keeps it (review M5): never a full address, only the query's
+ * shape: `j***@e***` for an address, the first three characters of anything else.
+ */
+export function maskedSearch(q: string): string {
+  const query = q.trim().toLowerCase();
+  const at = query.indexOf("@");
+  if (at >= 0) {
+    const domain = query.slice(at + 1);
+    return `${query.slice(0, Math.min(1, at))}***@${domain.slice(0, 1)}${domain ? "***" : ""}`;
+  }
+  return query.length > 3 ? `${query.slice(0, 3)}***` : "***";
+}
 
 /** Settles within `ms` or rejects with a timeout (a hung dependency must not hang the probe). */
 function within<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -268,6 +294,55 @@ export function createStaffOperations(
     }
   }
 
+  /**
+   * Each entry's target in words, resolved now and never stored: a member's current address
+   * (`Erased member` once erased; none unless `memberLabels`), a title's or collection's name.
+   */
+  async function labelled(
+    page: { items: AuditLogEntry[]; nextCursor: string | null },
+    options: { memberLabels: boolean },
+  ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }> {
+    const ids = (type: string) => [
+      ...new Set(page.items.filter((item) => item.target.type === type).map((i) => i.target.id)),
+    ];
+    const labels = new Map<string, string>();
+    const memberIds = ids("member");
+    for (const id of memberIds) {
+      if (id.startsWith("erased:")) labels.set(`member:${id}`, ERASED_MEMBER_LABEL);
+    }
+    if (options.memberLabels) {
+      const { identity } = areas();
+      await Promise.all(
+        memberIds
+          .filter((id) => !id.startsWith("erased:"))
+          .map(async (id) => {
+            // One indexed lookup by id (identity's member search matches an exact id).
+            const found = await identity.searchMembers({ q: id, limit: 5 });
+            const member = found.items.find((item) => item.accountId === id);
+            if (member) labels.set(`member:${id}`, member.email);
+          }),
+      );
+    }
+    const titleIds = ids("title");
+    for (let start = 0; start < titleIds.length; start += 50) {
+      const chunk = titleIds.slice(start, start + 50);
+      const titles = await areas().personalisation.staffTitles({ ids: chunk.join(",") });
+      for (const title of titles.items) labels.set(`title:${title.id}`, title.name);
+    }
+    if (ids("collection").length > 0) {
+      for (const collection of (await areas().personalisation.listCollections()).items) {
+        labels.set(`collection:${collection.id}`, collection.name);
+      }
+    }
+    return {
+      items: page.items.map((item) => ({
+        ...item,
+        targetLabel: labels.get(`${item.target.type}:${item.target.id}`) ?? null,
+      })),
+      nextCursor: page.nextCursor,
+    };
+  }
+
   /** `not_found` for an account that does not exist (the identity area decides). */
   const requireMember = (accountId: string) => areas().identity.getMemberIdentity(accountId);
 
@@ -293,7 +368,8 @@ export function createStaffOperations(
       await trail.recordRead(
         context,
         "member.searched",
-        { type: "member_search", id: query.q },
+        // Never the address typed (review M5): who searched, when, and the query's shape.
+        { type: "member_search", id: maskedSearch(query.q) },
         { results: page.items.length, more: page.nextCursor !== null },
       );
       return page;
@@ -403,8 +479,16 @@ export function createStaffOperations(
       });
     },
 
-    async pendingErasures(limit) {
-      return { subjectKeys: await areas().events.staff.pendingErasures(limit) };
+    async pendingErasures(context, limit) {
+      const subjectKeys = await areas().events.staff.pendingErasures(limit);
+      // Who read the list and how long it was; never the keys themselves.
+      await trail.recordRead(
+        context,
+        "privacy.erasures_listed",
+        { type: "event_lake", id: "erasures" },
+        { count: subjectKeys.length },
+      );
+      return { subjectKeys };
     },
 
     async confirmErasures(context, subjectKeys, reason) {
@@ -414,14 +498,25 @@ export function createStaffOperations(
         action: "privacy.erasures_confirmed",
         target: { type: "event_lake", id: "erasures" },
         reason,
-        parameters: { subjectKeys: keys },
+        // How many, never which: an erased member's keys must not outlive the erasure here.
+        parameters: { keys: keys.length },
         run: () => areas().events.staff.confirmErasures(keys),
         after: () => ({ confirmed: keys.length }),
       });
     },
 
     // Already `{ requests }`, the shape the pipeline reads.
-    pendingExports: (limit) => areas().events.staff.pendingExports(limit),
+    async pendingExports(context, limit) {
+      // Already `{ requests }`, the shape the pipeline reads.
+      const pending = await areas().events.staff.pendingExports(limit);
+      await trail.recordRead(
+        context,
+        "privacy.exports_listed",
+        { type: "event_lake", id: "exports" },
+        { count: pending.requests.length },
+      );
+      return pending;
+    },
 
     async recordExportResults(context, document, reason) {
       await trail.audited({
@@ -651,18 +746,20 @@ export function createStaffOperations(
           return { name, up: false, checkedAt: toIsoString(clock.now()), detail };
         }
       };
-      const [dependencies, dead] = await Promise.all([
+      const [dependencies, dead, privacy] = await Promise.all([
         Promise.all([
           probe("database", () => deps.repos.ping()),
           probe("cache", () => deps.cache.get("admin:health-probe")),
           probe("recommendation-store", () => deps.recommendations.models()),
         ]),
         deadLetters.count(),
+        privacyBacklog(deps, areas),
       ]);
       // The JobQueue port reports no depth in any mode (Valkey's is on /metrics, `webflix_jobs`).
       return {
         dependencies,
         jobs: { depth: null, deadLetters: dead },
+        privacy,
         checkedAt: toIsoString(clock.now()),
       };
     },
@@ -715,8 +812,10 @@ export function createStaffOperations(
             );
           }
           let published: string;
+          let publishedSha256: string;
           try {
-            published = (await inspectRecommendations(blobs)).run;
+            ({ run: published, manifestSha256: publishedSha256 } =
+              await inspectRecommendations(blobs));
           } catch (error) {
             if (!(error instanceof RecommendationImportError)) throw error;
             return answer(
@@ -727,7 +826,10 @@ export function createStaffOperations(
             );
           }
           const status = await personalisation.recommendationStatus();
-          if (status.activeModel?.run === published) {
+          // Served means the same content, not only the same run: a version the pipeline
+          // rewrote (an erasure) is imported again (pipeline review L2).
+          const active = await deps.recommendations.activeModel();
+          if (active?.run === published && active.manifestSha256 === publishedSha256) {
             return answer("already_served", published, null, status);
           }
           return answer("queued", published, null, await personalisation.requestImport());
@@ -758,8 +860,19 @@ export function createStaffOperations(
     experiments,
     system,
     audit: {
-      list: trail.list,
-      listOwn: (context, query) => trail.listOwn(context.staff.subject, query),
+      async list(context, query) {
+        const page = await labelled(await trail.list(query), { memberLabels: true });
+        const { cursor: _cursor, limit: _limit, ...filters } = query;
+        await trail.recordRead(
+          context,
+          "audit.read",
+          { type: "audit_log", id: "all" },
+          { filters: asJson(filters), results: page.items.length },
+        );
+        return page;
+      },
+      listOwn: async (context, query, options) =>
+        labelled(await trail.listOwn(context.staff.subject, query), options),
     },
   };
 }

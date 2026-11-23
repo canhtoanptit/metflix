@@ -6,7 +6,8 @@
  * Only the account holder may download a copy, so the page leads there: a member who opens the
  * email signed out (on their phone, usually) signs in and comes back to this same page, the token
  * still kept in the tab; one at Who's watching? chooses a profile; one on a kids or restricted
- * profile switches. Then one button downloads it through `GET /privacy/exports/{id}?token=`.
+ * profile switches. Then one button downloads it through `POST /privacy/exports/{id}/download`
+ * (the token in the body, never in a URL), after a fresh "Confirm it's you" when the server asks.
  * A link that cannot be used (expired, cut short, for another account) gets one honest screen
  * with the way to a new copy.
  */
@@ -17,12 +18,15 @@ import { Button, CheckCircleIcon, ErrorState, LockIcon, MailIcon, Spinner } from
 import { type ReactNode, useEffect, useRef } from "react";
 import { describeError } from "../../../../app/query/errors.ts";
 import { useSession } from "../../../../app/session/session.ts";
+import { BusyButton } from "../../../../app/telemetry/BusyButton.tsx";
 import { isRestrictedProfile } from "../../../../app/telemetry/index.ts";
 import { forgetLinkToken, useLinkToken } from "../../auth/emailLink.ts";
 import { Frame } from "../../auth/ResetPasswordPage.tsx";
+import { isUnfinishedSignup } from "../../billing/membership.ts";
+import { IdentityNotConfirmed, useConfirmIdentity } from "../../shared/ConfirmIdentity.tsx";
 import { formatLongDate } from "../../shared/format.ts";
 import { saveDataExport } from "./download.ts";
-import { privacyRequestsQuery, typicalWait } from "./requests.ts";
+import { exportEmailLine, privacyRequestsQuery, typicalWait } from "./requests.ts";
 
 const route = getRouteApi("/public/account/privacy/exports/$requestId");
 
@@ -55,11 +59,11 @@ export function ExportLinkPage() {
           </Button>
         }
       >
-        Your copy is ready. For your security, only the account holder can download it: sign in, and
-        you'll come straight back here.
+        For your security, only the account holder can download it, after confirming it's them. Sign
+        in, and you'll come straight back here.
       </Step>
     );
-  } else if (!session.activeProfile) {
+  } else if (!session.activeProfile && !isUnfinishedSignup(session)) {
     body = (
       <Step
         icon={<LockIcon size="xl" />}
@@ -75,7 +79,7 @@ export function ExportLinkPage() {
         The account holder downloads it from a profile without parental controls.
       </Step>
     );
-  } else if (isRestrictedProfile(session.activeProfile)) {
+  } else if (session.activeProfile && isRestrictedProfile(session.activeProfile)) {
     body = (
       <Step
         icon={<LockIcon size="xl" />}
@@ -108,8 +112,14 @@ function Download({
   email: string;
 }) {
   const requests = useQuery(privacyRequestsQuery());
+  const identity = useConfirmIdentity({
+    id: "export-link-download",
+    purpose: "download your data",
+    // Back from confirming at a provider (the token is still kept in this tab): download it.
+    onResume: () => save.mutate(),
+  });
   const save = useMutation({
-    mutationFn: () => saveDataExport(requestId, token),
+    mutationFn: () => identity.run(() => saveDataExport(requestId, token)),
     meta: { silent: true },
     onSuccess: () => forgetLinkToken(tokenKey(requestId)),
   });
@@ -146,7 +156,8 @@ function Download({
         title="Your data isn't ready yet"
         action={<BackToPrivacy />}
       >
-        It usually takes {typical}. We'll email {email} when it's ready.
+        It usually takes {typical}.{" "}
+        {exportEmailLine(request, email) ?? "Check back in Account › Privacy."}
       </Step>
     );
   }
@@ -172,8 +183,9 @@ function Download({
         title="Your download has started"
         action={<BackToPrivacy />}
       >
-        One file (JSON) with everything Webflix holds about your account. Keep it somewhere safe: it
-        holds your personal details.
+        One file (JSON) with your account, profiles, viewing activity, membership and the rest of
+        your personal data; its notes say what isn't in it and why. Keep it somewhere safe: it holds
+        your personal details.
       </Step>
     );
   }
@@ -183,21 +195,24 @@ function Download({
       tone="positive"
       title="Your data is ready"
       action={
-        <Button
-          variant="accent"
-          size="lg"
-          fullWidth
-          loading={save.isPending}
-          onClick={() => save.mutate()}
-        >
-          Download your data
-        </Button>
+        <>
+          <BusyButton
+            variant="accent"
+            size="lg"
+            fullWidth
+            busy={save.isPending}
+            onClick={() => save.mutate()}
+          >
+            Download your data
+          </BusyButton>
+          {identity.prompt}
+        </>
       }
     >
       {request.expiresAt
-        ? `This copy can be downloaded until ${formatLongDate(request.expiresAt)}.`
-        : "This copy can be downloaded for a limited time."}
-      {save.isError ? (
+        ? `You can download this copy until ${formatLongDate(request.expiresAt)}. You'll be asked to confirm it's you first.`
+        : "You'll be asked to confirm it's you first."}
+      {save.isError && !(save.error instanceof IdentityNotConfirmed) ? (
         <span role="alert" className="mt-2 block text-danger">
           {describeError(save.error).description}
         </span>

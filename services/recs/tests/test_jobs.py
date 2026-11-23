@@ -44,7 +44,14 @@ def _publish(store: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int, dict
     return 0, orjson.loads(capsys.readouterr().out)
 
 
-@pytest.mark.parametrize(("days", "reason"), [(0, "no events received"), (3, "no play before")])
+@pytest.mark.parametrize(
+    ("days", "reason"),
+    [
+        (0, "no events received"),  # nothing at all
+        (3, "no events received before"),  # nothing before the backtest's cutoff (T - 7 d)
+        (10, "no play before"),  # nothing before that backtest's ranker window (T - 14 d)
+    ],
+)
 def test_a_young_lake_has_nothing_to_train_and_every_step_says_so(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], days: int, reason: str
 ) -> None:
@@ -80,3 +87,32 @@ def test_the_command_exits_zero_with_nothing_to_train(
     ])  # fmt: skip
     summary = orjson.loads(capsys.readouterr().out)
     assert summary["status"] == "nothing-to-train"
+
+
+def test_a_cutoff_already_scored_ends_cleanly_in_every_phase(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second run of a day's cutoff (a Job's retry after its import failed): prepare leaves an
+    engine input without profiles and a state saying so, the Node step has its input, finish
+    follows the state; every phase exits 0 and says `already-scored`."""
+    from webflix_recs.provenance import recipe_hash
+    from webflix_recs.storage import put_json
+    from webflix_recs.train import TrainParams, run_id_for
+
+    store = tmp_path / "store"
+    storage = _young_lake(store, 0)
+    run = run_id_for(ANCHOR_MS, recipe_hash(TrainParams().to_dict()))
+    put_json(storage, f"recs/v={run}/manifest.json", {"run": run})  # the version is complete
+    work = tmp_path / "work"
+    for phase in ("prepare", "finish"):
+        cli.main([
+            "--store", str(store), "train-and-score", "--as-of", iso_ms(ANCHOR_MS),
+            "--work", str(work), "--phase", phase,
+        ])  # fmt: skip
+        summary = orjson.loads(capsys.readouterr().out)
+        assert summary["status"] == "already-scored" and summary["run"] == run, phase
+        if phase == "prepare":
+            lines = Path(summary["engineInput"]).read_bytes().splitlines()
+            assert (
+                len(lines) == 1 and orjson.loads(lines[0])["format"] == "webflix.rule-engine-input"
+            )

@@ -9,11 +9,8 @@
     <meta name="referrer" content="no-referrer" />
     <title>Webflix Staff</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <style>
-      /* Painted before any script loads: the canvas colour, never white. Mirrors --color-canvas. */
-      html, body { margin: 0; background: #0b0c0f; color: #b6b8bf; }
-      .boot { min-height: 100dvh; display: grid; place-items: center; font: 500 14px/1.4 system-ui, sans-serif; }
-    </style>
+    <!-- No inline script (the console's Content-Security-Policy, script-src 'self', blocks it)
+         and no inline style: the boot message is styled by the stylesheet the build links here. -->
   </head>
   <body>
     <div id="root"><div class="boot" aria-busy="true">Loading the staff console…</div></div>

@@ -6,12 +6,15 @@
  */
 import { applyD1Migrations, createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { sha256Hex, utf8Encode } from "@webflix/core";
 import {
   FIXTURE_CATALOG,
   FIXTURE_DEMO_ACCOUNT,
   FIXTURE_MANIFEST,
   FIXTURE_MASTER_PLAYLIST,
 } from "@webflix/core/testing";
+import { createIdentityRepository } from "@webflix/db";
+import { createD1Database } from "@webflix/db/d1";
 import { beforeAll, describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index.ts";
 import { MEDIA_GENERATION_KEY } from "../src/media-generation.ts";
@@ -113,18 +116,25 @@ const measured: Env = {
   WEBFLIX_EDGE_CACHE: "off",
 };
 
-const jar = new Map<string, string>();
+const demoJar = new Map<string, string>();
 async function call(
   path: string,
-  init: { method?: string; body?: string; headers?: Record<string, string> } = {},
+  init: {
+    method?: string;
+    body?: string;
+    headers?: Record<string, string>;
+    /** Whose cookies (default: the demo account's session). */
+    jar?: Map<string, string>;
+  } = {},
 ): Promise<Response> {
+  const jar = init.jar ?? demoJar;
   const headers = new Headers(init.headers);
   headers.set("X-Webflix-Client", "web");
   headers.set("CF-Connecting-IP", "192.0.2.10");
   if (jar.size > 0) {
     headers.set("Cookie", [...jar].map(([name, value]) => `${name}=${value}`).join("; "));
   }
-  if (init.body) headers.set("Content-Type", "application/json");
+  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await worker.fetch(
     new Request(new URL(path, "http://localhost:8787"), {
       ...(init.method ? { method: init.method } : {}),
@@ -239,6 +249,110 @@ beforeAll(async () => {
     "/api/v1/events",
     body({ events: [clientEvent(1), clientEvent(2)] }),
   );
+
+  // The member pages and staff reads the web app and the console added: an account with an open
+  // checkout, then a member (the fake provider's trial) with its next invoice and privacy terms.
+  const member = new Map<string, string>();
+  const as = (init: Parameters<typeof call>[1] = {}) => ({ ...init, jar: member });
+  const signup = await call(
+    "/api/v1/auth/signup",
+    as(body({ email: "budget-member@example.test", password: "a long and correct horse battery" })),
+  );
+  if (signup.status !== 201) throw new Error(`signup: ${signup.status} ${await signup.text()}`);
+  reset();
+  const checkout = await call("/api/v1/billing/checkout", as(body({ planId: "standard" })));
+  const started = (await checkout.json()) as { id: string; clientSecret: string };
+  // The isolate's first checkout also syncs the plan catalogue with the provider (here the fake,
+  // whose state is in D1); a second member's checkout shows the steady cost.
+  table["POST /api/v1/billing/checkout (first)"] = { status: checkout.status, ...counts };
+  const second = new Map<string, string>();
+  const secondSignup = await call("/api/v1/auth/signup", {
+    ...body({ email: "budget-second@example.test", password: "a long and correct horse battery" }),
+    jar: second,
+  });
+  if (secondSignup.status !== 201) throw new Error(`signup: ${secondSignup.status}`);
+  table["POST /api/v1/billing/checkout"] = await measure("/api/v1/billing/checkout", {
+    ...body({ planId: "standard" }),
+    jar: second,
+  });
+  table["GET /api/v1/billing/checkout (open)"] = await measure("/api/v1/billing/checkout", as());
+  table["GET /api/v1/billing/checkout/:id"] = await measure(
+    `/api/v1/billing/checkout/${started.id}`,
+    as(),
+  );
+  await (
+    await call("/_pay/api/confirm", as(body({ clientSecret: started.clientSecret, card: "visa" })))
+  ).arrayBuffer();
+  await (
+    await call(`/api/v1/billing/checkout/${started.id}/confirm`, as({ method: "POST" }))
+  ).arrayBuffer();
+  const avatars = (await (await call("/api/v1/avatars", as())).json()) as {
+    groups: { avatars: { id: string }[] }[];
+  };
+  const profile = (await (
+    await call(
+      "/api/v1/profiles",
+      as(body({ name: "Budget", avatarId: avatars.groups[0]?.avatars[0]?.id })),
+    )
+  ).json()) as { id: string };
+  await (
+    await call(
+      "/api/v1/session/profile",
+      as({ method: "PUT", body: JSON.stringify({ profileId: profile.id }) }),
+    )
+  ).arrayBuffer();
+  table["GET /api/v1/account (next invoice)"] = await measure("/api/v1/account", as());
+  table["GET /api/v1/privacy/requests (terms)"] = await measure("/api/v1/privacy/requests", as());
+  // The console's reads, with a staff token from the development issuer's jobs client.
+  const issued = await call("/dev-idp/staff/token", {
+    method: "POST",
+    body: "grant_type=client_credentials",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${btoa("webflix-jobs:dev-only-jobs-client-secret")}`,
+    },
+    jar: new Map(),
+  });
+  const { access_token: token } = (await issued.json()) as { access_token: string };
+  const staffCall = {
+    headers: { Authorization: `Bearer ${token}` },
+    jar: new Map<string, string>(),
+  };
+  table["GET /api/admin/v1/members?q="] = await measure(
+    "/api/admin/v1/members?q=budget-member",
+    staffCall,
+  );
+  const found = (await (await call("/api/admin/v1/members?q=budget-member", staffCall)).json()) as {
+    items: { accountId: string }[];
+  };
+  table["GET /api/admin/v1/members/:id"] = await measure(
+    `/api/admin/v1/members/${found.items[0]?.accountId}`,
+    staffCall,
+  );
+  // A password reset through the emailed link (identity): every device signed out, this one
+  // signed in, as sign-in answers. The link's token is minted here as the reset email would.
+  const resetEmail = "budget-reset@example.test";
+  const resetSignup = await call("/api/v1/auth/signup", {
+    ...body({ email: resetEmail, password: "a long and correct horse battery" }),
+    jar: new Map(),
+  });
+  if (resetSignup.status !== 201) throw new Error(`signup: ${resetSignup.status}`);
+  const identityRepository = createIdentityRepository(createD1Database(env.DB));
+  const resetAccount = await identityRepository.findAccountByEmail(resetEmail);
+  const resetLink = "r".repeat(43);
+  await identityRepository.createToken({
+    tokenHash: await sha256Hex(utf8Encode(resetLink)),
+    accountId: resetAccount?.id ?? "",
+    purpose: "reset_password",
+    email: resetEmail,
+    expiresAt: Date.now() + 30 * 60 * 1000,
+    usedAt: null,
+    createdAt: Date.now(),
+  });
+  table["POST /api/v1/auth/password-reset/confirm"] = await measure(
+    "/api/v1/auth/password-reset/confirm",
+    { ...body({ token: resetLink, newPassword: "the owner's new passphrase" }), jar: new Map() },
+  );
   for (const [path, row] of Object.entries(table)) {
     console.log(
       `budget ${path.padEnd(32)} status ${row.status}  D1 ${row.d1}  DO ${row.durableObject}  KV ${row.kv}  R2 ${row.r2}  Queues ${row.queue}`,
@@ -315,8 +429,57 @@ describe("hot-path binding budgets (per request)", () => {
     expect(events?.d1).toBeLessThanOrEqual(4);
   });
 
+  it("the member pages and the console's reads stay a few D1 queries, nothing else", () => {
+    const pinned: [string, number][] = [
+      ["GET /api/v1/billing/checkout (open)", 2],
+      ["GET /api/v1/account (next invoice)", 3],
+      ["GET /api/v1/privacy/requests (terms)", 2],
+      ["GET /api/admin/v1/members?q=", 4],
+      // The audit entry is written before the data is read and settled after (docs/BACKEND.md),
+      // and a member's record reads every area's part: not a hot path, a staff click.
+      ["GET /api/admin/v1/members/:id", 8],
+    ];
+    for (const [route, d1] of pinned) {
+      expect(table[route], route).toMatchObject({ status: 200, durableObject: 0, r2: 0, queue: 0 });
+      expect(table[route]?.d1, route).toBeLessThanOrEqual(d1);
+    }
+  });
+
+  it("checkout: polling one is one rate-limit call, starting one at most two Durable Object calls", () => {
+    expect(table["GET /api/v1/billing/checkout/:id"]).toMatchObject({
+      status: 200,
+      durableObject: 1,
+      r2: 0,
+      queue: 0,
+    });
+    expect(table["GET /api/v1/billing/checkout/:id"]?.d1).toBeLessThanOrEqual(2);
+    for (const route of [
+      "POST /api/v1/billing/checkout (first)",
+      "POST /api/v1/billing/checkout",
+    ]) {
+      expect(table[route], route).toMatchObject({ status: 201, r2: 0 });
+      expect(table[route]?.durableObject, route).toBeLessThanOrEqual(2);
+      expect(table[route]?.queue, route).toBeLessThanOrEqual(1);
+      // Most of these are the fake provider's own state in D1 (customer, setup, the first
+      // invoice's estimate; with Stripe they are subrequests instead); the first of an isolate
+      // also syncs the catalogue. Bounded so a regression shows; Workers Paid allows 1,000.
+      expect(table[route]?.d1, route).toBeLessThanOrEqual(64);
+    }
+  });
+
   it("sign-in is one rate-limit call plus a few D1 queries", () => {
     expect(table["POST /api/v1/auth/login"]).toMatchObject({ status: 200, durableObject: 1 });
     expect(table["POST /api/v1/auth/login"]?.d1).toBeLessThanOrEqual(4);
+  });
+
+  it("a password reset that signs this device in costs what sign-in does", () => {
+    // The live token, the reset with its new session in one batch, the session bootstrap, the
+    // membership; one Durable Object call frees the account's streams, one message alerts.
+    expect(table["POST /api/v1/auth/password-reset/confirm"]).toMatchObject({
+      status: 200,
+      durableObject: 1,
+      queue: 1,
+    });
+    expect(table["POST /api/v1/auth/password-reset/confirm"]?.d1).toBeLessThanOrEqual(4);
   });
 });

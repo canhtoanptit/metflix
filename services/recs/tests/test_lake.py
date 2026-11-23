@@ -287,6 +287,32 @@ def test_invalid_lines_are_quarantined_once(tmp_path: Path) -> None:
     assert len(list(storage.list("events-quarantine/"))) == 1
 
 
+def test_quarantined_lines_the_schema_now_accepts_go_back_into_their_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An event the schema refused (a newer version, say) is quarantined; once the code accepts
+    it, the next compaction puts it back into its hour and compacts the hour with it."""
+    storage = LocalStorage(tmp_path)
+    write_lake(storage, _events(), "a")
+    newer = {**make_event("title.open", HOUR + 60_000), "version": 2}
+    prefix = partition_prefix(HOUR)
+    storage.put(f"{prefix}newer.ndjson.gz", gzip.compress(orjson.dumps(newer) + b"\nnot json\n"))
+    result = compact(str(tmp_path), now_ms=ANCHOR_MS, delete_sources=True)
+    assert result.invalid_quarantined == 2 and result.quarantine_requeued == 0
+    assert newer["eventId"] not in _ids(str(tmp_path))
+    # An upgrade: version 2 is now readable.
+    accepted = schemas.is_valid_event
+    monkeypatch.setattr(schemas, "is_valid_event", lambda event: accepted({**event, "version": 1}))
+    again = compact(str(tmp_path), now_ms=ANCHOR_MS, delete_sources=True)
+    assert again.quarantine_requeued == 1 and again.hours_compacted == 1
+    assert newer["eventId"] in _ids(str(tmp_path))
+    (left,) = [i.key for i in storage.list("events-quarantine/")]
+    assert gzip.decompress(storage.get(left) or b"") == b"not json\n"
+    # Nothing more to requeue; the hour is unchanged.
+    third = compact(str(tmp_path), now_ms=ANCHOR_MS)
+    assert third.quarantine_requeued == 0 and third.hours_compacted == 0
+
+
 def test_the_hour_listing_ignores_deeper_keys(tmp_path: Path) -> None:
     storage = LocalStorage(tmp_path)
     write_lake(storage, _events(), "a")

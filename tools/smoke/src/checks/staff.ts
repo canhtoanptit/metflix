@@ -7,6 +7,7 @@
 import {
   ADMIN_API_BASE_PATH,
   type AdminApiClient,
+  AUDIT_READ_ACTIONS,
   type AuditLogEntry,
   STAFF_ROLES,
   type StaffRole,
@@ -22,6 +23,22 @@ import { memberWithPaidInvoice } from "./billing.ts";
 import { browseAll, cardsOfRow, unique } from "./util.ts";
 
 type Persona = keyof typeof STAFF_PERSONAS;
+
+/** An email address written out (a masked shape like `s***@s***` is not one). */
+const EMAIL_ADDRESS = /[^\s@*"]+@[^\s@*"]+\.[^\s@*"]+/;
+
+/** `SystemHealth.privacy`: three backlogs, each a count, its oldest instant and age. */
+const PRIVACY_HEALTH_FIELDS = [
+  "pendingErasures",
+  "oldestPendingErasureAt",
+  "oldestPendingErasureAgeSec",
+  "waitingExports",
+  "oldestWaitingExportAt",
+  "oldestWaitingExportAgeSec",
+  "erasuresInProgress",
+  "oldestErasureInProgressAt",
+  "oldestErasureInProgressAgeSec",
+] as const;
 
 async function staff(
   ctx: CheckContext,
@@ -274,7 +291,7 @@ export const staffChecks: CheckDefinition[] = [
     id: "staff.refund",
     area: "staff",
     title:
-      "A staff refund retried under its idempotency key refunds once (the same refund answered again); other parameters or another staff member with the key conflict; each settled refund is audited",
+      "A staff refund retried under its idempotency key refunds once (the same refund answered again); other parameters or another staff member with the key conflict; each settled refund is audited with its amount and the member's address",
     needs: [needs.staffIssuer, needs.fakePayments],
     async run(ctx: CheckContext) {
       const { account, invoice } = await memberWithPaidInvoice(ctx, "refund");
@@ -380,13 +397,27 @@ export const staffChecks: CheckDefinition[] = [
         (entry) => entry.action === action && entry.outcome === "succeeded",
       );
       equal(settled.length, 2, "succeeded refund entries (a retry adds none)");
+      // Readable at a glance (UX review 2.17): the amount and the member's address.
+      for (const [requestId, amount, what] of [
+        [first.requestId, part, "the first refund"],
+        [rest.requestId, paid - part, "the second refund"],
+      ] as const) {
+        const entry = entries.find((candidate) => candidate.requestId === requestId);
+        equal(entry?.facts.amount?.amountMinor, amount, `${what}'s audit facts.amount`);
+        equal(entry?.kind, "action", `${what}'s audit kind`);
+        equal(
+          entry?.targetLabel,
+          account.email,
+          `${what}'s audit targetLabel (the member's address)`,
+        );
+      }
     },
   },
   {
     id: "staff.support-audit",
     area: "staff",
     title:
-      "Support actions act and are audited: reading a member, removing a PIN, recording consent, sending a password reset, signing the member out everywhere",
+      "Support actions act and are audited: reading a member, removing a PIN, recording a consent withdrawal (a grant is the member's own: consent_grant_member_only), sending a password reset, signing the member out everywhere",
     needs: [needs.staffIssuer],
     async run(ctx: CheckContext) {
       const env = ctx.env;
@@ -435,6 +466,32 @@ export const staffChecks: CheckDefinition[] = [
       const seen = await succeeds(() => account.agent.api.getConsent(), "the member's consent");
       equal(seen.purposes.analytics.granted, false, "analytics after the support answer");
       equal(seen.purposes.analytics.source, "support", "source of the support answer");
+      // Staff record a withdrawal, never a grant: turning a purpose on is the member's own
+      // answer (privacy review M4).
+      await rejects(
+        () =>
+          support.setMemberConsent({
+            params: { accountId },
+            body: { purpose: "personalisation", granted: true, reason: "smoke: asked to turn on" },
+          }),
+        "consent_grant_member_only",
+        "PUT /members/:id/privacy/consent {granted: true} (a staff grant)",
+      );
+      const unchanged = await succeeds(
+        () => account.agent.api.getConsent(),
+        "the member's consent after the refused grant",
+      );
+      check(
+        unchanged.purposes.personalisation.source !== "support" ||
+          !unchanged.purposes.personalisation.granted,
+        "a staff grant turned personalisation on",
+        { observed: JSON.stringify(unchanged.purposes.personalisation) },
+      );
+      equal(
+        unchanged.purposes.personalisation.granted,
+        seen.purposes.personalisation.granted,
+        "personalisation after the refused grant",
+      );
       const reset = await audited(
         () =>
           support.sendMemberPasswordReset({
@@ -576,6 +633,146 @@ export const staffChecks: CheckDefinition[] = [
     },
   },
   {
+    id: "staff.audit-privacy",
+    area: "staff",
+    title:
+      "The audit log protects members and records reading: a search by address keeps only its shape; reading the log and the operator's export and erasure lists is recorded; kind=action holds changes only and kind=read reads only; a member target reads as the member's address; GET /system/health reports the privacy backlog",
+    needs: [needs.staffIssuer],
+    async run(ctx: CheckContext) {
+      const support = await staff(ctx, "support");
+      const admin = await staff(ctx, "admin");
+      const member = await ctx.env.bareSignup("audit-privacy");
+      const accountId = member.session.account.id;
+      const entryOf = async (requestId: string, what: string) =>
+        (
+          await ctx.eventually(`the audit entry of ${what}`, async () => {
+            const page = await succeeds(
+              () => admin.listAuditLog({ query: { requestId } }),
+              "GET /audit?requestId=",
+            );
+            const entry = page.items.find((candidate) => candidate.requestId === requestId);
+            return entry
+              ? { done: true, value: entry }
+              : { done: false, observed: `${page.items.length} entries` };
+          })
+        ).value;
+
+      // A search by the full address keeps the query's shape, never the address (privacy L9).
+      const searched = await audited(
+        () => support.searchMembers({ query: { q: member.email } }),
+        "GET /members?q=<a full address>",
+      );
+      check(
+        searched.value.items.some((item) => item.accountId === accountId),
+        "the search by address did not find the member",
+      );
+      const search = await entryOf(searched.requestId, "the search");
+      equal(search.action, "member.searched", "the search's audit action");
+      equal(search.kind, "read", "the search's audit kind");
+      const local = member.email.slice(0, member.email.indexOf("@"));
+      const kept = JSON.stringify(search);
+      check(
+        !EMAIL_ADDRESS.test(search.target.id) &&
+          !kept.includes(member.email) &&
+          !kept.includes(local.slice(1)),
+        "the search's audit entry keeps the address searched for",
+        { expected: "the query's shape only (e.g. s***@s***)", observed: kept.slice(0, 400) },
+      );
+
+      // A change to the member, read back with the member's address as its label.
+      const withdrawal = await audited(
+        () =>
+          support.setMemberConsent({
+            params: { accountId },
+            body: { purpose: "analytics", granted: false, reason: "smoke: audit kinds" },
+          }),
+        "PUT /members/:id/privacy/consent (a withdrawal)",
+      );
+      const change = await entryOf(withdrawal.requestId, "the withdrawal");
+      equal(change.kind, "action", "the withdrawal's audit kind");
+      equal(
+        change.targetLabel,
+        member.email,
+        "the withdrawal's targetLabel (the member's address)",
+      );
+      equal(change.facts.purpose, "analytics", "the withdrawal's facts.purpose");
+      equal(change.facts.granted, false, "the withdrawal's facts.granted");
+
+      // Reading is recorded: the log itself and the operator's lists.
+      for (const [what, action, call] of [
+        ["GET /audit", "audit.read", () => admin.listAuditLog({ query: { limit: 5 } })],
+        [
+          "GET /system/privacy/exports",
+          "privacy.exports_listed",
+          () => admin.listPendingExports({ query: { limit: 1 } }),
+        ],
+        [
+          "GET /system/privacy/erasures",
+          "privacy.erasures_listed",
+          () => admin.listPendingErasures({ query: { limit: 1 } }),
+        ],
+      ] as const satisfies readonly (readonly [string, string, () => Promise<unknown>])[]) {
+        const read = await audited<unknown>(call, what);
+        const entry = await entryOf(read.requestId, what);
+        equal(entry.action, action, `${what}: its audit action`);
+        equal(entry.kind, "read", `${what}: its audit kind`);
+      }
+
+      // The two kinds, by filter.
+      const filtered = async (kind: "action" | "read", requestId: string) =>
+        (
+          await succeeds(
+            () => admin.listAuditLog({ query: { kind, requestId } }),
+            `GET /audit?kind=${kind}&requestId=`,
+          )
+        ).items.length;
+      equal(await filtered("read", searched.requestId), 1, "kind=read: the search");
+      equal(await filtered("action", searched.requestId), 0, "kind=action: the search");
+      equal(await filtered("action", withdrawal.requestId), 1, "kind=action: the withdrawal");
+      equal(await filtered("read", withdrawal.requestId), 0, "kind=read: the withdrawal");
+      const reads: readonly string[] = AUDIT_READ_ACTIONS;
+      const actions = await succeeds(
+        () => admin.listAuditLog({ query: { kind: "action", limit: 100 } }),
+        "GET /audit?kind=action",
+      );
+      const strayRead = actions.items.find((entry) => reads.includes(entry.action));
+      check(!strayRead, "GET /audit?kind=action lists a read", {
+        observed: strayRead ? `${strayRead.action} (${strayRead.requestId})` : "",
+      });
+      const readsOnly = await succeeds(
+        () => admin.listAuditLog({ query: { kind: "read", limit: 100 } }),
+        "GET /audit?kind=read",
+      );
+      const strayAction = readsOnly.items.find(
+        (entry) => !reads.includes(entry.action) || entry.kind !== "read",
+      );
+      check(!strayAction, "GET /audit?kind=read lists something other than a read", {
+        observed: strayAction ? `${strayAction.action} (${strayAction.kind})` : "",
+      });
+
+      // The privacy backlog, each count with the age of its oldest (privacy review M2, H2).
+      const privacy = (await succeeds(() => admin.getSystemHealth(), "GET /system/health")).privacy;
+      equal(
+        Object.keys(privacy).sort().join(","),
+        [...PRIVACY_HEALTH_FIELDS].sort().join(","),
+        "GET /system/health privacy fields",
+      );
+      for (const [count, at, age] of [
+        ["pendingErasures", "oldestPendingErasureAt", "oldestPendingErasureAgeSec"],
+        ["waitingExports", "oldestWaitingExportAt", "oldestWaitingExportAgeSec"],
+        ["erasuresInProgress", "oldestErasureInProgressAt", "oldestErasureInProgressAgeSec"],
+      ] as const) {
+        const waiting = privacy[count] > 0;
+        check(
+          (privacy[at] !== null) === waiting && (privacy[age] !== null) === waiting,
+          `GET /system/health privacy.${count}: the oldest is given exactly when something waits`,
+          { observed: JSON.stringify(privacy) },
+        );
+      }
+      ctx.note(`privacy backlog: ${JSON.stringify(privacy)}`);
+    },
+  },
+  {
     id: "staff.curated-row",
     area: "staff",
     title:
@@ -588,7 +785,7 @@ export const staffChecks: CheckDefinition[] = [
       const content = await staff(ctx, "content");
       const admin = await staff(ctx, "admin");
       const actorId = await subjectOf(content);
-      const viewer = await env.isolatedViewer("curated");
+      const viewer = await env.isolatedViewer("curated", { member: false });
       const { cards } = await env.catalog();
       const titleIds = cards
         .filter((card) => card.maturity !== "18+")

@@ -215,6 +215,49 @@ describe("the gate and restricted profiles", () => {
   });
 });
 
+describe("an account with no profile yet (sign-up abandoned before the first)", () => {
+  it("is managed from the gate: no parental controls exist to protect", async () => {
+    const t = await createTestApp();
+    const device = t.device();
+    await device.api.signup({ body: { email: "abandoned@example.com", password: PASSWORD } });
+    // No profile, no membership: the account's own pages answer.
+    expect((await device.api.getAccount()).account.email).toBe("abandoned@example.com");
+    expect((await device.api.listDevices()).items).toHaveLength(1);
+    expect((await device.api.listIdentities()).items).toEqual([]);
+    expect((await device.api.listPrivacyRequests()).items).toEqual([]);
+    // The proofs the sensitive routes ask for still apply, unchanged.
+    expect(await codeOf(device.api.updateAccount({ body: { email: "moved@example.com" } }))).toBe(
+      "password_required",
+    );
+    expect(await codeOf(device.api.requestDataExport())).toBe("reauthentication_required");
+    expect(await codeOf(device.api.requestAccountDeletion())).toBe("reauthentication_required");
+    const moved = await device.api.updateAccount({
+      body: { email: "moved@example.com", currentPassword: PASSWORD },
+    });
+    expect(moved.account.email).toBe("moved@example.com");
+    await device.api.elevate({ body: { password: PASSWORD } });
+    expect((await device.api.requestDataExport()).status).toBeDefined();
+  });
+
+  it("goes back to today's rule as soon as a profile exists, even a kids one", async () => {
+    const t = await createTestApp();
+    const device = t.device();
+    await device.api.signup({ body: { email: "first-kids@example.com", password: PASSWORD } });
+    const kids = await device.api.createProfile({
+      body: { name: "Kids", avatarId: "av-robot", isKids: true },
+    });
+    for (const [name, call] of accountCalls(device)) {
+      expect(await codeOf(call()), `${name} at the gate`).toBe("profile_required");
+    }
+    await device.api.selectProfile({ body: { profileId: kids.id } });
+    for (const [name, call] of accountCalls(device)) {
+      expect(await codeOf(call()), `${name} from the kids profile`).toBe(
+        "unrestricted_profile_required",
+      );
+    }
+  });
+});
+
 describe("a household without parental controls", () => {
   it("adds profiles without the password, and its profiles manage the account", async () => {
     const t = await createTestApp();

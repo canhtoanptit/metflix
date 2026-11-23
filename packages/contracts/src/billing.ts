@@ -18,6 +18,18 @@ import {
 } from "./constants.ts";
 import { Money, PlanId, SignedMoney } from "./plans.ts";
 
+/**
+ * Why an amount is below its price, as numbers (UX review 2.2, 2.3): the account's credit it
+ * uses (left from a downgrade, or the unused time of the plan being changed) and the promo code's
+ * discount, each null when none. The price before them is `amount + creditApplied + discount`:
+ * the plan's monthly price for a renewal or a first payment, the new plan's remaining time for a
+ * plan change. Always sent by this API (optional in the type for clients' fixtures).
+ */
+const AmountReasons = {
+  creditApplied: Money.nullable().optional(),
+  discount: Money.nullable().optional(),
+};
+
 export const PaymentProviderId = z.enum(PAYMENT_PROVIDERS).meta({ id: "PaymentProviderId" });
 export type PaymentProviderId = z.output<typeof PaymentProviderId>;
 
@@ -49,7 +61,10 @@ export const MembershipState = z
      * membership, milestone 1's mock membership. Always sent by this API (optional in the type
      * for clients' fixtures).
      */
-    nextInvoice: z.object({ at: IsoDateTime, amount: Money }).nullable().optional(),
+    nextInvoice: z
+      .object({ at: IsoDateTime, amount: Money, ...AmountReasons })
+      .nullable()
+      .optional(),
   })
   .meta({ id: "MembershipState" });
 export type MembershipState = z.output<typeof MembershipState>;
@@ -152,8 +167,14 @@ export const Checkout = z
     trial: z
       .object({ days: z.number().int().positive(), endsAt: IsoDateTime.nullable() })
       .nullable(),
-    /** What is charged now (0 with a trial), once known. */
+    /**
+     * What is charged now (0 with a trial), once known: from the start for an account that can
+     * no longer have a trial (`OpenCheckout.trialEligible` false: the first invoice as the
+     * provider previews it, the account's credit and the code applied), otherwise once the card
+     * is confirmed. `creditApplied` and `discount` explain it (null while it is null).
+     */
     amountDue: Money.nullable(),
+    ...AmountReasons,
     promotion: AppliedPromotion.nullable(),
     /**
      * What became of `promotion`: null without a code; `pending` until the card is confirmed
@@ -178,7 +199,17 @@ export type Checkout = z.output<typeof Checkout>;
  * `GET /billing/checkout/:id` answers it to the session that continues.
  */
 export const OpenCheckout = z
-  .object({ checkout: Checkout.nullable() })
+  .object({
+    checkout: Checkout.nullable(),
+    /**
+     * Whether this account can still have a free trial (UX review 2.6): true until it has had
+     * one, so the plan's `trial` is what it gets, unless the card it confirms already had a trial
+     * on another account (then the checkout asks for the first payment: `requires_payment`).
+     * False once the account had a trial, and when no trial is offered (no payment provider).
+     * Always sent by this API (optional in the type for clients' fixtures).
+     */
+    trialEligible: z.boolean().optional(),
+  })
   .meta({ id: "OpenCheckout" });
 export type OpenCheckout = z.output<typeof OpenCheckout>;
 
@@ -194,12 +225,20 @@ export const PlanChangePreview = z
     planId: PlanId,
     /** Charged when the change is applied (0 when the change produces a credit). */
     amountDue: Money,
-    /** Credit left on the account after the change (0 when none). */
+    /**
+     * Why `amountDue` is below the new plan's remaining time: the credit for the current plan's
+     * unused time (and any credit the account had), and a discount. The remaining time on the
+     * new plan is `amountDue + creditApplied + discount`.
+     */
+    ...AmountReasons,
+    /** Credit left on the account after the change (0 when none): it pays `nextRenewal`. */
     credit: Money,
+    /** The provider's own line items, in its words: for detail only, never the summary. */
     lines: z.array(z.object({ description: z.string(), amount: SignedMoney })),
     /** When the new plan takes effect. */
     effectiveAt: IsoDateTime,
-    nextRenewal: z.object({ at: IsoDateTime, amount: Money }).nullable(),
+    /** The first renewal on the new plan, with the credit it uses (`creditApplied`). */
+    nextRenewal: z.object({ at: IsoDateTime, amount: Money, ...AmountReasons }).nullable(),
     /** Pass to `PUT /account/subscription` to apply exactly this preview. Opaque. */
     previewToken: z.string().min(1),
     expiresAt: IsoDateTime,
@@ -238,7 +277,13 @@ export const Invoice = z
     number: z.string().nullable(),
     status: z.enum(INVOICE_STATUSES),
     description: z.string().nullable(),
+    /**
+     * After discounts. Negative: a credit to the account (a downgrade's unused time), not a
+     * payment: nothing was paid (`amountPaid` 0) and later invoices use it (`creditApplied`).
+     */
     total: SignedMoney,
+    /** The account credit this invoice used, and its discount (null when none). */
+    ...AmountReasons,
     amountPaid: Money,
     amountDue: Money,
     amountRefunded: Money,

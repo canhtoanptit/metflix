@@ -81,7 +81,7 @@ describe("demo run", () => {
 
     const viewer = await demoViewer(t);
     const page = await t.services.browse.getBrowse(viewer, "home", undefined);
-    expect(page.policy?.id).toBe(`learned:${demo.run}`);
+    expect(page.policy?.id).toBe(`demo:${demo.run}`);
     const kids = await demoViewer(t, "pr-kids");
     expect((await t.services.browse.getBrowse(kids, "home", undefined)).policy?.id).toBe("rules");
 

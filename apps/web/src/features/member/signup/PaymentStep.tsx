@@ -96,6 +96,7 @@ export function PaymentStep() {
         confirmPath={signupConfirmPath}
         onConfirming={onConfirming}
         onConflict={onConflict}
+        declinedBefore={search.declined ?? null}
       />
     </StepBody>
   );

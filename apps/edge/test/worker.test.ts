@@ -270,10 +270,91 @@ describe("the Worker on Cloudflare bindings", () => {
     }
   });
 
+  it("answers the staff console's client-side routes with its own index, never cached", async () => {
+    for (const [path, headers] of [
+      ["/admin/members/m-1", { "Sec-Fetch-Mode": "navigate" }],
+      ["/admin/auth/callback", { "Sec-Fetch-Mode": "navigate" }],
+      ["/admin/operations/dead-letters", {}],
+    ] as [string, Record<string, string>][]) {
+      const response = await worker.fetch(
+        new Request(new URL(path, BASE), { headers }),
+        env,
+        createExecutionContext(),
+      );
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get("Cache-Control"), path).toBe("no-store");
+      // The console's own policy: this origin only (the development issuer is on it), never
+      // the member app's https: wildcard or Stripe's and Google Maps' origins.
+      const policy = response.headers.get("Content-Security-Policy") ?? "";
+      expect(policy, path).toContain("connect-src 'self';");
+      expect(policy, path).not.toMatch(/https:|stripe|googleapis/);
+      expect(await response.text(), path).toContain("<title>Webflix Staff</title>");
+    }
+    // A build file the console no longer has is a 404, never its index.
+    const missing = await worker.fetch(
+      new Request(new URL("/admin/assets/index-0000dead.js", BASE), {
+        headers: { "Sec-Fetch-Dest": "script" },
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("Cache-Control")).toBe("no-store");
+    await missing.body?.cancel();
+  });
+
+  it("gives the staff console its settings from the staff configuration (the development issuer here)", async () => {
+    const response = await SELF.fetch(new URL("/admin/config.json", BASE));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      issuer: "/dev-idp/staff",
+      clientId: "webflix-admin",
+      scope: "openid profile email",
+    });
+  });
+
   it("never lets a shared cache store a gateway response without explicit caching headers", async () => {
     const response = await SELF.fetch(new URL("/readyz", BASE));
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("logs the path of a request, never its query (search words, emails, tokens, codes)", async () => {
+    // Workers Logs persists what the Worker writes; the platform's invocation logs (which record
+    // the full URL) are off (test/node/config.test.ts).
+    const secrets = ["kestrel-secret-words", "someone@example.com", "tok-secret", "code-secret"];
+    const urls = [
+      `/api/v1/search?q=${secrets[0]}`,
+      `/api/admin/v1/members?q=${secrets[1]}`,
+      `/api/v1/privacy/exports/req-1?token=${secrets[2]}`,
+      `/api/v1/auth/oidc/google/callback?code=${secrets[3]}&state=state-secret`,
+    ];
+    const lines: string[] = [];
+    const originals = { log: console.log, warn: console.warn, error: console.error };
+    for (const level of ["log", "warn", "error"] as const) {
+      console[level] = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+    }
+    try {
+      for (const url of urls) {
+        const ctx = createExecutionContext();
+        const response = await handleFetch(new Request(new URL(url, BASE)), env, ctx);
+        await response.arrayBuffer();
+        await waitOnExecutionContext(ctx);
+      }
+    } finally {
+      Object.assign(console, originals);
+    }
+    const requests = lines.filter((line) => line.includes('"http.request"'));
+    expect(requests.length).toBeGreaterThanOrEqual(urls.length);
+    for (const secret of [...secrets, "state-secret"]) {
+      expect(
+        lines.filter((line) => line.includes(secret)),
+        secret,
+      ).toEqual([]);
+    }
   });
 });
 

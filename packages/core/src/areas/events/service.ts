@@ -15,7 +15,7 @@ import { handleJob } from "../../ports/job-queue.ts";
 import type { Logger } from "../../ports/logger.ts";
 import { HEARTBEAT_CARRY_SEC, type OutboxEvent } from "../../repositories/ports.ts";
 import type { AuthContext, ServiceDependencies } from "../../services/context.ts";
-import type { AreaModule, ServerEventInput } from "../module.ts";
+import type { AreaModule, AreaSeams, ServerEventInput } from "../module.ts";
 import {
   createCollector,
   type IngestRequest,
@@ -37,9 +37,11 @@ import type { OtherAreas } from "./neighbours.ts";
 import { isCompleted, playbackEvent } from "./playback-events.ts";
 import {
   createPrivacy,
+  type ErasureInProgress,
   type ExportEventsRequestList,
   type ExportEventsResults,
   type ExportResultsOutcome,
+  type PrivacyBacklog,
 } from "./privacy.ts";
 import type { ConsentPurposeName } from "./repository.ts";
 
@@ -53,6 +55,9 @@ const EXPIRY_BATCH = 100;
 const EXPIRY_MARGIN_SEC = 60;
 
 export type { IngestRequest } from "./collector.ts";
+
+/** Erasure records read per page by `withheldSubjects`. */
+const WITHHELD_PAGE = 1_000;
 
 /** Read-back filters (`GET /diagnostics/events`, the staff view). */
 export interface RecentEventsFilter {
@@ -101,6 +106,17 @@ export interface EventsStaffMethods {
   pendingExports(limit: number): Promise<ExportEventsRequestList>;
   /** Batch mode: fold in `export-events`' results document (see `ExportResultsOutcome`). */
   recordExportResults(document: ExportEventsResults): Promise<ExportResultsOutcome>;
+  /**
+   * Erasures in progress (deletions `processing`), longest-running first, at most `limit`: for
+   * an operator to see one is stuck and for how long (`stuckForSec`, `attempts`, `lastError`,
+   * when it runs again). The admin API's system routes can serve it.
+   */
+  erasuresInProgress(limit: number): Promise<ErasureInProgress[]>;
+  /**
+   * Privacy work not done yet (pending erasures, waiting exports, erasures in progress), each
+   * counted up to `limit` with the time of its oldest: for `GET /system/health`.
+   */
+  privacyBacklog(limit: number): Promise<PrivacyBacklog>;
 }
 
 /**
@@ -141,6 +157,8 @@ export interface EventsService extends AreaModule {
   forgetProfileBehaviour(input: { accountId: string; profileId: string }): Promise<void>;
   /** The `AreaSeams.accountDeletionScheduled` seam (see areas/module.ts). */
   accountDeletionScheduled(accountId: string): Promise<boolean>;
+  /** The `AreaSeams.withheldSubjects` seam (see areas/module.ts). */
+  withheldSubjects(asOf: number): Promise<string[]>;
   staff: EventsStaffMethods;
 }
 
@@ -150,6 +168,8 @@ export interface EventsServiceOptions {
    * export and erasure hooks), resolved when used: they are built after this one.
    */
   otherAreas: OtherAreas;
+  /** The seams this area calls: personalisation's `personalisationConsentChanged`. */
+  seams: Pick<AreaSeams, "personalisationConsentChanged">;
 }
 
 export function createEventsService(
@@ -158,8 +178,13 @@ export function createEventsService(
 ): EventsService {
   const { clock, config, eventSink } = deps;
   const keys = createSubjectKeys(config.events.pseudonymKey);
-  // The ledger emits `consent.change` through the collector's seam implementation.
-  const ledger = createConsentLedger(deps, (event) => collector.emitServerEvent(event));
+  // The ledger emits `consent.change` through the collector's seam implementation, and tells
+  // personalisation of every answer about its purpose.
+  const ledger = createConsentLedger(
+    deps,
+    (event) => collector.emitServerEvent(event),
+    (change) => options.seams.personalisationConsentChanged(change),
+  );
   const collector = createCollector(deps, keys, ledger, options.otherAreas);
   const privacy = createPrivacy(deps, keys, options.otherAreas, () => drainOutbox(deps.logger));
 
@@ -302,6 +327,14 @@ export function createEventsService(
   const staff: EventsStaffMethods = {
     consent: (accountId) => ledger.state(accountId, { gpc: false }),
     async setConsent(accountId, purpose, granted) {
+      // Support records a member's withdrawal only: turning a purpose on is the member's own
+      // answer (privacy review M4), never staff's on their behalf.
+      if (granted) {
+        throw new AppError("consent_grant_member_only", {
+          detail:
+            "Staff can only record a withdrawal. The member turns a purpose on themselves, in Account › Privacy.",
+        });
+      }
       await ledger.answer(accountId, purpose, granted, "support");
       return ledger.state(accountId, { gpc: false });
     },
@@ -316,6 +349,8 @@ export function createEventsService(
     },
     pendingExports: (limit) => privacy.pendingExports(limit),
     recordExportResults: (document) => privacy.recordExportResults(document),
+    erasuresInProgress: (limit) => privacy.erasuresInProgress(limit),
+    privacyBacklog: (limit) => privacy.privacyBacklog(limit),
   };
 
   return {
@@ -419,10 +454,26 @@ export function createEventsService(
       deps.logger.info("events.profile_behaviour_forgotten", {});
     },
 
+    async withheldSubjects(asOf) {
+      // Keyset pages: every unsettled record, however many (a deployment whose erase job does
+      // not run accumulates pending ones).
+      const keys: string[] = [];
+      let after: string | null = null;
+      for (;;) {
+        const page = await deps.repos.events.erasuresUnsettledAt(asOf, after, WITHHELD_PAGE);
+        for (const record of page) keys.push(record.subjectKey);
+        if (page.length < WITHHELD_PAGE) return keys;
+        after = page[page.length - 1]?.subjectKey ?? null;
+      }
+    },
+
     async accountDeletionScheduled(accountId) {
       const requests = await deps.repos.events.listPrivacyRequests(accountId);
+      // Scheduled, or its erasure in progress: the account is being deleted either way.
       return requests.some(
-        (request) => request.kind === "deletion" && request.status === "scheduled",
+        (request) =>
+          request.kind === "deletion" &&
+          (request.status === "scheduled" || request.status === "processing"),
       );
     },
     staff,

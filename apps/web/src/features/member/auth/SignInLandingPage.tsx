@@ -7,6 +7,7 @@ import { queries } from "../../../app/query/queries.ts";
 import { useSession } from "../../../app/session/session.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberHeader } from "../shared/Chrome.tsx";
+import { forgetLinkIntent, linkOfferPath, pendingLinkIntent } from "./linkIntent.ts";
 import {
   afterSignInPath,
   announceAuthChange,
@@ -18,6 +19,7 @@ import {
   signInReturnPath,
   withParams,
 } from "./oidc.ts";
+import { CARD_HEADING, EmailText } from "./parts.tsx";
 
 const route = getRouteApi("/public/login/continue");
 
@@ -76,7 +78,14 @@ function Landing() {
       announceAuthChange("signed-in");
       if (outcome === "signed-in") {
         toast.success(`Signed in with ${name}`);
-        void navigate({ href: afterSignInPath(session, search.redirect), replace: true });
+        // Signed in another way after `link-required` for another provider: offer that one.
+        const linking = pendingLinkIntent();
+        if (linking === provider) forgetLinkIntent();
+        const next =
+          linking && linking !== provider
+            ? linkOfferPath(linking)
+            : afterSignInPath(session, search.redirect);
+        void navigate({ href: next, replace: true });
       }
       return;
     }
@@ -187,7 +196,7 @@ function Welcome({
         id="welcome-heading"
         ref={headingRef}
         tabIndex={-1}
-        className="type-headline text-fg outline-none"
+        className={`${CARD_HEADING} outline-none`}
       >
         Welcome to Webflix
       </h1>
@@ -195,7 +204,7 @@ function Welcome({
         {context === "signin"
           ? `There was no Webflix account for your ${name} account, so we created one.`
           : "Your account is ready."}{" "}
-        You'll sign in with {name} as <span className="wrap-anywhere text-fg">{email}</span>.
+        You'll sign in with {name} as <EmailText>{email}</EmailText>.
       </p>
       <Button variant="accent" size="lg" fullWidth asChild className="mt-2">
         <a
@@ -239,7 +248,7 @@ function NotKept({ name, retryHref }: { name: string; retryHref: string }) {
         id="not-kept-heading"
         ref={headingRef}
         tabIndex={-1}
-        className="type-headline text-fg outline-none"
+        className={`${CARD_HEADING} outline-none`}
       >
         You're not signed in
       </h1>

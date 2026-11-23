@@ -2,10 +2,13 @@
  * Stage the static assets the Worker serves (wrangler.jsonc `assets.directory`):
  *
  * - the SPA build (`apps/web/dist`), without source maps and Vite's build manifest;
+ * - the staff console's build (`apps/admin/dist`) under `/admin/`, the same way, without its
+ *   `config.json` (the Worker answers that from its staff configuration: src/admin-console.ts);
  * - the API reference bundle at `/api/docs/scalar.js` (blueprint: no third-party origins),
  *   served by the asset layer before the Worker runs;
  * - a `_headers` file: the chart's security headers for every asset, immutable caching for
- *   Vite's content-hashed `/assets/*`.
+ *   Vite's content-hashed `/assets/*` and `/admin/assets/*`, and the console's `index.html`
+ *   never cached.
  *
  * The staging directory is rebuilt from scratch each time, so it never serves files the
  * current web build no longer has.
@@ -14,20 +17,38 @@ import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unstable_readConfig } from "wrangler";
+import { consoleContentSecurityPolicy } from "../../src/console-policy.ts";
 import { EDGE_DIR, REPO_ROOT, type Target, WRANGLER_CONFIG } from "./platform.ts";
 import { chartSpaHeaders, withPaymentProvider } from "./security-headers.ts";
 
-/** `WEBFLIX_PAYMENT_PROVIDER` of an environment in wrangler.jsonc (empty: the core default). */
-export function configuredPaymentProvider(target: Target): string | undefined {
+/** A var of an environment in wrangler.jsonc (empty: unset). */
+function configuredVar(target: Target, name: string): string | undefined {
   const config = unstable_readConfig(
     { config: WRANGLER_CONFIG, ...(target === "production" ? { env: "production" } : {}) },
     { hideWarnings: true },
   );
-  const value = config.vars.WEBFLIX_PAYMENT_PROVIDER;
+  const value = config.vars[name];
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/** `WEBFLIX_PAYMENT_PROVIDER` of an environment in wrangler.jsonc (empty: the core default). */
+export function configuredPaymentProvider(target: Target): string | undefined {
+  return configuredVar(target, "WEBFLIX_PAYMENT_PROVIDER");
+}
+
+/**
+ * The staff issuer the console of an environment connects to: `WEBFLIX_STAFF_ISSUER`, or none
+ * (locally the development issuer on this origin; in production, until one is configured,
+ * nothing: the console's settings answer 503). The Worker computes the same from its config.
+ */
+export function configuredStaffIssuer(target: Target): string | null {
+  return configuredVar(target, "WEBFLIX_STAFF_ISSUER") ?? null;
+}
+
 export const WEB_DIST = join(REPO_ROOT, "apps", "web", "dist");
+export const ADMIN_DIST = join(REPO_ROOT, "apps", "admin", "dist");
+/** Where the console is staged in the assets directory (its build's `base`, src/spa.ts). */
+const ADMIN_STAGED = "admin";
 /** wrangler.jsonc `assets.directory`, per environment. */
 export function assetsDir(target: Target): string {
   return join(EDGE_DIR, "dist", target === "production" ? "production-assets" : "public");
@@ -52,6 +73,7 @@ function scalarBundle(): string {
 export async function headersFile(
   target: Target,
   paymentProvider: string | undefined = configuredPaymentProvider(target),
+  staffIssuer: string | null = configuredStaffIssuer(target),
 ): Promise<string> {
   // Stripe's origins only when Stripe is the environment's provider (security-headers.ts).
   const security = withPaymentProvider(
@@ -66,6 +88,23 @@ export async function headersFile(
     "",
     "/assets/*",
     "  Cache-Control: public, max-age=31536000, immutable",
+    "",
+    // The staff console: its own policy instead of the member app's (after `/*`: a detach only
+    // removes what an earlier rule added), hashed build files forever, its index never (a
+    // deploy's console is the one the next navigation loads). Its client-side routes get the
+    // same from the Worker (src/spa.ts).
+    "/admin/*",
+    "  ! Content-Security-Policy",
+    `  Content-Security-Policy: ${consoleContentSecurityPolicy(staffIssuer)}`,
+    "",
+    "/admin/assets/*",
+    "  Cache-Control: public, max-age=31536000, immutable",
+    "",
+    "/admin/",
+    "  Cache-Control: no-store",
+    "",
+    "/admin/index.html",
+    "  Cache-Control: no-store",
     "",
     "/api/docs/scalar.js",
     "  Cache-Control: public, max-age=86400",
@@ -98,14 +137,26 @@ export async function stageAssets(
       `No web build in ${relative(REPO_ROOT, WEB_DIST)} (pnpm --filter @webflix/web build)`,
     );
   }
+  if (!(await exists(join(ADMIN_DIST, "index.html")))) {
+    throw new Error(
+      `No staff console build in ${relative(REPO_ROOT, ADMIN_DIST)} (pnpm --filter @webflix/admin build)`,
+    );
+  }
   await rm(directory, { recursive: true, force: true });
-  await cp(WEB_DIST, directory, {
+  const built = (root: string, dropped: readonly string[] = []) => ({
     recursive: true,
-    filter: (source) => {
-      const path = relative(WEB_DIST, source);
-      return !path.endsWith(".map") && path !== ".vite" && !path.startsWith(`.vite/`);
+    filter: (source: string) => {
+      const path = relative(root, source);
+      return (
+        !path.endsWith(".map") &&
+        path !== ".vite" &&
+        !path.startsWith(".vite/") &&
+        !dropped.includes(path)
+      );
     },
   });
+  await cp(WEB_DIST, directory, built(WEB_DIST));
+  await cp(ADMIN_DIST, join(directory, ADMIN_STAGED), built(ADMIN_DIST, ["config.json"]));
   const docs = join(directory, "api", "docs");
   await mkdir(docs, { recursive: true });
   await cp(scalarBundle(), join(docs, "scalar.js"));

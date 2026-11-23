@@ -377,14 +377,14 @@ describe("email tokens", () => {
 
     t.clock.advance(30 * 60 * 1000);
     await expect(
-      t.services.identity.confirmPasswordReset(token, "a new passphrase"),
+      t.services.identity.confirmPasswordReset(token, "a new passphrase", client),
     ).rejects.toMatchObject({
       code: "verification_token_invalid",
     });
     const fresh = await resetLink(t, "tok@example.com");
-    await t.services.identity.confirmPasswordReset(fresh, "a new passphrase");
+    await t.services.identity.confirmPasswordReset(fresh, "a new passphrase", client);
     await expect(
-      t.services.identity.confirmPasswordReset(fresh, "another passphrase"),
+      t.services.identity.confirmPasswordReset(fresh, "another passphrase", client),
     ).rejects.toMatchObject({
       code: "verification_token_invalid",
     });
@@ -403,7 +403,7 @@ describe("email tokens", () => {
       t.clock.now(),
     );
     await expect(
-      t.services.identity.confirmPasswordReset(token, "a new passphrase"),
+      t.services.identity.confirmPasswordReset(token, "a new passphrase", client),
     ).rejects.toMatchObject({
       code: "verification_token_invalid",
     });
@@ -738,5 +738,223 @@ describe("a profile that becomes restricted", () => {
       uncharged,
     );
     expect(forgotten).toHaveLength(2);
+  });
+});
+
+/**
+ * Security review H1 (pre-account takeover): an automatic link (§4.1) may only put someone into
+ * an account whose every way in was set up by a person who, at that moment, proved control of
+ * the account's current address. Proofs: a federated sign-up with an issuer-verified address, a
+ * completed password reset, a verification link opened in a session of the account. A click from
+ * anywhere else, a password change and a password sign-in prove nothing; an address change undoes
+ * the proof. Everything else is `link-required`.
+ */
+describe("automatic linking needs ways in set up by the address's owner (H1)", () => {
+  const ATTACKER_PASSWORD = "attacker-knows-this";
+
+  function issuers(t: TestServices) {
+    const google = offerGoogle(t);
+    const apple = new MemoryIdentityProvider({ id: "apple", clock: t.clock });
+    t.deps.identityProviders.apple = apple;
+    return { google, apple };
+  }
+
+  /** A sign-in through `provider` with an address it verified, as a browser with no session. */
+  async function federated(
+    t: TestServices,
+    provider: MemoryIdentityProvider,
+    id: "google" | "apple",
+    email: string,
+  ) {
+    const start = await t.services.identity.startOidc({
+      provider: id,
+      intent: "signin",
+      returnTo: "/",
+      auth: null,
+    });
+    return t.services.identity.completeOidc({
+      provider: id,
+      response: provider.complete(start.location, { email, emailVerified: true }),
+      transaction: start.transaction ?? undefined,
+      client,
+    });
+  }
+
+  async function passwordSignUp(t: TestServices, email: string, password = ATTACKER_PASSWORD) {
+    const issued = await t.services.auth.signup({ email, password }, client);
+    const auth = await t.services.auth.authenticate(issued.token);
+    if (!auth) throw new Error("no session");
+    return { auth, token: issued.token };
+  }
+
+  /** The newest verification link sent to `email`, as its token. */
+  async function verificationToken(t: TestServices, email: string): Promise<string> {
+    await drain(t);
+    const message = t.ports.email
+      .mailbox(email)
+      .findLast((item) => item.template === "verify-email");
+    const link = message?.text.match(/https?:\/\/\S+#token=[A-Za-z0-9_-]+/)?.[0];
+    if (!link) throw new Error(`no verification link for ${email}`);
+    return new URL(link).hash.slice("#token=".length);
+  }
+
+  async function resetToken(t: TestServices, email: string): Promise<string> {
+    await t.services.identity.requestPasswordReset(email, uncharged);
+    await drain(t);
+    const message = t.ports.email
+      .mailbox(email)
+      .findLast((item) => item.template === "reset-password");
+    const link = message?.text.match(/https?:\/\/\S+#token=[A-Za-z0-9_-]+/)?.[0];
+    if (!link) throw new Error(`no reset link for ${email}`);
+    return new URL(link).hash.slice("#token=".length);
+  }
+
+  const accountOf = (t: TestServices, email: string) =>
+    t.deps.repos.identity.findAccountByEmail(email);
+
+  it("a click from a browser with no session verifies the address but links nothing automatically", async () => {
+    const t = await createTestServices();
+    const { google } = issuers(t);
+    const attacker = await passwordSignUp(t, "victim@example.com");
+    // The victim follows the genuine link, signed out.
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "victim@example.com"),
+      null,
+    );
+    expect((await accountOf(t, "victim@example.com"))?.emailVerifiedAt).not.toBeNull();
+    const victim = await federated(t, google, "google", "victim@example.com");
+    expect(victim.outcome).toBe("link-required");
+    expect(victim.session).toBeNull();
+    expect(await t.deps.repos.identity.listIdentities(attacker.auth.session.accountId)).toEqual([]);
+  });
+
+  it("a click in a session of another account proves nothing for this one", async () => {
+    const t = await createTestServices();
+    const { google } = issuers(t);
+    await passwordSignUp(t, "victim@example.com");
+    const bystander = await passwordSignUp(t, "bystander@example.com", MEMBER_PASSWORD);
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "victim@example.com"),
+      bystander.auth,
+    );
+    expect((await federated(t, google, "google", "victim@example.com")).outcome).toBe(
+      "link-required",
+    );
+  });
+
+  it("a member who verifies in their own session is linked automatically, without friction", async () => {
+    const t = await createTestServices();
+    const { google } = issuers(t);
+    const member = await passwordSignUp(t, "member@example.com", MEMBER_PASSWORD);
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "member@example.com"),
+      member.auth,
+    );
+    const done = await federated(t, google, "google", "member@example.com");
+    expect(done.outcome).toBe("signed-in");
+    expect((await t.services.auth.authenticate(done.session?.token))?.session.accountId).toBe(
+      member.auth.session.accountId,
+    );
+  });
+
+  it("an account created through an issuer is proven: another issuer with its address links", async () => {
+    const t = await createTestServices();
+    const { google, apple } = issuers(t);
+    expect((await federated(t, google, "google", "fed@example.com")).outcome).toBe("signed-up");
+    expect((await federated(t, apple, "apple", "fed@example.com")).outcome).toBe("signed-in");
+  });
+
+  it("neither a password change nor a password sign-in proves an account someone else may have set up", async () => {
+    const t = await createTestServices();
+    const { google } = issuers(t);
+    const attacker = await passwordSignUp(t, "victim@example.com");
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "victim@example.com"),
+      null,
+    );
+    await t.services.account.updateAccount(
+      attacker.auth,
+      { currentPassword: ATTACKER_PASSWORD, newPassword: "attacker-changed-it" },
+      uncharged,
+    );
+    await t.services.auth.login(
+      { email: "victim@example.com", password: "attacker-changed-it" },
+      client,
+      openLogin,
+    );
+    expect((await federated(t, google, "google", "victim@example.com")).outcome).toBe(
+      "link-required",
+    );
+  });
+
+  it("a password reset proves the account: the attacker is out, and the owner's issuer links", async () => {
+    const t = await createTestServices();
+    const { google } = issuers(t);
+    const attacker = await passwordSignUp(t, "victim@example.com");
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "victim@example.com"),
+      null,
+    );
+    expect((await federated(t, google, "google", "victim@example.com")).outcome).toBe(
+      "link-required",
+    );
+    // The landing page sends the owner to reset the password: it becomes theirs.
+    const owner = await t.services.identity.confirmPasswordReset(
+      await resetToken(t, "victim@example.com"),
+      "the owner's own passphrase",
+      client,
+    );
+    // The device that completed the reset is signed in, and it is the only one.
+    const ownerAuth = await t.services.auth.authenticate(owner.token);
+    expect(ownerAuth?.session.accountId).toBe(attacker.auth.session.accountId);
+    expect(
+      await t.deps.repos.identity.countSessions(attacker.auth.session.accountId, t.clock.now()),
+    ).toBe(1);
+    expect(await t.services.auth.authenticate(attacker.token)).toBeNull();
+    await expect(
+      t.services.auth.login(
+        { email: "victim@example.com", password: ATTACKER_PASSWORD },
+        client,
+        openLogin,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_credentials" });
+    expect((await federated(t, google, "google", "victim@example.com")).outcome).toBe("signed-in");
+  });
+
+  it("an address change undoes the proof: the new address must be proven again", async () => {
+    const t = await createTestServices();
+    const { google } = issuers(t);
+    // An account its owner proved (verified in their own session)...
+    const owner = await passwordSignUp(t, "old@example.com", MEMBER_PASSWORD);
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "old@example.com"),
+      owner.auth,
+    );
+    expect((await accountOf(t, "old@example.com"))?.accessProvenAt).not.toBeNull();
+    // ...pointed at another person's address, whose owner clicks the link signed out.
+    await t.services.account.updateAccount(
+      owner.auth,
+      { email: "someone-else@example.com", currentPassword: MEMBER_PASSWORD },
+      uncharged,
+    );
+    expect((await accountOf(t, "someone-else@example.com"))?.accessProvenAt).toBeNull();
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "someone-else@example.com"),
+      null,
+    );
+    expect((await federated(t, google, "google", "someone-else@example.com")).outcome).toBe(
+      "link-required",
+    );
+    // The account's own holder confirming the new address in their session proves it again.
+    await t.services.account.updateAccount(
+      owner.auth,
+      { email: "new@example.com", currentPassword: MEMBER_PASSWORD },
+      uncharged,
+    );
+    await t.services.identity.confirmEmailVerification(
+      await verificationToken(t, "new@example.com"),
+      owner.auth,
+    );
+    expect((await federated(t, google, "google", "new@example.com")).outcome).toBe("signed-in");
   });
 });

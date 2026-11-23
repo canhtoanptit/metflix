@@ -12,9 +12,13 @@ Protocol:
   outside it are dropped from every system's list before scoring, so no system is penalised
   for recommending what Continue Watching or Watch It Again cover.
 * Systems: random, popularity, co-watch item-kNN, ALS, content, the ranker (debiased and naive),
-  the final re-ranked list (`learned`), the real milestone 1 engine (`rule-engine`: its score
-  order; `rule-engine-home`: its home page reading order), any external rankings file, and the
-  oracle (true utility) when the simulator's truth is given.
+  the pipeline's final re-ranked list (`learned`), the real milestone 1 engine (`rule-engine`:
+  its score order; `rule-engine-home`: its home page reading order), the same engine's home page
+  with the run handed to it as the learned policy's candidates (`learned-home`: what members
+  are served under the learned policy), any external rankings file, and the oracle (true
+  utility) when the simulator's truth is given. Every system sees item statistics (plays,
+  viewers, the engine's Trending and Top 10 views) over all eligible profiles, as training,
+  scoring and the product do, not over the evaluated population only.
 * Three families of accuracy metrics, because logged plays are not neutral:
   - replay on all discoveries (`ndcg@10`, ...): what members played in the test window. They
     could only play what the platform showed them, and the platform showed them what the
@@ -26,8 +30,10 @@ Protocol:
     exposure; simulator only.
 * Intervals: percentile bootstrap over profiles (1000 resamples), paired for differences.
 
-Gate (`GATE_METRIC`): `utility@10` of `learned` against `rule-engine` when the simulator's truth
-is given, the paired 95% interval of the difference entirely above zero. Expected true utility
+Gate (`GATE_METRIC`): `utility@10` of `learned-home` against `rule-engine-home` (what members
+see under each policy) when the simulator's truth is given, the paired 95% interval of the
+difference entirely above zero (`gate_verdict`). A publish needs this at several rolling
+cutoffs (gate.py). Expected true utility
 of the first ten recommendations is what the blueprint's "beats the rule engine on the
 simulator" means once exposure bias is taken seriously; ten is about the first screen (the
 billboard and the first rows' visible cards). Without truth (real data) the gate falls back to
@@ -37,7 +43,7 @@ billboard and the first rows' visible cards). Without truth (real data) the gate
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -57,8 +63,13 @@ from webflix_recs.train import Models
 
 GATE_METRIC = "utility@10"
 FALLBACK_GATE_METRIC = "search:ndcg@10"
-CANDIDATE = "learned"
-BASELINE = "rule-engine"
+#: The gate compares what members see under each policy: the engine's home page with the run as
+#: its learned candidates, against the engine's own home page.
+CANDIDATE = "learned-home"
+BASELINE = "rule-engine-home"
+#: Component comparisons reported beside the gate (not gating): the pipeline's own final list
+#: against the engine's score order.
+SCORE_BASELINE = "rule-engine"
 KS = (10, 20)
 KMAX = 20
 COLD_TITLE_DAYS = 14
@@ -203,7 +214,15 @@ def evaluation_population(inputs: EvaluationInputs, log: Any = print) -> Evaluat
         return EvaluationPopulation(
             cutoff, end, eligible, history_all, future, searched, available, [], history_all
         )
-    history = History.build(dataset, catalog, cutoff, profiles=population)
+    # The evaluated profiles' own signals, with item statistics (plays in the last 7 and 28
+    # days, distinct viewers) over every eligible profile, as training and scoring compute
+    # them: the population alone holds only part of the plays.
+    history = replace(
+        History.build(dataset, catalog, cutoff, profiles=population),
+        title_plays_7d=history_all.title_plays_7d,
+        title_plays_28d=history_all.title_plays_28d,
+        title_profiles=history_all.title_profiles,
+    )
     return EvaluationPopulation(
         cutoff, end, eligible, history_all, future, searched, available, population, history
     )
@@ -240,22 +259,54 @@ def _no_population_report(
     }
 
 
-def write_rule_engine_input(inputs: EvaluationInputs, work_dir: Path, log: Any = print) -> Path:
+def write_rule_engine_input(
+    inputs: EvaluationInputs,
+    work_dir: Path,
+    log: Any = print,
+    *,
+    section: str | None = None,
+    append: bool = False,
+) -> Path:
     """The rule engine's input for the evaluated population, for a Node step run elsewhere
-    (`node scripts/rule-engine-rankings.ts --input <file> --out-dir <dir>`)."""
-    from webflix_recs.evaluation.rule_engine import engine_input  # noqa: PLC0415
+    (`node scripts/rule-engine-rankings.ts --input <file> --out-dir <dir>`). With `section`, the
+    Node step writes this population's rankings to `<dir>/<section>/`; `append` adds the section
+    to an input that already holds others (one per gate cutoff)."""
+    from webflix_recs.evaluation.rule_engine import engine_input, learned_section  # noqa: PLC0415
 
     selected = evaluation_population(inputs, log)
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / "engine-input.ndjson"
     if not selected.population:
-        empty_engine_input(inputs.catalog, selected.cutoff, path)
+        empty_engine_input(inputs.catalog, selected.cutoff, path, section=section, append=append)
         return path
-    engine_input(selected.history, inputs.catalog, selected.population, path)
+    learned = learned_section(
+        inputs.models,
+        selected.history,
+        inputs.catalog,
+        selected.population,
+        inputs.run_manifest["run"],
+    )
+    engine_input(
+        selected.history,
+        inputs.catalog,
+        selected.population,
+        path,
+        views_history=selected.history_all,
+        section=section,
+        append=append,
+        learned=learned,
+    )
     return path
 
 
-def empty_engine_input(catalog: Catalog, as_of_ms: int, path: Path) -> None:
+def empty_engine_input(
+    catalog: Catalog,
+    as_of_ms: int,
+    path: Path,
+    *,
+    section: str | None = None,
+    append: bool = False,
+) -> None:
     """A rule-engine input with no profile (the Node step then writes empty rankings): what a
     job writes when there is nothing to evaluate, so the step after it still succeeds."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,8 +319,19 @@ def empty_engine_input(catalog: Catalog, as_of_ms: int, path: Path) -> None:
         "titles": [{"id": t["id"], "addedAt": t["addedAt"]} for t in catalog.raw["titles"]],
         "views": [],
         "limit": len(catalog),
+        **({"section": section} if section else {}),
     }
-    path.write_bytes(orjson.dumps(header) + b"\n")
+    with path.open("ab" if append else "wb") as handle:
+        handle.write(orjson.dumps(header) + b"\n")
+
+
+def gate_verdict(interval: m.Interval) -> tuple[bool, str]:
+    """One backtest's verdict: passed only when the whole 95% interval of the paired difference
+    (candidate - baseline) is above zero. A positive mean whose interval reaches zero is within
+    noise, and within noise is a loss."""
+    if interval.low > 0:
+        return True, "the 95% interval of the paired difference is above zero"
+    return False, "the 95% interval of the paired difference includes or is below zero"
 
 
 def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> dict[str, Any]:
@@ -319,10 +381,26 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
     if inputs.models.ranker_naive is None:
         del lists["ranker-naive"]
     externals = dict(inputs.externals or {})
-    if not any(name.startswith("rule-engine") for name in externals):
-        from webflix_recs.evaluation.rule_engine import run_rule_engine  # noqa: PLC0415
+    ran_engine = not any(name.startswith("rule-engine") for name in externals)
+    if ran_engine:
+        from webflix_recs.evaluation.rule_engine import (  # noqa: PLC0415
+            learned_section,
+            run_rule_engine,
+        )
 
-        externals.update(run_rule_engine(history, catalog, population, work_dir / "rule-engine"))
+        learned = learned_section(
+            inputs.models, history, catalog, population, inputs.run_manifest["run"]
+        )
+        externals.update(
+            run_rule_engine(
+                history,
+                catalog,
+                population,
+                work_dir / "rule-engine",
+                views_history=history_all,
+                learned=learned,
+            )
+        )
     external_coverage = {}
     for path in externals.values():
         system, rankings = load_external(path, cutoff, inputs.allow_leak)
@@ -330,6 +408,12 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
         external_coverage[system] = round(
             sum(1 for p in population if p in rankings) / max(n, 1), 4
         )
+    if ran_engine:
+        # The exchange files hold profile keys with their libraries and rankings: read, they go
+        # (erasure only knows the store). Files an operator passed in are the operator's.
+        import shutil  # noqa: PLC0415
+
+        shutil.rmtree(work_dir / "rule-engine", ignore_errors=True)
 
     truth = None
     kinds = None
@@ -427,22 +511,32 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
     )
     if truth is not None:
         compared += ("utility@10", "regret@10", "utility@20")
-    differences: dict[str, Any] = {}
-    if BASELINE in per_profile:
-        for system in per_profile:
-            if system == BASELINE:
-                continue
-            differences[system] = {
+
+    def differences_from(baseline: str) -> dict[str, Any]:
+        if baseline not in per_profile:
+            return {}
+        return {
+            system: {
                 metric: bootstrap.interval(
-                    per_profile[system][metric] - per_profile[BASELINE][metric], masked(metric)
+                    per_profile[system][metric] - per_profile[baseline][metric], masked(metric)
                 ).to_list()
                 for metric in compared
             }
+            for system in per_profile
+            if system != baseline
+        }
+
+    differences = differences_from(SCORE_BASELINE)
+    differences_home = differences_from(BASELINE)
     # Ablations: what each stage adds, paired on the same profiles.
     ablations: dict[str, Any] = {}
     for name, (with_, without) in {
         "position-bias correction (ranker - ranker-naive)": ("ranker", "ranker-naive"),
         "re-ranking (learned - ranker)": ("learned", "ranker"),
+        "the engine's home page with the run (learned-home - learned)": (
+            "learned-home",
+            "learned",
+        ),
     }.items():
         if with_ in per_profile and without in per_profile:
             ablations[name] = {
@@ -459,24 +553,24 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
         "baseline": BASELINE,
         "level": 0.95,
     }
-    if gate_metric not in per_profile[CANDIDATE]:
+    if CANDIDATE not in per_profile or BASELINE not in per_profile:
+        missing = [name for name in (CANDIDATE, BASELINE) if name not in per_profile]
+        gate.update(
+            difference=None,
+            passed=False,
+            reason=f"{' and '.join(missing)} missing (the rule engine's rankings with the run)",
+        )
+    elif gate_metric not in per_profile[CANDIDATE]:
         gate.update(
             difference=None, passed=False, reason=f"{gate_metric} is not available (truth missing?)"
         )
-    elif BASELINE not in per_profile:
-        gate.update(difference=None, passed=False, reason="the rule-engine baseline is missing")
     else:
         interval = bootstrap.interval(
             per_profile[CANDIDATE][gate_metric] - per_profile[BASELINE][gate_metric],
             masked(gate_metric),
         )
-        gate.update(
-            difference=interval.to_list(),
-            passed=bool(interval.low > 0),
-            reason="the 95% interval of the paired difference is above zero"
-            if interval.low > 0
-            else "the 95% interval of the paired difference includes or is below zero",
-        )
+        passed, reason = gate_verdict(interval)
+        gate.update(difference=interval.to_list(), passed=passed, reason=reason)
     return {
         "format": "webflix.recs-evaluation",
         "formatVersion": 1,
@@ -498,6 +592,7 @@ def evaluate(inputs: EvaluationInputs, *, work_dir: Path, log: Any = print) -> d
         "results": results,
         "coldStartTitleRecall@20": cold_title_results,
         "differencesVsRuleEngine": differences,
+        "differencesVsRuleEngineHome": differences_home,
         "ablations": ablations,
         "gate": gate,
         "propensity": inputs.models.propensity.to_dict(),

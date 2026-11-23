@@ -1,16 +1,17 @@
 import type { PaymentProviderId } from "@webflix/contracts";
-import type {
-  BillingCustomerRecord,
-  BillingOperationRecord,
-  BillingRepository,
-  CheckoutRecord,
-  InvoiceRecord,
-  MembershipRecord,
-  PaymentMethodSetupRecord,
-  PlanPriceRecord,
-  ProviderEventRecord,
-  ProviderPriceRecord,
-  RefundRecord,
+import {
+  type BillingCustomerRecord,
+  type BillingOperationRecord,
+  type BillingRepository,
+  type CheckoutRecord,
+  ERASED_TRIAL_OWNER,
+  type InvoiceRecord,
+  type MembershipRecord,
+  type PaymentMethodSetupRecord,
+  type PlanPriceRecord,
+  type ProviderEventRecord,
+  type ProviderPriceRecord,
+  type RefundRecord,
 } from "../../areas/billing/repository.ts";
 
 const OPEN_CHECKOUT = new Set(["requires_setup", "requires_payment", "processing"]);
@@ -34,7 +35,7 @@ export function createMemoryBillingRepository(): BillingRepository {
 
   const eventKey = (provider: PaymentProviderId, id: string) => `${provider}:${id}`;
 
-  return {
+  const repository: BillingRepository = {
     async getCustomer(accountId, provider) {
       const record = customers.get(`${accountId}:${provider}`);
       return record ? clone(record) : null;
@@ -169,6 +170,66 @@ export function createMemoryBillingRepository(): BillingRepository {
     async hasTrialFingerprint(accountId) {
       return [...fingerprints.values()].some((claim) => claim.accountId === accountId);
     },
+    async trialUsed(accountId) {
+      return (
+        [...fingerprints.values()].some((claim) => claim.accountId === accountId) ||
+        memberships.get(accountId)?.trialRedeemedAt != null
+      );
+    },
+    async findOpenCheckoutAndTrial(accountId, now) {
+      return {
+        checkout: await repository.findOpenCheckout(accountId, now),
+        trialUsed: await repository.trialUsed(accountId),
+      };
+    },
+
+    async forgetAccount({ accountId, customerIds }) {
+      for (const [key, claim] of fingerprints) {
+        if (claim.accountId !== accountId) continue;
+        if (key.endsWith(`:account:${accountId}`)) fingerprints.delete(key);
+        else fingerprints.set(key, { accountId: ERASED_TRIAL_OWNER, createdAt: 0 });
+      }
+      for (const [key, record] of operations) {
+        if (record.accountId === accountId) operations.delete(key);
+      }
+      for (const [key, record] of events) {
+        if (
+          record.accountId === accountId ||
+          (record.customerId !== null && customerIds.includes(record.customerId))
+        ) {
+          events.delete(key);
+        }
+      }
+      for (const [key, record] of invoices) {
+        if (record.accountId === accountId) {
+          invoices.set(key, { ...record, hostedUrl: null, pdfUrl: null });
+        }
+      }
+      for (const [key, record] of checkouts) {
+        if (record.accountId === accountId) checkouts.delete(key);
+      }
+      for (const [key, record] of setups) {
+        if (record.accountId === accountId) setups.delete(key);
+      }
+      memberships.delete(accountId);
+      for (const [key, record] of customers) {
+        if (record.accountId === accountId) customers.delete(key);
+      }
+    },
+    async listCheckouts(accountId, limit) {
+      return [...checkouts.values()]
+        .filter((record) => record.accountId === accountId)
+        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+        .slice(0, limit)
+        .map(clone);
+    },
+    async listSetups(accountId, limit) {
+      return [...setups.values()]
+        .filter((record) => record.accountId === accountId)
+        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+        .slice(0, limit)
+        .map(clone);
+    },
 
     async upsertInvoice(record) {
       const existing = [...invoices.values()].find(
@@ -267,4 +328,5 @@ export function createMemoryBillingRepository(): BillingRepository {
       return record ? clone(record) : null;
     },
   };
+  return repository;
 }

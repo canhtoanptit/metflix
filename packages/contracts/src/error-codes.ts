@@ -98,6 +98,11 @@ export const ERROR_CATALOG = {
    * the account (`DELETE /account/deletion`).
    */
   account_deletion_scheduled: { status: 409, title: "This account is being deleted" },
+  /**
+   * Staff may record a member's withdrawal of consent, never a grant: turning a purpose on is
+   * the member's own answer (Account › Privacy), never support's (privacy review M4).
+   */
+  consent_grant_member_only: { status: 403, title: "Only the member can turn this on" },
   /** An experiment change that conflicts with its state or its layer's allocation (§8.1). */
   experiment_conflict: { status: 409, title: "That change conflicts with the experiment" },
   /** A valid staff token without the role the route needs (§8.3). */

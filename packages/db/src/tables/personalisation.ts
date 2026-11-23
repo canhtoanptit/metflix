@@ -77,6 +77,13 @@ export interface TitleAvailabilityTable {
   updated_by: string;
 }
 
+export interface RecommendationWithdrawalsTable {
+  subject_key: string;
+  account_key: string;
+  kind: string;
+  withdrawn_at: number;
+}
+
 export interface PersonalisationTables {
   recommendation_models: RecommendationModelsTable;
   recommendation_neighbours: RecommendationNeighboursTable;
@@ -86,6 +93,7 @@ export interface PersonalisationTables {
   editorial_collections: EditorialCollectionsTable;
   editorial_collection_items: EditorialCollectionItemsTable;
   title_availability: TitleAvailabilityTable;
+  recommendation_withdrawals: RecommendationWithdrawalsTable;
 }
 
 /** Parents first. */
@@ -98,4 +106,5 @@ export const PERSONALISATION_TABLES = [
   "editorial_collections",
   "editorial_collection_items",
   "title_availability",
+  "recommendation_withdrawals",
 ] as const satisfies readonly (keyof PersonalisationTables)[];

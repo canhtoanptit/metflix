@@ -18,6 +18,7 @@
  * retried request finds the first one's entry and is answered from it, never run again.
  */
 import {
+  AUDIT_READ_ACTIONS,
   type AuditLogEntry,
   type AuditOutcome,
   type AuditQuery,
@@ -32,6 +33,7 @@ import { serializeError } from "../../ports/logger.ts";
 import type { StaffIdentity } from "../../ports/staff-verifier.ts";
 import type { ServiceDependencies } from "../../services/context.ts";
 import type { StaffAction } from "../experiments/audit.ts";
+import { auditFacts } from "./facts.ts";
 import type { AuditLogRecord } from "./repository.ts";
 
 /** Who is acting and the request it came with (the HTTP layer fills it in). */
@@ -43,6 +45,9 @@ export interface StaffContext {
 /** An entry nobody settled within this long is marked `unknown` by the sweep. */
 export const PENDING_AUDIT_TIMEOUT_MS = 15 * 60 * 1000;
 const SWEEP_BATCH = 500;
+/** Entries deleted per sweep: bounded work per scheduler tick; a backlog drains over ticks. */
+const RETENTION_BATCH = 900;
+const DAY_MS = 24 * 3600 * 1000;
 const DEFAULT_AUDIT_PAGE = 50;
 
 export function auditActor(staff: StaffContext["staff"]): AuditLogRecord["actor"] {
@@ -142,6 +147,8 @@ export interface AuditTrail {
   ): Promise<{ items: AuditLogEntry[]; nextCursor: string | null }>;
   /** Marks `unknown` what stayed `pending` past `PENDING_AUDIT_TIMEOUT_MS`; how many. */
   sweepPendingAudit(): Promise<number>;
+  /** Deletes entries older than the retention period (`WEBFLIX_AUDIT_RETENTION_DAYS`); how many. */
+  enforceRetention(): Promise<number>;
 }
 
 const AuditCursor = z.object({ c: z.number().int(), i: z.string().min(1).max(64) });
@@ -159,8 +166,14 @@ export function presentAuditEntry(record: AuditLogRecord): AuditLogEntry {
     createdAt: toIsoString(record.createdAt),
     outcome: record.outcome,
     completedAt: record.completedAt === null ? null : toIsoString(record.completedAt),
+    kind: READ_ACTIONS.has(record.action) ? "read" : "action",
+    // Resolved by the staff operations when the log is read (a member's current address).
+    targetLabel: null,
+    facts: auditFacts(record),
   };
 }
+
+const READ_ACTIONS: ReadonlySet<string> = new Set(AUDIT_READ_ACTIONS);
 
 export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
   const { repos, clock, ids, logger } = deps;
@@ -242,6 +255,7 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
         targetId: query.targetId,
         outcome: query.outcome,
         requestId: query.requestId,
+        kind: query.kind,
       },
       { before, limit: limit + 1 },
     );
@@ -352,6 +366,7 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
             ...item,
             before: null,
             after: typeof error === "string" ? { error } : null,
+            facts: typeof error === "string" ? { error } : {},
           };
         }),
         nextCursor: page.nextCursor,
@@ -367,6 +382,13 @@ export function createAuditTrail(deps: ServiceDependencies): AuditTrail {
       );
       if (expired > 0) log.warn("admin.audit_pending_expired", { entries: expired });
       return expired;
+    },
+
+    async enforceRetention() {
+      const cutoff = clock.now() - deps.config.admin.auditRetentionDays * DAY_MS;
+      const deleted = await repos.admin.deleteAuditBefore(cutoff, RETENTION_BATCH);
+      if (deleted > 0) log.info("admin.audit_expired", { entries: deleted });
+      return deleted;
     },
   };
 }

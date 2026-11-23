@@ -43,6 +43,14 @@ import {
  * nothing new was published, a pointer read and a cache read).
  */
 export const experimentResultsImportJob = defineJob("experiments.import-results", z.object({}));
+/**
+ * Retention of experiment reports (aggregate totals): those computed more than the aggregates
+ * period ago (`WEBFLIX_AGGREGATES_RETENTION_DAYS`, 37 months by default, what the privacy page
+ * promises) are deleted, at most `RESULTS_PRUNE_PER_RUN` per run, on every scheduler tick.
+ */
+export const experimentResultsPruneJob = defineJob("experiments.prune-results", z.object({}));
+const RESULTS_PRUNE_BATCH = 200;
+const RESULTS_PRUNE_PER_RUN = 1_000;
 /** The last results run imported completely (shared cache): a tick that finds it again stops. */
 const RESULTS_MARKER = "webflix:v1:experiment-results:imported-run";
 const RESULTS_MARKER_TTL_SEC = 7 * 24 * 60 * 60;
@@ -273,6 +281,17 @@ export function createExperimentsService(
 
   return {
     jobs: [
+      handleJob(experimentResultsPruneJob, async () => {
+        const before = clock.now() - deps.config.events.aggregateRetentionDays * 86_400_000;
+        let pruned = 0;
+        // Bounded batches, a bounded number per run: a backlog goes over several ticks.
+        while (pruned < RESULTS_PRUNE_PER_RUN) {
+          const batch = await deps.repos.experiments.pruneResults(before, RESULTS_PRUNE_BATCH);
+          pruned += batch;
+          if (batch < RESULTS_PRUNE_BATCH) break;
+        }
+        if (pruned > 0) logger.info("experiments.results_pruned", { pruned });
+      }),
       handleJob(experimentResultsImportJob, async () => {
         const blobs = deps.recommendationArtefacts;
         if (!blobs) return;
@@ -293,7 +312,7 @@ export function createExperimentsService(
         }
       }),
     ],
-    scheduled: () => [experimentResultsImportJob.create({})],
+    scheduled: () => [experimentResultsImportJob.create({}), experimentResultsPruneJob.create({})],
     importResults,
     assignments,
 

@@ -64,7 +64,7 @@ import {
   presentRefund,
   presentSetup,
 } from "./presenters.ts";
-import { priceLookupKey, projectMembership, supersedes } from "./projection.ts";
+import { moneyOrNull, priceLookupKey, projectMembership, supersedes } from "./projection.ts";
 import type {
   CheckoutPromotion,
   CheckoutRecord,
@@ -126,7 +126,15 @@ export interface BillingService extends AreaModule {
   ): Promise<Checkout>;
   /** The account's checkout in progress, without its client secret (`GET /billing/checkout`). */
   getOpenCheckout(accountId: string): Promise<OpenCheckout>;
-  getCheckout(accountId: string, checkoutId: string): Promise<Checkout>;
+  /**
+   * Where a checkout stands. `refresh: false` answers from stored state without reading the
+   * provider (a poll moments after another one: `billing-refresh`, review M1).
+   */
+  getCheckout(
+    accountId: string,
+    checkoutId: string,
+    options?: { refresh?: boolean },
+  ): Promise<Checkout>;
   confirmCheckout(accountId: string, checkoutId: string): Promise<Checkout>;
 
   previewPlanChange(accountId: string, planId: PlanId): Promise<PlanChangePreview>;
@@ -137,7 +145,12 @@ export interface BillingService extends AreaModule {
   cancel(accountId: string): Promise<Membership>;
   resume(accountId: string): Promise<Membership>;
   setupPaymentMethod(accountId: string): Promise<PaymentMethodSetup>;
-  getPaymentMethodSetup(accountId: string, setupId: string): Promise<PaymentMethodSetup>;
+  /** Where a card change stands; `refresh: false` as for `getCheckout`. */
+  getPaymentMethodSetup(
+    accountId: string,
+    setupId: string,
+    options?: { refresh?: boolean },
+  ): Promise<PaymentMethodSetup>;
   listInvoices(accountId: string, page: { cursor?: string; limit?: number }): Promise<InvoicePage>;
   validatePromotion(input: { code: string; planId: PlanId }): Promise<PromotionQuote>;
 
@@ -190,7 +203,8 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
    * the same: the config says `none`, nothing that needs a provider starts, no webhook is taken.
    */
   const configured = deps.config.billing.paymentProvider !== "none";
-  let catalogue: Promise<void> | undefined;
+  /** Settled, never a pending promise: see `ensureCatalogue`. */
+  let catalogueSynced = false;
 
   function requireProvider(): void {
     if (!configured) {
@@ -261,16 +275,20 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     return { provider, ...result, syncedAt: toIsoString(now) };
   }
 
-  /** Prices exist at the provider before the first subscription (idempotent, once per process). */
-  function ensureCatalogue(): Promise<void> {
-    catalogue ??= syncCatalogue().then(
-      () => undefined,
-      (error: unknown) => {
-        catalogue = undefined;
-        throw providerProblem(error);
-      },
-    );
-    return catalogue;
+  /**
+   * Prices exist at the provider before the first subscription (idempotent; remembered once it
+   * succeeded). No shared in-flight sync: on Workers one request may not await a promise another
+   * request settles (docs/CLOUDFLARE.md §2), so concurrent first checkouts each sync. A duplicate
+   * that meets the provider's "in flight" answer (a retryable `unavailable`) is a 503 to retry.
+   */
+  async function ensureCatalogue(): Promise<void> {
+    if (catalogueSynced) return;
+    try {
+      await syncCatalogue();
+    } catch (error) {
+      throw providerProblem(error);
+    }
+    catalogueSynced = true;
   }
 
   // --- Reading ----------------------------------------------------------------------------------
@@ -306,6 +324,46 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       throw new AppError("account_deletion_scheduled", {
         detail: "Your account is scheduled to be deleted. Keep your account first, then try again.",
       });
+    }
+  }
+
+  /**
+   * The account's half of "one trial per account and per card" (§5.4), decided before any card
+   * (UX review 2.6): the same test the confirmation makes. A card that had a trial on another
+   * account is only known once it is confirmed.
+   */
+  async function trialEligible(accountId: string): Promise<boolean> {
+    return configured && !(await repos.billing.trialUsed(accountId));
+  }
+
+  /**
+   * What the first invoice will charge an account that can no longer have a trial, and why
+   * (UX review 2.2): previewed by the provider before the card, so the payment step states it.
+   * Display only: a provider that cannot answer now leaves it unknown until the confirmation.
+   */
+  async function firstInvoiceEstimate(
+    accountId: string,
+    customerId: string,
+    planId: PlanId,
+    promotionId: string | null,
+  ): Promise<Pick<CheckoutRecord, "amountDueMinor" | "creditAppliedMinor" | "discountMinor">> {
+    const unknown = { amountDueMinor: null, creditAppliedMinor: null, discountMinor: null };
+    if (await trialEligible(accountId)) return unknown;
+    try {
+      const preview = await payments.previewFirstInvoice({
+        customerId,
+        priceLookupKey: priceLookupKey(planId, BILLING_CURRENCY),
+        promotionId,
+      });
+      return {
+        amountDueMinor: preview.amountMinor,
+        creditAppliedMinor: preview.creditAppliedMinor,
+        discountMinor: preview.discountMinor,
+      };
+    } catch (error) {
+      if (!(error instanceof PaymentProviderError)) throw error;
+      logger.info("billing.first_invoice_preview_skipped", { accountId, code: error.code });
+      return unknown;
     }
   }
 
@@ -371,9 +429,15 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     };
   }
 
+  /**
+   * The checkout with its client secret: the one stored with it (review M1: a poll needs no
+   * provider read for it); a row from before the secret was stored reads it from the provider.
+   */
   async function checkoutView(checkout: CheckoutRecord): Promise<Checkout> {
-    let clientSecret: string | null = null;
-    if (checkout.status === "requires_setup" && checkout.providerSetupId) {
+    let clientSecret: string | null = checkout.clientSecret;
+    if (clientSecret !== null) {
+      // Stored with the checkout.
+    } else if (checkout.status === "requires_setup" && checkout.providerSetupId) {
       clientSecret = (await payments.retrieveSetup(checkout.providerSetupId))?.clientSecret ?? null;
     } else if (checkout.status === "requires_payment" && checkout.providerSubscriptionId) {
       clientSecret =
@@ -403,7 +467,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     accountId: string,
     customerId: string,
     operationId: string,
-  ): Promise<string> {
+  ): Promise<{ id: string; clientSecret: string | null }> {
     const setup = await providerCall(
       context,
       {
@@ -417,7 +481,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
     ).catch((error: unknown) => {
       throw providerProblem(error);
     });
-    return setup.id;
+    return { id: setup.id, clientSecret: setup.clientSecret };
   }
 
   // --- Card replacement completion (from the provider's event, §5.4) ----------------------------
@@ -442,7 +506,13 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
   ): Promise<void> {
     if (confirmed.status === "failed") {
       if (setup.status !== "failed") {
-        await repos.billing.saveSetup({ ...setup, status: "failed", updatedAt: context.now() });
+        await repos.billing.saveSetup({
+          ...setup,
+          status: "failed",
+          clientSecret: null,
+          failureReason: declineReason(confirmed.failureCode),
+          updatedAt: context.now(),
+        });
       }
       return;
     }
@@ -505,6 +575,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       ...setup,
       status: "succeeded",
       providerPaymentMethodId: paymentMethodId,
+      clientSecret: null,
       updatedAt: context.now(),
     });
   }
@@ -622,6 +693,16 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       const refunds = (
         await Promise.all(invoices.map((invoice) => repos.billing.listRefunds(invoice.id)))
       ).flat();
+      // Every checkout (plan, state, the promo code and what became of it) and card change
+      // (privacy review M6); never a client secret.
+      const checkouts = await Promise.all(
+        (await repos.billing.listCheckouts(accountId, 100)).map((checkout) =>
+          checkoutSummary({ ...checkout, clientSecret: null }, null),
+        ),
+      );
+      const cardChanges = (await repos.billing.listSetups(accountId, 100)).map((setup) =>
+        presentSetup(setup, null, setup.failureReason),
+      );
       const data = {
         membership: current?.state ?? null,
         entitlement: current?.entitlement ?? null,
@@ -636,23 +717,43 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         paymentMethod: current?.paymentMethod ?? null,
         invoices: invoices.map(presentInvoice),
         refunds: refunds.map(presentRefund),
+        checkouts,
+        promotionCodes: checkouts
+          .filter((checkout) => checkout.promotion !== null)
+          .map((checkout) => ({
+            code: checkout.promotion?.code ?? "",
+            checkoutId: checkout.id,
+            outcome: checkout.promotionOutcome ?? null,
+            at: checkout.createdAt,
+          })),
+        cardChanges,
       };
       return JSON.parse(JSON.stringify(data)) as JsonValue;
     },
 
     async eraseAccountData(accountId): Promise<void> {
-      // §6.3: the provider forgets the member (subscription ended, customer and cards deleted:
-      // a deleted account is never charged again); Webflix keeps what the law requires
-      // (invoices, refunds, operations, provider events, the customer link: no foreign key to
-      // the account, D-M2-6). The projection, checkouts and card changes cascade with the account.
+      // §6.3, privacy review M5. First the provider forgets the member: the subscription ends,
+      // the customer and its cards are deleted, so a deleted account is never charged again.
+      // Then Webflix keeps only the financial record: the invoices (without the provider's
+      // hosted page and PDF links: they show the member's name and address) and refunds; and
+      // each card fingerprint that had a trial, with nothing left that leads to the account.
+      // Operations, provider events, checkouts, card changes, the projection, the account's
+      // trial marker and the customer link go (`forgetAccount`). Events the provider sends
+      // afterwards name a customer that is no longer anyone's and are dropped on receipt.
+      // Idempotent: a retry finds no customer to delete and forgets what is left.
       const customer = await repos.billing.getCustomer(accountId, provider);
-      if (!customer) return;
-      await providerCall(
-        context,
-        { id: `erase-${accountId}`, attempt: 1, kind: "cancel_now", accountId },
-        (call) => payments.deleteCustomer({ customerId: customer.customerId }, call),
-      );
-      logger.info("billing.customer_erased", { accountId });
+      if (customer) {
+        await providerCall(
+          context,
+          { id: `erase-${accountId}`, attempt: 1, kind: "cancel_now", accountId },
+          (call) => payments.deleteCustomer({ customerId: customer.customerId }, call),
+        );
+      }
+      await repos.billing.forgetAccount({
+        accountId,
+        customerIds: customer ? [customer.customerId] : [],
+      });
+      logger.info("billing.account_forgotten", { hadCustomer: customer !== null });
     },
 
     // --- Reading --------------------------------------------------------------------------------
@@ -750,6 +851,14 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           promotionCode: promotion?.promotion.code ?? null,
           promotionId: promotion?.id ?? null,
           promotion: promotion?.promotion ?? null,
+          ...(open.providerCustomerId
+            ? await firstInvoiceEstimate(
+                accountId,
+                open.providerCustomerId,
+                input.planId,
+                promotion?.id ?? null,
+              )
+            : {}),
           updatedAt: now,
         };
         await repos.billing.saveCheckout(resumed);
@@ -778,12 +887,23 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
             throw providerProblem(error);
           });
         }
-        await repos.billing.saveCheckout({ ...open, status: "expired", updatedAt: now });
+        await repos.billing.saveCheckout({
+          ...open,
+          status: "expired",
+          clientSecret: null,
+          updatedAt: now,
+        });
       }
       await ensureCatalogue();
       const customerId = await customerFor(accountId);
       const id = ids.next();
-      const setupId = await newSetup(accountId, customerId, `setup-${id}`);
+      const setup = await newSetup(accountId, customerId, `setup-${id}`);
+      const estimate = await firstInvoiceEstimate(
+        accountId,
+        customerId,
+        input.planId,
+        promotion?.id ?? null,
+      );
       const checkout: CheckoutRecord = {
         id,
         accountId,
@@ -795,12 +915,13 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         promotion: promotion?.promotion ?? null,
         provider,
         providerCustomerId: customerId,
-        providerSetupId: setupId,
+        providerSetupId: setup.id,
+        clientSecret: setup.clientSecret,
         providerSubscriptionId: null,
         providerPaymentMethodId: null,
         trialDays: null,
         trialFingerprint: null,
-        amountDueMinor: null,
+        ...estimate,
         failureReason: null,
         operationId: `subscribe-${id}`,
         attempt: 1,
@@ -815,11 +936,18 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
 
     async getOpenCheckout(accountId) {
       // From the database alone: what to continue with, never the capability to confirm it.
-      const open = await repos.billing.findOpenCheckout(accountId, context.now());
-      return { checkout: open ? await checkoutSummary(open, null) : null };
+      // One round trip for both (a hot read: every payment and plan step asks it).
+      const { checkout: open, trialUsed } = await repos.billing.findOpenCheckoutAndTrial(
+        accountId,
+        context.now(),
+      );
+      return {
+        checkout: open ? await checkoutSummary(open, null) : null,
+        trialEligible: configured && !trialUsed,
+      };
     },
 
-    async getCheckout(accountId, checkoutId) {
+    async getCheckout(accountId, checkoutId, options = {}) {
       let checkout = await repos.billing.getCheckout(accountId, checkoutId);
       if (!checkout) throw new AppError("not_found", { detail: "No such checkout" });
       const now = context.now();
@@ -827,14 +955,16 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         checkout.expiresAt <= now &&
         (checkout.status === "requires_setup" || checkout.status === "requires_payment")
       ) {
-        checkout = { ...checkout, status: "expired", updatedAt: now };
+        checkout = { ...checkout, status: "expired", clientSecret: null, updatedAt: now };
         await repos.billing.saveCheckout(checkout);
       }
       // Polling a checkout that waits on the provider reads the provider (reconciliation):
       // the membership activates when the provider says so, with or without a webhook.
-      // When that read cannot happen right now (finding K12), the checkout is answered as it
-      // stands and the next poll settles it.
+      // When that read cannot happen right now (finding K12), or the provider was read for this
+      // account moments ago (`refresh: false`, review M1), the checkout is answered as it stands
+      // and a later poll settles it.
       if (
+        options.refresh !== false &&
         (checkout.status === "processing" || checkout.status === "requires_payment") &&
         checkout.providerSubscriptionId
       ) {
@@ -869,14 +999,11 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
         // The card was refused at setup: a fresh setup for the next card, and say why.
         const reason = declineReason(setup.failureCode);
         // A new operation: the old key would replay the refused setup.
-        const setupId = await newSetup(
-          accountId,
-          checkout.providerCustomerId,
-          `setup-${ids.next()}`,
-        );
+        const next = await newSetup(accountId, checkout.providerCustomerId, `setup-${ids.next()}`);
         await repos.billing.saveCheckout({
           ...checkout,
-          providerSetupId: setupId,
+          providerSetupId: next.id,
+          clientSecret: next.clientSecret,
           failureReason: reason,
           updatedAt: now,
         });
@@ -997,6 +1124,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           await repos.billing.saveCheckout({
             ...subscribe,
             status: "failed",
+            clientSecret: null,
             failureReason: declineReason(error.code),
             updatedAt: context.now(),
           });
@@ -1017,7 +1145,19 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           subscription.status === "incomplete" && subscription.paymentClientSecret
             ? "requires_payment"
             : "processing",
-        amountDueMinor: invoice?.amountDueMinor ?? (subscribe.trialDays ? 0 : null),
+        // The first payment's secret, for the browser to confirm it (none while processing).
+        clientSecret:
+          subscription.status === "incomplete" ? subscription.paymentClientSecret : null,
+        // What the first invoice charges and why; with a trial, nothing (and no reason).
+        ...(invoice
+          ? {
+              amountDueMinor: invoice.amountDueMinor,
+              creditAppliedMinor: invoice.creditAppliedMinor,
+              discountMinor: invoice.discountMinor,
+            }
+          : subscribe.trialDays
+            ? { amountDueMinor: 0, creditAppliedMinor: null, discountMinor: null }
+            : {}),
         failureReason: null,
         updatedAt: context.now(),
       };
@@ -1064,6 +1204,8 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       return {
         planId,
         amountDue: { amountMinor: preview.amountDueMinor, currency },
+        creditApplied: moneyOrNull(preview.creditAppliedMinor, currency),
+        discount: moneyOrNull(preview.discountMinor, currency),
         credit: { amountMinor: preview.creditMinor, currency },
         lines: preview.lines.map((line) => ({
           description: line.description,
@@ -1074,6 +1216,8 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
           ? {
               at: toIsoString(preview.nextRenewal.at),
               amount: { amountMinor: preview.nextRenewal.amountMinor, currency },
+              creditApplied: moneyOrNull(preview.nextRenewal.creditAppliedMinor, currency),
+              discount: moneyOrNull(preview.nextRenewal.discountMinor, currency),
             }
           : null,
         previewToken,
@@ -1187,28 +1331,35 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       await requireProviderMembership(accountId);
       const customerId = await customerFor(accountId);
       const id = ids.next();
-      const setupId = await newSetup(accountId, customerId, `card-${id}`);
+      const setup = await newSetup(accountId, customerId, `card-${id}`);
       const now = context.now();
       const record: PaymentMethodSetupRecord = {
         id,
         accountId,
         provider,
-        providerSetupId: setupId,
+        providerSetupId: setup.id,
         providerPaymentMethodId: null,
         status: "requires_confirmation",
+        clientSecret: setup.clientSecret,
+        failureReason: null,
         attempt: 1,
         createdAt: now,
         updatedAt: now,
       };
       await repos.billing.saveSetup(record);
-      const setup = await payments.retrieveSetup(setupId);
-      return presentSetup(record, setup?.clientSecret ?? null);
+      return presentSetup(record, record.clientSecret);
     },
 
-    async getPaymentMethodSetup(accountId, setupId) {
+    async getPaymentMethodSetup(accountId, setupId, options = {}) {
       const record = await repos.billing.getSetup(accountId, setupId);
       if (!record) throw new AppError("not_found", { detail: "No such card change" });
       if (record.status === "succeeded") return presentSetup(record, null);
+      if (record.status === "failed") return presentSetup(record, null, record.failureReason);
+      // The provider was read for this account moments ago (`billing-refresh`, review M1): the
+      // change as stored, with its stored secret; a later poll reads the provider again.
+      if (options.refresh === false && record.clientSecret !== null) {
+        return presentSetup(record, record.clientSecret);
+      }
       // Polling reads the provider (the event may not have arrived yet, or its processing
       // stopped half-way) and finishes what it can. Without the provider's answer there is
       // nothing to report beyond "try again" (`service_unavailable`).
@@ -1231,13 +1382,17 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       }
       const current = (await repos.billing.getSetup(accountId, setupId)) ?? record;
       if (current.status === "succeeded" || current.status === "failed") {
-        return presentSetup(current, null, declineReason(confirmed?.failureCode ?? null));
+        return presentSetup(
+          current,
+          null,
+          current.failureReason ?? declineReason(confirmed?.failureCode ?? null),
+        );
       }
       if (confirmed?.status === "succeeded" || confirmed?.status === "processing") {
         // Confirmed at the provider; the change is being finished.
         return presentSetup({ ...current, status: "processing" }, null);
       }
-      return presentSetup(current, confirmed?.clientSecret ?? null);
+      return presentSetup(current, current.clientSecret ?? confirmed?.clientSecret ?? null);
     },
 
     async listInvoices(accountId, page) {
@@ -1618,7 +1773,7 @@ export function createBillingService(deps: ServiceDependencies, seams: AreaSeams
       }
       try {
         const result = await syncCatalogue();
-        catalogue = Promise.resolve();
+        catalogueSynced = true;
         return result;
       } catch (error) {
         logger.warn("billing.catalogue_sync_failed", { error: serializeError(error) });

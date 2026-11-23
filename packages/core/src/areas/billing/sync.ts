@@ -61,11 +61,18 @@ export async function recordProviderEvent(
   context: BillingContext,
   event: ProviderEvent,
   source: ProviderEventRecord["source"],
-): Promise<{ duplicate: boolean }> {
+): Promise<{ duplicate: boolean; ignored?: boolean }> {
   const { repos, jobs } = context.deps;
   const customer = event.customerId
     ? await repos.billing.findCustomer(context.provider, event.customerId)
     : null;
+  if (event.customerId && !customer) {
+    // A customer that is no one's here: an erased account's (its deletion's own events, a late
+    // redelivery, reconciliation listing them again: privacy review M5), or another deployment's
+    // on a shared provider account. Nothing to do and nothing to keep: acknowledged, not stored.
+    context.deps.logger.info("billing.event_not_ours", { type: event.type, source });
+    return { duplicate: false, ignored: true };
+  }
   const { inserted, record } = await repos.billing.recordProviderEvent({
     provider: context.provider,
     eventId: event.id,
@@ -304,7 +311,14 @@ async function settleCheckouts(
   for (const checkout of checkouts) {
     const status = checkoutStatusFor(checkout, membership);
     if (status !== checkout.status) {
-      await repos.billing.saveCheckout({ ...checkout, status, updatedAt: context.now() });
+      const waiting = status === "requires_setup" || status === "requires_payment";
+      await repos.billing.saveCheckout({
+        ...checkout,
+        status,
+        // A client secret is kept only while the browser still needs it.
+        clientSecret: waiting ? checkout.clientSecret : null,
+        updatedAt: context.now(),
+      });
     }
   }
 }
@@ -373,8 +387,8 @@ export async function reconcile(
     });
     listed += events.length;
     for (const event of events) {
-      const { duplicate } = await recordProviderEvent(context, event, "reconcile");
-      if (!duplicate) recorded += 1;
+      const { duplicate, ignored } = await recordProviderEvent(context, event, "reconcile");
+      if (!duplicate && !ignored) recorded += 1;
     }
     const last = events[events.length - 1];
     if (events.length < RECONCILE_PAGE || !last) {

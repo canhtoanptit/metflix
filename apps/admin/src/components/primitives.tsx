@@ -5,7 +5,14 @@
  */
 import { Badge, type BadgeTone, CheckIcon, createIcon, cx, IconButton } from "@webflix/ui";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import { formatDateTime, formatMoney, formatRelative, formatUtc } from "../lib/format.ts";
+import {
+  formatDate,
+  formatDateTime,
+  formatMoney,
+  formatRelative,
+  formatTimeSeconds,
+  formatUtc,
+} from "../lib/format.ts";
 
 export function PageHeader({
   title,
@@ -130,6 +137,23 @@ export function DateTime({
       {relativeTo !== undefined ? (
         <span className="text-fg-subtle"> ({formatRelative(value, relativeTo)})</span>
       ) : null}
+    </time>
+  );
+}
+
+/**
+ * A log's timestamp: the date, then the time with seconds, side by side where there is room and
+ * on two lines in a narrow column (a phone's table), never broken mid-date.
+ */
+export function Stamp({ value }: { value: string }) {
+  return (
+    <time
+      dateTime={value}
+      title={formatUtc(value)}
+      className="inline-flex flex-col tabular-nums sm:flex-row sm:gap-1"
+    >
+      <span className="whitespace-nowrap">{formatDate(value)},</span>
+      <span className="whitespace-nowrap">{formatTimeSeconds(value)}</span>
     </time>
   );
 }

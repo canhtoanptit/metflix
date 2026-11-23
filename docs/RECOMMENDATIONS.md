@@ -291,7 +291,9 @@ ordering on screen) one command per mode publishes and imports a run made for th
 | Kubernetes (kind) | `make k8s-recs-demo` (a one-off Job made from the import step of the train-and-score CronJob) |
 
 It is plainly demo data: the run id ends in **`-de00de00`** (`isDemoRun`), the manifest says
-`code.demo: true` with a note, and `GET /system/recommendations` shows that run. It is not a
+`code.demo: true` with a note, `GET /system/recommendations` shows that run, and its pages carry
+the policy **`demo:{run}`** (into impressions and title-opens), with no experiment exposure. It
+goes through the same importer as any run, so nothing is stored for a withheld key. It is not a
 trained model: the per-profile lists are the rule engine's own scores for each demo profile's
 seeded library (personal, Top Picks spread over genres, billboard, Because You Watched), the
 neighbours the catalogue's content similarity (support 0); profile keys are derived with the
@@ -318,6 +320,7 @@ never match a real profile's key.
 | Situation | What the page is | `policy` |
 | --- | --- | --- |
 | Kids or lowered-ceiling profile | the rule engine; no learned data read, no experiment | `rules` |
+| The account withdrew consent to personalisation (or who withdrew cannot be read: fails closed) | the rule engine; no list, no neighbour, no exposure in either arm | `rules` |
 | No active model, or the model is past `expiresAt` | the rule engine | `rules` |
 | Store down, or slower than `WEBFLIX_RECS_READ_TIMEOUT_MS` (250 ms) | the rule engine; the store is skipped for 30 s | `rules` |
 | The experiment assigns the control variant | the rule engine; no list, no neighbour | `rules` |
@@ -331,6 +334,8 @@ did, `learned:{run}` only when a fresh personal list ranked it. The ranker's pos
 estimate and the experiment analysis read it from impressions (the pipeline treats it as free
 text: only `explore` is interpreted), so a page ranked without a personal list is never counted
 as learned. The engine decides the label after composing the page (`Personalization.modelUse`).
+A demo run (below) is not a trained model: whatever it shaped is labelled `demo:{run}`, never
+`learned:` or `neighbours:`, and it exposes nobody to the experiment.
 
 With learned candidates: **Top Picks for {name}** (the model's re-ranked list in its order) comes
 after Continue Watching; the billboard is the model's first eligible pick (rotating daily among
@@ -353,7 +358,10 @@ correction cannot be estimated from real traffic.
 
 **Experiments.** `WEBFLIX_RECS_EXPERIMENT` (default `recs.learned-vs-rules`) decides the policy
 of the profiles it assigns: its control variant gets the rule engine, the others learned
-candidates; unassigned profiles get `WEBFLIX_RECS_DEFAULT_POLICY`. An `experiment.exposure` is
+candidates; unassigned profiles get `WEBFLIX_RECS_DEFAULT_POLICY`: **`rules` in production**
+unless an operator sets `learned` (deliberately, once the experiment showed the model beats the
+rule engine: the offline gate alone does not, reliably), `learned` elsewhere so the demo run, the
+specs and the conformance checks exercise the learned path. An `experiment.exposure` is
 logged for both arms when the treatment can apply (a fresh model is active), never on
 assignment alone, once per unit and variant (process memory, then a shared-cache marker).
 Replicas and isolates each cache the definitions (a copy is used at most 30 s after its database
@@ -374,11 +382,60 @@ and cached like the catalogue (30 s in memory, 5 min shared); a staff change inv
 and no copy is used more than 30 s after its database read, so a change made on another replica
 is served everywhere within 30 s.
 
-**Account deletion.** Profile keys are the lake's own subject keys (`createSubjectKeys`, the
-events area's; the pipeline's `ids.pseudonym`). The events area's erasure job calls
-`eraseAccountData` before the account row goes: the lists of the account's profiles are deleted
-in every registered run (database rows, or the KV keys on Cloudflare) and dropped from the
-caches, at once rather than at their expiry.
+**Privacy.** Profile keys are the lake's own subject keys (`createSubjectKeys`, the events
+area's; the pipeline's `ids.pseudonym`).
+
+- *Account deletion*: the events area's erasure job calls `eraseAccountData` before the account
+  row goes: the lists of the account's profiles are deleted in every registered run (database
+  rows, or the KV keys on Cloudflare) and dropped from the caches, at once rather than at their
+  expiry.
+- *A profile becoming restricted* (kids, a lowered ceiling; the `forgetProfileBehaviour` seam,
+  after the events area queued its erasure): its lists are deleted from every run at once.
+- *Imports withhold what is being or was erased* (privacy review M3): a run built between an
+  erasure and the lake's daily erase can still carry the subject. Before writing any list the
+  importer reads, once, the keys it must not store: the events area's erasure records unsettled
+  for the run's data cutoff (`withheldSubjects(asOf)`: pending, or completed by the pipeline's
+  erase at or after `asOf`; accounts, their profiles, profiles erased alone because they became
+  restricted), and the profiles of accounts that withdrew personalisation. Keyset-paged reads
+  by pseudonymous key, independent of the run's size, so the Worker's import (≤ 800 lists, 1,000
+  D1 queries) and the Cloudflare ops importer (which never holds the pseudonym secret) apply it
+  too; if they cannot be read, nothing is imported. A profile restricted now always has such a
+  record from the moment of its restriction (pending again if restricted again), and once the
+  erase has run it emits nothing the pipeline could score; a run with data after that erase
+  carries no list for it.
+- *A rewritten version* (pipeline review L2): the import is decided by the manifest digest, not
+  the run id. The served run published again with other content (services/recs `erase` removes an
+  erased subject's rows from published versions and re-points `recs/current.json`) is applied in
+  place: every file verified, its neighbours and lists written over the stored ones (one key at a
+  time, so readers see the old or the new list), every stored list it no longer holds (or
+  withholds) deleted from every run, its digest recorded (`status: "rewritten"`). The staff
+  import route queues it too (`already_served` only for the same content). Everything a rewrite
+  does is counted before it starts: lists written, removed keys times registered runs (each a KV
+  delete on Cloudflare), pages of stored keys listed; in a Worker more than the invocation's KV
+  budget (800 operations) is refused up front with `recommendation_import_too_large`, naming
+  `make cf-recs-import`, never part-way.
+- *Withdrawing personalisation* (privacy review L1; the events area's
+  `personalisationConsentChanged` seam, after each recorded answer: Account › Privacy, the
+  banner, Global Privacy Control, support): the account's key and its profiles' keys are
+  recorded (`recommendation_withdrawals`), their stored lists deleted from every run, and from
+  then on the account's profiles, those created later included, get the rule engine (`rules`),
+  no exposure in either arm of the experiment (they cannot receive the learned treatment, so
+  they enter neither), and imports withhold them. Serving reads the withdrawn accounts in the
+  same batch as the editorial data (no read of its own on the warm path), so the withdrawing
+  process applies it at once and every other within 30 s (the copy's age bound); if that read
+  fails, every page is `rules` until it succeeds. Granting again removes the record; the next
+  import (the pipeline includes the account again) brings learned lists back. The record holds
+  pseudonymous keys only and goes with the account at erasure. Members who never answered in an
+  opt-in deployment are not recorded (no answer is sent through the seam); the pipeline already
+  leaves them out of training, so they have no lists, but a model's neighbours may still help
+  their pages (`neighbours:{run}`).
+- *Data export* (privacy review M6, `exportAccountData`, under `personalisation` in the
+  document): the lists held now for the account's profiles in every registered run of the mode's
+  store (database rows, or Workers KV on Cloudflare): profile, run, whether it is served, when
+  computed, expiry, and per list its kind, its source title (Because You Watched) and its title
+  ids; and when personalisation was withdrawn. The shared caches (Valkey, KV) hold copies of the
+  same lists for minutes; the pipeline's artefacts and datasets are the pipeline's (its `erase`
+  rewrites them) and are not in this part.
 
 **Budget, measured** (database round trips per `GET /browse`; Node on SQLite in
 `apps/api/test/personalisation.test.ts`, the Worker on D1 in

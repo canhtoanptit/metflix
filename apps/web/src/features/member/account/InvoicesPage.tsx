@@ -14,6 +14,7 @@ import {
 import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { formatSignedMoney } from "../billing/copy.ts";
+import { describeReduction } from "../billing/outcome.ts";
 import { formatLongDate, formatMoney, formatShortDate } from "../shared/format.ts";
 import { AccountHeading } from "./AccountLayout.tsx";
 
@@ -94,7 +95,26 @@ export function InvoiceList({ limit }: { limit?: number }) {
   );
 }
 
-function statusOf(invoice: Invoice): { label: string; tone: BadgeTone } {
+/**
+ * What kind of entry it is, in the member's terms (UX review 2.3, 3.9): a payment, a credit to
+ * the account (a downgrade's unused time: nothing was paid), or a free trial's $0 invoice.
+ */
+function kindOf(invoice: Invoice): "payment" | "credit" | "trial" {
+  if (invoice.total.amountMinor < 0) return "credit";
+  const nothingTakenOff =
+    !(invoice.creditApplied?.amountMinor ?? 0) && !(invoice.discount?.amountMinor ?? 0);
+  return invoice.total.amountMinor === 0 &&
+    invoice.amountPaid.amountMinor === 0 &&
+    invoice.status === "paid" &&
+    nothingTakenOff
+    ? "trial"
+    : "payment";
+}
+
+function statusOf(invoice: Invoice): { label: string; tone: BadgeTone } | null {
+  const kind = kindOf(invoice);
+  if (kind === "trial") return null;
+  if (kind === "credit") return { label: "Credit", tone: "positive" };
   if (invoice.amountRefunded.amountMinor > 0) {
     return invoice.amountRefunded.amountMinor >= invoice.amountPaid.amountMinor
       ? { label: "Refunded", tone: "outline" }
@@ -102,9 +122,7 @@ function statusOf(invoice: Invoice): { label: string; tone: BadgeTone } {
   }
   switch (invoice.status) {
     case "paid":
-      return invoice.total.amountMinor < 0
-        ? { label: "Credit", tone: "positive" }
-        : { label: "Paid", tone: "positive" };
+      return { label: "Paid", tone: "positive" };
     case "open":
       return { label: "Due", tone: "danger" };
     case "uncollectible":
@@ -118,7 +136,20 @@ function statusOf(invoice: Invoice): { label: string; tone: BadgeTone } {
 
 function InvoiceRow({ invoice }: { invoice: Invoice }) {
   const status = statusOf(invoice);
+  const kind = kindOf(invoice);
   const date = invoice.paidAt ?? invoice.createdAt;
+  // Why a payment is below its price: "$7.99 less your $4.98 credit".
+  const reduction =
+    kind === "payment" ? describeReduction(invoice.creditApplied, invoice.discount) : null;
+  const before = reduction
+    ? formatMoney({
+        amountMinor:
+          invoice.total.amountMinor +
+          (invoice.creditApplied?.amountMinor ?? 0) +
+          (invoice.discount?.amountMinor ?? 0),
+        currency: invoice.total.currency,
+      })
+    : null;
   const period =
     invoice.periodStart && invoice.periodEnd && invoice.periodStart !== invoice.periodEnd
       ? `${formatShortDate(invoice.periodStart)} to ${formatShortDate(invoice.periodEnd)}`
@@ -127,17 +158,34 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
   return (
     <li className="flex flex-col gap-1.5 px-4 py-3.5 sm:px-5">
       <div className="flex items-start justify-between gap-4">
-        <p className="type-label text-fg">{invoice.description ?? "Webflix membership"}</p>
+        <p className="type-label text-fg">
+          {kind === "trial" ? "Free trial" : (invoice.description ?? "Webflix membership")}
+        </p>
         <span className="shrink-0 type-label text-fg tabular-nums">
-          {formatSignedMoney(invoice.total)}
+          {kind === "credit"
+            ? `${formatMoney({ amountMinor: -invoice.total.amountMinor, currency: invoice.total.currency })} credit`
+            : formatSignedMoney(invoice.total)}
         </span>
       </div>
+      {reduction && before ? (
+        <p className="type-body-sm text-fg-muted">
+          {before} less {reduction}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 type-body-sm text-fg-muted">
-        <Badge tone={status.tone} size="sm">
-          {status.label}
-        </Badge>
+        {status ? (
+          <Badge tone={status.tone} size="sm">
+            {status.label}
+          </Badge>
+        ) : null}
         <span>
-          {invoice.status === "paid" ? "Paid " : "Issued "}
+          {kind === "trial"
+            ? "Started "
+            : kind === "credit"
+              ? "Credited "
+              : invoice.status === "paid"
+                ? "Paid "
+                : "Issued "}
           {formatLongDate(date)}
         </span>
         {period ? <span>For {period}</span> : null}

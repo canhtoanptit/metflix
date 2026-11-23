@@ -3,6 +3,12 @@
  * as well as pointer; each change is announced. Titles are kept as ids (what the staff API
  * stores) and shown with their name and card, resolved through `GET /titles?ids=`. An id the
  * catalogue no longer knows is shown as such, to be removed.
+ *
+ * Focus stays where a keyboard user can carry on (UX review 2.7): after Add, on that result's
+ * button; after a move, on the same button of the moved title (its other arrow once it reaches
+ * the top or the bottom), so moving a title five places is five presses of Enter; after Remove,
+ * on the Remove button of the title that took its place (or the one before it, or the search
+ * field once the list is empty).
  */
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { StaffTitle } from "@webflix/contracts";
@@ -13,7 +19,7 @@ import {
   CloseIcon,
   IconButton,
 } from "@webflix/ui";
-import { useId, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import { queries } from "../../api/queries.ts";
 import { TitleSearch, TitleThumb, titleLine } from "./TitleSearch.tsx";
 
@@ -74,6 +80,8 @@ export function TitleRow({
   );
 }
 
+type Control = "up" | "down" | "remove";
+
 export function TitleListEditor({
   value,
   onChange,
@@ -93,6 +101,34 @@ export function TitleListEditor({
   const resolved = useTitles(value);
   const titleOf = (id: string) => resolved.byId.get(id) ?? known.get(id);
   const nameOf = (id: string) => titleOf(id)?.name ?? id;
+  const controls = useRef(new Map<string, HTMLButtonElement>());
+  const searchField = useRef<HTMLInputElement>(null);
+  const pendingFocus = useRef<{ id: string; control: Control } | "search" | null>(null);
+  const controlRef = (id: string, control: Control) => (element: HTMLButtonElement | null) => {
+    const key = `${id}:${control}`;
+    if (element) controls.current.set(key, element);
+    else controls.current.delete(key);
+  };
+
+  // After the list re-renders with a change, put focus where the change asked for it.
+  useLayoutEffect(() => {
+    const target = pendingFocus.current;
+    if (target === null) return;
+    pendingFocus.current = null;
+    if (target === "search") {
+      searchField.current?.focus();
+      return;
+    }
+    const wanted = controls.current.get(`${target.id}:${target.control}`);
+    const other =
+      target.control === "up"
+        ? controls.current.get(`${target.id}:down`)
+        : target.control === "down"
+          ? controls.current.get(`${target.id}:up`)
+          : undefined;
+    const element = wanted && !wanted.disabled ? wanted : other && !other.disabled ? other : wanted;
+    element?.focus();
+  }, [value]);
 
   function add(title: StaffTitle): void {
     if (value.includes(title.id) || value.length >= max) return;
@@ -108,13 +144,17 @@ export function TitleListEditor({
     const [item] = next.splice(index, 1);
     if (item === undefined) return;
     next.splice(target, 0, item);
+    pendingFocus.current = { id: item, control: by < 0 ? "up" : "down" };
     onChange(next);
     setAnnouncement(`${nameOf(item)} moved to position ${target + 1} of ${next.length}.`);
   }
 
   function remove(index: number): void {
     const item = value[index];
-    onChange(value.filter((_, position) => position !== index));
+    const next = value.filter((_, position) => position !== index);
+    const neighbour = next[index] ?? next[index - 1];
+    pendingFocus.current = neighbour ? { id: neighbour, control: "remove" } : "search";
+    onChange(next);
     if (item) setAnnouncement(`Removed ${nameOf(item)}.`);
   }
 
@@ -140,6 +180,7 @@ export function TitleListEditor({
                 position={index + 1}
               />
               <IconButton
+                ref={controlRef(id, "up")}
                 size="sm"
                 label={`Move ${nameOf(id)} up`}
                 icon={ChevronUpIcon}
@@ -147,6 +188,7 @@ export function TitleListEditor({
                 onClick={() => move(index, -1)}
               />
               <IconButton
+                ref={controlRef(id, "down")}
                 size="sm"
                 label={`Move ${nameOf(id)} down`}
                 icon={ChevronDownIcon}
@@ -154,6 +196,7 @@ export function TitleListEditor({
                 onClick={() => move(index, 1)}
               />
               <IconButton
+                ref={controlRef(id, "remove")}
                 size="sm"
                 label={`Remove ${nameOf(id)}`}
                 icon={CloseIcon}
@@ -168,7 +211,7 @@ export function TitleListEditor({
           {error}
         </p>
       ) : null}
-      <TitleSearch picked={value} onPick={add} full={value.length >= max} />
+      <TitleSearch picked={value} onPick={add} full={value.length >= max} inputRef={searchField} />
       {value.length >= max ? (
         <p className="type-caption text-fg-subtle">
           The list is full ({max}): remove one to add another.

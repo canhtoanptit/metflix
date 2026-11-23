@@ -6,6 +6,7 @@ from typing import Any
 
 ORDER = (
     "oracle",
+    "learned-home",
     "learned",
     "ranker",
     "ranker-naive",
@@ -70,7 +71,13 @@ def markdown_table(report: dict[str, Any], slice_name: str = "all") -> str:
 def slice_table(
     report: dict[str, Any],
     metric: str,
-    systems: tuple[str, ...] = ("learned", "rule-engine", "popularity", "oracle"),
+    systems: tuple[str, ...] = (
+        "learned-home",
+        "rule-engine-home",
+        "learned",
+        "rule-engine",
+        "oracle",
+    ),
 ) -> str:
     results = report["results"]
     slices = [name for name in report["slices"] if any(name in results.get(s, {}) for s in systems)]

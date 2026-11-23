@@ -72,11 +72,23 @@ export type MemberFacts = (
  * the ranker's position-bias estimate and the experiment analysis read it): `rules` when nothing
  * from a model shaped the page, `neighbours:{run}` when the rule engine was helped by a fresh
  * model's neighbours but the profile has no personal list, `learned:{run}` only when a fresh
- * personal list ranked the page.
+ * personal list ranked the page. A demo run (`isDemoRun`: not a trained model, docs/
+ * RECOMMENDATIONS.md "A demo run") labels whatever it shaped `demo:{run}`, never `learned:`.
  */
 export const RULES_POLICY_ID = "rules";
-export const neighboursPolicyId = (run: string): string => `neighbours:${run}`;
-export const learnedPolicyId = (run: string): string => `learned:${run}`;
+export const neighboursPolicyId = (run: string): string =>
+  isDemoRun(run) ? demoPolicyId(run) : `neighbours:${run}`;
+export const learnedPolicyId = (run: string): string =>
+  isDemoRun(run) ? demoPolicyId(run) : `learned:${run}`;
+export const demoPolicyId = (run: string): string => `demo:${run}`;
+
+/** The run ids of demo runs end with this (a hex recipe, as the run id format requires). */
+export const DEMO_RUN_RECIPE = "de00de00";
+
+/** A demo run (`node apps/api/src/recs.ts demo`): the rule engine's own scores, not a model. */
+export function isDemoRun(run: string): boolean {
+  return run.endsWith(`-${DEMO_RUN_RECIPE}`);
+}
 
 /** The label of a page the engine composed under `plan` (what the model actually contributed). */
 export function policyFor(
@@ -109,6 +121,15 @@ const ModelEnvelope = z.custom<{ data: ModelData | null }>(
 const EditorialEnvelope = z.custom<EditorialData>(
   (value) => typeof value === "object" && value !== null && "collections" in value,
 );
+
+/** The editorial data as serving uses it: the withdrawn accounts as a set, built once a load. */
+interface EditorialState {
+  data: EditorialData;
+  withdrawn: ReadonlySet<string>;
+}
+
+/** The withdrawals could not be read: treated as everybody's (see `plan`). */
+const UNKNOWN_WITHDRAWALS: ReadonlySet<string> = new Set();
 const ListsEnvelope = z.custom<{ lists: ProfileLists | null }>(
   (value) => typeof value === "object" && value !== null && "lists" in value,
 );
@@ -160,13 +181,14 @@ export class RecommendationServing {
   private readonly deps: ServiceDependencies;
   private readonly seams: AreaSeams;
   private readonly models: TwoLevel<ModelSnapshot | null, { data: ModelData | null }>;
-  private readonly editorialData: TwoLevel<EditorialData, EditorialData>;
+  private readonly editorialData: TwoLevel<EditorialState, EditorialData>;
   private readonly sharedLists: JsonCache<{ lists: ProfileLists | null }> | null;
   private readonly memoryLists = new Map<
     string,
     { lists: ProfileLists | null; expiresAt: number }
   >();
   private readonly profileKeys = new Map<string, string>();
+  private readonly accountKeys = new Map<string, string>();
   private readonly memberFacts = new Map<
     string,
     { facts: Awaited<ReturnType<MemberFacts>>; expiresAt: number }
@@ -196,16 +218,19 @@ export class RecommendationServing {
       logger: deps.logger,
       memoryTtlMs: 30_000,
     });
-    // Staff decisions change rarely and are read by every page: cached like the catalogue.
+    // Staff decisions change rarely and are read by every page: cached like the catalogue. The
+    // accounts that withdrew personalisation come in the same read (no read of their own).
     this.editorialData = new TwoLevel(deps.cache, {
       prefix: "webflix:v1:",
       schema: EditorialEnvelope,
       sharedTtlSec: 300,
-      key: () => "editorial",
-      // A staff decision made on another replica is seen everywhere within the same bound.
+      // v2: with `withdrawnAccounts` (a copy written before it is never read).
+      key: () => "editorial:v2",
+      // A staff decision or a withdrawal made on another replica is seen everywhere within the
+      // same bound.
       maxAgeMs: MODEL_MAX_AGE_MS,
       load: () => deps.repos.personalisation.loadEditorial(),
-      build: (data) => data,
+      build: (data) => ({ data, withdrawn: new Set(data.withdrawnAccounts ?? []) }),
       clock: deps.clock,
       logger: deps.logger,
       memoryTtlMs: 30_000,
@@ -223,8 +248,8 @@ export class RecommendationServing {
   }
 
   /** Forget the cached editorial data (after a staff change in this process). */
-  invalidateEditorial(): Promise<void> {
-    return this.editorialData.invalidate();
+  async invalidateEditorial(): Promise<void> {
+    await this.editorialData.invalidate();
   }
 
   /**
@@ -232,8 +257,27 @@ export class RecommendationServing {
    * unavailable title is unavailable to everyone). A read failure means none: never an error.
    */
   async editorial(now: number): Promise<EditorialInput | null> {
+    return (await this.editorialState(now)).input;
+  }
+
+  /** The editorial input, and the accounts that withdrew personalisation. */
+  private async editorialState(
+    now: number,
+  ): Promise<{ input: EditorialInput | null; withdrawn: ReadonlySet<string> }> {
+    let state: EditorialState;
     try {
-      const data = await this.editorialData.get();
+      state = await this.editorialData.get();
+    } catch (error) {
+      this.deps.logger.warn("editorial.unavailable", { error: serializeError(error) });
+      // Who withdrew is unknown: every page is the rule engine's until the read succeeds
+      // (failing closed: a withdrawn member is never served the model by an outage).
+      return { input: null, withdrawn: UNKNOWN_WITHDRAWALS };
+    }
+    return { input: this.editorialInput(state.data, now), withdrawn: state.withdrawn };
+  }
+
+  private editorialInput(data: EditorialData, now: number): EditorialInput | null {
+    try {
       if (
         data.billboards.length === 0 &&
         data.collections.length === 0 &&
@@ -274,14 +318,25 @@ export class RecommendationServing {
     await Promise.all(keys.map((key) => this.sharedLists?.delete(key).catch(() => undefined)));
   }
 
-  /** Forget the cached model and lists (after an import or a rollback in this process). */
-  async invalidate(): Promise<void> {
+  /**
+   * Forget the cached model and lists (after an import or a rollback in this process). False when
+   * the shared cache could not be told (other processes then reread within `MODEL_MAX_AGE_MS`).
+   */
+  async invalidate(): Promise<boolean> {
     const remembered = [...this.memoryLists.keys()];
     this.memoryLists.clear();
-    await Promise.all([
+    const [model, ...lists] = await Promise.all([
       this.models.invalidate(),
-      ...remembered.map((key) => this.sharedLists?.delete(key).catch(() => undefined)),
+      ...remembered.map((key) =>
+        this.sharedLists
+          ? this.sharedLists.delete(key).then(
+              () => true,
+              () => false,
+            )
+          : true,
+      ),
     ]);
+    return model && lists.every(Boolean);
   }
 
   /** The plan of one profile's page. Never throws: any failure is the rule engine. */
@@ -292,8 +347,9 @@ export class RecommendationServing {
     const restricted = standingOf(viewer.profile) !== "unrestricted";
     const unit = { type: "profile" as const, id: viewer.profile.id };
     // Independent reads side by side (each is cached; on a cold process each is one read).
-    const [editorial, snapshot, assigned] = await Promise.all([
-      this.editorial(now),
+    const [{ input: editorial, withdrawn }, accountKey, snapshot, assigned] = await Promise.all([
+      this.editorialState(now),
+      restricted ? null : this.accountKey(viewer.session.accountId),
       restricted ? null : this.model(now),
       restricted
         ? ({} as ExperimentAssignments)
@@ -311,6 +367,12 @@ export class RecommendationServing {
       exploreSeed,
     };
     if (restricted) return rules;
+    // The account withdrew consent to personalisation (privacy review L1): the rule engine's
+    // page, `rules`, and no exposure in either arm (it cannot receive the learned treatment).
+    // Unknown (the editorial read failed): the same, until the read succeeds again.
+    if (withdrawn === UNKNOWN_WITHDRAWALS || (accountKey !== null && withdrawn.has(accountKey))) {
+      return rules;
+    }
     try {
       const { experimentKey, defaultPolicy } = config.personalisation;
       const variant = assigned[experimentKey];
@@ -326,7 +388,9 @@ export class RecommendationServing {
       // The treatment applies only with a fresh model: a stale or missing one is cold start for
       // both arms, so nobody is exposed to a difference that does not exist.
       if (!snapshot || snapshot.model.expiresAt <= now) return rules;
-      if (variant !== undefined) {
+      // A demo run is not the trained model the experiment compares with the rule engine: its
+      // pages say `demo:{run}`, and neither arm is exposed.
+      if (variant !== undefined && !isDemoRun(snapshot.model.run)) {
         await this.seams.logExposure({
           experimentKey,
           variant,
@@ -370,6 +434,16 @@ export class RecommendationServing {
     const key = await this.subjectKeys.profile(profileId);
     if (this.profileKeys.size >= PROFILE_KEY_MEMORY) this.profileKeys.clear();
     this.profileKeys.set(profileId, key);
+    return key;
+  }
+
+  /** The account's pseudonymous key (the lake's), memoised like profile keys. */
+  async accountKey(accountId: string): Promise<string> {
+    const known = this.accountKeys.get(accountId);
+    if (known) return known;
+    const key = await this.subjectKeys.account(accountId);
+    if (this.accountKeys.size >= PROFILE_KEY_MEMORY) this.accountKeys.clear();
+    this.accountKeys.set(accountId, key);
     return key;
   }
 

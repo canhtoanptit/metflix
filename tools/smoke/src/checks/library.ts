@@ -81,7 +81,7 @@ export const libraryChecks: CheckDefinition[] = [
     area: "library",
     title: "My List add/remove round trip, newest first, reflected in viewer state",
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("my-list");
+      const viewer = await ctx.env.isolatedViewer("my-list", { member: false });
       const { cards } = await ctx.env.catalog();
       const [first, second] = cards;
       check(first && second, "need two titles");
@@ -149,7 +149,7 @@ export const libraryChecks: CheckDefinition[] = [
     area: "library",
     title: "Ratings round trip (love, dislike, clear) reflected in viewer state",
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("ratings");
+      const viewer = await ctx.env.isolatedViewer("ratings", { member: false });
       const api = viewer.agent.api;
       const home = await browseAll(viewer.agent, "home", 3);
       const target = home.rows.filter((row) => row.kind !== "top-10").flatMap(cardsOfRow)[0];
@@ -204,7 +204,7 @@ export const libraryChecks: CheckDefinition[] = [
     area: "library",
     title: "Disliked titles disappear from every personalised row of every view",
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("dislikes");
+      const viewer = await ctx.env.isolatedViewer("dislikes", { member: false });
       const api = viewer.agent.api;
       // Top 10 is a popularity chart and My List the member's own picks: both keep disliked
       // titles, as documented (docs/RECOMMENDATIONS.md, "Dislikes").
@@ -438,7 +438,7 @@ export const libraryChecks: CheckDefinition[] = [
     title:
       "A new profile opens with no notification backlog: at most three earlier arrivals, already read; read state stays consistent",
     async run(ctx: CheckContext) {
-      const viewer = await ctx.env.isolatedViewer("notify");
+      const viewer = await ctx.env.isolatedViewer("notify", { member: false });
       const api = viewer.agent.api;
       const list = await succeeds(() => api.listNotifications(), "GET /notifications");
       equal(list.unreadCount, 0, "unreadCount of a new profile");

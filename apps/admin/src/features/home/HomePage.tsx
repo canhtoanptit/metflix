@@ -1,11 +1,13 @@
 /**
- * Where a staff member lands: the areas their roles open, and for admins what needs following
- * up (actions that ended with an unknown outcome, failed jobs, a dependency down).
+ * Where a staff member lands: the areas their roles open (and, quietly, the ones that need
+ * another role), and what needs following up: for admins, actions that ended with an unknown
+ * outcome, failed jobs, a dependency down and overdue privacy work; for everyone else, their own
+ * unsettled actions.
  */
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { AuditLogEntry } from "@webflix/contracts";
-import { ArrowRightIcon, CheckCircleIcon, cx } from "@webflix/ui";
+import { ArrowRightIcon, CheckCircleIcon, LockIcon } from "@webflix/ui";
 import { AREAS, ROLE_LABELS } from "../../access/roles.ts";
 import { useStaff } from "../../access/staff.tsx";
 import { queries } from "../../api/queries.ts";
@@ -13,7 +15,9 @@ import { DateTime, PageHeader, Section, StatusBadge } from "../../components/pri
 import { ErrorPanel, LoadingRows } from "../../components/states.tsx";
 import { useDocumentTitle } from "../../lib/hooks.ts";
 import { AUDIT_OUTCOME } from "../../lib/status.ts";
+import { EntryWhat } from "../operations/AuditEntryParts.tsx";
 import { auditFilterFor } from "../operations/audit-filter.ts";
+import { formatAge, privacyBacklog } from "../operations/privacy-backlog.ts";
 
 const AREA_LINKS = {
   members: "/members",
@@ -27,6 +31,7 @@ export function HomePage() {
   useDocumentTitle("Overview");
   const staff = useStaff();
   const areas = AREAS.filter((area) => staff.has(area.role));
+  const others = AREAS.filter((area) => !staff.has(area.role));
   const name = staff.identity.name ?? staff.identity.email ?? "staff member";
   return (
     <>
@@ -54,6 +59,22 @@ export function HomePage() {
             </li>
           ))}
         </ul>
+        {others.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            <h2 className="type-caption text-fg-muted">Areas for other roles</h2>
+            <ul className="flex flex-wrap gap-x-5 gap-y-1.5" aria-label="Areas for other roles">
+              {others.map((area) => (
+                <li
+                  key={area.id}
+                  className="inline-flex items-center gap-1.5 type-body-sm text-fg-subtle"
+                >
+                  <LockIcon size="xs" className="shrink-0" />
+                  {area.label}: needs the {ROLE_LABELS[area.role]} role
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {staff.has("admin") ? <NeedsAttention /> : <YourFollowUps />}
       </div>
     </>
@@ -62,6 +83,7 @@ export function HomePage() {
 
 /** Without the admin role: your own actions that ended without a clear outcome, or still run. */
 function YourFollowUps() {
+  const staff = useStaff();
   const unknown = useQuery(queries.ownAudit({ outcome: "unknown", limit: 5 }));
   const pending = useQuery(queries.ownAudit({ outcome: "pending", limit: 5 }));
   const entries: AuditLogEntry[] = [...(unknown.data?.items ?? []), ...(pending.data?.items ?? [])];
@@ -90,12 +112,14 @@ function YourFollowUps() {
         <ul className="flex flex-col divide-y divide-line-subtle">
           {entries.map((entry) => (
             <li key={entry.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-              <span className="flex flex-wrap items-center gap-2 type-body-sm text-fg">
+              <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 type-body-sm">
                 <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
                   {AUDIT_OUTCOME[entry.outcome].label}
                 </StatusBadge>
-                <code className="font-mono text-xs text-fg-muted">{entry.action}</code>
-                <DateTime value={entry.createdAt} />
+                <EntryWhat entry={entry} linkMembers={staff.has("support")} />
+                <span className="text-fg-subtle">
+                  <DateTime value={entry.createdAt} />
+                </span>
               </span>
               <Link
                 to="/activity"
@@ -118,6 +142,9 @@ function NeedsAttention() {
   const health = useQuery(queries.health());
   const down = health.data?.dependencies.filter((dependency) => !dependency.up) ?? [];
   const deadLetters = health.data?.jobs.deadLetters ?? 0;
+  const overdue = health.data
+    ? privacyBacklog(health.data.privacy).filter((line) => line.warning)
+    : [];
   const entries: AuditLogEntry[] = [...(unknown.data?.items ?? []), ...(pending.data?.items ?? [])];
   const loading = unknown.isPending || pending.isPending || health.isPending;
   const error = unknown.error ?? pending.error ?? health.error;
@@ -125,7 +152,7 @@ function NeedsAttention() {
   return (
     <Section
       title="Needs attention"
-      description="Actions without a settled outcome, failed jobs and dependencies that are down."
+      description="Actions without a settled outcome, failed jobs, dependencies that are down and privacy work that is overdue."
     >
       {loading ? (
         <LoadingRows rows={3} label="Loading what needs attention" />
@@ -138,10 +165,11 @@ function NeedsAttention() {
             void health.refetch();
           }}
         />
-      ) : entries.length === 0 && down.length === 0 && deadLetters === 0 ? (
+      ) : entries.length === 0 && down.length === 0 && deadLetters === 0 && overdue.length === 0 ? (
         <p className="flex items-center gap-2 type-body-sm text-fg-muted">
           <CheckCircleIcon size="sm" className="text-positive" />
-          Nothing to follow up: every action settled, no failed jobs, every dependency up.
+          Nothing to follow up: every action settled, no failed jobs, every dependency up, privacy
+          work on time.
         </p>
       ) : (
         <ul className="flex flex-col divide-y divide-line-subtle">
@@ -152,6 +180,25 @@ function NeedsAttention() {
             >
               <span className="type-body-sm text-fg">
                 {dependency.name} is down{dependency.detail ? ` (${dependency.detail})` : ""}
+              </span>
+              <Link
+                to="/operations/health"
+                className="focus-ring rounded-xs type-body-sm text-fg-muted underline-offset-4 hover:text-fg hover:underline"
+              >
+                System health
+              </Link>
+            </li>
+          ))}
+          {overdue.map((line) => (
+            <li key={line.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+              <span className="flex flex-wrap items-center gap-2 type-body-sm text-fg">
+                <StatusBadge tone="warning">Overdue</StatusBadge>
+                {line.label}: {line.count}
+                {line.oldestAgeSec !== null ? (
+                  <span className="text-fg-muted">
+                    (the oldest for {formatAge(line.oldestAgeSec)})
+                  </span>
+                ) : null}
               </span>
               <Link
                 to="/operations/health"
@@ -176,13 +223,14 @@ function NeedsAttention() {
           ) : null}
           {entries.map((entry) => (
             <li key={entry.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-              <span className={cx("flex flex-wrap items-center gap-2 type-body-sm text-fg")}>
+              <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 type-body-sm">
                 <StatusBadge tone={AUDIT_OUTCOME[entry.outcome].tone}>
                   {AUDIT_OUTCOME[entry.outcome].label}
                 </StatusBadge>
-                <code className="font-mono text-xs text-fg-muted">{entry.action}</code>
-                <span className="text-fg-muted">by {entry.actor.name ?? entry.actor.id}</span>
-                <DateTime value={entry.createdAt} />
+                <EntryWhat entry={entry} linkMembers />
+                <span className="text-fg-subtle">
+                  by {entry.actor.name ?? entry.actor.id}, <DateTime value={entry.createdAt} />
+                </span>
               </span>
               <Link
                 to="/operations/audit"

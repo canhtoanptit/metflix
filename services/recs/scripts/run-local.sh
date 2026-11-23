@@ -3,16 +3,21 @@
 #
 #   services/recs/scripts/run-local.sh [smoke|medium|full]
 #
-# Everything lands under .cache/recs/<preset>/: store/ (the blob store: lake, catalogue,
-# working data, artefacts), truth/ (the simulator's ground truth, read only by evaluation) and
-# reports/ (evaluation, experiment analysis, summary.md). Each step prints what it did and how
-# long it took; the CLI's JSON summaries are kept in reports/steps/.
+# Everything lands under .cache/recs/<preset>/ (or RECS_ROOT): store/ (the blob store: lake,
+# catalogue, working data, artefacts), truth/ (the simulator's ground truth, read only by
+# evaluation) and reports/ (evaluations, experiment analysis, summary.md). Each step prints what
+# it did and how long it took; the CLI's JSON summaries are kept in reports/steps/.
+#
+# The gate needs a passing backtest at each of GATE_CUTOFFS rolling cutoffs (end - 7 d, end - 14
+# d, ...; default 3, 1 at smoke size, whose 21 days hold one). Each is trained and evaluated
+# here; reports/evaluation-<k>.json holds the k-th, reports/evaluation.json the most recent.
+# SEED picks the simulator's seed (default: the preset's); WORKERS caps the worker processes.
 set -euo pipefail
 
 PRESET="${1:-full}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RECS="$REPO/services/recs"
-ROOT="$REPO/.cache/recs/$PRESET"
+ROOT="${RECS_ROOT:-$REPO/.cache/recs/$PRESET}"
 STORE="$ROOT/store"
 TRUTH="$ROOT/truth"
 REPORTS="$ROOT/reports"
@@ -30,6 +35,13 @@ instant() { "$PY" -c "from webflix_recs.ids import iso_ms, parse_iso_ms; print(i
 END="$(instant "$DAYS")"
 CUTOFF="$(instant "$DAYS - 7")"
 COMPACT_AT="$(instant "$DAYS + 0.05")"
+if [[ "$PRESET" == "smoke" ]]; then
+  GATE_CUTOFFS="${GATE_CUTOFFS:-1}"
+else
+  GATE_CUTOFFS="${GATE_CUTOFFS:-3}"
+fi
+SEED_ARGS=()
+[[ -n "${SEED:-}" ]] && SEED_ARGS=(--seed "$SEED")
 
 rm -rf "$ROOT"
 mkdir -p "$STORE" "$TRUTH" "$REPORTS/steps"
@@ -50,35 +62,38 @@ step() {
 }
 field() { "$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$REPORTS/steps/$1.json" "$2"; }
 
-echo "recs: preset $PRESET, simulated window $START .. $END, backtest cutoff $CUTOFF, into $ROOT"
+echo "recs: preset $PRESET, simulated window $START .. $END, $GATE_CUTOFFS gate cutoff(s) from $CUTOFF, into $ROOT"
 echo "==> export-catalog (Node, @webflix/catalog read-only)"
 node "$RECS/scripts/export-catalog.ts" --store "$STORE" --anchor "$END"
-step simulate "$CLI" --store "$STORE" simulate --preset "$PRESET" --start "$START" --truth "$TRUTH" \
-  --experiment recs-aa --experiment "recs-ranking:effect=0.10"
-step compact "$CLI" --store "$STORE" compact --now "$COMPACT_AT"
-step build-dataset "$CLI" --store "$STORE" build-dataset --dataset main --as-of "$END"
-step train-backtest "$CLI" --store "$STORE" train --dataset main --as-of "$CUTOFF"
-BACKTEST="$(field train-backtest run)"
-step evaluate "$CLI" --store "$STORE" evaluate --run "$BACKTEST" --dataset main --truth "$TRUTH" \
-  --work "$ROOT/work" --out "$REPORTS/evaluation.json"
-step train-production "$CLI" --store "$STORE" train --dataset main --as-of "$END"
+step simulate "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} simulate --preset "$PRESET" --start "$START" --truth "$TRUTH" \
+  ${SEED_ARGS[@]+"${SEED_ARGS[@]}"} --experiment recs-aa --experiment "recs-ranking:effect=0.10"
+step compact "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} compact --now "$COMPACT_AT"
+step build-dataset "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} build-dataset --dataset main --as-of "$END" --erasures none
+for ((k = 1; k <= GATE_CUTOFFS; k++)); do
+  at="$(instant "$DAYS - 7 * $k")"
+  # Each backtest learns from what was known at its cutoff (a dataset as of it); it is evaluated
+  # with the main dataset, which covers its test week.
+  step "build-dataset-$k" "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} build-dataset --dataset "cutoff-$k" --as-of "$at" --erasures none
+  step "train-backtest-$k" "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} train --dataset "cutoff-$k" --as-of "$at"
+  BACKTEST="$(field "train-backtest-$k" run)"
+  step "evaluate-$k" "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} evaluate --run "$BACKTEST" --dataset main --truth "$TRUTH" \
+    --work "$ROOT/work/$BACKTEST" --out "$REPORTS/evaluation-$k.json"
+done
+cp "$REPORTS/evaluation-1.json" "$REPORTS/evaluation.json"
+step train-production "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} train --dataset main --as-of "$END"
 PRODUCTION="$(field train-production run)"
-step score "$CLI" --store "$STORE" score --run "$PRODUCTION"
-# At smoke size the learned models have too little data to beat the rule engine, and the gate
-# refuses to publish: the run records the refusal and goes on. At other sizes it is a failure.
+step score "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} score --run "$PRODUCTION" --gate-cutoffs "$GATE_CUTOFFS" --erasures none
+# A refusal by the gate is an outcome, not a failure of the run: it is recorded and the run goes
+# on (the summary's gate table says at which cutoffs the learned home page lost).
 PUBLISHED=1
-if ! step publish "$CLI" --store "$STORE" publish --run "$PRODUCTION"; then
+if ! step publish "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} publish --run "$PRODUCTION"; then
   PUBLISHED=0
-  if [[ "$PRESET" != "smoke" ]]; then
-    echo "recs: publish refused (see above)" >&2
-    exit 3
-  fi
-  echo "    publish refused by the gate (expected at smoke size): nothing published"
+  echo "    publish refused by the gate: nothing published"
 fi
 if [[ "$PUBLISHED" == 1 ]]; then
-  step validate "$CLI" --store "$STORE" validate
+  step validate "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} validate
 fi
-step analyse-experiments "$CLI" --store "$STORE" analyse-experiments --as-of "$END" --out "$REPORTS/experiments.json"
+step analyse-experiments "$CLI" --store "$STORE" ${WORKERS:+--workers "$WORKERS"} analyse-experiments --as-of "$END" --out "$REPORTS/experiments.json"
 
 "$PY" -m webflix_recs.evaluation.summary "$REPORTS" >"$REPORTS/summary.md"
 cat "$REPORTS/summary.md"

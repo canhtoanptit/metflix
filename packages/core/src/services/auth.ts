@@ -103,11 +103,14 @@ export function createAuthService(
       const passwordHash = await passwords.hash(body.password);
       const accountId = ids.next();
       const session = await sessions.newSession(accountId, client, true);
+      // Nothing proves yet who reads this address: not verified, ways in not proven
+      // (`accessProvenAt`), so no issuer links to it automatically until they are.
       const account: IdentityAccount = {
         id: accountId,
         email: body.email,
         passwordHash,
         emailVerifiedAt: null,
+        accessProvenAt: null,
         createdAt: now,
         updatedAt: now,
       };

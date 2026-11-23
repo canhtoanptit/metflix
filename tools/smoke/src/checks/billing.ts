@@ -9,6 +9,7 @@ import type { Checkout, Invoice, MembershipState, PlanId, TitleCard } from "@web
 import type { Environment, TestAccount } from "../env.ts";
 import { check, equal, fail, problem, rejects, status, succeeds } from "../expect.ts";
 import { type Agent, isApiError } from "../http.ts";
+import { admissible, profileIndependentSpec } from "../limits.ts";
 import { awaitMail, mailboxNow } from "../mail.ts";
 import { needs } from "../needs.ts";
 import { federatedSignIn } from "../oidc.ts";
@@ -18,6 +19,7 @@ import {
   type CardChoice,
   confirmAtProvider,
   confirmCard,
+  convertTrial,
   deliverPending,
   deliveryPolicy,
   type FakeCard,
@@ -35,6 +37,17 @@ import { API, CSRF } from "./util.ts";
 
 /** The fake provider's standing promo code by default (WEBFLIX_PAYMENTS_FAKE_PROMOTIONS). */
 const FAKE_STANDING_PROMOTION = "WEBFLIX50";
+
+/**
+ * Another agent on `agent`'s session (its cookies), not waiting out `rate_limited`: what a
+ * budget check needs to see each 429, without spending a sign-in (which a run started right
+ * after another's IP-exhausting checks may find throttled).
+ */
+function sameSession(ctx: CheckContext, agent: Agent, label: string): Agent {
+  const raw = ctx.agent(label, { retryOn429: false });
+  for (const [name, value] of agent.jar.snapshot()) raw.jar.set(name, value);
+  return raw;
+}
 
 /** A movie every adult profile may play (the catalogue's first). */
 async function movie(env: Environment): Promise<TitleCard> {
@@ -873,6 +886,355 @@ export const billingChecks: CheckDefinition[] = [
       );
       await succeeds(() => agent.api.resumeMembership(), "resume");
       check((await membership(agent, "after resuming")).nextInvoice, "no next bill after resuming");
+    },
+  },
+  {
+    id: "billing.amounts",
+    area: "billing",
+    title:
+      "Amounts carry their reasons: trial eligibility is stated with no checkout open; a downgrade's preview, the renewal after it and the restart's checkout (known before the card) each add up as amount + creditApplied + discount = the price before them; a negative invoice is a credit with nothing paid",
+    needs: [needs.fakePayments],
+    timeoutMs: 180_000,
+    async run(ctx: CheckContext) {
+      const account = await ctx.env.bareHolder("amounts");
+      const agent = account.agent;
+      const minor = (money: { amountMinor: number } | null | undefined) => money?.amountMinor ?? 0;
+      const before = (money: { amountMinor: number }, credit?: unknown, discount?: unknown) =>
+        money.amountMinor +
+        minor(credit as { amountMinor: number } | null) +
+        minor(discount as { amountMinor: number } | null);
+      const fresh = await succeeds(() => agent.api.getOpenCheckout(), "GET /billing/checkout");
+      equal(fresh.checkout, null, "the open checkout of a new account");
+      equal(fresh.trialEligible, true, "trialEligible of a new account (no checkout open)");
+
+      const premium = await price(agent, "premium");
+      const basic = await price(agent, "basic");
+      const standard = await price(agent, "standard");
+      const subscribed = await subscribe(ctx, agent, {
+        planId: "premium",
+        card: labelledCard("visa", ctx.options.runId, "amounts"),
+      });
+      check(subscribed.trial, "a new account with a new card got no trial", {
+        observed: JSON.stringify(subscribed.checkout),
+      });
+      const afterTrial = await succeeds(() => agent.api.getOpenCheckout(), "GET /billing/checkout");
+      equal(afterTrial.checkout, null, "the open checkout once the trial started");
+      equal(afterTrial.trialEligible, false, "trialEligible once the account had a trial");
+      await convertTrial(agent, subscribed.membership);
+      const active = await membership(agent, "after the trial");
+      check(active.nextInvoice, "an active member has no next invoice", {
+        observed: JSON.stringify(active),
+      });
+      equal(active.nextInvoice.creditApplied ?? null, null, "the renewal's credit (none)");
+      equal(active.nextInvoice.discount ?? null, null, "the renewal's discount (none)");
+      equal(active.nextInvoice.amount.amountMinor, premium, "the renewal (the plan's price)");
+
+      // A downgrade right after a renewal: the unused time of the dearer plan is credited.
+      const preview = await succeeds(
+        () => agent.api.previewPlanChange({ body: { planId: "basic" } }),
+        "preview a downgrade to Basic",
+      );
+      const remaining = preview.lines
+        .filter((line) => line.amount.amountMinor > 0)
+        .reduce((sum, line) => sum + line.amount.amountMinor, 0);
+      check(
+        minor(preview.creditApplied) > 0,
+        "a downgrade's preview states no credit for the unused time",
+        { observed: JSON.stringify(preview) },
+      );
+      equal(
+        before(preview.amountDue, preview.creditApplied, preview.discount),
+        remaining,
+        "the preview: amountDue + creditApplied + discount vs the new plan's remaining time",
+      );
+      check(
+        remaining > 0 && remaining <= basic,
+        "the new plan's remaining time is not a part of its price",
+        {
+          observed: `${remaining} of ${basic}`,
+        },
+      );
+      check(preview.nextRenewal, "the preview has no next renewal", {
+        observed: JSON.stringify(preview),
+      });
+      equal(
+        before(
+          preview.nextRenewal.amount,
+          preview.nextRenewal.creditApplied,
+          preview.nextRenewal.discount,
+        ),
+        basic,
+        "the preview's renewal: amount + creditApplied + discount vs Basic's price",
+      );
+      await succeeds(
+        () =>
+          agent.api.changePlan({ body: { planId: "basic", previewToken: preview.previewToken } }),
+        "apply the downgrade",
+      );
+      const credited = (await invoices(agent, "after the downgrade")).find(
+        (invoice) => invoice.total.amountMinor < 0,
+      );
+      check(credited, "a downgrade crediting unused time left no negative invoice", {
+        observed: JSON.stringify(await invoices(agent, "after the downgrade")),
+      });
+      equal(credited.amountPaid.amountMinor, 0, "a negative invoice's amountPaid (a credit)");
+      equal(credited.amountDue.amountMinor, 0, "a negative invoice's amountDue");
+      const downgraded = await membership(agent, "after the downgrade");
+      check(downgraded.nextInvoice, "no next invoice after the downgrade", {
+        observed: JSON.stringify(downgraded),
+      });
+      check(
+        minor(downgraded.nextInvoice.creditApplied) > 0,
+        "the next invoice does not use the credit",
+        { observed: JSON.stringify(downgraded.nextInvoice) },
+      );
+      equal(
+        before(
+          downgraded.nextInvoice.amount,
+          downgraded.nextInvoice.creditApplied,
+          downgraded.nextInvoice.discount,
+        ),
+        basic,
+        "the next invoice: amount + creditApplied + discount vs Basic's price",
+      );
+
+      // The membership ends with credit left; a restart's checkout states its amount before the
+      // card (the account can no longer have a trial), the credit and any code applied.
+      await succeeds(() => agent.api.cancelMembership(), "cancel at the period's end");
+      check(downgraded.currentPeriodEnd, "no period end");
+      await advancePast(agent, downgraded.currentPeriodEnd, RENEWAL_SETTLE_SEC, "the period end");
+      await ctx.eventually("the membership ends", async () => {
+        const state = await membership(agent, "after the period end");
+        return state.status === "canceled" || state.status === "none"
+          ? { done: true, value: state }
+          : { done: false, observed: state.status };
+      });
+      const code = ctx.options.promoCode ?? FAKE_STANDING_PROMOTION;
+      const offered = await agent.api
+        .validatePromotion({ body: { code, planId: "standard" } })
+        .then(() => true)
+        .catch(() => false);
+      const restart = await succeeds(
+        () =>
+          agent.api.startCheckout({
+            body: { planId: "standard", ...(offered ? { promotionCode: code } : {}) },
+          }),
+        "a restart's checkout",
+      );
+      equal(restart.status, "requires_setup", "the restart's checkout");
+      check(restart.amountDue, "the restart's amount is not stated before the card", {
+        expected: "amountDue known at requires_setup (trialEligible false)",
+        observed: JSON.stringify(restart),
+      });
+      check(minor(restart.creditApplied) > 0, "the restart's checkout does not use the credit", {
+        observed: JSON.stringify(restart),
+      });
+      if (offered) {
+        check(
+          minor(restart.discount) > 0,
+          "the restart's checkout states no discount for the code",
+          {
+            observed: JSON.stringify(restart),
+          },
+        );
+      }
+      equal(
+        before(restart.amountDue, restart.creditApplied, restart.discount),
+        standard,
+        "the restart: amountDue + creditApplied + discount vs Standard's price",
+      );
+      ctx.note(
+        `downgrade credit ${minor(preview.creditApplied)}, invoice ${credited.total.amountMinor}; restart ${restart.amountDue.amountMinor} + credit ${minor(restart.creditApplied)} + discount ${minor(restart.discount)} = ${standard}`,
+      );
+    },
+  },
+  {
+    id: "billing.promo-budget",
+    area: "billing",
+    title:
+      "One promo-code budget per account, whichever route looks a code up: after ten lookups (validations and checkouts with a code) both answer 429 with Retry-After; the open checkout's own code and a checkout without a code still start; another account is unaffected",
+    needs: [needs.fakePayments],
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const spec = profileIndependentSpec(env, "promotion");
+      const code = ctx.options.promoCode ?? FAKE_STANDING_PROMOTION;
+      const account = await env.bareSignup("promo-budget");
+      // The account's own session, in a browser that shows the 429s instead of waiting them out.
+      const agent = sameSession(ctx, account.agent, "promo-budget-raw");
+      const guess = (index: number) =>
+        `SMOKE-GUESS-${ctx.options.runId}-${index}`.toUpperCase().slice(0, 40);
+      const post = (path: string, body: object) =>
+        agent.fetch(`${API}${path}`, { method: "POST", headers: CSRF, body });
+      const validations = Math.floor(spec.limit / 2);
+      const started = Date.now();
+      for (let index = 0; index < validations; index += 1) {
+        problem(
+          await post("/billing/promotions/validate", { code: guess(index), planId: "basic" }),
+          "promotion_code_invalid",
+          `validation ${index + 1} (a guessed code)`,
+        );
+      }
+      for (let index = validations; index < spec.limit - 1; index += 1) {
+        problem(
+          await post("/billing/checkout", { planId: "basic", promotionCode: guess(index) }),
+          "promotion_code_invalid",
+          `lookup ${index + 1}: a checkout with a guessed code`,
+        );
+      }
+      const withCode = await post("/billing/checkout", { planId: "basic", promotionCode: code });
+      if (withCode.status === 422 && !ctx.options.promoCode) {
+        ctx.skip(
+          `the fake provider has no standing promo code ${code} (WEBFLIX_PAYMENTS_FAKE_PROMOTIONS is set otherwise, or none): pass --promo-code CODE`,
+        );
+      }
+      status(withCode, 201, `lookup ${spec.limit}: a checkout with a valid code`);
+      const open = withCode.json<Checkout>();
+      // The budget is spent: the next lookup by either route is refused before the provider.
+      const refill = admissible(spec, Date.now() - started).max - spec.limit;
+      const refused = [
+        [
+          "a validation",
+          await post("/billing/promotions/validate", { code: guess(90), planId: "basic" }),
+        ],
+        [
+          "a checkout with another code",
+          await post("/billing/checkout", { planId: "basic", promotionCode: guess(91) }),
+        ],
+      ] as const;
+      let admittedLate = 0;
+      for (const [what, answer] of refused) {
+        if (answer.status !== 429 && refill > admittedLate) {
+          admittedLate += 1;
+          ctx.note(`${what} admitted: the run was slow enough for the budget to refill one lookup`);
+          continue;
+        }
+        problem(answer, "rate_limited", `${what} after ${spec.limit} lookups`);
+        const after = Number(answer.headers.get("Retry-After"));
+        check(
+          Number.isFinite(after) && after > 0 && after <= spec.windowSec,
+          `${what}: no usable Retry-After`,
+          { observed: answer.headers.get("Retry-After") ?? "(absent)", exchange: answer.exchange },
+        );
+      }
+      // Picking up the open checkout with its own code is not another lookup.
+      const again = await post("/billing/checkout", { planId: "basic", promotionCode: code });
+      status(again, 201, "the open checkout's own code again (budget spent)");
+      equal(again.json<Checkout>().id, open.id, "the checkout answered (the open one)");
+      const plain = await post("/billing/checkout", { planId: "basic" });
+      status(plain, 201, "a checkout without a code (budget spent)");
+      equal(plain.json<Checkout>().promotion, null, "the promotion of a checkout without a code");
+      // The budget is the account's: another one looks a code up as usual.
+      const other = await env.bareSignup("promo-budget-other");
+      await rejects(
+        () => other.agent.api.validatePromotion({ body: { code: guess(92), planId: "basic" } }),
+        "promotion_code_invalid",
+        "another account's validation",
+      );
+    },
+  },
+  {
+    id: "billing.provider-budget",
+    area: "billing",
+    title:
+      "Member routes that call the provider share one budget per account (checkout start, card setup, plan-change preview): spent, a preview and a card setup answer 429 with Retry-After while another account starts a checkout; polls of a checkout and a card change are never refused",
+    needs: [needs.fakePayments],
+    timeoutMs: 180_000,
+    async run(ctx: CheckContext) {
+      const env = ctx.env;
+      const spec = profileIndependentSpec(env, "billing");
+      const account = await env.bareSignup("provider-budget");
+      await env.holder(account);
+      const agent = sameSession(ctx, account.agent, "provider-budget-raw");
+      const post = (path: string, body?: object) =>
+        agent.fetch(`${API}${path}`, {
+          method: "POST",
+          headers: CSRF,
+          ...(body === undefined ? {} : { body }),
+        });
+      const tally = (results: readonly { status: number }[]) =>
+        JSON.stringify(
+          results.reduce<Record<number, number>>((counts, result) => {
+            counts[result.status] = (counts[result.status] ?? 0) + 1;
+            return counts;
+          }, {}),
+        );
+      const first = Date.now();
+      // One checkout start (the first call on the budget).
+      await subscribe(ctx, agent, {
+        planId: "standard",
+        card: labelledCard("visa", ctx.options.runId, "provider-budget"),
+      });
+      const setup = await post("/billing/payment-method/setup");
+      status(setup, 201, "POST /billing/payment-method/setup");
+      const setupId = setup.json<{ id: string }>().id;
+      const setupPolls = await Promise.all(
+        Array.from({ length: 50 }, () =>
+          agent.fetch(`${API}/billing/payment-method/setup/${setupId}`),
+        ),
+      );
+      check(
+        setupPolls.every((result) => result.status === 200),
+        "parallel polls of a card change were refused",
+        { expected: "50 × 200", observed: tally(setupPolls) },
+      );
+      let previews = 0;
+      let limited: Awaited<ReturnType<typeof post>> | undefined;
+      for (let index = 0; index < spec.limit + 5; index += 1) {
+        const answer = await post("/billing/subscription/preview", {
+          planId: index % 2 === 0 ? "premium" : "basic",
+        });
+        if (answer.status === 429) {
+          limited = answer;
+          break;
+        }
+        status(answer, 200, `preview ${index + 1}`);
+        previews += 1;
+      }
+      const admitted = 2 + previews; // the checkout start and the card setup, then the previews
+      const range = admissible(spec, Date.now() - first);
+      check(limited, "the budget never ran out", {
+        expected: `429 after ${spec.limit} calls (checkout start, card setup, previews)`,
+        observed: `${admitted} admitted`,
+      });
+      check(
+        admitted >= range.min && admitted <= range.max,
+        "the per-account provider budget is not the documented one",
+        {
+          expected: `${spec.limit} per ${spec.windowSec} s (up to ${range.max} with the refill meanwhile)`,
+          observed: `${admitted} admitted (1 checkout start, 1 card setup, ${previews} previews)`,
+        },
+      );
+      for (const [what, answer] of [
+        ["a preview", limited],
+        ["a card setup", await post("/billing/payment-method/setup")],
+      ] as const) {
+        problem(answer, "rate_limited", `${what} once the budget is spent`);
+        const after = Number(answer.headers.get("Retry-After"));
+        check(
+          Number.isFinite(after) && after > 0 && after <= spec.windowSec,
+          `${what}: no usable Retry-After`,
+          { observed: answer.headers.get("Retry-After") ?? "(absent)", exchange: answer.exchange },
+        );
+      }
+      // The budget is the account's own; polls are never refused.
+      const other = await env.bareSignup("provider-budget-other");
+      const started = await succeeds(
+        () => other.agent.api.startCheckout({ body: { planId: "basic" } }),
+        "another account starts a checkout",
+      );
+      const polls = await Promise.all(
+        Array.from({ length: 50 }, () =>
+          other.agent.fetch(`${API}/billing/checkout/${started.id}`),
+        ),
+      );
+      check(
+        polls.every((result) => result.status === 200),
+        "parallel polls of a checkout were refused",
+        { expected: "50 × 200", observed: tally(polls) },
+      );
+      ctx.note(
+        `${admitted} provider calls admitted, then 429 (Retry-After ${limited.headers.get("Retry-After")} s)`,
+      );
     },
   },
   {

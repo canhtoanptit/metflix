@@ -85,6 +85,7 @@ export const ROUTE_INDEX = {
   updateConsent: { method: "PUT", path: "/privacy/consent" },
   requestDataExport: { method: "POST", path: "/privacy/export" },
   downloadDataExport: { method: "GET", path: "/privacy/exports/:id" },
+  fetchDataExport: { method: "POST", path: "/privacy/exports/:id/download" },
   listPrivacyRequests: { method: "GET", path: "/privacy/requests" },
   requestAccountDeletion: { method: "POST", path: "/account/deletion" },
   cancelAccountDeletion: { method: "DELETE", path: "/account/deletion" },

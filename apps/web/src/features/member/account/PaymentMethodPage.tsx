@@ -10,7 +10,8 @@ import { useAuthenticatedSession } from "../../../app/session/session.ts";
 import { forgetSetup, rememberedSetup, rememberSetup } from "../billing/checkoutMemory.ts";
 import { type DeclineReason, describeDecline } from "../billing/copy.ts";
 import { NoProviderNotice } from "../billing/NoProviderNotice.tsx";
-import { ProviderStep, useBillingConfig } from "../billing/ProviderStep.tsx";
+import { leaveFor } from "../billing/navigation.ts";
+import { fakeFormHref, ProviderStep, useBillingConfig } from "../billing/ProviderStep.tsx";
 import { patiently, usePoll } from "../billing/polling.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatLongDate } from "../shared/format.ts";
@@ -60,7 +61,7 @@ export function AccountPaymentMethodPage() {
   const [step, setStep] = useState<Step>(() =>
     returnedSetup ? { kind: "checking", setupId: returnedSetup } : { kind: "idle" },
   );
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const outcomeRef = useRef<HTMLDivElement>(null);
   const wasUnpaid = useRef<boolean | null>(null);
 
   // Back from the provider's page within the app (or a link carrying a card change): check it.
@@ -141,15 +142,25 @@ export function AccountPaymentMethodPage() {
 
   useEffect(() => {
     if (step.kind === "done" || step.kind === "failed" || step.kind === "not-added") {
-      headingRef.current?.focus();
+      outcomeRef.current?.focus();
     }
   }, [step.kind]);
 
-  const start = async () => {
+  /**
+   * One click to the provider (UX review 3.14): with the provider's hosted page, "Replace card"
+   * goes straight there; Stripe's form is part of this page, so it opens here instead.
+   */
+  const start = async (unpaidNow: boolean) => {
     setStep({ kind: "starting" });
     try {
       const setup = await patiently(() => api().setupPaymentMethod());
       if (!setup.clientSecret) throw new Error("The card change carries no client secret");
+      const provider = config.data;
+      if (provider?.provider === "fake") {
+        rememberSetup({ accountId: session.account.id, setupId: setup.id, recovering: unpaidNow });
+        leaveFor(fakeFormHref(provider.formUrl, setup.clientSecret, returnPathFor(setup.id)));
+        return;
+      }
       setStep({ kind: "form", setup: { ...setup, clientSecret: setup.clientSecret } });
     } catch (error) {
       setStep({ kind: "error", error });
@@ -202,6 +213,7 @@ export function AccountPaymentMethodPage() {
       />
       {step.kind === "done" ? (
         <FormAlert
+          ref={outcomeRef}
           tone="positive"
           title={step.recovered ? "Your payment went through" : "Your card has been updated"}
           action={
@@ -219,6 +231,7 @@ export function AccountPaymentMethodPage() {
         </FormAlert>
       ) : step.kind === "failed" ? (
         <FormAlert
+          ref={outcomeRef}
           title={step.reason ? describeDecline(step.reason).title : "Your card wasn't saved"}
         >
           {step.reason
@@ -227,14 +240,14 @@ export function AccountPaymentMethodPage() {
           Your card on file hasn't changed and nothing was charged.
         </FormAlert>
       ) : step.kind === "not-added" ? (
-        <FormAlert tone="info" title="No new card was added">
+        <FormAlert ref={outcomeRef} tone="info" title="No new card was added">
           You came back from the payment page before a card was confirmed. Your card on file hasn't
           changed.
         </FormAlert>
       ) : step.kind === "error" ? (
         <FormAlert title={describeMemberError(step.error).title}>
           {ApiError.is(step.error, "payments_not_configured")
-            ? "This Webflix isn't set up to take payments right now."
+            ? "Webflix can't take payments right now."
             : describeMemberError(step.error).description}{" "}
           Your card on file hasn't changed.
         </FormAlert>
@@ -260,9 +273,7 @@ export function AccountPaymentMethodPage() {
             <CreditCardIcon size="md" />
           </span>
           <div className="flex min-w-0 flex-col">
-            <h2 ref={headingRef} tabIndex={-1} className="type-label text-fg outline-none">
-              {card ? describeCard(card) : "No card on file"}
-            </h2>
+            <p className="type-label text-fg">{card ? describeCard(card) : "No card on file"}</p>
             {card ? <p className="type-body-sm text-fg-muted">{describeExpiry(card)}</p> : null}
           </div>
         </div>
@@ -270,8 +281,8 @@ export function AccountPaymentMethodPage() {
 
       {config.data?.provider === "none" ? (
         <NoProviderNotice title="Cards can't be changed here right now">
-          This Webflix isn't set up to take payments, so the card on file can't be replaced at the
-          moment. Nothing has been charged.
+          Webflix can't take payments right now, so the card on file can't be replaced. Nothing has
+          been charged.
         </NoProviderNotice>
       ) : !canChange ? (
         <p className="type-body-sm text-fg-muted">
@@ -322,18 +333,29 @@ export function AccountPaymentMethodPage() {
           />
         </AccountSection>
       ) : (
-        <div className="flex flex-col gap-3 sm:flex-row">
-          <Button
-            variant={unpaid ? "accent" : "primary"}
-            size="lg"
-            loading={step.kind === "starting"}
-            onClick={() => void start()}
-          >
-            {card ? "Replace card" : "Add a card"}
-          </Button>
-          <Button variant="outline" size="lg" asChild>
-            <Link to="/account/membership">Back to membership</Link>
-          </Button>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button
+              variant="accent"
+              size="lg"
+              loading={step.kind === "starting"}
+              onClick={() => void start(unpaid)}
+            >
+              {card ? "Replace card" : "Add a card"}
+            </Button>
+            <Button variant="outline" size="lg" asChild>
+              <Link to="/account/membership">Back to membership</Link>
+            </Button>
+          </div>
+          {config.data?.provider === "fake" ? (
+            <p className="type-body-sm text-fg-subtle">
+              You'll add the new card on our payment provider's secure page, then come straight back
+              here. Webflix never sees your card number.{" "}
+              {unpaid
+                ? "Once the card is confirmed, we charge what's due to it."
+                : "Nothing is charged now: your next payment goes to the new card."}
+            </p>
+          ) : null}
         </div>
       )}
     </>

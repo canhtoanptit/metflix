@@ -14,7 +14,9 @@ import { parseArgs } from "node:util";
  * Artefacts are read from the mode's blob store (the pipeline publishes `recs/current.json` and
  * `experiments/results/current.json` into the same bucket), or from `--from <dir>`, a pipeline
  * store in the filesystem layout (`.cache/recs/<preset>/store`). One JSON line per result on
- * stdout; exit 1 on failure (for `experiments-import`, also when a result was refused).
+ * stdout; exit 1 on failure (for `experiments-import`, also when a result was refused); exit 3
+ * when a run was imported but the shared cache could not be told (retried; every process serves
+ * it within the model's 30 s age bound).
  *
  * `demo` (docs/RECOMMENDATIONS.md, "A demo run"): a run for the demo account's profiles, for a
  * demo where no pipeline run is fresh. Not a trained model: the rule engine's scores for each
@@ -122,6 +124,14 @@ async function main(argv: string[]): Promise<number> {
       result = await personalisation.recommendationStatus();
     }
     process.stdout.write(`${JSON.stringify(result)}\n`);
+    // Imported, but the shared cache was never told (retried): said, with its own exit code.
+    const imported = (result as { imported?: unknown })?.imported ?? result;
+    if ((imported as { cacheInvalidated?: boolean } | null)?.cacheInvalidated === false) {
+      process.stderr.write(
+        "imported, but the shared cache could not be told after retries: every process serves the new model within 30 s\n",
+      );
+      return 3;
+    }
     return 0;
   } catch (error) {
     runtime.logger.error("recs.command_failed", { command, error: serializeError(error) });

@@ -7,26 +7,39 @@ The rule engine and its guarantees are unchanged and documented in docs/RECOMMEN
 engine stays the authority for page assembly and every rule; this pipeline only supplies
 candidates, scores and neighbours, precomputed.
 
-**Outcome (full local run, `make recs`, 60,000 simulated households, 56 days).** The learned
-system beats the milestone 1 rule engine on the publish gate. The gate metric is the true utility
-of the first ten recommendations: 0.787 against 0.675, a paired difference of **+0.112 (95%
-bootstrap interval [0.109, 0.115])** over 46,458 profiles. It also wins on the exposure-robust
-logged metric (search-discovery NDCG@10 +0.095 [0.089, 0.100]) and on plain replay
-(NDCG@10 +0.073 [0.070, 0.077]). The run was published (`recs/current.json`), its artefacts
-validated, and the experiment analysis reported the A/A test flat and the planted +10% effect
-detected (+8.7%). These are simulator results: they validate the pipeline and the relative
-ordering of systems under the simulator's assumptions, not real-world lift (§9).
+**Outcome, measured on the current code (November 2026).** Does the learned model beat the
+milestone 1 rule engine? Offline on the simulator, at medium size, yes, in every seed and week
+tried; at full size, yes, in all three weeks of the one seed run (+0.101, +0.032, +0.108); at
+smoke size, no; and served online in the simulator it raised
+plays a little while its lists were fresh and lowered watch time once they aged. The offline
+comparison is what members see under each policy: the engine's home page with the run's lists
+handed to it as the learned policy's candidates, against the engine's own home page, by the true
+utility of the first ten titles in reading order, with a paired 95% bootstrap interval over
+profiles (§5). At medium size (8,000 households, 42 days) the learned page won at all three
+rolling gate cutoffs (days 35, 28 and 21) for all three simulator seeds tried (7, 8, 9):
+differences from +0.024 to +0.100, mean +0.061 with a standard deviation of 0.027 across the
+nine, each interval about ±0.006. The seed and the week move the result four to five times more
+than an interval admits, so the numbers support "wins in every cell", not a magnitude (§6). At
+smoke size (300 households, 21 days) it does not win (−0.022, +0.004, +0.026 for the three seeds,
+every interval covering zero) and the gate refuses to publish. The +0.112 [0.109, 0.115] reported
+before came from an older recipe on an earlier lake with a different comparison and is
+withdrawn. Online in the simulator (§7), served to half of the members, the learned pages added
++3.3% and +4.2% qualified plays in the first week while the run was fresh; over 14 days without
+scoring again, +0.7% and +1.2% (within noise) with 3-4% less watch time; the product's analysis
+at medium traffic would most likely detect none of it. Part of the offline win is written into
+the simulator: §2, "What the simulator builds in". These are simulator results: they validate
+the pipeline and the relative ordering of systems under the simulator's assumptions, not
+real-world lift (§9).
 
-**Since the product was built around the pipeline (November 2026).** The lake is now written by
-the product's own writer, and the simulator stores only what that writer stores (restricted
-profiles produce nothing, accounts without any consented purpose only their consent changes,
-exposures once per unit and variant per 30 days), dropping events after every random draw so
-that every stored event is byte-identical to the earlier simulator's. At smoke size the
-evaluation is unchanged to the last digit (1,606 of 1,606 metric values, the gate interval, the
-propensity estimate) and so are the experiment results; only counts of excluded data moved
-(§6, §7). The full-run tables below were measured on the earlier lake; their accuracy numbers
-are expected to be identical, their data-rule counts are not (§6 says which and why), and
-refreshing them needs a full run on an idle machine (`make recs`, about 15 minutes and 10 GB).
+**Since the product was built around the pipeline (November 2026).** The lake is written by the
+product's own writer, and the simulator stores only what that writer stores (restricted profiles
+produce nothing, accounts without any consented purpose only their consent changes, exposures
+once per unit and variant per 30 days), dropping events after every random draw so that every
+stored event is byte-identical to the earlier simulator's. Datasets and scoring leave out every
+subject the product lists as pending erasure (erased accounts, restricted or deleted profiles),
+retention is enforced on the store from the product's own settings (`retain`), and a run is
+published only on its own gate decision across three consecutive weeks (services/recs/README.md,
+"Jobs").
 
 ## 1. Pipeline
 
@@ -37,18 +50,25 @@ refreshing them needs a full run on an idle machine (`make recs`, about 15 minut
         ▼
  events/dt=…/hh=…/*.ndjson.gz ──compact──► part-*.parquet (deduplicated, per closed hour)
         │                         ▲
-        │                         └── erase (account deletions: lake, datasets, artefacts)
+        │                         ├── erase (account deletions: lake, datasets, artefacts)
+        │                         └── retain (13 months of activity, 37 of totals, by age)
         │
-        ▼ build-dataset (knowledge cutoff, validation, dedup, clock correction, eligibility)
+        ▼ build-dataset (knowledge cutoff, validation, dedup, clock correction, eligibility,
+        │                subjects pending erasure left out)
  playback · actions · impressions(+labels) · profiles · accounts      (Parquet)
         │
-        ▼ train (temporal stacking: candidates at T-7d → ranker on [T-7d, T) → candidates at T)
+        ▼ train (temporal stacking: candidates at T-7d → ranker on [T-7d, T) → candidates at T;
+        │        a backtest at cutoff c learns from a dataset built as of c)
  co-watch (shrunk) · ALS · content (TF-IDF+SVD) · propensity · EM ranker · re-ranker
         │
-        ├─► evaluate: backtest vs random, popularity, components, the real M1 engine, oracle
-        │           → gate (utility@10 vs rule engine, paired 95% interval above zero)
+        ├─► evaluate, at each rolling cutoff T−7d, T−14d, T−21d: backtests vs random,
+        │   popularity, components, the real M1 engine (score order, home page, and home page
+        │   with the run as its learned candidates), oracle
+        │           → gate decision for the run (learned home − engine home, utility@10,
+        │             paired 95% interval above zero at every cutoff)
         ▼
- score → recs/v={run}/{neighbours,profiles}/*.parquet + manifest → publish → recs/current.json
+ score → recs/v={run}/{neighbours,profiles}/*.parquet + manifest (+ its decision)
+       → publish (checks the run's own decision again) → recs/current.json
         │
         ▼ (TypeScript) importer → RecommendationStore → engine.ts
 
@@ -57,8 +77,10 @@ refreshing them needs a full run on an idle machine (`make recs`, about 15 minut
 
 Every stage records what it read and its knowledge cutoff; every run records the code digest,
 git commit, parameters, seeds, data range and metrics (`recs-work/runs/{run}/manifest.json`).
-The recipe hash (code digest + parameters) ties a published run to the backtest that justified
-it: changing any code or parameter requires a new evaluation before anything can be published.
+The recipe hash (code digest + parameters) and the cutoffs tie a published run to the
+backtests that justified it: a run's gate decision names the run and the evaluations of its own
+rolling cutoffs, so neither a change of code or parameters nor a pass from another week can
+publish it (§5).
 
 ## 2. The behaviour simulator
 
@@ -114,7 +136,18 @@ released: an `abandon` with reason `expired`, at the last report, received 140-2
 when the home page is rendered, once per profile and variant per 30 days, with the unit's
 assignments and the page's policy, as the product logs it; the planted effect multiplies the
 treatment profiles' session rate by 1 + effect (so qualified plays per member, the registered
-primary metric, move by about that much). The full run carries an A/A test and a +10% test.
+primary metric, move by about that much). The documented runs carry an A/A test and a +10%
+test. A planted effect only tests that the analysis detects a difference of a known size; it
+says nothing about learned versus rules. For that, an experiment can be **served**
+(`--experiment key:served=learned:start=DAY --learned-store … --learned-run …`): from its start
+day the treatment arm's home pages are composed with a scored run's lists the way the engine
+composes them under the learned policy (the model's billboard and Top Picks, rows ordered by
+its personal scores, its Because You Watched rows first, its percentiles as the taste term, a
+session boost for neighbours of what was just watched; the rules still dispose), in the
+simulator's Python stand-in for the engine; the control arm keeps the rule pages. Nothing about
+the experiment happens before its start, so a first pass without the run produces the same
+lake up to that day (event for event, tested), the run is trained on it, and a second pass
+serves it (§7, "Learned against rules, online").
 
 **Determinism and scale.** One generator per account (seed, account index): the lake is
 byte-identical whatever the number of worker processes (tested). Generation is separate from
@@ -125,6 +158,42 @@ of up to 100 playback events, one object per other server event), which multipli
 of objects and is meant for exercising compaction and erasure, not for the documented runs. A
 replay sink for the real `POST /events` would batch client events the same way and drive the
 playback routes for server events.
+
+### What the simulator builds in
+
+The simulator's members were written by us, and part of the learned model's offline win comes
+from that writing. What the gated difference (learned home page − engine home page, utility@10)
+is made of, by component of the true utility, at medium size and the latest cutoff (day 35;
+the reviewer's decomposition, re-run on the current harness; seeds 7 / 8 / 9):
+
+| Component of U (`world.py`) | Share of within-profile variance | Contribution to the gated difference |
+| --- | --- | --- |
+| genre match | 0.44 (34-37%) | +0.005 / +0.011 / +0.036 |
+| quality (linear in seed popularity) | 0.37 to 0.47 (30-36%) | −0.026 / −0.001 / +0.010 |
+| latent part content features cannot see (`latent_free`) | 0.18 to 0.20 (14-16%) | +0.019 / +0.017 / +0.003 |
+| latent part aligned with genres | 0.09 (7%) | +0.011 / +0.005 / +0.007 |
+| series bias | 0.06 (5%) | +0.012 / +0.009 / +0.010 |
+| idiosyncratic noise | 0.12 (9-10%) | +0.005 / +0.005 / +0.004 |
+| mood, people | 0.03 | about 0 |
+| **total** | | **+0.024 / +0.045 / +0.071** |
+
+* A rank-8 bilinear term (`0.55 · <u_p, v_t>/√8`, world.py) is about 15% of each member's
+  utility variance by construction. Content features cannot see it; collaborative filtering
+  (ALS) is built to find it. It is the largest single source of the win for seeds 7 and 8 (four
+  fifths and two fifths of it) and almost none for seed 9, where the model wins on genre match.
+* The engine's weights are fixed (popularity 0.2, trend 0.15, freshness 0.1 of the score),
+  while simulated quality is linear in seed popularity: whether ranking by popularity helps or
+  hurts against quality depends on numbers we chose.
+* Members examine cards exactly as the position-bias model and the EM ranker assume
+  (`k^-0.7` times a row attention, behaviour.py): the correction is fitting the true model.
+* The gate scores static utility, while members also act on a novelty boost for new arrivals.
+  Scored with that boost too, the gated difference stays about where it is (+0.025 / +0.040 /
+  +0.058 against +0.024 / +0.045 / +0.071 static): the static oracle is not what makes the
+  learned page win.
+
+For real members the sign of the difference depends on magnitudes the simulator cannot know.
+The relative ordering of components is informative about the pipeline; the size of the win is
+not a prediction.
 
 ## 3. The dataset
 
@@ -230,11 +299,18 @@ eligible profiles with at least one *discovery* in the window (a qualified play 
 had arrived by T and that they had not played before T); gain 1, or 2 if they completed an
 item. Every system ranks the same universe per profile (arrived by T, not watched before T).
 Systems: random; popularity (plays in the last 28 days); co-watch item-kNN; ALS; content; the
-ranker (debiased) and its naive twin; `learned` (the final list: re-ranked top picks, then the
-rest by score); **the real milestone 1 engine**, run through `scripts/rule-engine-rankings.ts`
-on each profile's library as of T (its `score()` order, and its home page in reading order);
-and the oracle (true utility). Intervals: 1000 bootstrap resamples over profiles, paired for
-differences.
+ranker (debiased) and its naive twin; `learned` (the pipeline's final list: re-ranked top
+picks, then the rest by score); **the real milestone 1 engine**, run through
+`scripts/rule-engine-rankings.ts` on each profile's library as of T: its `score()` order
+(`rule-engine`), its home page in reading order (`rule-engine-home`: billboard, then the first
+six cards of every row, then the next six), and **its home page with the run handed to it as the
+learned policy's candidates** (`learned-home`: the run's neighbours and the profile's lists, as
+serving passes them; the model proposes, the rules dispose). `learned-home` is what members are
+served under the learned policy; `learned` is a component. Every system sees item statistics
+(plays in the last 7 and 28 days, distinct viewers, the engine's Trending and Top 10 views) over
+all eligible profiles, as training, scoring and the product compute them, not over the evaluated
+population only. And the oracle (true utility). Intervals: 1000 bootstrap resamples over
+profiles, paired for differences.
 
 **Metrics @K** (K = 10, 20): recall, NDCG (graded), MAP, hit rate; diversity (1 − mean pairwise
 similarity in the engine's content-feature space, model-independent); novelty (mean
@@ -253,133 +329,154 @@ The report keeps three families apart: replay on all discoveries (biased toward 
 replay on *search* discoveries (titles members sought out whatever the rows showed; robust to
 exposure, smaller sample); and true utility (unbiased, simulator only).
 
-**The gate.** `publish` refuses a run unless an evaluation of the same recipe shows
-**utility@10 of `learned` above the rule engine's, with the 95% paired bootstrap interval of the
-difference entirely above zero**. Why this metric: it is what "beats the rule engine on the
-simulator" (blueprint §7.1) means once exposure bias is taken seriously; it measures what members
-get from the first screen (ten is about the billboard and the visible cards of the first rows);
-and it is a property of the ranked list, not of what the incumbent happened to show. Why paired
-and interval-based: a point estimate would let noise publish. Without truth (real data) the gate
-falls back to search-discovery NDCG@10, and the online experiment (§7) is the real decision.
+**The gate.** One backtest passes when **utility@10 of `learned-home` minus `rule-engine-home`**
+has its 95% paired bootstrap interval entirely above zero (a positive mean whose interval
+reaches zero is within noise, and within noise is a loss). A production run trained as of T is
+published only if the backtests of its own recipe at **every** rolling cutoff T − 7 d, T − 14 d,
+T − 21 d passed (`WEBFLIX_RECS_GATE_CUTOFFS`, default 3): `train-and-score` trains and evaluates
+each, writes the run's decision (`recs-work/evaluations/{recipe}/decision-{run}.json`, also in
+the version's manifest), and `publish` checks it again against the evaluation reports as they
+are then. A pass from another week cannot stand in for the run's own, and an evaluation re-run
+later that failed makes the run unpublishable (services/recs/README.md, "The gate").
+
+Why this comparison: it is what members see under each policy, the page the engine assembles
+with and without the model, rather than the pipeline's own list against the engine's score order
+(the engine's home page usually costs about 0.08 of utility@10 against its score order, and the
+assembled page with the model costs up to 0.09 against the model's list: comparing lists would
+measure neither page). Why utility@10: it is what "beats the rule engine on the simulator"
+(blueprint §7.1) means once exposure bias is taken seriously, and ten is about the first screen.
+Why several cutoffs: the bootstrap interval only covers which profiles were sampled; the
+simulator's seed and the week move the result four to five times more (§6), so one week's pass
+is weak evidence and three consecutive weeks are less weak. It is still not a measure of real
+lift: without truth (real data) the gate falls back to search-discovery NDCG@10, and the online
+experiment (§7) is the decision. A young lake cannot pass: each cutoff needs plays from before
+it minus 7 days, so three cutoffs need four weeks of lake, and nothing is published (the product
+serves the rules) until then.
 
 **Leakage.** The harness refuses (`LeakError`) a run trained after the cutoff, a run that read
 any event received at or after it, a dataset that does not cover the test window, and an
-external rankings file produced after the cutoff. The leak test plants two leaks on the real
+external rankings file produced after the cutoff. A backtest learns from a dataset built as of
+its own cutoff, not from the job's dataset as of T: a dataset built later decides eligibility
+and device clock offsets with later events and labels the ranker's impressions with plays (and
+watched seconds) received after the cutoff, while every row it hands over passes the
+received-before-cutoff filter. Measured at medium size (seed 7, day 35) before the change: the
+later dataset inflated the gated difference from +0.024 [0.019, 0.029] to +0.035 [0.030, 0.040],
+and the ranker's utility@10 from 0.723 to 0.750. Small per event, a third of the result. The
+leak test plants two leaks on the real
 catalogue: a run trained through the test window, and a rankings file that peeked at it; both
 are refused, and with the guard bypassed both inflate the metrics (the peek reaches recall@20
 of 1.0; in a medium-scale probe during development the leaky run moved NDCG@10 from 0.513 to
 0.545, four times the interval half-width).
 
-## 6. Results (full local run)
+## 6. Results
 
-`make recs` from an empty `.cache/recs/full`: 60,000 households (135,679 profiles, of which
-89,004 eligible after excluding 27,973 restricted and 14,267 non-consenting; on the product-shaped
-lake the restricted ones are not in the lake at all, see below), 56 days from
-2026-09-01, 3.35 million sessions, 39.6 million lake events. Backtest cutoff 2026-10-20, test
-window to 2026-10-27; 46,458 profiles with at least one discovery (1.55 per profile; 10,078 with
-a search discovery); 113 titles available, 11 of them under 14 days old. Recipe `986d4ce2`
-(the code digest and parameters of the repository as delivered). Means with 95% bootstrap
-intervals (1000 resamples over profiles).
+What was run on the current code (recipe `75bc3909`): smoke (300 households, 21 days: one gate
+cutoff fits, day 14) and medium (8,000 households, 42 days: cutoffs at days 35, 28 and 21) for
+simulator seeds 7, 8 and 9 (`SEED=N WORKERS=4 services/recs/scripts/run-local.sh medium`), and
+the full size once (below). The +0.112 [0.109, 0.115] this document reported before came from an
+older recipe (`986d4ce2`) on an earlier lake, compared the pipeline's own list with the engine's
+score order, and was one seed at one week: it is withdrawn. Means with 95% bootstrap intervals
+(1,000 resamples over profiles).
 
-Data rules at work (measured on the earlier lake, which still held restricted subjects' events):
-all 39.3 million events received before the cutoff validated (0 invalid); compaction dropped
-211,676 duplicate deliveries; the dataset build removed 111,392 more that crossed hour
-boundaries (client retries), corrected the clocks of 4,132 devices, accepted 272,842 client
-events delivered more than an hour late (by receipt, as production would have), and dropped 3.3
-million events of profiles that were not eligible, on top of every event flagged restricted.
+**The gate at medium size, every seed and every cutoff** (utility@10; the gated difference is
+`learned-home` − `rule-engine-home`; the last column is the comparison the gate used before, the
+pipeline's list against the engine's score order, kept as a component):
 
-What collecting like the product changes in these counts, measured at smoke size (same seed,
-before → after) and expected in the same proportions at full size: lake events 134,335 →
-107,139 (−20%: restricted subjects and accounts without consent store nothing); profiles seen
-637 → 508 and excluded as restricted 128 → 0 (they are no longer in the lake at all); excluded
-for consent 72 → 71 (an account with neither purpose now has no profile events); duplicates the
-dataset removes in playback 131 → 0 (a server event's duplicate now keeps its receipt, so
-compaction drops it within the hour); devices whose clock was corrected 15 → 13 (two devices
-used only by restricted profiles). Every evaluated profile, every metric and the gate are
-identical, because every stored event of an eligible profile is.
+| Seed | Cutoff | Profiles | learned-home | rule-engine-home | Gated difference | learned − rule-engine |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7 | day 35 | 6,486 | 0.655 | 0.631 | **+0.024 [+0.019, +0.029]** | −0.009 [−0.017, −0.001] |
+| 7 | day 28 | 5,873 | 0.532 | 0.479 | **+0.053 [+0.047, +0.058]** | +0.023 [+0.014, +0.031] |
+| 7 | day 21 | 5,695 | 0.559 | 0.459 | **+0.100 [+0.094, +0.108]** | +0.084 [+0.075, +0.093] |
+| 8 | day 35 | 6,544 | 0.695 | 0.650 | **+0.045 [+0.039, +0.051]** | +0.030 [+0.022, +0.038] |
+| 8 | day 28 | 5,785 | 0.572 | 0.534 | **+0.038 [+0.033, +0.044]** | −0.010 [−0.020, −0.000] |
+| 8 | day 21 | 6,067 | 0.759 | 0.660 | **+0.100 [+0.093, +0.106]** | +0.054 [+0.044, +0.063] |
+| 9 | day 35 | 6,211 | 0.705 | 0.634 | **+0.071 [+0.066, +0.076]** | +0.095 [+0.086, +0.103] |
+| 9 | day 28 | 5,277 | 0.641 | 0.568 | **+0.073 [+0.066, +0.080]** | +0.155 [+0.145, +0.166] |
+| 9 | day 21 | 5,109 | 0.625 | 0.581 | **+0.044 [+0.038, +0.050]** | +0.074 [+0.064, +0.083] |
 
-| System | Utility@10 ↑ | Regret@10 ↓ | NDCG@10 (replay) | Recall@20 | MAP@10 | Search NDCG@10 | Diversity@10 | Novelty@10 | Coverage@10 |
-|---|---|---|---|---|---|---|---|---|---|
-| oracle (true utility) | 1.657 [1.653, 1.661] | 0 | 0.538 [0.535, 0.542] | 0.915 | 0.436 | 0.486 [0.479, 0.494] | 0.851 | 4.74 | 1.00 |
-| **learned** (published list) | **0.787 [0.784, 0.791]** | **0.870 [0.867, 0.873]** | 0.548 [0.545, 0.551] | 0.874 | 0.446 | 0.271 [0.265, 0.278] | 0.890 | 5.10 | 0.89 |
-| ranker (before re-ranking) | 0.814 [0.810, 0.818] | 0.843 | 0.560 [0.557, 0.563] | 0.879 | 0.460 | 0.275 [0.269, 0.282] | 0.877 | 5.13 | 0.91 |
-| ranker, naive labels | 0.766 [0.762, 0.770] | 0.891 | 0.550 [0.547, 0.552] | 0.880 | 0.447 | 0.272 [0.265, 0.279] | 0.880 | 5.21 | 0.94 |
-| **rule engine** (M1, score order) | 0.675 [0.671, 0.679] | 0.982 [0.979, 0.985] | 0.475 [0.472, 0.478] | 0.861 | 0.386 | 0.176 [0.171, 0.182] | 0.821 | 3.54 | 0.99 |
-| rule engine, home page order | 0.590 [0.586, 0.594] | 1.067 | 0.460 [0.456, 0.463] | 0.771 | 0.376 | 0.193 [0.187, 0.199] | 0.881 | 3.16 | 1.00 |
-| ALS | 0.686 [0.681, 0.690] | 0.972 | 0.233 | 0.587 | 0.169 | 0.136 | 0.814 | 3.67 | 0.88 |
-| co-watch item-kNN | 0.488 [0.484, 0.492] | 1.169 | 0.172 | 0.520 | 0.116 | 0.088 | 0.821 | 2.56 | 0.90 |
-| content | 0.447 [0.443, 0.452] | 1.210 | 0.160 | 0.461 | 0.111 | 0.092 | 0.709 | 5.19 | 1.00 |
-| popularity | 0.338 [0.334, 0.341] | 1.319 | 0.101 | 0.556 | 0.063 | 0.072 | 0.875 | 2.39 | 0.32 |
-| random | -0.191 [-0.196, -0.187] | 1.849 | 0.047 | 0.188 | 0.028 | 0.044 | 0.887 | 5.63 | 1.00 |
+All nine pass and all three runs were published. Across the nine: mean +0.061, standard
+deviation 0.027, range +0.024 to +0.100 (4% to 22% of the engine's home page). Each interval's
+half-width is 0.005 to 0.007: **the seed and the week move the result four to five times more
+than the interval admits**, so no single interval is the uncertainty of the magnitude. What
+these numbers support: at medium size, on this simulator, the learned home page beat the
+engine's home page in every one of nine seed-and-week cells, by 0.024 to 0.100. The comparison
+of lists the gate used before loses in two of the nine (seed 7 day 35, seed 8 day 28).
 
-**Gate**: utility@10 of `learned` minus the rule engine = **+0.112 [+0.109, +0.115] → pass**
-(+16.6% relative; regret down from 0.982 to 0.870). Paired differences against the rule engine:
+* **Exposure-robust replay** mostly agrees: search-discovery NDCG@10 of the learned home page
+  minus the engine's is +0.004 to +0.036, every lower bound at or above zero except one (seed 7,
+  day 35: −0.006). Replay NDCG@10 on all discoveries disagrees (−0.040 to −0.127): members were
+  shown the engine stand-in's pages, and that family rewards resembling them (§5). It is
+  reported, never used to decide.
+* **Ablations vary as much as the gate.** Position-bias correction (debiased − naive ranker):
+  −0.024 to +0.113, median +0.023, negative in two of nine; "worth a third of the gain", as
+  written before, was a single draw. Re-ranking (published list − ranker): −0.022 to −0.051, the
+  price of diversity. The engine assembling the page with the model (learned-home − learned):
+  −0.092 to +0.028, negative in eight of nine (the page's rows that are not personal, Continue
+  Watching, Top 10, and the rules take space from the model's best titles). The engine's own home
+  page against its score order: −0.08 in six of nine cells, about 0 in the others.
+* **Slices** (day 35): warm profiles gain in every seed (0.634 vs 0.604, 0.680 vs 0.610, 0.676
+  vs 0.608); cold profiles (under 14 days or 3 plays, about 1,800) gain in one seed of three
+  (0.710 vs 0.698, 0.731 vs 0.753, 0.782 vs 0.703: the first two within noise). Cold-start titles:
+  recall@20 of discoveries of titles under 14 days old is 0.99 for every system with freshness
+  signals.
+* **Position bias** (day 35): γ̂ = 0.75 [0.65, 0.84], 0.70 [0.61, 0.78], 0.82 [0.72, 0.92] for
+  seeds 7, 8, 9, against the true 0.7 (§4 on why it tilts upward).
 
-| System | Utility@10 | NDCG@10 (replay) | Search NDCG@10 | Recall@20 |
-|---|---|---|---|---|
-| learned | +0.112 [+0.109, +0.115] | +0.073 [+0.070, +0.077] | +0.095 [+0.089, +0.100] | +0.013 [+0.011, +0.016] |
-| ranker | +0.138 [+0.136, +0.141] | +0.085 [+0.082, +0.089] | +0.099 [+0.093, +0.105] | +0.019 [+0.016, +0.022] |
-| ALS alone | +0.010 [+0.007, +0.013] | −0.242 [−0.245, −0.239] | −0.041 [−0.046, −0.035] | −0.274 [−0.278, −0.270] |
-| engine home order | −0.085 [−0.088, −0.083] | −0.015 [−0.018, −0.013] | +0.017 [+0.013, +0.021] | −0.090 [−0.093, −0.087] |
+**Smoke size** (about 245 profiles, cutoff day 14, seeds 7 / 8 / 9): the learned home page does
+not win, −0.022 [−0.048, +0.007] / +0.004 [−0.027, +0.037] / +0.026 [−0.011, +0.058], and the
+gate refuses every time; the list comparison loses clearly, −0.093 / −0.153 / −0.131. With a few
+thousand ranker examples the content-and-popularity engine is as good a bet, which is the point
+of a gate.
 
-**Ablations** (paired):
+**Full size, once** (60,000 households, 56 days, seed 7; recipe `81724e67`, the code as this
+round leaves it; 28.7 million lake events, 89,016 eligible profiles): the gate passed at all three
+cutoffs and the run was published.
 
-| Change | Utility@10 | NDCG@10 | Search NDCG@10 | Diversity@10 | Novelty@10 |
-|---|---|---|---|---|---|
-| position-bias correction (EM ranker − naive ranker) | +0.048 [+0.046, +0.049] | +0.011 [+0.010, +0.012] | +0.003 [+0.001, +0.005] | −0.003 | −0.075 |
-| re-ranking (published list − ranker) | −0.026 [−0.027, −0.025] | −0.012 [−0.013, −0.011] | −0.004 [−0.006, −0.002] | +0.013 | −0.032 |
+| Cutoff | Profiles | learned-home | rule-engine-home | Gated difference | learned − rule-engine |
+| --- | --- | --- | --- | --- | --- |
+| day 49 | 46,467 | 0.691 | 0.590 | **+0.101 [+0.099, +0.103]** | +0.113 [+0.110, +0.116] |
+| day 42 | 42,826 | 0.518 | 0.486 | **+0.032 [+0.030, +0.034]** | +0.059 [+0.055, +0.062] |
+| day 35 | 41,470 | 0.564 | 0.456 | **+0.108 [+0.106, +0.110]** | +0.179 [+0.176, +0.182] |
 
-The position-bias correction is worth a third of the gain over the engine. The re-ranker buys
-diversity with some measured utility; part of that cost is an artefact of the static oracle,
-which ignores the novelty members show in the simulation (§10), but the trade-off is real and
-its weights are a product decision, not a tuned optimum.
+The intervals are ±0.002 and the week alone moves the result from +0.032 to +0.108; one seed was
+run, so the spread across seeds at this size is not known. Search-discovery NDCG@10 agrees
+(+0.058, +0.016, +0.027, all above zero); position-bias correction +0.014 to +0.034; re-ranking
+−0.024 to −0.046; the engine assembling the page with the model −0.071 to −0.131 against the
+model's list. Warm profiles 0.677 vs 0.563, cold (9,702) 0.742 vs 0.693 at day 49. γ̂ = 0.76
+[0.73, 0.80]. Experiments: the A/A not significant (−0.0%, p 1.0; SRM p 0.014 against the 0.001
+threshold), the planted +10% read as +8.7% [+7.5%, +9.8%] (p 5e-50), as on the earlier lake.
 
-**Slices** (utility@10; learned vs rule engine): new and recent profiles (cold: under 14 days or
-under 3 plays, 9,690 profiles) 0.776 [0.769, 0.784] vs 0.728 [0.719, 0.737]; warm (36,768)
-0.790 [0.786, 0.794] vs 0.661 [0.657, 0.665]. By profile type: owners 0.776 vs 0.663, partners
-0.802 vs 0.689, shared family profiles 0.830 vs 0.734, young adults 0.786 vs 0.673 (all
-intervals disjoint). On replay NDCG@10 the cold slice is close (0.450 [0.444, 0.456] vs 0.430
-[0.424, 0.436]): with no history, both lean on popularity and freshness. **Cold-start titles**
-(discoveries of titles under 14 days old): recall@20 0.981 [0.980, 0.982] for the learned
-list, 0.948 [0.946, 0.950] for the engine, 0.578 for popularity; near the ceiling for every
-system with freshness signals, because simulated members like new arrivals.
 
-**Position bias**: γ̂ = 0.76 [0.725, 0.795] at full scale and 0.75 [0.67, 0.83] at medium scale,
-against the true 0.7; the row-attention estimate decays from 1 at the first shuffled module to
-about 0.37 at module 12 (truth relative to that module: 0.45/0.95 = 0.47), steeper than the truth because
-deeper modules are reached by members who found nothing above (§4).
-
-**Smaller sizes** (same code): at medium (8,000 households, 42 days; 6,486 evaluated profiles)
-the gate passes with +0.046 [0.038, 0.054]; replay NDCG@10 cannot separate learned and engine
-(0.511 vs 0.516) and the engine's home order scores above the oracle there (0.541 vs 0.514). At
-smoke size (300 households, 21 days; 245 profiles) the learned models lose to the engine
-(−0.165 [−0.217, −0.116], unchanged by the product-shaped lake) and **the gate refuses to
-publish**: with a few thousand ranker examples the content-and-popularity engine is the better
-bet, which is the point of having a gate.
+**What this round changed in the numbers** (medium, seed 7, day 35): computing the evaluated
+systems' item statistics over all eligible profiles, as scoring does, moved the list comparison
+from +0.040 to +0.023; training the backtest on a dataset as of its own cutoff instead of the
+job's dataset (§5, leakage) moved the gated difference from +0.035 to +0.024 and the list
+comparison from +0.023 to −0.009.
 
 ### Run time and memory
 
-On this machine (18 cores, 48 GB) shared with another project's Kubernetes cluster (load
-average 15-30 throughout), `WEBFLIX_RECS_THREADS=4`, 12 worker processes for simulation, compaction and
-lake reading. Peak RSS is per step (the larger of the main process and any worker).
+On an 18-core, 48 GB laptop, `WORKERS=4`, `WEBFLIX_RECS_THREADS=4`, three gate cutoffs (one at
+smoke size), each backtest on its own dataset. Peak RSS is per step (the larger of the main
+process and any worker).
 
-| Step | smoke (s / MB) | medium (s / MB) | full (s / MB) |
+| Step | smoke (s / MB) | medium, seed 9 (s / MB) | full (s / MB) |
 |---|---|---|---|
-| simulate | 1.8 / 130 | 24 / 177 | 161 / 237 |
-| compact | 0.5 / 144 | 6.4 / 427 | 138 / 961 |
-| build-dataset | 1.9 / 226 | 9.2 / 1,737 | 156 / 6,650 |
-| train (backtest) | 32 / 293 | 58 / 2,037 | 119 / 7,254 |
-| evaluate (incl. the Node rule engine) | 1.0 / 311 | 4.7 / 1,780 | 43 / 7,537 |
-| train (production) | 33 / 308 | 36 / 1,716 | 168 / 9,212 |
-| score | 0.7 / 332 | 3.5 / 1,511 | 23 / 8,214 |
-| publish + validate | refused | 1.5 / 245 | 5 / 534 |
-| analyse-experiments | 2.2 / 265 | 9.2 / 1,665 | 85 / 9,701 |
-| **whole run** | **76 s** | **158 s** | **916 s (15.3 min)** |
-| events / profiles | 134 k / 696 | 4.96 M / 18,049 | 39.6 M / 135,679 |
+| simulate | 1.9 / 124 | 37 / 176 | 300 / 261 |
+| compact | 0.5 / 129 | 8.0 / 261 | 52 / 747 |
+| build-dataset (as of T) | 1.8 / 227 | 11.9 / 1,862 | 61 / 8,437 |
+| build-dataset, each cutoff | 1 to 3 / 185 | 6.5 to 10.9 / 1,047 to 1,543 | 35 to 52 / 5,510 to 7,573 |
+| train, each backtest | 36 / 296 | 37 to 48 / 1,187 to 1,600 | 49 to 55 / 6,718 to 9,124 |
+| evaluate, each (incl. the Node rule engine, three pages) | 1.8 / 321 | 6.5 to 7.9 / 1,528 to 1,855 | 47 to 53 / 7,865 to 9,901 |
+| train (production) | 44 / 308 | 39 / 1,713 | 47 / 10,278 |
+| score | 1.0 / 331 | 3.6 / 1,558 | 23 / 8,140 |
+| publish + validate | refused | 1.5 / 245 | 4.7 / 541 |
+| analyse-experiments | 3.0 / 241 | 12.3 / 1,425 | 68 / 8,199 |
+| **whole run** | **about 90 s** | **286 s** | **995 s (16.6 min), peak 10.3 GB, no swap** |
+| events / profiles | 107 k / 696 | 3.69 M / 17,990 | 28.7 M / 135,679 |
 
-Memory at full size is dominated by holding the whole dataset (8.8 M playback rows, 9.8 M
+Memory at full size is dominated by holding a whole dataset (8.8 M playback rows, 9.9 M
 impressions) in memory with string profile keys; streaming the tables per profile shard would
-bound it, and is the next step before a catalogue or member base ten times larger.
+bound it, and is the next step before a member base ten times larger.
 
 ## 7. Experiment analysis
 
@@ -399,11 +496,19 @@ results"):
   counted (`diagnostics.layerOverlapUnits`); the product's disjoint allocations make it 0.
 * **Pre-registration**: refused if registered after the start or exposed before registration;
   the primary metric is fixed by the definition. A product experiment's window starts at its
-  registration when staff set its start earlier, since the product assigns nobody before.
+  registration when staff set its start earlier, since the product assigns nobody before. Its
+  latest status change bounds the window too: a start scheduled for later starts it then, and a
+  `completed` or `paused` experiment's window ends when that took effect (not at an absent or
+  later `endsAt`); a `completed` one with neither time is skipped. A definition carries only the
+  latest change, so a pause that has since been resumed cannot be seen and its days count as
+  running.
 * **Sample-ratio mismatch**: chi-square against the design weights; below p = 0.001 the decision
   is `invalid-sample-ratio-mismatch`.
 * **Metrics** per unit since first exposure: qualified plays, watch hours, any play, active
   days, retained; per-variant means with intervals, Welch difference, delta-method relative lift.
+  The primary metric decides at α (split over treatments); secondary metrics are judged at α
+  split over them as well (Bonferroni), so `significant` on one of four secondaries is not the
+  one-in-five chance finding it would be at the primary's level.
 * **Peeking protection**: the mixture sequential probability ratio test (Johari et al. 2017)
   with a normal mixture, at daily looks, giving always-valid p-values and confidence sequences.
   Staff read results in the admin console whenever they like; a fixed-horizon test checked daily
@@ -412,28 +517,87 @@ results"):
   control mean: the prior puts its mass on effects the experiment was sized for. The
   fixed-horizon Welch test is reported too, valid only at the registered end.
 * **Calibration** (tests, deterministic): 300 simulated A/A experiments with 14 daily looks:
-  mSPRT false-positive rate 0.000 (bound α + 3σ ≈ 0.088), naive daily peeking 0.170 — the
-  protection is necessary and works. A planted +20% effect on qualified plays, 200 seeds, 5,000
-  units: detected 68.5% of the time against a computed mSPRT power of 63.4% (Monte Carlo of the
-  estimator's Gaussian path at the planned looks), inside the tolerance; the fixed-horizon power
-  for the same design is 90.6%, which is the price of looking any time.
+  mSPRT false-positive rate 0.000, naive daily peeking 0.170 — the protection is necessary and
+  works. The bound asserted is 0.02, not α: on this generator the mixture test is conservative
+  (about 1 in 600 over 1,000 seeds, measured in review), and a bound at α let through an
+  estimator whose variance was half the truth (false positives 0.045 to 0.062). A second test
+  recomputes the always-valid p-value from the units' values with plain numpy (Welch variance
+  at each look, the mixture likelihood ratio, the running maximum) and requires the report to
+  match it exactly, so a variance off by any factor fails whatever the A/A rate. A planted +20%
+  effect on qualified plays, 200 seeds, 5,000 units: detected 68.5% of the time against a
+  computed mSPRT power of 63.4% (Monte Carlo of the estimator's Gaussian path at the planned
+  looks), inside the tolerance; the fixed-horizon power for the same design is 90.6%, which is
+  the price of looking any time. The mixing scale is recomputed at each look from the control
+  mean (τ = MDE × control mean); fixing it at the design would make the guarantee exact for a
+  fixed estimand, but the estimand of a cumulative metric grows with the window and a scale
+  fixed on day one would be too small by the end; the A/A calibration is the check.
+* **What the analysis can detect** (minimum detectable effect at 80% power, mSPRT, daily looks,
+  α = 0.05, from the medium lake's own A/A experiment: per-unit qualified plays and their
+  covariance across the 42 looks; other sizes by scaling the units): **5.4% at medium** (12,825
+  units), **2.0% at full size** (97,000 units; an approximation, the full window is 56 days),
+  **43% at smoke size** (489 units). Power at +5%: 0.73 at medium, 0.00 at smoke. The registered
+  MDE of the simulated experiments (5%) is therefore just within reach at medium and far out of
+  reach at smoke size, where no experiment result means anything.
 
-**Full run (simulator, events through the real lake path).** Two experiments registered before
-the start, profiles as units, qualified plays as the primary metric, MDE 5%, daily looks:
+**Planted effects, medium size (simulator, events through the real lake path), seeds 7 / 8 /
+9.** Two experiments registered before the start, profiles as units, qualified plays as the
+primary metric, MDE 5%, daily looks:
 
-| Experiment | Units (control / treatment) | SRM p | Control mean | Difference [95% CI] | Lift | Always-valid p | Decision |
-|---|---|---|---|---|---|---|---|
-| `recs-aa` (identical variants) | 48,873 / 48,109 | 0.014 (threshold 0.001) | 26.32 | −0.01 [−0.29, +0.27] | −0.0% | 1.0 | not significant |
-| `recs-ranking` (planted +10% visits) | 48,502 / 48,480 | 0.94 | 25.23 | +2.18 [+1.90, +2.46] | +8.7% | 5e-50 | significant |
+| Experiment | Units | Control mean | Lift [difference 95% CI] | Always-valid p | Decision |
+|---|---|---|---|---|---|
+| `recs-aa` (identical variants) | 12,825 / 12,969 / 12,797 | 20.7 / 22.6 / 24.3 | +2.1% / +0.5% / −0.5% (every CI covers 0) | 0.87 / 1.0 / 0.83 | not significant ×3 |
+| `recs-ranking` (planted +10% visits) | 12,825 / 12,969 / 12,797 | 20.2 / 21.5 / 23.1 | +7.5% / +10.0% / +10.4% | 1e-5 / 8e-8 / 7e-10 | significant ×3 |
 
-The planted effect multiplies visits by 1.10; qualified plays per member move by 8.7% because
-churn and viewing time do not scale exactly with visits. At medium scale the same pair reads
-A/A not significant (p 0.87) and +7.5% detected (p 1e-5); at smoke size (489 units) neither is
-significant, as the computed power predicts for that sample. Collecting like the product left
-the smoke results identical (units, metrics, sample-ratio checks); the count of units excluded
-for missing analytics consent went from 20 to 19 in each experiment, because an account with no
-consented purpose at all now stores no exposure (it is absent rather than excluded). The full
-run's unit counts are expected to move the same way: slightly fewer exclusions, the same units.
+The planted effect multiplies visits by 1.10; qualified plays per member move by 7.5% to 10.4%
+because churn and viewing time do not scale exactly with visits. At smoke size (489 units)
+neither is significant, as the computed power predicts for that sample; at full size (one seed,
+97,000 units) the A/A reads −0.0% (p 1.0) and the planted effect +8.7% (p 5e-50).
+
+**Learned against rules, online (simulator).** What the offline gate cannot show is what
+members do when they are served the learned pages. `served=learned` (§2) measures it: medium
+households over 56 days; experiment `recs-learned` starts on day 42; a first pass simulates the
+whole window with both arms on rule pages; a run is trained and scored as of day 42 from that
+lake; a second pass, identical up to day 42, serves that run's lists to the treatment arm for the
+last 14 days; the analysis runs on the second pass as the product would run it. Because both
+passes share every member and random stream up to day 42, each unit's change between the passes
+estimates what serving the run did to it (control arm: the spill-over through shared
+households), which is far more precise than comparing arms within one pass.
+
+Two seeds (7, 8), the run trained as of day 42 and served unchanged for the 14 days (about 6,000
+units per arm). Effect of serving the run (paired estimate, 95% interval, relative to the
+treatment arm's first-pass mean), by how long the run had been served when measured:
+
+| Window after the start | Qualified plays (primary) | Watch hours | Active days |
+| --- | --- | --- | --- |
+| first 3 days | +1.1% [−1.8%, +4.0%] / +3.3% [+0.8%, +5.8%] | −1.9% [−4.8%, +1.0%] / +0.2% [−2.5%, +2.9%] | −0.3% / −0.0% (both within noise) |
+| first 7 days | **+3.3% [+1.0%, +5.6%] / +4.2% [+2.0%, +6.4%]** | −0.7% [−3.0%, +1.7%] / −1.4% [−3.7%, +1.0%] | −0.2% / +0.2% (both within noise) |
+| all 14 days | +0.7% [−1.1%, +2.4%] / +1.2% [−0.6%, +3.0%] | **−4.4% [−6.2%, −2.5%] / −3.4% [−5.2%, −1.5%]** | −1.9% [−3.1%, −0.6%] / −1.3% [−2.5%, 0.0%] |
+
+* While the lists are fresh, the learned pages bring a few percent more qualified plays and no
+  measurable change in watch time. As the run ages without being scored again, the gain in
+  plays fades and members watch 3-4% less. What changes on the page (treatment arm, second pass
+  against first): the model's billboard is opened half as often as the engine's (0.65 against
+  1.29 and 1.35 opens per unit), its Top Picks row takes 0.45 opens, Top 10 loses some, and
+  members resume and finish more of what they started (Continue Watching opens +9% to +10%,
+  completions +8% to +10%) in shorter plays (27-28 minutes per play against 29).
+* The product scores daily and falls back to the rules once a run's lists are three days old;
+  the simulator serves one run for 14 days, so the 14-day row overstates what staleness costs in
+  the product, and the first rows are closer to it. Serving a fresh run every day needs a pass
+  per refresh, each identical to the previous one up to its day and trained on it (about two
+  minutes per pass at medium size); it was not run.
+* **Power.** The product's analysis (mSPRT, daily looks, the registered MDE of 5%) reads these
+  experiments as not significant on the primary metric (+1.2% and −1.7% unpaired, CIs about
+  ±3%); on watch hours, a secondary metric, it reads −2.6% (not significant) and −6.3%
+  (significant at the split α). At medium size its power to detect the first week's effect
+  (+3.3% / +4.2%) is 0.19 /
+  0.42, and 0.99 / 1.00 at full size; for the 14-day effect it is 0.02 / 0.04 at medium and
+  0.07 / 0.28 at full size. An online test sized like the medium simulation would most likely
+  miss an effect of the size the simulator shows; one with full-size traffic would see the
+  fresh-list effect.
+* This is the simulator's members reacting to the simulator's port of the engine's learned
+  integration (§9); it measures the direction and rough size the offline gate cannot, under the
+  same assumptions as everything else here.
+
 
 ## 8. Serving hand-off
 
@@ -450,15 +614,25 @@ validates and imports).
 ## 9. What the numbers do and do not show
 
 * They show that the pipeline is correct end to end (validation, deduplication, late and skewed
-  events, privacy exclusions, leakage guards, atomic publishing) and that, *under the
-  simulator's assumptions*, the learned system ranks better than the milestone 1 engine by the
-  measure that matters, with intervals that exclude no difference.
+  events, privacy exclusions, retention, leakage guards, a gate tied to the run, atomic
+  publishing), and that at medium size, on this simulator, the engine's home page with the
+  learned candidates scored higher true utility@10 than the engine's own home page in every one
+  of nine seed-and-week cells (+0.035 to +0.118).
+* They do not show a magnitude. Each interval covers only which profiles were sampled; the seed
+  and the week move the result four to five times more (§6), and part of the win is written into
+  the simulator (§2, "What the simulator builds in").
+* They do not show that members are better off. Served online in the simulator, the learned
+  pages did not raise what members played and lowered how long they watched (§7, "Learned
+  against rules, online"): the offline gate measures a ranked first screen against a static
+  utility, members respond to whole pages, novelty, fatigue and bingeing. The product therefore
+  defaults to the rules in production and the online experiment decides.
 * They do not show real-world lift. The simulator's members were written by us; its utility
   model shares structure with both the engine (content features, popularity) and the learned
-  models (latent factors). The relative ordering of systems is informative; the magnitudes are
-  not transferable. Only the online experiment (rule engine vs learned, §7) measures lift.
+  models (latent factors).
 * The logging policy is a stand-in for the engine, not the engine; the real engine is used for
-  the baseline rankings, but members in the simulation reacted to the stand-in's pages.
+  the baseline and learned pages offline, but simulated members reacted to the stand-in's pages,
+  and the online experiment's learned pages come from a Python port of the engine's learned
+  integration, not from `engine.ts`.
 * Popularity in the logging policy comes from the seed baseline, not from simulated plays (shards
   run in parallel), so there is no popularity feedback loop in the simulated data.
 
@@ -468,8 +642,8 @@ validates and imports).
   catalogue of tens of thousands would need sparse ALS (e.g. the `implicit` library), an
   approximate-nearest-neighbour candidate stage and top-N storage instead of per-title loops.
 * The ranker is pointwise; a pairwise or listwise objective was not compared (see §4).
-* Static true utility: the oracle ignores novelty and fatigue, so freshness boosts in the
-  re-ranker cost measured utility even where members, in the simulation, like new titles.
+* Static true utility: the oracle ignores novelty and fatigue (scored with novelty, the gated
+  difference barely moves, §2).
 * Hyperparameters were set once on a validation week (ALS) or by design (re-ranking); there is no
   systematic search.
 * The experiment analysis treats metrics that accumulate over the exposure window; its
@@ -477,14 +651,26 @@ validates and imports).
   estimand.
 * Pickled scikit-learn models are verified by SHA-256 before loading but tie a run to the
   library version that wrote it.
-* A fresh lake has nothing to train for its first two weeks (the backtest at T − 7 days needs
-  plays before T − 14 days): `train-and-score` and `publish` report that and exit cleanly, and
-  the engine serves the milestone 1 rules meanwhile.
+* A fresh lake has nothing to train for its first two weeks and cannot pass the three-cutoff
+  gate for four: `train-and-score` and `publish` report that and exit cleanly, and the engine
+  serves the milestone 1 rules meanwhile.
+* The evaluation's own population is chosen with the dataset as of the end of the test window:
+  eligibility (consent, restriction) as of then, so a profile that withdrew consent during the
+  test week is not evaluated. That is the privacy rule, applied to the judge; it does not reach
+  what the models learned (below, §5).
 * Erasure reads the whole lake three times (discover, rewrite, verify), reading only subject
   columns except where a key matches; daily that is about the cost of a dataset build at full
   size. Measured at smoke size only. Compacted hours are sorted by account with 1,000-row groups
   so the data export reads one or two groups per hour; at a much larger member base a per-account
   index would replace the scan.
+* Erasure works on subject keys: device ids of signed-out events (no account, no profile) stay in
+  the lake until retention removes them, since nothing ties them to the erased member.
+* Device units of an experiment take the outcomes of every profile signed in on the device, so a
+  shared device counts its household's plays once per device unit (and a profile on two devices
+  twice); profile units, the product's default, are not affected.
+* An event of a version this code cannot read yet is quarantined; every compaction re-validates
+  the quarantine, so after an upgrade such events go back into their hour (services/recs
+  `lake.py`); until the upgrade they are in no dataset.
 
 ## 11. From the simulator to real data
 
@@ -493,9 +679,11 @@ validates and imports).
    writer produced (`tests/test_ingested_lake.py`, and the product's own test runs it on a lake
    the HTTP app wrote), the simulator stores only what that writer stores, compaction writes a
    format a small JavaScript reader decodes, erasure runs as an operation against the staff API,
-   the events of members' data exports are extracted by a batch job (`export-events`: thirteen
-   months of hourly partitions do not fit a Worker invocation), and experiment results land
-   where the product imports them. Two facts of the product's writer the jobs account for:
+   the events of members' data exports are extracted by a batch job (`export-events`: every
+   hour still held, about 9,500 partitions at the default retention, does not fit a Worker
+   invocation), retention is enforced on the store by age (`retain`, from the product's own
+   settings), and experiment results land where the product imports them. Two facts of the
+   product's writer the jobs account for:
    playback events and a few other kinds reach the lake from a database outbox on a scheduler
    tick (5 minutes by default, configurable: keep the jobs' 15-minute grace above it), and on
    Cloudflare every accepted client batch is its own object for now (many small objects per
@@ -503,23 +691,27 @@ validates and imports).
 2. Start with replay metrics on search discoveries plus coverage and diversity guardrails as the
    offline gate (the evaluator does this when no truth is given), and keep an exploration slice
    (`context.policy.explore`) in production: without it position bias cannot be estimated.
-3. Run the rule engine vs learned experiment (§7) before any default switch; keep the A/A
-   running in the same layer to watch the assignment and logging.
+3. Run the rule engine vs learned experiment (§7) before any default switch (the product's
+   default policy in production is the rules); keep the A/A running in the same layer to watch
+   the assignment and logging. Size it for what it must detect: at medium traffic the analysis
+   detects about 5% on qualified plays, and the simulator's online effect of the learned pages
+   was well below that on plays and negative on watch time.
 4. Recalibrate the simulator against real aggregates (session rates, play rates by position,
    completion distributions) so that it stays useful for testing changes before they ship.
-5. A gap the product's lake opens: restricted profiles emit nothing, so the pipeline cannot see
-   a profile *become* restricted (a kids flag set, a ceiling lowered). The earlier rule dropped
-   a profile whose latest state was restricted with its whole history; on the product's lake
-   such a profile keeps its earlier, unrestricted history in training data and can still be
-   scored (serving falls back to the rules for it, so nothing is shown). Closing it needs one
-   signal from the product: a server event when a profile's standing changes, or the profile
-   keys listed for exclusion the way erasure keys are.
+5. Restricted profiles emit nothing, so the pipeline cannot see a profile *become* restricted
+   (a kids flag set, a ceiling lowered) from the lake. The product lists such a profile's key as
+   pending erasure (and a deleted profile's, and an erased account's), and every dataset and
+   scoring run leaves out every key pending when it starts, so neither its earlier history nor
+   its lists survive the next run; the erase job then removes its events everywhere.
+6. Consent is the account's latest stamp, except that a grant recorded by support never counts:
+   staff can no longer grant for a member, and an old support grant in the lake makes the account
+   count as not consenting until the member answers again (services/recs `consent.py`).
 
 ## 12. Mode mapping
 
 | | dev | k8s | cloudflare |
 | --- | --- | --- | --- |
-| Jobs | `make recs` on the developer machine, store = the dev filesystem store | CronJobs running the `webflix-recs` image (docs/KUBERNETES.md §9.6): a lake round running `erase`, `export-events` and `compact` one after another (Garage ignores conditional writes, so the scheduler is the lake's lock and says so with `WEBFLIX_RECS_LAKE_SERIALIZED=true`; without it the jobs refuse, exit 10), `train-and-score` and `publish`, `analyse-experiments` daily, store = Garage through `WEBFLIX_S3_*` | the same image run outside Workers (a container or any scheduler) against R2's S3 API, where the lake lease itself excludes overlapping jobs |
+| Jobs | `make recs` on the developer machine, store = the dev filesystem store | CronJobs running the `webflix-recs` image (docs/KUBERNETES.md §9.6): a lake round running `erase`, `export-events`, `compact` and `retain` one after another (Garage ignores conditional writes, so the scheduler is the lake's lock and says so with `WEBFLIX_RECS_LAKE_SERIALIZED=true`; without it the jobs refuse, exit 10), `train-and-score` and `publish`, `analyse-experiments` daily, store = Garage through `WEBFLIX_S3_*` | the same image run outside Workers (a container or any scheduler) against R2's S3 API, where the lake lease itself excludes overlapping jobs |
 | Rule-engine baseline | Node script from the repository, in-process | `train-and-score --phase prepare`, the Node script in an image with the repository's packages, `--phase finish`, sharing an `emptyDir` | same |
 | Erasure keys, experiment definitions | files, or the dev API with an access token | the staff API with a service account of the staff issuer (client credentials) | same |
 | Artefacts read by | importer via the filesystem store | importer via S3 | importer via R2 binding |

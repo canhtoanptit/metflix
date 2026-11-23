@@ -13,6 +13,13 @@ are skipped and listed; `unit` (`profile` or `device`), `layer`, `control`, the 
 analysis window starts at `max(startsAt, registeredAt)`: the product assigns nobody before an
 experiment is started (registration), so a `startsAt` set in the past before pressing start is
 not a late registration, and nothing before registration counts.
+
+The latest status change (`status`, `statusChangeAt`, `previousStatus`) bounds the window too:
+a start scheduled for later (`running` after `draft`) starts it then; a `completed` or `paused`
+experiment's window ends when that took effect (earlier than `endsAt`, or instead of none), so
+it does not keep growing after the product stopped assigning. A `completed` experiment with
+neither time is skipped (its end is unknown). Only the latest change is in a definition: a pause
+that has since been resumed cannot be seen, and its days count as running.
 """
 
 from __future__ import annotations
@@ -35,6 +42,18 @@ def _from_product(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
         return None, "no startsAt"
     registered = parse_iso_ms(str(item["registeredAt"]))
     starts = max(parse_iso_ms(str(item["startsAt"])), registered)
+    ends = parse_iso_ms(str(item["endsAt"])) if item.get("endsAt") else None
+    status, previous = item.get("status"), item.get("previousStatus")
+    change = parse_iso_ms(str(item["statusChangeAt"])) if item.get("statusChangeAt") else None
+    if change is not None and status == "running" and previous in (None, "draft"):
+        starts = max(starts, change)
+    if status in ("completed", "paused"):
+        if change is not None:
+            ends = change if ends is None else min(ends, change)
+        elif ends is None and status == "completed":
+            return None, "completed without statusChangeAt or endsAt: its end is unknown"
+    if ends is not None and ends <= starts:
+        return None, f"{status}: stopped before it started assigning"
     definition: dict[str, Any] = {
         "key": key,
         "variants": [
@@ -49,7 +68,7 @@ def _from_product(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
         "minimumDetectableEffect": float(item["minimumDetectableEffect"]),
         "registeredAt": iso_ms(registered),
         "startsAt": iso_ms(starts),
-        "endsAt": iso_ms(parse_iso_ms(str(item["endsAt"]))) if item.get("endsAt") else None,
+        "endsAt": iso_ms(ends) if ends is not None else None,
         "analysis": {"method": "msprt", "looks": "daily"},
     }
     if item.get("layer"):

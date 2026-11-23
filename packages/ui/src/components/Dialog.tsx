@@ -143,6 +143,11 @@ export interface ConfirmDialogProps {
   loading?: boolean;
   /** Return a promise to keep the dialog open (and busy) until it settles. */
   onConfirm: () => void | Promise<void>;
+  /**
+   * Where focus goes once the dialog has closed, when what opened it is gone (the confirmed
+   * action removed it): call `event.preventDefault()` and focus the right element.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
@@ -160,6 +165,7 @@ export function ConfirmDialog({
   tone = "danger",
   loading = false,
   onConfirm,
+  onCloseAutoFocus,
 }: ConfirmDialogProps) {
   // Opened with `open` (no trigger), Radix has nothing to return focus to on close and leaves it
   // on the page body: return it to whatever had focus when the dialog opened instead.
@@ -176,7 +182,8 @@ export function ConfirmDialog({
                 document.activeElement instanceof HTMLElement ? document.activeElement : null;
             }}
             onCloseAutoFocus={(event) => {
-              if (trigger || !opener.current?.isConnected) return;
+              onCloseAutoFocus?.(event);
+              if (event.defaultPrevented || trigger || !opener.current?.isConnected) return;
               event.preventDefault();
               opener.current.focus();
             }}
