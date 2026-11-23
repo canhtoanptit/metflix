@@ -37,7 +37,7 @@ export function ManageProfilesPage() {
           ))}
           {full || demo ? null : <AddProfileTile />}
         </ProfileGrid>
-        <Button variant="primary" size="lg" asChild>
+        <Button variant="accent" size="lg" asChild>
           <Link to="/profiles">Done</Link>
         </Button>
       </main>

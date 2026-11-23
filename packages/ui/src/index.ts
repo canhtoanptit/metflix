@@ -119,6 +119,8 @@ export { Toaster, toast } from "./components/Toast.tsx";
 export type { TooltipProps } from "./components/Tooltip.tsx";
 export { Tooltip, TooltipProvider } from "./components/Tooltip.tsx";
 export { UiProvider } from "./components/UiProvider.tsx";
+export type { EmailTextProps } from "./components/UserText.tsx";
+export { EmailText } from "./components/UserText.tsx";
 // Icons
 export * from "./icons/index.ts";
 // Utilities

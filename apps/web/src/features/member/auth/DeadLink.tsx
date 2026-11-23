@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, EMAIL_VERIFICATION_TTL_SEC, PASSWORD_RESET_TTL_SEC } from "@webflix/contracts";
-import { Button, MailIcon } from "@webflix/ui";
+import { Button, EmailText, MailIcon } from "@webflix/ui";
 import { useEffect, useRef } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
@@ -9,7 +9,6 @@ import { useSession } from "../../../app/session/session.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown } from "../shared/format.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
-import { CARD_HEADING, EmailText } from "./parts.tsx";
 
 /**
  * One honest screen for an emailed link that cannot be used: used already, expired, cut short
@@ -31,7 +30,12 @@ export function DeadLink({ kind }: { kind: "reset" | "verify" }) {
       <span className="grid size-14 place-items-center rounded-full bg-surface-3 text-fg-muted">
         <MailIcon size="xl" />
       </span>
-      <h1 id="dead-link" ref={headingRef} tabIndex={-1} className={`${CARD_HEADING} outline-none`}>
+      <h1
+        id="dead-link"
+        ref={headingRef}
+        tabIndex={-1}
+        className="type-card-headline text-fg outline-none"
+      >
         This link can't be used
       </h1>
       <p className="type-body-lg text-fg-muted">

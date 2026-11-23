@@ -12,11 +12,16 @@
  */
 import { Link, useRouterState } from "@tanstack/react-router";
 import type { ConsentState } from "@webflix/contracts";
-import { CloseIcon, cx, IconButton, Switch, toast } from "@webflix/ui";
+import { Button, CloseIcon, cx, IconButton, Switch, toast } from "@webflix/ui";
 import { type RefObject, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { BusyButton, focusMainContent } from "./BusyButton.tsx";
 import { useAnswerConsent } from "./consent.ts";
-import { KEPT_AFTER_REFUSAL, PURPOSE_COPY, PURPOSE_ORDER, WHAT_IS_RECORDED } from "./copy.ts";
+import {
+  CONSENT_TOAST_ID,
+  KEPT_AFTER_REFUSAL,
+  PURPOSE_COPY,
+  PURPOSE_ORDER,
+  WHAT_IS_RECORDED,
+} from "./copy.ts";
 import type { PromptKind } from "./PrivacyShell.tsx";
 import { browserGpc, effectivePurposes, type Purposes } from "./policy.ts";
 
@@ -69,6 +74,7 @@ export function ConsentPrompt({
     }
     const any = answers.analytics || answers.personalisation;
     toast.success(any ? "Thanks, your choice is saved" : "Your choice is saved", {
+      id: CONSENT_TOAST_ID,
       description: any
         ? "You can change this any time in Account › Privacy."
         : `${KEPT_AFTER_REFUSAL} You can change this any time in Account › Privacy.`,
@@ -126,49 +132,49 @@ export function ConsentPrompt({
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 md:shrink-0 md:flex-nowrap">
               {ask ? (
                 <>
-                  <BusyButton
-                    variant="primary"
+                  <Button
+                    variant="accent"
                     className={equal}
-                    busy={busy}
+                    loading={busy}
                     onClick={() => save({ analytics: true, personalisation: true })}
                   >
                     Allow
-                  </BusyButton>
-                  <BusyButton
-                    variant="primary"
+                  </Button>
+                  <Button
+                    variant="accent"
                     className={equal}
-                    busy={busy}
+                    loading={busy}
                     onClick={() => save({ analytics: false, personalisation: false })}
                   >
                     Don't allow
-                  </BusyButton>
+                  </Button>
                 </>
               ) : (
                 <>
-                  <BusyButton
-                    variant="primary"
+                  <Button
+                    variant="accent"
                     className={equal}
-                    busy={busy}
+                    loading={busy}
                     onClick={() => finish("acknowledged")}
                   >
                     Keep it on
-                  </BusyButton>
-                  <BusyButton
-                    variant="primary"
+                  </Button>
+                  <Button
+                    variant="accent"
                     className={equal}
-                    busy={busy}
+                    loading={busy}
                     onClick={() => save({ analytics: false, personalisation: false })}
                   >
                     Turn it off
-                  </BusyButton>
+                  </Button>
                 </>
               )}
-              <BusyButton
+              <Button
                 ref={chooseRef}
                 variant="link"
                 size="sm"
                 aria-expanded={false}
-                busy={busy}
+                loading={busy}
                 onClick={() => {
                   setChoosing(true);
                   setMoveFocus("choices");
@@ -176,7 +182,7 @@ export function ConsentPrompt({
                 className="min-h-6 w-full md:w-auto"
               >
                 Choose for each use
-              </BusyButton>
+              </Button>
             </div>
           )}
         </div>
@@ -201,14 +207,14 @@ export function ConsentPrompt({
               ))}
             </fieldset>
             <div className="flex flex-wrap items-center gap-3">
-              <BusyButton variant="primary" busy={busy} onClick={() => save(choices)}>
+              <Button variant="accent" loading={busy} onClick={() => save(choices)}>
                 Save choices
-              </BusyButton>
-              <BusyButton
+              </Button>
+              <Button
                 variant="link"
                 size="sm"
                 aria-expanded={true}
-                busy={busy}
+                loading={busy}
                 className="min-h-6"
                 onClick={() => {
                   setChoosing(false);
@@ -216,7 +222,7 @@ export function ConsentPrompt({
                 }}
               >
                 Back
-              </BusyButton>
+              </Button>
             </div>
           </>
         ) : null}
@@ -229,6 +235,19 @@ export function ConsentPrompt({
       </div>
     </section>
   );
+}
+
+/**
+ * Move focus to the page's main content (the skip link's target): the control that had it, in
+ * the prompt, is going away.
+ */
+function focusMainContent(): void {
+  requestAnimationFrame(() => {
+    const main = document.getElementById("main") ?? document.querySelector("main");
+    if (!(main instanceof HTMLElement)) return;
+    if (!main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+    main.focus({ preventScroll: true });
+  });
 }
 
 function lowerFirst(text: string): string {

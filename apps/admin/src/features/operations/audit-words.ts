@@ -28,7 +28,7 @@ interface Phrase {
 
 const PURPOSES: Record<string, string> = {
   analytics: "analytics",
-  personalisation: "personalisation",
+  personalisation: "personalization",
 };
 
 const days = (facts: AuditFacts) =>
@@ -82,7 +82,7 @@ const PHRASES: Record<string, Phrase> = {
   },
   "privacy.deletion_canceled": {
     asked: () => "Cancel the account deletion",
-    done: () => "Cancelled the account deletion",
+    done: () => "Canceled the account deletion",
   },
   // Billing
   "billing.refund": {
@@ -107,7 +107,7 @@ const PHRASES: Record<string, Phrase> = {
       const when =
         facts.when === "now" ? " now" : facts.when === "period_end" ? " at the period end" : "";
       const refund = money(facts) ? `, refunded ${money(facts)}` : "";
-      return `Cancelled the membership${when}${refund}`;
+      return `Canceled the membership${when}${refund}`;
     },
   },
   "billing.trial_extended": {
@@ -256,7 +256,7 @@ export const TARGET_TYPES: Record<string, string> = {
   member: "Member",
   member_search: "Member search",
   plan_price: "Plan price",
-  plan_catalogue: "Plan catalogue",
+  plan_catalogue: "Plan catalog",
   billboard: "Billboard",
   collection: "Collection",
   title: "Title",

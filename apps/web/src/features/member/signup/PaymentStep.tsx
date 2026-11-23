@@ -88,7 +88,7 @@ export function PaymentStep() {
           <Link
             to="/signup/plan"
             search={{ plan: planId }}
-            className="focus-ring shrink-0 rounded-xs type-label text-accent hover:underline"
+            className="focus-ring inline-flex min-h-6 shrink-0 items-center rounded-xs type-label text-accent hover:underline"
           >
             Change<span className="sr-only"> plan</span>
           </Link>

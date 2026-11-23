@@ -1571,6 +1571,13 @@ export const privacyChecks: CheckDefinition[] = [
       check(scheduled, "no account-deletion-scheduled email");
       const when = new Date(request.scheduledFor);
       const dated = [
+        // Emails say dates as the member app does ("December 7, 2026", docs/DESIGN_SYSTEM.md).
+        when.toLocaleDateString("en-US", {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "UTC",
+        }),
         `${when.getUTCDate()} ${when.toLocaleString("en-GB", { month: "long", timeZone: "UTC" })} ${when.getUTCFullYear()}`,
         request.scheduledFor.slice(0, 10),
       ];

@@ -241,7 +241,7 @@ test("support cancels a scheduled account deletion", async ({ page }) => {
   await dialog.getByRole("button", { name: "Cancel deletion" }).click();
   await expect(
     dialog.getByText(
-      "The deletion is cancelled: the account stays, and an email tells the member so.",
+      "The deletion is canceled: the account stays, and an email tells the member so.",
     ),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Close" }).click();

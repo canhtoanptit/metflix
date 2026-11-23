@@ -21,7 +21,6 @@ import { FormAlert } from "../shared/FormAlert.tsx";
 import { possessive } from "../shared/format.ts";
 import { standingOf, useIsDemoAccount } from "../shared/privileges.ts";
 import { RetryTimer } from "../shared/RetryTimer.tsx";
-import { useFocusAfterBusy } from "../shared/useFocusAfterBusy.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { MembershipNotice } from "./MembershipNotice.tsx";
 import { AddProfileTile, ProfileChoice, ProfileGrid } from "./ProfileTile.tsx";
@@ -99,7 +98,7 @@ export function ProfileGatePage() {
       }
       if (!locked && !ApiError.is(error, "rate_limited")) {
         const { title, description } = describeError(error);
-        toast.error(title, { description });
+        toast.error(title, { id: "switch-profile", description });
       }
     },
     onSuccess: enter,
@@ -122,17 +121,15 @@ export function ProfileGatePage() {
       return api().selectProfile({ body: { profileId: profile.id } });
     },
     meta: { silent: true },
-    onSuccess: async (next) => {
+    onSuccess: async (next, profile) => {
       void queryClient.invalidateQueries({ queryKey: qk.account.profiles() });
       toast.success("Profile lock removed", {
+        id: `profile-${profile.id}`,
         description: "You can set a new PIN in Manage profiles.",
       });
       await enter(next);
     },
   });
-
-  const removeRef = useRef<HTMLButtonElement>(null);
-  useFocusAfterBusy(unlock.isPending, removeRef);
 
   const choose = (profile: Profile) => {
     if (select.isPending) return;
@@ -241,7 +238,6 @@ export function ProfileGatePage() {
                     Back
                   </Button>
                   <Button
-                    ref={removeRef}
                     variant="accent"
                     loading={unlock.isPending}
                     onClick={() => unlock.mutate(locked)}

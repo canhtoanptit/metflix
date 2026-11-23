@@ -268,7 +268,7 @@ function ResultsSection({ experimentKey }: { experimentKey: string }) {
       description={
         results.data?.computedAt ? (
           <>
-            Analysed <DateTime value={results.data.computedAt} />
+            Analyzed <DateTime value={results.data.computedAt} />
           </>
         ) : (
           "From the analysis job's latest run."

@@ -18,6 +18,7 @@ import { useApplySession } from "../../../app/session/session.ts";
 import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberHeader } from "../shared/Chrome.tsx";
+import { forgetDeletionOnSignIn } from "../shared/deletionMemory.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { describeMemberError } from "../shared/privileges.ts";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
@@ -26,7 +27,6 @@ import { DeadLink } from "./DeadLink.tsx";
 import { forgetLinkToken, looksLikeLinkToken, useLinkToken } from "./emailLink.ts";
 import { linkOfferPath, pendingLinkIntent } from "./linkIntent.ts";
 import { afterSignInPath, announceAuthChange, providerName } from "./oidc.ts";
-import { CARD_HEADING } from "./parts.tsx";
 
 const TOKEN_KEY = "webflix:reset-token";
 
@@ -62,7 +62,9 @@ export function ResetPasswordPage() {
       // the new session and move on by themselves.
       await applySession(session);
       announceAuthChange("signed-in");
+      forgetDeletionOnSignIn();
       toast.success("Password changed", {
+        id: "account-password",
         description: "You're signed in here, and signed out everywhere else.",
       });
       const linking = pendingLinkIntent();
@@ -124,7 +126,7 @@ export function ResetPasswordPage() {
         aria-labelledby="reset-heading"
         className="flex flex-col gap-4"
       >
-        <h1 id="reset-heading" className={`${CARD_HEADING} mb-1`}>
+        <h1 id="reset-heading" className="type-card-headline mb-1 text-fg">
           Choose a new password
         </h1>
         {failure ? (

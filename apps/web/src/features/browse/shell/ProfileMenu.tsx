@@ -58,7 +58,10 @@ export function ProfileMenu({
     },
     onError: (error) => {
       const described = describeError(error);
-      toast.error("Couldn't switch profile", { description: described.description });
+      toast.error("Couldn't switch profile", {
+        id: "switch-profile",
+        description: described.description,
+      });
     },
   });
 

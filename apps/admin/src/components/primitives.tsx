@@ -7,6 +7,7 @@ import { Badge, type BadgeTone, CheckIcon, createIcon, cx, IconButton } from "@w
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   formatDate,
+  formatDateInSentence,
   formatDateTime,
   formatMoney,
   formatRelative,
@@ -137,6 +138,28 @@ export function DateTime({
       {relativeTo !== undefined ? (
         <span className="text-fg-subtle"> ({formatRelative(value, relativeTo)})</span>
       ) : null}
+    </time>
+  );
+}
+
+/**
+ * A day, without the time of day: when a membership renews or ends, when an account was opened.
+ * "Dec 30, 2026" in a list or table; `inSentence`, "December 30, 2026" (docs/DESIGN_SYSTEM.md
+ * "Dates and amounts"). The exact instant stays on hover, in UTC, like every other time here.
+ */
+export function DateOnly({
+  value,
+  inSentence = false,
+  fallback = "—",
+}: {
+  value: string | null | undefined;
+  inSentence?: boolean;
+  fallback?: ReactNode;
+}) {
+  if (!value) return <span className="text-fg-subtle">{fallback}</span>;
+  return (
+    <time dateTime={value} title={formatUtc(value)} className="tabular-nums">
+      {inSentence ? formatDateInSentence(value) : formatDate(value)}
     </time>
   );
 }

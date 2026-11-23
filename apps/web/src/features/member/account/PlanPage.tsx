@@ -79,7 +79,7 @@ export function AccountPlanPage() {
           description={describeError(error).description}
           action={
             <Button
-              variant="primary"
+              variant="accent"
               onClick={() => {
                 void details.refetch();
                 void plans.refetch();
@@ -514,7 +514,7 @@ function RestartChooser({ details, plans }: { details: AccountDetails; plans: Pl
         description={
           first
             ? "Pick a plan, then add your payment method to start watching."
-            : "Pick a plan and you're back. Your profiles, My List and history are waiting."
+            : "Pick a plan and you're back. Your profiles, My List and viewing activity are still here."
         }
       />
       <form

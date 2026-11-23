@@ -10,8 +10,11 @@ import type { MembershipRecord } from "./repository.ts";
 /** "Trial ending" goes out this long before the trial ends (§5.4: from `trial_end`). */
 export const TRIAL_ENDING_NOTICE_MS = 3 * 24 * 3_600_000;
 
-const money = (minor: number, currency: string) =>
-  `${(minor / 100).toFixed(2)} ${currency.toUpperCase()}`;
+/** An amount for a template: minor units and currency, formatted once by `packages/email`. */
+const money = (amountMinor: number, currency: string) => ({
+  amountMinor,
+  currency: currency.toUpperCase(),
+});
 
 /**
  * Billing's emails (§8.2: receipt, payment failed, trial ending, plan changed, cancellation),
@@ -74,9 +77,7 @@ export async function emailsForChange(
       template: "payment-failed",
       data: {
         planName,
-        amount: latestInvoice
-          ? money(latestInvoice.amountDueMinor, latestInvoice.currency)
-          : planName,
+        amount: latestInvoice ? money(latestInvoice.amountDueMinor, latestInvoice.currency) : null,
         retryAt:
           latestInvoice?.nextPaymentAttempt != null
             ? toIsoString(latestInvoice.nextPaymentAttempt)
@@ -163,7 +164,7 @@ export async function emailTrialsEnding(context: BillingContext): Promise<number
       data: {
         planName: plan?.name ?? "Webflix",
         trialEndsAt: toIsoString(record.trialEndsAt),
-        amount: plan ? money(plan.monthlyPrice.amountMinor, plan.monthlyPrice.currency) : "",
+        amount: plan ? money(plan.monthlyPrice.amountMinor, plan.monthlyPrice.currency) : null,
         manageUrl: link(context, "/account"),
       },
       idempotencyKey: `trial-ending:${record.providerSubscriptionId}:${record.trialEndsAt}`,

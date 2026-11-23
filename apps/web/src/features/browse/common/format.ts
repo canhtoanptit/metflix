@@ -91,7 +91,7 @@ export function languageName(tag: string): string {
   return name;
 }
 
-/** Compact relative time for notifications: "Just now", "5m", "3h", "Yesterday", "4d", "12 Nov". */
+/** Compact relative time for notifications: "Just now", "5m", "3h", "Yesterday", "4d", "Nov 12". */
 export function relativeTime(iso: string, now: number = Date.now()): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return "";
@@ -104,7 +104,7 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
   const days = Math.round(hours / 24);
   if (days === 1) return "Yesterday";
   if (days < 7) return `${days}d ago`;
-  return new Date(then).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  return new Date(then).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /** Up to `max` genre names joined for a metadata line. */

@@ -131,20 +131,18 @@ test("a Google-only account with no profile confirms with Google to set a passwo
     .click();
   await expect(page.getByRole("heading", { level: 1, name: "Security" })).toBeVisible();
 
-  const setPassword = async () => {
-    await page.getByLabel("New password", { exact: true }).fill(PASSWORD);
-    await page.getByRole("button", { name: "Set password" }).click();
-  };
-  await setPassword();
+  // Confirm it's you first (a full navigation to the provider), then the password, typed once.
+  const section = page.getByRole("region", { name: "Password", exact: true });
+  await section.getByRole("button", { name: "Set a password" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("link", { name: `Continue with ${name}` }).click();
   await answerIssuer(page, { email });
   await expect(page).toHaveURL(/\/account\/security/);
   await expect(page.getByText(/Confirmed it's you/).first()).toBeVisible();
-  // The provider's page is a full navigation: set it again now that the session is confirmed.
-  if (!(await page.getByText("Password set").count())) await setPassword();
+  await page.getByLabel("New password", { exact: true }).fill(PASSWORD);
+  await page.getByRole("button", { name: "Set password" }).click();
   await expect(page.getByText("Password set").first()).toBeVisible();
-  await expect(page.getByRole("form", { name: "Change password" })).toBeVisible();
+  await expect(section.getByRole("button", { name: "Change password" })).toBeVisible();
   await expect(
     page.getByRole("status").filter({ hasText: "Finish setting up Webflix" }),
   ).toBeVisible();

@@ -15,7 +15,7 @@ import { describeError } from "../../../app/query/errors.ts";
 import { queries } from "../../../app/query/queries.ts";
 import { formatSignedMoney } from "../billing/copy.ts";
 import { describeReduction } from "../billing/outcome.ts";
-import { formatLongDate, formatMoney, formatShortDate } from "../shared/format.ts";
+import { formatDateRange, formatMoney, formatShortDate } from "../shared/format.ts";
 import { AccountHeading } from "./AccountLayout.tsx";
 
 /** Billing history: every invoice and receipt, newest first, as the provider issued them. */
@@ -54,7 +54,7 @@ export function InvoiceList({ limit }: { limit?: number }) {
         title="We couldn't load your billing history"
         description={describeError(invoices.error).description}
         action={
-          <Button variant="primary" onClick={() => void invoices.refetch()}>
+          <Button variant="accent" onClick={() => void invoices.refetch()}>
             Try again
           </Button>
         }
@@ -152,7 +152,7 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
     : null;
   const period =
     invoice.periodStart && invoice.periodEnd && invoice.periodStart !== invoice.periodEnd
-      ? `${formatShortDate(invoice.periodStart)} to ${formatShortDate(invoice.periodEnd)}`
+      ? formatDateRange(invoice.periodStart, invoice.periodEnd)
       : null;
   const link = invoice.hostedUrl ?? invoice.pdfUrl;
   return (
@@ -186,7 +186,7 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
               : invoice.status === "paid"
                 ? "Paid "
                 : "Issued "}
-          {formatLongDate(date)}
+          {formatShortDate(date)}
         </span>
         {period ? <span>For {period}</span> : null}
         {invoice.number ? (

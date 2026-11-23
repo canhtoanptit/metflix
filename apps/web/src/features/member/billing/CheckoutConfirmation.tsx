@@ -258,7 +258,7 @@ export function CheckoutConfirmation({
           title="Confirming your payment"
           actions={
             elapsed > VERY_SLOW_MS ? (
-              <Button variant="primary" size="lg" onClick={retry}>
+              <Button variant="accent" size="lg" onClick={retry}>
                 Check again
               </Button>
             ) : undefined
@@ -406,7 +406,7 @@ export function CheckoutConfirmation({
           tone="danger"
           title="We couldn't check your payment"
           actions={
-            <Button variant="primary" size="lg" onClick={retry}>
+            <Button variant="accent" size="lg" onClick={retry}>
               Try again
             </Button>
           }
@@ -433,7 +433,7 @@ function DeletionPanel() {
       title={deletionTitle(deletion?.scheduledFor)}
       actions={
         <Button variant="accent" size="lg" asChild>
-          <Link to="/account/privacy">Go to Privacy</Link>
+          <Link to="/account/privacy">Go to Account › Privacy</Link>
         </Button>
       }
     >
@@ -489,7 +489,7 @@ function FirstPayment({
           ref={heading}
           id="first-payment-title"
           tabIndex={-1}
-          className="type-headline text-fg outline-none"
+          className="type-card-headline text-fg outline-none"
         >
           {restart
             ? plan
@@ -499,7 +499,7 @@ function FirstPayment({
         </h1>
         <p className="type-body-lg text-fg-muted">
           {restart
-            ? "Your card is saved. Now confirm the payment on our payment provider's secure page and you're back straight away: your profiles, My List and viewing activity are all still here."
+            ? "Your card is saved. Now confirm the payment on our payment provider's secure page and you're back straight away: your profiles, My List and viewing activity are still here."
             : "Your card is saved, but there's no free trial this time: this card has had one before. Confirm the first payment and your membership starts."}
         </p>
       </header>

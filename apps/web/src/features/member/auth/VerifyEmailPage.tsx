@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ApiError } from "@webflix/contracts";
-import { Button, CheckCircleIcon, ErrorState, Spinner } from "@webflix/ui";
+import { Button, CheckCircleIcon, EmailText, ErrorState, Spinner } from "@webflix/ui";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
@@ -10,7 +10,6 @@ import { useSession } from "../../../app/session/session.ts";
 import { DeadLink } from "./DeadLink.tsx";
 import { forgetLinkToken, looksLikeLinkToken, useLinkToken } from "./emailLink.ts";
 import { afterSignInPath } from "./oidc.ts";
-import { CARD_HEADING, EmailText } from "./parts.tsx";
 import { Frame } from "./ResetPasswordPage.tsx";
 
 const TOKEN_KEY = "webflix:verify-token";
@@ -130,7 +129,7 @@ export function VerifyEmailPage() {
           title="We couldn't verify your email just now"
           description={describeError(state.error).description}
           action={
-            <Button variant="primary" onClick={() => setAttempt((value) => value + 1)}>
+            <Button variant="accent" onClick={() => setAttempt((value) => value + 1)}>
               Try again
             </Button>
           }
@@ -187,7 +186,12 @@ function Verified({ whose }: { whose: Whose | "already" }) {
       <span className="grid size-14 place-items-center rounded-full bg-positive-subtle text-positive">
         <CheckCircleIcon size="xl" />
       </span>
-      <h1 id="verified" ref={headingRef} tabIndex={-1} className={`${CARD_HEADING} outline-none`}>
+      <h1
+        id="verified"
+        ref={headingRef}
+        tabIndex={-1}
+        className="type-card-headline text-fg outline-none"
+      >
         {title}
       </h1>
       {whose === "own" ? (

@@ -264,7 +264,7 @@ function OverridesSection({ onChoose }: { onChoose: (titleId: string) => void })
         <span className="flex flex-col">
           <span className="font-semibold text-fg">{row.name ?? row.titleId}</span>
           {row.name ? null : (
-            <span className="type-caption text-warning">No longer in the catalogue</span>
+            <span className="type-caption text-warning">No longer in the catalog</span>
           )}
         </span>
       ),
@@ -330,7 +330,7 @@ function OverridesSection({ onChoose }: { onChoose: (titleId: string) => void })
           empty={
             <Empty
               title="No overrides"
-              description="Every title follows the catalogue's own availability."
+              description="Every title follows the catalog's own availability."
             />
           }
         />

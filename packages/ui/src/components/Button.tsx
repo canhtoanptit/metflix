@@ -5,9 +5,12 @@ import { cx } from "../lib/cx.ts";
 import { Spinner } from "./Spinner.tsx";
 
 export const BUTTON_VARIANTS = {
-  /** Paper white, dark text: the primary action over artwork ("Play"). */
+  /** Paper white, dark text: Play, and only Play (start or resume watching). */
   primary: "bg-fg text-fg-inverse hover:bg-fg/80 active:bg-fg/70",
-  /** Amber: brand calls to action ("Get started", "Sign in", "Continue"). */
+  /**
+   * Amber: the main action of a page, a card or a dialog ("Continue", "Save", "Try again",
+   * "Confirm"); one per place. Anything that destroys data is `danger` instead.
+   */
   accent: "bg-accent text-fg-on-accent hover:bg-accent-hover active:bg-accent-active",
   /** Frosted glass over artwork ("More info"). */
   secondary: "bg-glass text-fg backdrop-blur-md hover:bg-glass-hover",
@@ -47,7 +50,11 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: IconComponent;
   /** Icon component rendered after the label. */
   iconAfter?: IconComponent;
-  /** Busy state: shows a spinner, sets `aria-busy` and blocks clicks. */
+  /**
+   * Busy state: shows a spinner, sets `aria-busy` and `aria-disabled`, and ignores activation
+   * (click, Enter, Space, a form's implicit submit). It is not `disabled`, so keyboard focus
+   * stays on the button while its request runs instead of falling to the page.
+   */
   loading?: boolean;
   fullWidth?: boolean;
   /**
@@ -59,7 +66,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 export function Button({
-  variant = "primary",
+  variant = "accent",
   size = "md",
   icon: Icon,
   iconAfter: IconAfter,
@@ -70,6 +77,8 @@ export function Button({
   children,
   disabled,
   type,
+  onClick,
+  "aria-disabled": ariaDisabled,
   ...rest
 }: ButtonProps) {
   const iconSize = ICON_FOR_SIZE[size];
@@ -79,7 +88,8 @@ export function Button({
     "transition-[background-color,border-color,color,box-shadow,transform] duration-fast ease-standard",
     "active:scale-98 disabled:pointer-events-none disabled:opacity-40",
     "aria-disabled:pointer-events-none aria-disabled:opacity-40",
-    variant === "link" ? "h-auto px-0" : SIZES[size],
+    // A text-only button still offers a 24px target (WCAG 2.5.8).
+    variant === "link" ? "h-auto min-h-6 px-0" : SIZES[size],
     variant === "link" && "text-[length:inherit]",
     BUTTON_VARIANTS[variant],
     fullWidth && "w-full",
@@ -93,11 +103,25 @@ export function Button({
   ) : null;
   const trailing = IconAfter && !loading ? <IconAfter size={iconSize} /> : null;
 
+  // While busy, activation does nothing; focus stays where it is.
+  const activate: ButtonProps["onClick"] = loading
+    ? (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    : onClick;
+
   if (asChild) {
     // Slot merges these props into the single child element (a router link); Slottable puts the
     // icons around that element's own children. No wrapper element or fragment in between.
     return (
-      <Slot.Root className={classes} aria-busy={loading || undefined} {...rest}>
+      <Slot.Root
+        className={classes}
+        aria-busy={loading || undefined}
+        aria-disabled={loading || ariaDisabled || undefined}
+        onClick={activate}
+        {...rest}
+      >
         {leading}
         <Slot.Slottable>{children}</Slot.Slottable>
         {trailing}
@@ -109,8 +133,10 @@ export function Button({
     <button
       type={type ?? "button"}
       className={classes}
-      disabled={disabled || loading}
+      disabled={disabled}
       aria-busy={loading || undefined}
+      aria-disabled={loading || ariaDisabled || undefined}
+      onClick={activate}
       {...rest}
     >
       {leading}

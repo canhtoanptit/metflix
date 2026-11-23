@@ -26,15 +26,17 @@ export function ToastViewport() {
         const Icon = TONE_ICON[tone];
         return (
           <RadixToast.Root
-            key={item.id}
+            key={`${item.id}:${item.serial}`}
             open={item.open}
             type={tone === "error" ? "foreground" : "background"}
             duration={item.duration ?? (tone === "error" ? 8000 : 5000)}
             onOpenChange={(open) => {
-              if (!open) toast.dismiss(item.id);
+              if (!open && getToasts().some((record) => record.serial === item.serial))
+                toast.dismiss(item.id);
             }}
             onAnimationEnd={() => {
-              if (!item.open) updateToasts(getToasts().filter((record) => record.id !== item.id));
+              if (!item.open)
+                updateToasts(getToasts().filter((record) => record.serial !== item.serial));
             }}
             className={cx(
               "pointer-events-auto flex w-full items-start gap-3 rounded-lg border border-line bg-surface-3 p-4 text-fg shadow-lg",
@@ -72,9 +74,12 @@ export function ToastViewport() {
       })}
       <RadixToast.Viewport
         className={cx(
+          // Phones: across the bottom. Wider: the bottom corner at the end of the line, beside
+          // the content column rather than on top of it.
           "fixed inset-x-0 bottom-0 z-(--z-toast) mx-auto flex w-full max-w-dialog-sm flex-col gap-2 p-4 outline-none",
+          "sm:inset-x-auto sm:end-0 sm:mx-0 sm:p-6",
           // A screen with a bar fixed to the bottom sets --wf-toast-offset to its height.
-          "mb-(--wf-toast-offset) sm:bottom-6",
+          "mb-(--wf-toast-offset)",
         )}
       />
     </RadixToast.Provider>

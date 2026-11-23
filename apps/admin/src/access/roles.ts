@@ -102,7 +102,7 @@ export const AREAS: readonly Area[] = [
     id: "plans",
     label: "Plans & prices",
     role: roleFor("listAdminPlans") as StaffRole,
-    description: "Prices per currency, and the catalogue at the payment provider.",
+    description: "Prices per currency, and the catalog at the payment provider.",
   },
   {
     id: "content",

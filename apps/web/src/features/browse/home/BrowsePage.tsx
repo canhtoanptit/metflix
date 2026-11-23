@@ -97,7 +97,7 @@ function BrowseScreen({ view }: { view: BrowseView }) {
           description={error.description}
           reference={error.reference}
           action={
-            <Button variant="primary" onClick={() => browse.refetch()}>
+            <Button variant="accent" onClick={() => browse.refetch()}>
               Try again
             </Button>
           }

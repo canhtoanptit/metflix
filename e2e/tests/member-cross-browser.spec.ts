@@ -1,4 +1,5 @@
 import type { Locator } from "@playwright/test";
+import { settled } from "./browse-support.ts";
 import { expect, test } from "./fixtures.ts";
 import { becomeMember, createAccount, signUp, uniqueEmail } from "./member-support.ts";
 
@@ -89,6 +90,8 @@ test("profile edit: the Save bar spans the screen on a solid surface, toasts sit
   await press(confirm.getByRole("button", { name: "Confirm" }));
   const toast = page.locator("li").filter({ hasText: "Sam is locked" });
   await expect(toast).toBeVisible();
+  // Measured once it has risen into place, not mid-slide.
+  await settled(toast);
   const toastBox = await toast.boundingBox();
   const barBox = await bar.boundingBox();
   expect((toastBox?.y ?? 0) + (toastBox?.height ?? 0)).toBeLessThanOrEqual(barBox?.y ?? 0);

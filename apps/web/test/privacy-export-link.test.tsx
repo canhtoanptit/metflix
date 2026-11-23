@@ -161,7 +161,7 @@ describe("a deletion and the membership", () => {
     const section = await screen.findByRole("region", { name: "Delete your account" });
     // Conditional, from the shared outcome: what deleting today would do.
     await within(section).findByText(
-      /If you delete your account today: You can watch until .+\. Nothing more is charged\./,
+      /If you delete your account today: you can watch until .+\. Nothing more is charged\./,
     );
     await userEvent.click(within(section).getByRole("button", { name: "Delete my account" }));
     const dialog = await screen.findByRole("alertdialog", { name: "Delete your account?" });
@@ -196,7 +196,7 @@ describe("a deletion and the membership", () => {
     // The resume notice takes focus after keeping (UX review 2.7).
     await waitFor(() => expect(resume.closest('[role="status"]')).toHaveFocus());
     expect(
-      screen.getByText(/If you resume it: Your next payment is .+ on .+\./),
+      screen.getByText(/If you resume it: your next payment is .+ on .+\./),
     ).toBeInTheDocument();
     await userEvent.click(resume);
     await waitFor(() => expect(resumed).toHaveBeenCalledTimes(1));
@@ -262,12 +262,11 @@ describe("the export's email", () => {
       }),
     ]);
     renderAt("/account/privacy", state);
-    await screen.findByText("Preparing your data");
-    expect(
-      screen.getByText(
-        /We can't email .+ \(earlier emails to it didn't arrive\), so check back here\./,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/We'll email/)).toBeNull();
+    const preparing = (await screen.findByText("Preparing your data")).closest("[role=status]");
+    // The address is set as user data (EmailText), so the sentence spans several elements.
+    expect(preparing).toHaveTextContent(
+      /We can't email .+ \(earlier emails to it didn't arrive\), so check back here\./,
+    );
+    expect(preparing).not.toHaveTextContent(/We'll email/);
   });
 });

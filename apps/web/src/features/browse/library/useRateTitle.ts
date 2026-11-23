@@ -35,9 +35,10 @@ export function useRateTitle() {
       optimisticUpdate(queryClient, qk.profile.all(), (data) =>
         patchTitleViewer(data, titleId, { rating: value }),
       ),
-    onError: (_error, { name }, rollback) => {
+    onError: (_error, { titleId, name }, rollback) => {
       rollback?.();
       toast.error("Couldn't save your rating", {
+        id: `rating-${titleId}`,
         description: name ? `Your rating for ${name} is unchanged.` : "Please try again.",
       });
     },

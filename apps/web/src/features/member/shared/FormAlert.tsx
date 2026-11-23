@@ -57,7 +57,12 @@ export function FormAlert({
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         {title ? <p className="type-label text-fg">{title}</p> : null}
         {children ? <div className="type-body-sm text-fg-muted">{children}</div> : null}
-        {action ? <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-2">{action}</div> : null}
+        {/* A link standing alone here still offers a 24px target (WCAG 2.5.8, UX review 3.5). */}
+        {action ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-2 [&>a]:inline-flex [&>a]:min-h-6 [&>a]:items-center">
+            {action}
+          </div>
+        ) : null}
       </div>
     </div>
   );

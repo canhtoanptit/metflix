@@ -59,6 +59,23 @@ export async function hideDevChrome(page: Page): Promise<void> {
 }
 
 /**
+ * Until what `locator` shows has stopped moving: every finite animation in it (opening, sliding
+ * in, or a close a stray click would start) has finished. Measure or re-check after this, never
+ * after a fixed wait as long as the animation: under load that measures mid-animation (a 390 px
+ * sheet read as 389.9999964 px). Endless animations (a spinner, a shimmer) are not waited for.
+ */
+export async function settled(locator: Locator): Promise<void> {
+  await locator.evaluate((element) =>
+    Promise.all(
+      element
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
+}
+
+/**
  * Wait until every finite animation (entrance fades, the overlay or preview growing) has
  * finished: colour contrast and geometry are only meaningful on what is finally painted.
  */

@@ -371,7 +371,7 @@ test("a scheduled deletion: the membership says so, offers nothing billing would
     page.getByRole("heading", { name: /Your account is scheduled to be deleted on/ }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "Restart membership" })).toHaveCount(0);
-  await page.getByRole("link", { name: "Go to Privacy" }).click();
+  await page.getByRole("link", { name: "Go to Account › Privacy" }).click();
   await expect(page).toHaveURL(/\/account\/privacy/);
 
   // Keeping the account gives the choices back.

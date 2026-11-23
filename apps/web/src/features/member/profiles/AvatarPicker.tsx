@@ -65,7 +65,7 @@ export function AvatarPicker({
             title="Pictures didn't load"
             description={describeError(avatars.error).description}
             action={
-              <Button variant="primary" onClick={() => void avatars.refetch()}>
+              <Button variant="accent" onClick={() => void avatars.refetch()}>
                 Try again
               </Button>
             }

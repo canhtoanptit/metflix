@@ -35,7 +35,7 @@ export function AccountMembershipPage() {
           description={describeError(details.error).description}
           reference={describeError(details.error).reference}
           action={
-            <Button variant="primary" onClick={() => void details.refetch()}>
+            <Button variant="accent" onClick={() => void details.refetch()}>
               Try again
             </Button>
           }

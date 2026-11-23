@@ -163,7 +163,7 @@ export function buildDesign(draft: ExperimentDraft): {
     errors.key =
       "Lowercase letters, digits, dots, dashes or underscores, starting with a letter or digit (up to 64).";
   const name = draft.name.trim();
-  if (!name) errors.name = "Give it a name people will recognise.";
+  if (!name) errors.name = "Give it a name people will recognize.";
   else if (name.length > 120) errors.name = "Keep the name to 120 characters.";
   if (draft.description.length > 2000)
     errors.description = "Keep the description to 2000 characters.";

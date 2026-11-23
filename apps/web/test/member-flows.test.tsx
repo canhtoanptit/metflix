@@ -61,6 +61,41 @@ describe("sign in", () => {
     await expectNoA11yViolations(container);
   });
 
+  it("on the browser that asked for its account's deletion, Sign in says it was done", async () => {
+    // Only the date is kept, and only by the browser that asked (Account › Privacy).
+    localStorage.setItem("webflix:deletion-due", new Date(Date.now() - 3_600_000).toISOString());
+    try {
+      const user = userEvent.setup();
+      const { container } = renderMember("/login", "anonymous");
+      expect(await screen.findByText("Your account has been deleted")).toBeInTheDocument();
+      expect(screen.getByText(/You asked for it on this browser/)).toBeInTheDocument();
+      await user.type(screen.getByLabelText("Email address"), "demo@webflix.dev");
+      await user.type(screen.getByLabelText("Password", { exact: true }), "nope-nope");
+      await user.click(screen.getByRole("button", { name: "Sign in" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(
+        /If you meant the account deleted on .+, it no longer exists/,
+      );
+      // No reset offered for an account that is gone; a new account is.
+      expect(within(alert).queryByRole("link", { name: /reset/i })).not.toBeInTheDocument();
+      expect(within(alert).getByRole("link", { name: "create a new account" })).toBeInTheDocument();
+      await expectNoA11yViolations(container);
+    } finally {
+      localStorage.removeItem("webflix:deletion-due");
+    }
+  });
+
+  it("says nothing of a deletion that isn't due yet", async () => {
+    localStorage.setItem("webflix:deletion-due", new Date(Date.now() + 3_600_000).toISOString());
+    try {
+      renderMember("/login", "anonymous");
+      expect(await screen.findByLabelText("Email address")).toBeInTheDocument();
+      expect(screen.queryByText("Your account has been deleted")).not.toBeInTheDocument();
+    } finally {
+      localStorage.removeItem("webflix:deletion-due");
+    }
+  });
+
   it("validates before sending, with errors tied to their fields", async () => {
     const user = userEvent.setup();
     const login = vi.fn();

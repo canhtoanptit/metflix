@@ -241,7 +241,7 @@ test("turning everything off in Account drops what was waiting to be sent, at on
   expect(sent).toEqual([]);
 
   await navigateInApp(page, "/account/privacy");
-  const personalisation = page.getByRole("switch", { name: "Personalised recommendations" });
+  const personalisation = page.getByRole("switch", { name: "Personalized recommendations" });
   const analytics = page.getByRole("switch", { name: "Improving Webflix" });
   // The switch keeps focus while it saves, and is never disabled under the member's hand (UX
   // review 2.7): the save is held for a moment so that state can be seen.

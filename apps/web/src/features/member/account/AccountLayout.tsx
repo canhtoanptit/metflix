@@ -126,7 +126,7 @@ function AccountHolderRequired({ profile }: { profile: Profile }) {
         them.
       </p>
       <div className="mt-2 flex w-full flex-col gap-3 sm:w-auto sm:flex-row-reverse">
-        <Button variant="primary" size="lg" asChild>
+        <Button variant="accent" size="lg" asChild>
           <Link to="/profiles" search={{ redirect: here }}>
             Switch profile
           </Link>
@@ -164,7 +164,7 @@ export function AccountFrame({
           unfinished ? (
             <Link
               to="/logout"
-              className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+              className="focus-ring inline-flex min-h-6 items-center rounded-sm type-label text-fg-muted hover:text-fg"
             >
               Sign out
             </Link>
@@ -180,7 +180,7 @@ export function AccountFrame({
           ) : (
             <Link
               to="/profiles"
-              className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+              className="focus-ring inline-flex min-h-6 items-center rounded-sm type-label text-fg-muted hover:text-fg"
             >
               Who's watching?
             </Link>

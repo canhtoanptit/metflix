@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { OIDC_ERROR_PARAM, type OidcProvider } from "@webflix/contracts";
-import { Button, CheckCircleIcon, ProviderMark, Spinner, toast } from "@webflix/ui";
+import { Button, CheckCircleIcon, EmailText, ProviderMark, Spinner, toast } from "@webflix/ui";
 import { lazy, type ReactNode, Suspense, useEffect, useRef } from "react";
 import { queries } from "../../../app/query/queries.ts";
 import { useSession } from "../../../app/session/session.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberHeader } from "../shared/Chrome.tsx";
+import { forgetDeletionOnSignIn } from "../shared/deletionMemory.ts";
 import { forgetLinkIntent, linkOfferPath, pendingLinkIntent } from "./linkIntent.ts";
 import {
   afterSignInPath,
@@ -19,7 +20,6 @@ import {
   signInReturnPath,
   withParams,
 } from "./oidc.ts";
-import { CARD_HEADING, EmailText } from "./parts.tsx";
 
 const route = getRouteApi("/public/login/continue");
 
@@ -76,8 +76,9 @@ function Landing() {
     if ((outcome === "signed-in" || outcome === "signed-up") && signedIn) {
       // Another tab of this browser may still show the sign-in page: it moves on by itself.
       announceAuthChange("signed-in");
+      forgetDeletionOnSignIn();
       if (outcome === "signed-in") {
-        toast.success(`Signed in with ${name}`);
+        toast.success(`Signed in with ${name}`, { id: "sign-in" });
         // Signed in another way after `link-required` for another provider: offer that one.
         const linking = pendingLinkIntent();
         if (linking === provider) forgetLinkIntent();
@@ -196,7 +197,7 @@ function Welcome({
         id="welcome-heading"
         ref={headingRef}
         tabIndex={-1}
-        className={`${CARD_HEADING} outline-none`}
+        className="type-card-headline text-fg outline-none"
       >
         Welcome to Webflix
       </h1>
@@ -248,7 +249,7 @@ function NotKept({ name, retryHref }: { name: string; retryHref: string }) {
         id="not-kept-heading"
         ref={headingRef}
         tabIndex={-1}
-        className={`${CARD_HEADING} outline-none`}
+        className="type-card-headline text-fg outline-none"
       >
         You're not signed in
       </h1>

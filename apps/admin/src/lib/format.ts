@@ -1,43 +1,47 @@
+import {
+  currencyDigits,
+  formatLongDate,
+  formatShortDate,
+  formatShortDateTime,
+  formatTime,
+  formatDateRange as sharedDateRange,
+  formatMoney as sharedMoney,
+} from "@webflix/contracts";
+
 /**
- * Dates, durations and money for staff, in the browser's locale and time zone. Every absolute
- * time is also given in UTC on hover (`<time title>`), so two staff members in different zones
- * can compare what they see with the audit log.
+ * Dates, durations and money for staff, in the browser's time zone and the member app's words
+ * (`@webflix/contracts`: one set of formatters for the member app, the console and email). Every
+ * absolute time is also given in UTC on hover (`<time title>`), so two staff members in different
+ * zones can compare what they see with the audit log.
  */
 
-const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-const dateTimeSeconds = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "medium",
-});
-const dateOnly = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
-const timeSeconds = new Intl.DateTimeFormat(undefined, { timeStyle: "medium" });
-const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+const zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
   .formatToParts(new Date())
   .find((part) => part.type === "timeZoneName")?.value;
 
+/** "Dec 30, 2026, 8:17 AM" (with `seconds`, "8:17:05 AM"): staff tables and logs. */
 export function formatDateTime(iso: string, options: { seconds?: boolean } = {}): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  return (options.seconds ? dateTimeSeconds : dateTime).format(date);
+  return formatShortDateTime(iso, options);
 }
 
+/** "Dec 30, 2026": a table, a list, a compact line. */
 export function formatDate(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "—" : dateOnly.format(date);
+  return formatShortDate(iso);
+}
+
+/** "December 30, 2026": a date inside a sentence. */
+export function formatDateInSentence(iso: string): string {
+  return formatLongDate(iso);
 }
 
 /** "7:54:48 AM": the time of day alone, with seconds (beside a date shown apart). */
 export function formatTimeSeconds(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "—" : timeSeconds.format(date);
+  return formatTime(iso, { seconds: true });
 }
 
 /** "Nov 30 – Dec 30, 2026": a period, said once. */
 export function formatDateRange(startIso: string, endIso: string): string {
-  const start = new Date(startIso);
-  const end = new Date(endIso);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "—";
-  return dateOnly.formatRange(start, end);
+  return sharedDateRange(startIso, endIso);
 }
 
 /** "2026-11-23 14:32:05 UTC", for hover titles and copies. */
@@ -71,27 +75,12 @@ export function formatRelative(iso: string, now: number): string {
 }
 
 export function fractionDigits(currency: string): number {
-  try {
-    return (
-      new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions()
-        .maximumFractionDigits ?? 2
-    );
-  } catch {
-    return 2;
-  }
+  return currencyDigits(currency);
 }
 
+/** "$12.99": as the member app and email say it. */
 export function formatMoney(amount: { amountMinor: number; currency: string }): string {
-  const digits = fractionDigits(amount.currency);
-  const major = amount.amountMinor / 10 ** digits;
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: amount.currency,
-    }).format(major);
-  } catch {
-    return `${major.toFixed(digits)} ${amount.currency}`;
-  }
+  return sharedMoney(amount);
 }
 
 /**
@@ -100,10 +89,10 @@ export function formatMoney(amount: { amountMinor: number; currency: string }): 
  */
 export function parseMajorAmount(text: string, currency: string): number | null {
   const digits = fractionDigits(currency);
-  const normalised = text.trim().replace(/\s/g, "").replace(",", ".");
+  const normalized = text.trim().replace(/\s/g, "").replace(",", ".");
   const pattern = digits === 0 ? /^\d+$/ : new RegExp(`^\\d+(?:\\.\\d{1,${digits}})?$`);
-  if (!pattern.test(normalised)) return null;
-  const [whole = "0", fraction = ""] = normalised.split(".");
+  if (!pattern.test(normalized)) return null;
+  const [whole = "0", fraction = ""] = normalized.split(".");
   const minor = Number(whole) * 10 ** digits + Number(fraction.padEnd(digits, "0") || "0");
   return Number.isSafeInteger(minor) ? minor : null;
 }
@@ -114,5 +103,5 @@ export function minorToMajorText(amountMinor: number, currency: string): string 
 }
 
 export function plural(count: number, one: string, many = `${one}s`): string {
-  return `${count.toLocaleString()} ${count === 1 ? one : many}`;
+  return `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
 }

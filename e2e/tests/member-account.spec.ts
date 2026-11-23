@@ -79,24 +79,34 @@ test("change email and password, confirming it's you once", async ({ page, newDe
 
   await page.goto("/account/security");
   await expectAccessible(page);
-  // One way to prove it is the account holder (UX review 3.3): "Confirm it's you", not a field.
-  const email = page.getByRole("form", { name: "Change email" });
-  await expect(email.getByLabel("Current password")).toHaveCount(0);
-  const next = uniqueEmail("renamed");
-  await email.getByLabel("New email address").fill(next);
-  await email.getByRole("button", { name: "Update email" }).click();
+  // One way to prove it is the account holder (UX review 3.3): "Confirm it's you", not a field,
+  // and it comes first: the new address is typed once confirmed, so a provider's round trip
+  // could never lose it.
+  const emailSection = page.getByRole("region", { name: "Email", exact: true });
+  await emailSection.getByRole("button", { name: "Change email" }).click();
   const prompt = page.getByRole("dialog", { name: "Confirm it's you" });
   await expect(prompt).toContainText("To change your email");
+  await expect(emailSection.getByLabel("New email address")).toHaveCount(0);
   await prompt.getByLabel("Webflix password").fill("wrong-password-1");
   await prompt.getByRole("button", { name: "Confirm" }).click();
   await expect(prompt.getByLabel("Webflix password")).toHaveAccessibleDescription(/isn't right/);
   await prompt.getByLabel("Webflix password").fill(PASSWORD);
   await prompt.getByRole("button", { name: "Confirm" }).click();
+  const email = page.getByRole("form", { name: "Change email" });
+  await expect(email.getByLabel("Current password")).toHaveCount(0);
+  await expect(email.getByLabel("New email address")).toBeFocused();
+  const next = uniqueEmail("renamed");
+  await email.getByLabel("New email address").fill(next);
+  await email.getByRole("button", { name: "Update email" }).click();
   await expect(page.getByText(`You sign in with ${next}.`)).toBeVisible();
-  // Focus comes back to the form's button, not the page.
-  await expect(email.getByRole("button", { name: "Update email" })).toBeFocused();
+  await expect(prompt).toHaveCount(0);
+  // Done, the form closes and focus comes back to the section's button, not the page.
+  await expect(email).toHaveCount(0);
+  await expect(emailSection.getByRole("button", { name: "Change email" })).toBeFocused();
 
   // The proof still holds (five minutes): the password changes without asking again.
+  const passwordSection = page.getByRole("region", { name: "Password", exact: true });
+  await passwordSection.getByRole("button", { name: "Change password" }).click();
   const password = page.getByRole("form", { name: "Change password" });
   await expect(password.getByLabel("Current password")).toHaveCount(0);
   await password.getByLabel("New password").fill("short");
@@ -104,7 +114,8 @@ test("change email and password, confirming it's you once", async ({ page, newDe
   await expect(password.getByLabel("New password")).toHaveAccessibleDescription(/at least 8/);
   await password.getByLabel("New password").fill("a brand new passphrase");
   await password.getByRole("button", { name: "Change password" }).click();
-  await expect(password.getByLabel("New password")).toHaveValue("");
+  await expect(password).toHaveCount(0);
+  await expect(passwordSection.getByRole("button", { name: "Change password" })).toBeFocused();
   await expect(prompt).toHaveCount(0);
 
   const otherSession = await (await other.request.get("/api/v1/session")).json();

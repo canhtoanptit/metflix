@@ -105,7 +105,7 @@ export function AccountCancelPage() {
           title="We couldn't load your membership"
           description={describeError(details.error).description}
           action={
-            <Button variant="primary" onClick={() => void details.refetch()}>
+            <Button variant="accent" onClick={() => void details.refetch()}>
               Try again
             </Button>
           }

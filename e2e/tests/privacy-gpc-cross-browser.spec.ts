@@ -71,7 +71,7 @@ test("the browser's Global Privacy Control is a no for what the member never ans
   await expect(
     page.getByText("Your browser sends Global Privacy Control", { exact: true }),
   ).toBeVisible();
-  const personalisation = page.getByRole("switch", { name: "Personalised recommendations" });
+  const personalisation = page.getByRole("switch", { name: "Personalized recommendations" });
   await expect(personalisation).toHaveAttribute("aria-checked", "false");
   await expect(
     page.getByText("Off because your browser sends Global Privacy Control."),

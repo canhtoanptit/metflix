@@ -73,7 +73,7 @@ export function deletionBody(
     running
       ? "Your membership can't be changed meanwhile."
       : "A membership can't be started or restarted meanwhile."
-  } Changed your mind? Choose Keep my account in Privacy.`;
+  } Changed your mind? Choose Keep my account in Account › Privacy.`;
 }
 
 /** The scheduled deletion, said plainly, with the way to keep the account. */
@@ -97,7 +97,7 @@ export function DeletionScheduledNotice({
           to="/account/privacy"
           className="focus-ring rounded-xs type-label text-fg underline underline-offset-2"
         >
-          Go to Privacy
+          Go to Account › Privacy
         </Link>
       }
     >

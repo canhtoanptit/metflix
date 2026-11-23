@@ -237,7 +237,7 @@ export function outcomeCopy(
     case "cancelled":
       return {
         tone: "info",
-        title: `${name} ${context === "signup" ? "sign-up" : "sign-in"} cancelled`,
+        title: `${name} ${context === "signup" ? "sign-up" : "sign-in"} canceled`,
         body:
           context === "signup"
             ? `Nothing was created. Continue with ${name} again, or sign up with your email.`

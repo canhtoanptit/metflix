@@ -42,6 +42,7 @@ import {
   Dialog,
   DialogContent,
   DialogFooter,
+  EmailText,
   ErrorState,
   MailIcon,
   PasswordField,
@@ -54,6 +55,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
 } from "react";
@@ -369,7 +371,7 @@ function ConfirmIdentityBody({
         title="We couldn't check how to confirm it's you"
         description={described.description}
         action={
-          <Button variant="primary" onClick={() => void elevation.refetch()}>
+          <Button variant="accent" onClick={() => void elevation.refetch()}>
             Try again
           </Button>
         }
@@ -383,6 +385,28 @@ function ConfirmIdentityBody({
   const returnTo = (provider: OidcProvider) =>
     withParams(pathWithout(router.state.location.href), { confirm: id, provider });
 
+  const providerChoices =
+    issuers.length > 0 ? (
+      <div className="flex flex-col gap-3">
+        {issuers.map((provider) => {
+          const name = providerName(provider, offered);
+          return (
+            <ProviderButton
+              key={provider}
+              provider={{ id: provider, displayName: name }}
+              href={federatedStartUrl(provider, "reauth", returnTo(provider))}
+              label={password ? `Use ${name} instead` : `Continue with ${name}`}
+            />
+          );
+        })}
+        <p className="type-body-sm text-fg-subtle">
+          {issuers.length === 1
+            ? `You'll sign in to ${providerName(issuers[0] as OidcProvider, offered)} again, then come back here.`
+            : "You'll sign in to the provider again, then come back here."}
+        </p>
+      </div>
+    ) : null;
+
   return (
     <div className="flex flex-col gap-4">
       {notice ? (
@@ -390,42 +414,31 @@ function ConfirmIdentityBody({
       ) : null}
       {methods.length === 0 ? (
         <SetPasswordByEmail onCancel={onCancel} />
+      ) : password ? (
+        <PasswordProof
+          onProved={(next) => {
+            queryClient.setQueryData(qk.account.elevation(), next);
+            announceAuthChange("elevated");
+            onConfirmed();
+          }}
+          onMethodsChanged={() => void elevation.refetch()}
+          onCancel={onCancel}
+        >
+          {providerChoices ? (
+            <>
+              <OrDivider />
+              {providerChoices}
+            </>
+          ) : null}
+        </PasswordProof>
       ) : (
         <>
-          {password ? (
-            <PasswordProof
-              onProved={(next) => {
-                queryClient.setQueryData(qk.account.elevation(), next);
-                announceAuthChange("elevated");
-                onConfirmed();
-              }}
-              onMethodsChanged={() => void elevation.refetch()}
-            />
-          ) : null}
-          {password && issuers.length > 0 ? <OrDivider /> : null}
-          {issuers.length > 0 ? (
-            <div className="flex flex-col gap-3">
-              {issuers.map((provider) => {
-                const name = providerName(provider, offered);
-                return (
-                  <ProviderButton
-                    key={provider}
-                    provider={{ id: provider, displayName: name }}
-                    href={federatedStartUrl(provider, "reauth", returnTo(provider))}
-                    label={password ? `Use ${name} instead` : `Continue with ${name}`}
-                  />
-                );
-              })}
-              <p className="type-body-sm text-fg-subtle">
-                {issuers.length === 1
-                  ? `You'll sign in to ${providerName(issuers[0] as OidcProvider, offered)} again, then come back here.`
-                  : "You'll sign in to the provider again, then come back here."}
-              </p>
-            </div>
-          ) : null}
-          <Button variant="ghost" size="lg" fullWidth onClick={onCancel}>
-            Cancel
-          </Button>
+          {providerChoices}
+          <DialogFooter className="mt-2">
+            <Button variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+          </DialogFooter>
         </>
       )}
     </div>
@@ -449,7 +462,7 @@ function ReturnNoticeAlert({
   }, []);
   if (notice.outcome === "cancelled") {
     return (
-      <FormAlert ref={ref} tone="info" title={`You cancelled at ${name}`}>
+      <FormAlert ref={ref} tone="info" title={`You canceled at ${name}`}>
         Nothing changed. Choose a way to confirm it's you.
       </FormAlert>
     );
@@ -482,10 +495,16 @@ function ReturnNoticeAlert({
 function PasswordProof({
   onProved,
   onMethodsChanged,
+  onCancel,
+  children,
 }: {
   onProved: (elevation: Elevation) => void;
   onMethodsChanged: () => void;
+  onCancel: () => void;
+  /** The other ways to confirm, between the password and the dialog's footer. */
+  children?: ReactNode;
 }) {
+  const formId = useId();
   const session = useAuthenticatedSession();
   const [password, setPassword] = useState("");
   const [checked, setChecked] = useState(false);
@@ -530,57 +549,66 @@ function PasswordProof({
   };
 
   return (
-    <form
-      onSubmit={submit}
-      noValidate
-      className="flex flex-col gap-4"
-      aria-label="Confirm with your password"
-    >
-      {other ? <FormAlert title={other.title}>{other.description}</FormAlert> : null}
-      {rate.limited ? (
-        <FormAlert title="Too many attempts">
-          For your security, please wait a moment. The button shows when you can try again.
-        </FormAlert>
-      ) : null}
-      {/* Lets password managers offer the right saved password. */}
-      <input
-        type="hidden"
-        name="username"
-        autoComplete="username"
-        value={session.account.email}
-        readOnly
-      />
-      <PasswordField
-        ref={inputRef}
-        label="Webflix password"
-        name="current-password"
-        autoComplete="current-password"
-        autoFocus
-        value={password}
-        onChange={(event) => {
-          setPassword(event.target.value);
-          setChecked(false);
-        }}
-        error={fieldError}
-      />
-      <Link
-        to="/forgot-password"
-        search={{ email: session.account.email }}
-        className="focus-ring -mt-1 self-end rounded-xs type-label text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+    <>
+      <form
+        id={formId}
+        onSubmit={submit}
+        noValidate
+        className="flex flex-col gap-4"
+        aria-label="Confirm with your password"
       >
-        Forgot your password?
-      </Link>
-      <Button
-        type="submit"
-        variant="accent"
-        size="lg"
-        fullWidth
-        loading={elevate.isPending}
-        disabled={rate.limited}
-      >
-        {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Confirm"}
-      </Button>
-    </form>
+        {other ? <FormAlert title={other.title}>{other.description}</FormAlert> : null}
+        {rate.limited ? (
+          <FormAlert title="Too many attempts">
+            For your security, please wait a moment. The button shows when you can try again.
+          </FormAlert>
+        ) : null}
+        {/* Lets password managers offer the right saved password. */}
+        <input
+          type="hidden"
+          name="username"
+          autoComplete="username"
+          value={session.account.email}
+          readOnly
+        />
+        <PasswordField
+          ref={inputRef}
+          label="Webflix password"
+          name="current-password"
+          autoComplete="current-password"
+          autoFocus
+          value={password}
+          onChange={(event) => {
+            setPassword(event.target.value);
+            setChecked(false);
+          }}
+          error={fieldError}
+        />
+        <Link
+          to="/forgot-password"
+          search={{ email: session.account.email }}
+          className="focus-ring -mt-1 inline-flex min-h-6 items-center self-end rounded-xs type-label text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+        >
+          Forgot your password?
+        </Link>
+      </form>
+      {children}
+      {/* The dialog's footer (docs/DESIGN_SYSTEM.md "Dialogs"); Confirm submits the form above. */}
+      <DialogFooter className="mt-2">
+        <Button variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          form={formId}
+          variant="accent"
+          loading={elevate.isPending}
+          disabled={rate.limited}
+        >
+          {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Confirm"}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }
 
@@ -606,11 +634,10 @@ function SetPasswordByEmail({ onCancel }: { onCancel: () => void }) {
     return (
       <div className="flex flex-col gap-4">
         <FormAlert ref={sentRef} tone="positive" icon={MailIcon} title="Check your email">
-          We sent a link to <span className="text-fg">{email}</span>. It works once and expires in
-          30 minutes.
+          We sent a link to <EmailText>{email}</EmailText>. It works once and expires in 30 minutes.
         </FormAlert>
         <DialogFooter className="mt-2">
-          <Button variant="primary" onClick={onCancel}>
+          <Button variant="accent" onClick={onCancel}>
             Done
           </Button>
         </DialogFooter>
@@ -621,7 +648,7 @@ function SetPasswordByEmail({ onCancel }: { onCancel: () => void }) {
     <div className="flex flex-col gap-4">
       <FormAlert tone="info" title="Set a password to continue">
         Your sign-in provider can't confirm it's you right now, so set a Webflix password instead.
-        We'll email a link to <span className="text-fg">{email}</span>.
+        We'll email a link to <EmailText>{email}</EmailText>.
       </FormAlert>
       <p className="type-body-sm text-fg-muted">
         Setting your password through the link signs you out on every device, this one too. Then

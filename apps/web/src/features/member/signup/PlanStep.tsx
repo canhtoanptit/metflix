@@ -94,7 +94,7 @@ export function PlanStep() {
             title="We couldn't load the plans"
             description={describeError(plans.error).description}
             action={
-              <Button variant="primary" onClick={() => void plans.refetch()}>
+              <Button variant="accent" onClick={() => void plans.refetch()}>
                 Try again
               </Button>
             }
@@ -125,8 +125,8 @@ export function PlanStep() {
             Continue
           </Button>
           <p className="type-body-sm text-fg-subtle md:text-center">
-            How many screens you can watch on at once and the best video quality depend on your plan
-            and your device. 4K needs a compatible screen and a fast connection.
+            Screens at a time and the best video quality depend on your plan and your device. 4K
+            needs a compatible screen and a fast connection.
           </p>
         </div>
       </form>

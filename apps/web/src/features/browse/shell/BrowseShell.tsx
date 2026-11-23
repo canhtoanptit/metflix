@@ -5,6 +5,8 @@ import { toast, useMediaQuery } from "@webflix/ui";
 import { useEffect, useRef, useState } from "react";
 import { useTitleOverlay } from "../../../app/overlay/titleOverlay.ts";
 import { qk } from "../../../app/query/keys.ts";
+import { deletedAsAsked } from "../../member/shared/deletionMemory.ts";
+import { formatLongDate } from "../../member/shared/format.ts";
 import { preloadable, useModule } from "../common/modules.ts";
 import { takeTitleOpen, track } from "../common/telemetry.ts";
 import { previewModule } from "../preview/prepare.ts";
@@ -186,11 +188,21 @@ function SessionNotice() {
       before = next;
       if (!previous?.authenticated || !next) return;
       if (!next.authenticated) {
-        toast.show({
-          id: "session-ended",
-          title: "You've been signed out",
-          description: "Your session ended. Sign in again to pick up where you left off.",
-        });
+        // The account this browser asked to delete is gone (nothing identifying is kept).
+        const deletedOn = deletedAsAsked();
+        toast.show(
+          deletedOn
+            ? {
+                id: "session-ended",
+                title: "Your account has been deleted",
+                description: `As you asked, on ${formatLongDate(deletedOn)}. Thanks for watching Webflix.`,
+              }
+            : {
+                id: "session-ended",
+                title: "You've been signed out",
+                description: "Your session ended. Sign in again to pick up where you left off.",
+              },
+        );
       } else if (previous.activeProfile && !next.activeProfile) {
         toast.show({
           id: "session-ended",

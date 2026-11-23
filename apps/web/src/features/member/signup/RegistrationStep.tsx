@@ -10,6 +10,7 @@ import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { FederatedButtons } from "../auth/FederatedButtons.tsx";
 import { NoProviderNotice } from "../billing/NoProviderNotice.tsx";
 import { useBillingConfig } from "../billing/ProviderStep.tsx";
+import { forgetDeletionOnSignIn } from "../shared/deletionMemory.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown } from "../shared/format.ts";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
@@ -57,6 +58,7 @@ export function RegistrationStep() {
       if (ApiError.is(error, "email_already_registered")) setRegistered(body.email);
     },
     onSuccess: async (session) => {
+      forgetDeletionOnSignIn();
       await applySession(session);
       await navigate({ to: "/signup/plan", search: { plan: readDraft().planId ?? undefined } });
     },
@@ -92,7 +94,7 @@ export function RegistrationStep() {
         <NoProviderNotice
           headingLevel={1}
           action={
-            <Button variant="primary" size="lg" asChild>
+            <Button variant="accent" size="lg" asChild>
               <Link to="/login" search={{}}>
                 Sign in
               </Link>

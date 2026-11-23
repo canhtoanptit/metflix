@@ -1,50 +1,39 @@
 import {
-  type Money,
+  formatMoney,
   type Plan,
   videoQualityForHeight,
   videoQualityLabel,
 } from "@webflix/contracts";
 
 /**
- * Display formatting for the member screens. Locale-aware through `Intl`, with the formatter
- * instances cached (constructing them is the expensive part).
+ * Display formatting for the member screens. Dates and amounts come from `@webflix/contracts`
+ * (one set for the member app, the staff console and email: docs/DESIGN_SYSTEM.md "Dates and
+ * amounts"); the rest is the member app's own.
  */
+export {
+  formatDateRange,
+  formatLongDate,
+  formatLongDateTime,
+  formatMoney,
+  formatShortDate,
+  formatShortDateTime as formatDateTime,
+} from "@webflix/contracts";
 
-const moneyFormatters = new Map<string, Intl.NumberFormat>();
-
-/** `{ amountMinor: 1299, currency: "USD" }` → `$12.99`. */
-export function formatMoney(money: Money): string {
-  let formatter = moneyFormatters.get(money.currency);
-  if (!formatter) {
-    formatter = new Intl.NumberFormat(undefined, { style: "currency", currency: money.currency });
-    moneyFormatters.set(money.currency, formatter);
-  }
-  return formatter.format(money.amountMinor / 100);
+/**
+ * Whole sentences placed after a colon ("If you delete your account today: you can watch…"):
+ * the first word loses its capital, unless it is a name (Webflix) or "I".
+ */
+export function afterColon(sentences: string): string {
+  return /^(Webflix|I)\b/.test(sentences)
+    ? sentences
+    : sentences.charAt(0).toLowerCase() + sentences.slice(1);
 }
 
 export function formatMonthlyPrice(plan: Plan): string {
   return `${formatMoney(plan.monthlyPrice)}/month`;
 }
 
-const longDate = new Intl.DateTimeFormat(undefined, { dateStyle: "long" });
-const mediumDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
-const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-
-/** `November 21, 2026` */
-export function formatLongDate(iso: string): string {
-  return longDate.format(new Date(iso));
-}
-
-/** `Nov 21, 2026` */
-export function formatShortDate(iso: string): string {
-  return mediumDate.format(new Date(iso));
-}
-
-export function formatDateTime(iso: string): string {
-  return dateTime.format(new Date(iso));
-}
-
-const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+const relative = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" });
 
 /** "just now", "5 minutes ago", "yesterday", "3 weeks ago". */
 export function formatRelativeTime(iso: string, now = Date.now()): string {
@@ -65,7 +54,7 @@ export function formatCountdown(totalSeconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-/** "1 screen", "4 screens". */
+/** "1 screen at a time", "4 screens at a time": the stream limit, never "devices". */
 export function formatScreens(count: number): string {
   return count === 1 ? "1 screen at a time" : `${count} screens at a time`;
 }
@@ -85,7 +74,7 @@ export function possessive(name: string): string {
 
 const languageNames =
   typeof Intl.DisplayNames === "function"
-    ? new Intl.DisplayNames(undefined, { type: "language" })
+    ? new Intl.DisplayNames("en-US", { type: "language" })
     : null;
 
 /** `es` → `Spanish`; falls back to the tag. */

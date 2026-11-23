@@ -10,8 +10,9 @@ import { useApplySession } from "../../../app/session/session.ts";
 import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberFooter, MemberHeader } from "../shared/Chrome.tsx";
+import { deletedAsAsked, forgetDeletionOnSignIn } from "../shared/deletionMemory.ts";
 import { FormAlert } from "../shared/FormAlert.tsx";
-import { formatCountdown } from "../shared/format.ts";
+import { formatCountdown, formatLongDate } from "../shared/format.ts";
 import { useFocusOnError } from "../shared/useFocusOnError.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { useSingleFlight } from "../shared/useSingleFlight.ts";
@@ -28,7 +29,6 @@ import {
   signInReturnPath,
   useAuthChangeElsewhere,
 } from "./oidc.ts";
-import { CARD_HEADING } from "./parts.tsx";
 
 const route = getRouteApi("/guest/login");
 
@@ -60,6 +60,8 @@ export function LoginPage() {
   const alertRef = useRef<HTMLDivElement>(null);
   const rate = useRetryAfter();
   const flight = useSingleFlight();
+  // This browser asked for its account's deletion, and the day has passed (nothing identifying).
+  const [deletedOn] = useState(() => deletedAsAsked());
 
   const login = useMutation({
     mutationFn: (body: LoginBody) => {
@@ -77,6 +79,7 @@ export function LoginPage() {
       }
     },
     onSuccess: async (session, body) => {
+      forgetDeletionOnSignIn();
       await applySession(session);
       // Signed in to add a provider (`link-required`): the password just typed is also the
       // account-holder proof, so the offer on Security needs one click, not the password again.
@@ -133,23 +136,39 @@ export function LoginPage() {
   const alert = error ? (
     ApiError.is(error, "invalid_credentials") ? (
       <FormAlert ref={alertRef} title="Incorrect email or password">
-        Check them and try again.{" "}
-        <Link
-          to="/forgot-password"
-          search={{ email: typedEmail }}
-          className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
-        >
-          Reset your password
-        </Link>{" "}
-        or{" "}
-        <Link
-          to="/signup"
-          search={{ email: typedEmail }}
-          className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
-        >
-          create an account
-        </Link>
-        .
+        {deletedOn ? (
+          <>
+            If you meant the account deleted on {formatLongDate(deletedOn)}, it no longer exists:{" "}
+            <Link
+              to="/signup"
+              search={{ email: typedEmail }}
+              className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
+            >
+              create a new account
+            </Link>{" "}
+            to watch again. Otherwise, check them and try again.
+          </>
+        ) : (
+          <>
+            Check them and try again.{" "}
+            <Link
+              to="/forgot-password"
+              search={{ email: typedEmail }}
+              className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
+            >
+              Reset your password
+            </Link>{" "}
+            or{" "}
+            <Link
+              to="/signup"
+              search={{ email: typedEmail }}
+              className="focus-ring rounded-xs font-semibold text-fg underline underline-offset-2"
+            >
+              create an account
+            </Link>
+            .
+          </>
+        )}
       </FormAlert>
     ) : ApiError.is(error, "rate_limited") ? (
       <FormAlert ref={alertRef} title="Too many sign-in attempts">
@@ -173,9 +192,15 @@ export function LoginPage() {
         className="relative z-(--z-raised) flex flex-1 justify-center px-gutter pb-16 pt-4 sm:pt-10"
       >
         <div className="flex w-full max-w-form flex-col gap-4 md:self-start md:rounded-2xl md:border md:border-line-subtle md:bg-canvas/85 md:p-12 md:shadow-xl md:backdrop-blur-md">
-          <h1 id="sign-in-heading" className={`${CARD_HEADING} mb-2`}>
+          <h1 id="sign-in-heading" className="type-card-headline mb-2 text-fg">
             Sign in
           </h1>
+          {deletedOn && !returned && !error ? (
+            <FormAlert tone="info" title="Your account has been deleted">
+              You asked for it on this browser, and it was deleted on {formatLongDate(deletedOn)}.
+              To watch again, create a new account: the same email address works.
+            </FormAlert>
+          ) : null}
           {returned && !error ? (
             <FederatedOutcomeNotice
               outcome={returned.outcome}
@@ -233,7 +258,7 @@ export function LoginPage() {
             <Link
               to="/forgot-password"
               search={{ email: typedEmail }}
-              className="focus-ring -mt-1 self-end rounded-xs type-label text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+              className="focus-ring -mt-1 inline-flex min-h-6 items-center self-end rounded-xs type-label text-fg-muted underline-offset-2 hover:text-fg hover:underline"
             >
               Forgot password?
             </Link>

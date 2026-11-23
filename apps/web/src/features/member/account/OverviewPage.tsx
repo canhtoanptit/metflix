@@ -5,6 +5,7 @@ import {
   Badge,
   Button,
   ChevronRightIcon,
+  EmailText,
   ErrorState,
   KidsIcon,
   LockIcon,
@@ -43,7 +44,7 @@ export function AccountOverviewPage() {
         description={
           <>
             Member since {formatLongDate(session.account.createdAt)} ·{" "}
-            <span className="wrap-anywhere text-fg">{session.account.email}</span>
+            <EmailText>{session.account.email}</EmailText>
           </>
         }
       />
@@ -61,7 +62,7 @@ export function AccountOverviewPage() {
           title="We couldn't load your membership"
           description={describeError(details.error).description}
           action={
-            <Button variant="primary" onClick={() => void details.refetch()}>
+            <Button variant="accent" onClick={() => void details.refetch()}>
               Try again
             </Button>
           }
@@ -85,7 +86,7 @@ export function AccountOverviewPage() {
                 to="/account/security"
                 className="focus-ring rounded-xs type-label text-fg underline underline-offset-2"
               >
-                Verify in Security
+                Verify it in Account › Security
               </Link>
             }
           >
@@ -96,7 +97,9 @@ export function AccountOverviewPage() {
         <dl className="grid gap-4 sm:grid-cols-2">
           <div className="min-w-0">
             <dt className="type-caption text-fg-subtle">Email</dt>
-            <dd className="truncate type-body text-fg">{session.account.email}</dd>
+            <dd className="type-body text-fg">
+              <EmailText>{session.account.email}</EmailText>
+            </dd>
           </div>
           <div>
             <dt className="type-caption text-fg-subtle">Password</dt>

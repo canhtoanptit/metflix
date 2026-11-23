@@ -464,12 +464,12 @@ function BlockedTitle({
         action={
           <>
             {described.retryable ? (
-              <Button variant="primary" onClick={onRetry}>
+              <Button variant="accent" onClick={onRetry}>
                 Try again
               </Button>
             ) : null}
-            <Button variant={described.retryable ? "outline" : "primary"} onClick={onClose}>
-              Back to browsing
+            <Button variant={described.retryable ? "outline" : "accent"} onClick={onClose}>
+              Back to browse
             </Button>
           </>
         }

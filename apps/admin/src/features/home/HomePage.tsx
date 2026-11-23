@@ -82,6 +82,10 @@ export function HomePage() {
 }
 
 /** Without the admin role: your own actions that ended without a clear outcome, or still run. */
+/** The way on from an entry to follow up or that needs attention: a link, and it looks like one. */
+const ATTENTION_LINK =
+  "focus-ring inline-flex min-h-6 items-center rounded-xs type-body-sm text-fg underline underline-offset-2 hover:text-fg-muted";
+
 function YourFollowUps() {
   const staff = useStaff();
   const unknown = useQuery(queries.ownAudit({ outcome: "unknown", limit: 5 }));
@@ -124,7 +128,7 @@ function YourFollowUps() {
               <Link
                 to="/activity"
                 search={entry.requestId ? { requestId: entry.requestId } : {}}
-                className="focus-ring rounded-xs type-body-sm text-fg-muted underline-offset-4 hover:text-fg hover:underline"
+                className={ATTENTION_LINK}
               >
                 Open in your actions
               </Link>
@@ -181,10 +185,7 @@ function NeedsAttention() {
               <span className="type-body-sm text-fg">
                 {dependency.name} is down{dependency.detail ? ` (${dependency.detail})` : ""}
               </span>
-              <Link
-                to="/operations/health"
-                className="focus-ring rounded-xs type-body-sm text-fg-muted underline-offset-4 hover:text-fg hover:underline"
-              >
+              <Link to="/operations/health" className={ATTENTION_LINK}>
                 System health
               </Link>
             </li>
@@ -200,10 +201,7 @@ function NeedsAttention() {
                   </span>
                 ) : null}
               </span>
-              <Link
-                to="/operations/health"
-                className="focus-ring rounded-xs type-body-sm text-fg-muted underline-offset-4 hover:text-fg hover:underline"
-              >
+              <Link to="/operations/health" className={ATTENTION_LINK}>
                 System health
               </Link>
             </li>
@@ -213,10 +211,7 @@ function NeedsAttention() {
               <span className="type-body-sm text-fg">
                 {deadLetters === 1 ? "1 job" : `${deadLetters} jobs`} failed every attempt
               </span>
-              <Link
-                to="/operations/dead-letters"
-                className="focus-ring rounded-xs type-body-sm text-fg-muted underline-offset-4 hover:text-fg hover:underline"
-              >
+              <Link to="/operations/dead-letters" className={ATTENTION_LINK}>
                 Failed jobs
               </Link>
             </li>
@@ -237,7 +232,7 @@ function NeedsAttention() {
                 search={
                   entry.requestId ? { requestId: entry.requestId } : auditFilterFor(entry.target)
                 }
-                className="focus-ring rounded-xs type-body-sm text-fg-muted underline-offset-4 hover:text-fg hover:underline"
+                className={ATTENTION_LINK}
               >
                 Open in the audit log
               </Link>

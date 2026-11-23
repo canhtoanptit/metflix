@@ -14,11 +14,18 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { ApiError, type PrivacyRequest } from "@webflix/contracts";
-import { Button, CheckCircleIcon, ErrorState, LockIcon, MailIcon, Spinner } from "@webflix/ui";
+import {
+  Button,
+  CheckCircleIcon,
+  EmailText,
+  ErrorState,
+  LockIcon,
+  MailIcon,
+  Spinner,
+} from "@webflix/ui";
 import { type ReactNode, useEffect, useRef } from "react";
 import { describeError } from "../../../../app/query/errors.ts";
 import { useSession } from "../../../../app/session/session.ts";
-import { BusyButton } from "../../../../app/telemetry/BusyButton.tsx";
 import { isRestrictedProfile } from "../../../../app/telemetry/index.ts";
 import { forgetLinkToken, useLinkToken } from "../../auth/emailLink.ts";
 import { Frame } from "../../auth/ResetPasswordPage.tsx";
@@ -26,7 +33,7 @@ import { isUnfinishedSignup } from "../../billing/membership.ts";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../../shared/ConfirmIdentity.tsx";
 import { formatLongDate } from "../../shared/format.ts";
 import { saveDataExport } from "./download.ts";
-import { exportEmailLine, privacyRequestsQuery, typicalWait } from "./requests.ts";
+import { exportEmailNote, privacyRequestsQuery, typicalWait } from "./requests.ts";
 
 const route = getRouteApi("/public/account/privacy/exports/$requestId");
 
@@ -137,7 +144,7 @@ function Download({
         title="We couldn't check your link just now"
         description={describeError(requests.error).description}
         action={
-          <Button variant="primary" onClick={() => void requests.refetch()}>
+          <Button variant="accent" onClick={() => void requests.refetch()}>
             Try again
           </Button>
         }
@@ -157,7 +164,7 @@ function Download({
         action={<BackToPrivacy />}
       >
         It usually takes {typical}.{" "}
-        {exportEmailLine(request, email) ?? "Check back in Account › Privacy."}
+        {exportEmailNote(request, email) ?? "Check back in Account › Privacy."}
       </Step>
     );
   }
@@ -196,15 +203,15 @@ function Download({
       title="Your data is ready"
       action={
         <>
-          <BusyButton
+          <Button
             variant="accent"
             size="lg"
             fullWidth
-            busy={save.isPending}
+            loading={save.isPending}
             onClick={() => save.mutate()}
           >
             Download your data
-          </BusyButton>
+          </Button>
           {identity.prompt}
         </>
       }
@@ -243,11 +250,16 @@ function CannotUse({
           ? "This copy couldn't be prepared"
           : "This link has expired";
   const body =
-    reason === "other-account"
-      ? `You're signed in as ${email}, and this copy isn't one this account asked for. If you have more than one account, sign out and sign in to the one that asked.`
-      : reason === "incomplete"
-        ? "It looks cut short or changed. Open it again from the email, or ask for a new copy in Account › Privacy."
-        : `${failed ? "Nothing was sent." : expiresAt ? `It stopped working on ${formatLongDate(expiresAt)}.` : "It no longer works."} Ask for a new copy in Account › Privacy: it usually takes ${typical ?? "a little while"}.`;
+    reason === "other-account" ? (
+      <>
+        You're signed in as <EmailText>{email}</EmailText>, and this copy isn't one this account
+        asked for. If you have more than one account, sign out and sign in to the one that asked.
+      </>
+    ) : reason === "incomplete" ? (
+      "It looks cut short or changed. Open it again from the email, or ask for a new copy in Account › Privacy."
+    ) : (
+      `${failed ? "Nothing was sent." : expiresAt ? `It stopped working on ${formatLongDate(expiresAt)}.` : "It no longer works."} Ask for a new copy in Account › Privacy: it usually takes ${typical ?? "a little while"}.`
+    );
   return (
     <Step
       icon={<MailIcon size="xl" />}
@@ -311,7 +323,7 @@ function Step({
         id="export-link"
         ref={headingRef}
         tabIndex={-1}
-        className="type-headline text-fg outline-none"
+        className="type-card-headline text-fg outline-none"
       >
         {title}
       </h1>

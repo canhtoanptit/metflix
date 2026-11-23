@@ -5,6 +5,9 @@
  */
 import type { ConsentPurpose } from "@webflix/contracts";
 
+/** The toast subject for consent answers: the prompt's and the settings' (one at a time). */
+export const CONSENT_TOAST_ID = "consent";
+
 /** What is recorded with permission. */
 export const WHAT_IS_RECORDED =
   "Which titles you see, open and play, and how you search (never the words you type).";
@@ -14,7 +17,7 @@ export const WHAT_IS_RECORDED =
  * and from what is new and popular.
  */
 export const WITHOUT_PERSONALISATION =
-  "Without personalised recommendations, everything still works: your rows then come from what you watch and rate, your My List, and what's new and popular on Webflix.";
+  "Without personalized recommendations, everything still works: your rows then come from what you watch and rate, your My List, and what's new and popular on Webflix.";
 /**
  * What Webflix keeps whatever the answer: what it needs to work. A refusal is itself recorded
  * (the answer, so it can be honoured), and so is watch history (Continue Watching).
@@ -27,7 +30,7 @@ export const KEPT_AFTER_REFUSAL =
 
 export const PURPOSE_COPY: Record<ConsentPurpose, { label: string; description: string }> = {
   personalisation: {
-    label: "Personalised recommendations",
+    label: "Personalized recommendations",
     description: "What you browse and play helps choose the rows and titles we show you.",
   },
   analytics: {

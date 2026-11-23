@@ -12,12 +12,18 @@ export interface ToastOptions {
   action?: { label: string; onClick: () => void; altText?: string };
   /** Milliseconds before auto-dismiss (default 5000; errors 8000). */
   duration?: number;
-  /** Reuse an id to replace a toast instead of stacking duplicates. */
+  /**
+   * The toast's subject ("membership", "data-export", `profile-${id}`). One toast per subject: a
+   * newer one with the same id replaces the older, so two toasts never contradict each other
+   * (docs/DESIGN_SYSTEM.md "Toasts").
+   */
   id?: string;
 }
 
 export interface ToastRecord extends ToastOptions {
   id: string;
+  /** Changes on every show: a replacing toast is a new one (announced, timed afresh). */
+  serial: number;
   open: boolean;
 }
 
@@ -39,7 +45,7 @@ export const toast = {
   show(options: ToastOptions): string {
     counter += 1;
     const id = options.id ?? `toast-${counter}`;
-    const record: ToastRecord = { ...options, id, open: true };
+    const record: ToastRecord = { ...options, id, serial: counter, open: true };
     // Keep at most three visible; replacing an id moves it to the front.
     updateToasts([...toasts.filter((item) => item.id !== id), record].slice(-3));
     return id;

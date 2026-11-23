@@ -184,7 +184,7 @@ export function LandingPage() {
               Premium on four. Everyone can have their own profile, up to five per account.
             </AccordionItem>
             <AccordionItem value="cancel" title="How do I cancel?">
-              Online, in two clicks, from your Account page. There are no cancellation fees. You
+              Online, in two clicks, from Account › Membership. There are no cancellation fees. You
               keep watching until the end of the period you've paid for, and you can restart
               anytime.
             </AccordionItem>
@@ -195,7 +195,7 @@ export function LandingPage() {
             </AccordionItem>
             <AccordionItem value="what-to-watch" title="What can I watch on Webflix?">
               Original series and films across drama, thrillers, comedy, sci-fi, documentaries and
-              family favourites, alongside acclaimed open films. New titles arrive every week.
+              family favorites, alongside acclaimed open films. New titles arrive every week.
             </AccordionItem>
           </Accordion>
           <EmailCapture
@@ -207,23 +207,29 @@ export function LandingPage() {
 
       <MemberFooter>
         <nav aria-label="Footer" className="flex flex-wrap gap-x-6 gap-y-2">
-          <a href="#faq" className="focus-ring rounded-xs hover:text-fg hover:underline">
+          <a
+            href="#faq"
+            className="focus-ring inline-flex min-h-6 items-center rounded-xs hover:text-fg hover:underline"
+          >
             FAQ
           </a>
-          <a href="#plans" className="focus-ring rounded-xs hover:text-fg hover:underline">
+          <a
+            href="#plans"
+            className="focus-ring inline-flex min-h-6 items-center rounded-xs hover:text-fg hover:underline"
+          >
             Plans and pricing
           </a>
           <Link
             to="/login"
             search={{}}
-            className="focus-ring rounded-xs hover:text-fg hover:underline"
+            className="focus-ring inline-flex min-h-6 items-center rounded-xs hover:text-fg hover:underline"
           >
             Sign in
           </Link>
           <Link
             to="/signup"
             search={{}}
-            className="focus-ring rounded-xs hover:text-fg hover:underline"
+            className="focus-ring inline-flex min-h-6 items-center rounded-xs hover:text-fg hover:underline"
           >
             Create an account
           </Link>

@@ -93,8 +93,8 @@ const SIGNED_OUT_COPY: Record<SignedOutReason, { title: string; body: string; ac
     action: "Sign in again",
   },
   cancelled: {
-    title: "Sign-in was cancelled",
-    body: "You cancelled at the staff sign-in service. Nothing was changed.",
+    title: "Sign-in was canceled",
+    body: "You canceled at the staff sign-in service. Nothing was changed.",
     action: "Sign in",
   },
   failed: {

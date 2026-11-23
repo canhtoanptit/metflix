@@ -5,6 +5,7 @@
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdminPlan, PlanSyncResult } from "@webflix/contracts";
+import { videoQualityForHeight, videoQualityLabel } from "@webflix/contracts";
 import { Button, EditIcon, Field, Input, PlusIcon, RefreshIcon } from "@webflix/ui";
 import { useState } from "react";
 import { staffApi } from "../../api/client.ts";
@@ -38,7 +39,7 @@ export function PlansPage() {
     <>
       <PageHeader
         title="Plans & prices"
-        description="Prices per currency. A new price reaches new subscriptions once it is synchronised with the payment provider; current members keep the price they have."
+        description="Prices per currency. A new price reaches new subscriptions once it is synchronized with the payment provider; current members keep the price they have."
         actions={
           <Button variant="accent" size="sm" icon={RefreshIcon} onClick={() => setSyncOpen(true)}>
             Sync with the provider
@@ -57,7 +58,7 @@ export function PlansPage() {
               className="rounded-md border border-warning/40 p-3 type-body-sm text-fg-muted"
             >
               {neverSynced === 1 ? "One price has" : `${neverSynced} prices have`} never been
-              synchronised: new members can't be charged {neverSynced === 1 ? "it" : "them"} until
+              synchronized: new members can't be charged {neverSynced === 1 ? "it" : "them"} until
               you sync.
             </p>
           ) : null}
@@ -149,7 +150,7 @@ function PlanSection({ plan, onEdit }: { plan: AdminPlan; onEdit: (price: Price 
     <Section
       id={`plan-${plan.id}`}
       title={plan.name}
-      description={`${plan.maxStreams} ${plan.maxStreams === 1 ? "screen" : "screens"} · up to ${plan.maxQuality} · ${plan.trialDays}-day trial`}
+      description={`${plan.maxStreams} ${plan.maxStreams === 1 ? "screen" : "screens"} at a time · up to ${videoQualityLabel(videoQualityForHeight(Number.parseInt(plan.maxQuality, 10)))} · ${plan.trialDays}-day trial`}
       actions={
         <Button size="sm" variant="outline" icon={PlusIcon} onClick={() => onEdit(null)}>
           Add a currency

@@ -50,6 +50,10 @@
     width: 2.5rem;
     height: 2.5rem;
   }
+  /* User data in text (EmailText): no contextual alternates, so "3x06" is never drawn "3×06". */
+  .wf-user-text {
+    font-feature-settings: "calt" 0;
+  }
   .wf-provider-mark {
     display: block;
     flex-shrink: 0;

@@ -54,7 +54,7 @@ export function StatusPanel({
         ref={heading}
         id={`status-${stateKey}`}
         tabIndex={-1}
-        className="type-headline text-fg outline-none"
+        className="type-card-headline text-fg outline-none"
       >
         {title}
       </Heading>

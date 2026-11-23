@@ -18,9 +18,9 @@ import { type ReactNode, useId, useState } from "react";
 import { staffApi } from "../../api/client.ts";
 import { qk } from "../../api/queries.ts";
 import { ActionDialog, SHOWN_IN_FIELD } from "../../components/ActionDialog.tsx";
-import { DateTime, Money } from "../../components/primitives.tsx";
+import { DateOnly, Money } from "../../components/primitives.tsx";
 import {
-  formatDate,
+  formatDateInSentence,
   formatMoney,
   fractionDigits,
   minorToMajorText,
@@ -208,7 +208,7 @@ export function ConsentDialog({
 
 export const CONSENT_PURPOSES_LABEL: Record<ConsentPurpose, string> = {
   analytics: "Analytics",
-  personalisation: "Personalisation",
+  personalisation: "Personalization",
 };
 
 const CONSENT_PURPOSE_USE: Record<ConsentPurpose, string> = {
@@ -241,8 +241,12 @@ export function CancelDeletionDialog({
       description={
         <>
           The account is due to be erased on{" "}
-          {request.scheduledFor ? <DateTime value={request.scheduledFor} /> : "a date not set yet"}.
-          Cancelling keeps the account exactly as it is
+          {request.scheduledFor ? (
+            <DateOnly value={request.scheduledFor} inSentence />
+          ) : (
+            "a date not set yet"
+          )}
+          . Canceling keeps the account exactly as it is
           {request.email === "suppressed"
             ? ". Their address bounced or complained before, so no email can tell them: let them know another way."
             : ", and the member gets an email saying so."}{" "}
@@ -263,8 +267,8 @@ export function CancelDeletionDialog({
       }
       success={() =>
         request.email === "suppressed"
-          ? "The deletion is cancelled: the account stays. No email goes to the member (their address bounced or complained before): tell them another way."
-          : "The deletion is cancelled: the account stays, and an email tells the member so."
+          ? "The deletion is canceled: the account stays. No email goes to the member (their address bounced or complained before): tell them another way."
+          : "The deletion is canceled: the account stays, and an email tells the member so."
       }
     />
   );
@@ -405,13 +409,13 @@ export function RefundDialog({
 function membershipLine(state: MembershipState): string {
   const status = MEMBERSHIP[state.status].label;
   if (state.status === "trialing" && state.trialEndsAt) {
-    return `${status}, until ${formatDate(state.trialEndsAt)}${state.cancelAtPeriodEnd ? " (then it ends)" : ""}.`;
+    return `${status}, until ${formatDateInSentence(state.trialEndsAt)}${state.cancelAtPeriodEnd ? " (then it ends)" : ""}.`;
   }
   if (state.cancelAtPeriodEnd && state.currentPeriodEnd) {
-    return `${status}, ending on ${formatDate(state.currentPeriodEnd)}.`;
+    return `${status}, ending on ${formatDateInSentence(state.currentPeriodEnd)}.`;
   }
   if (state.currentPeriodEnd && state.status !== "canceled") {
-    return `${status}, renews on ${formatDate(state.currentPeriodEnd)}.`;
+    return `${status}, renews on ${formatDateInSentence(state.currentPeriodEnd)}.`;
   }
   return `${status}.`;
 }
@@ -478,7 +482,7 @@ export function CancelMembershipDialog({
           {canAtPeriodEnd && periodEnd ? (
             <RadioItem
               value="period_end"
-              label={`At the end of the period, on ${formatDate(periodEnd)}`}
+              label={`At the end of the period, on ${formatDateInSentence(periodEnd)}`}
               description="The member keeps watching until then; nothing is refunded."
             />
           ) : null}
@@ -553,7 +557,8 @@ export function ExtendTrialDialog({ member, ...dialog }: DialogState & { member:
       description={
         endsAt ? (
           <>
-            The trial ends on <DateTime value={endsAt} />. Nothing is charged until it ends.
+            The trial ends on <DateOnly value={endsAt} inSentence />. Nothing is charged until it
+            ends.
           </>
         ) : undefined
       }
@@ -590,7 +595,7 @@ export function ExtendTrialDialog({ member, ...dialog }: DialogState & { member:
         hint={
           newEnd ? (
             <>
-              New end: <DateTime value={newEnd} />
+              New end: <DateOnly value={newEnd} />
             </>
           ) : (
             "From 1 to 30 days."
@@ -655,7 +660,7 @@ export function ComplimentaryDialog({ member, ...dialog }: DialogState & { membe
         hint={
           until ? (
             <>
-              Nothing charged until about <DateTime value={until} />
+              Nothing charged until about <DateOnly value={until} inSentence />
             </>
           ) : (
             "From 1 to 366 days."

@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { createAccount } from "./api.ts";
+import { settled } from "./browse-support.ts";
 import { expect, test } from "./fixtures.ts";
 
 /**
@@ -39,7 +40,7 @@ test.describe("phones", () => {
     const sheet = page.getByRole("dialog", { name: "Notifications" });
     await expect(sheet).toBeVisible();
     // Proving that nothing closes it: the tap's own click must not toggle it shut.
-    await page.waitForTimeout(400);
+    await settled(sheet);
     await expect(sheet).toBeVisible();
     await expect(sheet).toHaveAttribute("data-testid", "notifications-sheet");
     const box = await sheet.boundingBox();
@@ -61,7 +62,7 @@ test.describe("phones", () => {
     release();
     const sheet = page.getByRole("dialog", { name: "Notifications" });
     await expect(sheet).toBeVisible();
-    await page.waitForTimeout(400);
+    await settled(sheet);
     await expect(sheet).toBeVisible();
   });
 
@@ -77,7 +78,7 @@ test.describe("phones", () => {
 
       await page.getByRole("button", { name: "Categories" }).tap();
       await expect(page.getByRole("menu")).toBeVisible();
-      await page.waitForTimeout(400);
+      await settled(page.getByRole("menu"));
       await expect(page.getByRole("menu")).toBeVisible();
     });
 
@@ -105,7 +106,7 @@ test.describe("tablets", () => {
     await bell.tap();
     const popover = page.getByRole("dialog", { name: "Notifications" });
     await expect(popover).toBeVisible();
-    await page.waitForTimeout(400);
+    await settled(popover);
     await expect(popover).toBeVisible();
     const box = await popover.boundingBox();
     expect(box?.width).toBeLessThan(834);
@@ -118,7 +119,7 @@ test.describe("tablets", () => {
       await page.goto("/browse");
       await page.getByRole("navigation", { name: "Primary" }).getByRole("button").tap();
       await expect(page.getByRole("menu")).toBeVisible();
-      await page.waitForTimeout(400);
+      await settled(page.getByRole("menu"));
       await expect(page.getByRole("menu")).toBeVisible();
     });
   });

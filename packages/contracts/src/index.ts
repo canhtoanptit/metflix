@@ -25,6 +25,7 @@ export * from "./error-codes.ts";
 export * from "./errors.ts";
 export * from "./events.ts";
 export * from "./experiments.ts";
+export * from "./format.ts";
 export * from "./http.ts";
 export * from "./identity.ts";
 export * from "./library.ts";

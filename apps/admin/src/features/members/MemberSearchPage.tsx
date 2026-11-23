@@ -5,11 +5,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { MemberSummary } from "@webflix/contracts";
-import { Badge, Button, Field, Input, SearchIcon } from "@webflix/ui";
+import { Badge, Button, EmailText, Field, Input, SearchIcon } from "@webflix/ui";
 import { useState } from "react";
 import { queries } from "../../api/queries.ts";
 import { type Column, DataTable } from "../../components/DataTable.tsx";
-import { DateTime, Identifier, PageHeader, StatusBadge } from "../../components/primitives.tsx";
+import { DateOnly, Identifier, PageHeader, StatusBadge } from "../../components/primitives.tsx";
 import { Empty, ErrorPanel, LoadingRows } from "../../components/states.tsx";
 import { useDocumentTitle } from "../../lib/hooks.ts";
 import { MEMBERSHIP, planName } from "../../lib/status.ts";
@@ -26,7 +26,7 @@ const columns: Column<MemberSummary>[] = [
           params={{ accountId: member.accountId }}
           className="focus-ring rounded-xs font-semibold text-fg underline-offset-4 hover:underline"
         >
-          {member.email}
+          <EmailText tone="inherit">{member.email}</EmailText>
         </Link>
         {member.isDemo ? (
           <Badge tone="info" size="sm">
@@ -62,7 +62,7 @@ const columns: Column<MemberSummary>[] = [
     id: "joined",
     header: "Joined",
     hideBelow: "md",
-    cell: (member) => <DateTime value={member.createdAt} />,
+    cell: (member) => <DateOnly value={member.createdAt} />,
   },
   {
     id: "account",

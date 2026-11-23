@@ -55,7 +55,7 @@ describe("payment copy", () => {
     expect(describePromotionFailure("exhausted")).toBe("This code has been used up.");
     expect(describePromotionFailure("not_applicable")).toMatch(/doesn't apply to this plan/);
     expect(describePromotionFailure("already_redeemed")).toMatch(/already used/);
-    expect(describePromotionFailure(undefined)).toMatch(/don't recognise/);
+    expect(describePromotionFailure(undefined)).toMatch(/don't recognize/);
   });
 
   it("states a code's effect from the server's terms", () => {

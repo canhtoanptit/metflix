@@ -8,7 +8,6 @@ import { discardPendingEvents } from "../../../app/telemetry/index.ts";
 import { AuthBackdrop } from "../shared/AuthBackdrop.tsx";
 import { MemberHeader } from "../shared/Chrome.tsx";
 import { useCountdown } from "../shared/useRetryAfter.ts";
-import { CARD_HEADING } from "./parts.tsx";
 
 const RETURN_AFTER_MS = 30_000;
 
@@ -70,7 +69,7 @@ export function LogoutPage() {
             <span className="grid size-14 place-items-center rounded-full bg-positive-subtle text-positive">
               <CheckCircleIcon size="xl" />
             </span>
-            <h1 ref={headingRef} tabIndex={-1} className={`${CARD_HEADING} outline-none`}>
+            <h1 ref={headingRef} tabIndex={-1} className="type-card-headline text-fg outline-none">
               You've signed out
             </h1>
             <p className="type-body text-fg-muted">

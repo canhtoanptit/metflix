@@ -71,7 +71,7 @@ export function TitleRow({
             id
           ) : (
             <span className="inline-flex items-center gap-1 text-warning">
-              <AlertTriangleIcon size="xs" /> Not in the catalogue
+              <AlertTriangleIcon size="xs" /> Not in the catalog
             </span>
           )}
         </span>

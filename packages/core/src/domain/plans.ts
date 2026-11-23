@@ -1,6 +1,13 @@
 import type { Plan, PlanId } from "@webflix/contracts";
 
-/** Plans are static configuration, not a table (blueprint §5). Prices are mock, in USD. */
+/**
+ * Plans are static configuration, not a table (blueprint §5). Prices are mock, in USD.
+ *
+ * `features` are shown as they are, on every plan card: quality on the one scale (HD, Full HD,
+ * 4K) and the stream limit as "screens at a time", in the words of every other screen
+ * (docs/DESIGN_SYSTEM.md "Plan wording"; a unit test holds them to `maxVideoHeight` and
+ * `maxStreams`).
+ */
 export const PLAN_CATALOG: readonly Plan[] = [
   {
     id: "basic",
@@ -9,7 +16,7 @@ export const PLAN_CATALOG: readonly Plan[] = [
     maxStreams: 1,
     maxQuality: "720p",
     maxVideoHeight: 720,
-    features: ["HD (720p)", "Watch on 1 device at a time", "Unlimited movies and series"],
+    features: ["HD video", "1 screen at a time", "Unlimited movies and series"],
     highlighted: false,
   },
   {
@@ -19,7 +26,7 @@ export const PLAN_CATALOG: readonly Plan[] = [
     maxStreams: 2,
     maxQuality: "1080p",
     maxVideoHeight: 1080,
-    features: ["Full HD (1080p)", "Watch on 2 devices at a time", "Unlimited movies and series"],
+    features: ["Full HD video", "2 screens at a time", "Unlimited movies and series"],
     highlighted: true,
   },
   {
@@ -29,11 +36,7 @@ export const PLAN_CATALOG: readonly Plan[] = [
     maxStreams: 4,
     maxQuality: "2160p",
     maxVideoHeight: 2160,
-    features: [
-      "Best available quality, up to 4K",
-      "Watch on 4 devices at a time",
-      "Unlimited movies and series",
-    ],
+    features: ["4K video", "4 screens at a time", "Unlimited movies and series"],
     highlighted: false,
   },
 ];

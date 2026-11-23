@@ -8,6 +8,8 @@
  */
 import { queryOptions } from "@tanstack/react-query";
 import type { PrivacyRequest, PrivacyRequestList, PrivacyTerms } from "@webflix/contracts";
+import { EmailText } from "@webflix/ui";
+import { createElement, Fragment, type ReactElement } from "react";
 import { api } from "../../../../app/api.ts";
 import { qk } from "../../../../app/query/keys.ts";
 
@@ -72,6 +74,16 @@ export function exportEmailLine(request: PrivacyRequest, address: string): strin
     default:
       return null;
   }
+}
+
+const ADDRESS = "\u0000";
+
+/** `exportEmailLine` for the page, the address set as user data (`EmailText`, UX review 3.7). */
+export function exportEmailNote(request: PrivacyRequest, address: string): ReactElement | null {
+  const line = exportEmailLine(request, ADDRESS);
+  if (!line) return null;
+  const [before, after] = line.split(ADDRESS);
+  return createElement(Fragment, null, before, createElement(EmailText, null, address), after);
 }
 
 /**

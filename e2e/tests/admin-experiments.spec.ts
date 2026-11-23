@@ -19,7 +19,7 @@ test("define, start (starts at, then live), stop and archive an experiment", asy
   await page.getByLabel("Key").fill("Not A Key");
   await page.getByRole("button", { name: "Save draft" }).click();
   await expect(page.getByText(/Lowercase letters, digits, dots/).first()).toBeVisible();
-  await expect(page.getByText("Give it a name people will recognise.")).toBeVisible();
+  await expect(page.getByText("Give it a name people will recognize.")).toBeVisible();
 
   await page.getByLabel("Key").fill(key);
   await page.getByLabel("Name", { exact: true }).fill("Console journey");

@@ -89,7 +89,7 @@ describe("the sign-in landing", () => {
       "/login/continue?provider=google&context=signin&from=%2Flogin&redirect=%2Faccount&oidc=cancelled",
       "anonymous",
     );
-    const notice = await screen.findByText("Google sign-in cancelled");
+    const notice = await screen.findByText("Google sign-in canceled");
     await waitFor(() => expect(locationOf(router)).toBe("/login?redirect=%2Faccount"));
     expect(notice.closest("[role=status]")).toHaveFocus();
     await expectNoA11yViolations(container);
@@ -177,10 +177,11 @@ describe("Confirm it's you", () => {
         },
       }),
     });
-    const form = await screen.findByRole("form", { name: "Set a password" });
-    await user.type(within(form).getByLabelText("New password"), "a long new passphrase");
-    await user.click(within(form).getByRole("button", { name: "Set password" }));
+    // Confirm it's you comes before the new password's field.
+    const section = await screen.findByRole("region", { name: "Password" });
+    await user.click(within(section).getByRole("button", { name: "Set a password" }));
     const prompt = await screen.findByRole("dialog", { name: "Confirm it's you" });
+    expect(within(section).queryByLabelText("New password")).not.toBeInTheDocument();
     expect(await within(prompt).findByText("Set a password to continue")).toBeInTheDocument();
     expect(prompt).toHaveTextContent("signs you out on every device, this one too");
     await expectNoA11yViolations(container);
@@ -189,18 +190,43 @@ describe("Confirm it's you", () => {
     expect(reset).toHaveBeenCalledWith("demo@webflix.dev");
   });
 
+  it("asks to confirm it's you before a new email address is typed", async () => {
+    const user = userEvent.setup();
+    renderIdentity("/account/security", "profile", {
+      identity: { hasPassword: false, identities: linkedGoogle() },
+    });
+    const section = await screen.findByRole("region", { name: "Email" });
+    const open = within(section).getByRole("button", { name: "Change email" });
+    await user.click(open);
+    expect(await screen.findByRole("dialog", { name: "Confirm it's you" })).toHaveTextContent(
+      "To change your email",
+    );
+    expect(within(section).queryByLabelText("New email address")).not.toBeInTheDocument();
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Confirm it's you" })).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByRole("form", { name: "Change email" })).not.toBeInTheDocument();
+    await waitFor(() => expect(open).toHaveFocus());
+  });
+
   it("dismissed, it changes nothing and reports nothing", async () => {
     const user = userEvent.setup();
     renderIdentity("/account/security", "profile", {
       identity: { hasPassword: false, identities: linkedGoogle() },
     });
-    const form = await screen.findByRole("form", { name: "Set a password" });
-    await user.type(within(form).getByLabelText("New password"), "a long new passphrase");
-    await user.click(within(form).getByRole("button", { name: "Set password" }));
+    const section = await screen.findByRole("region", { name: "Password" });
+    const open = within(section).getByRole("button", { name: "Set a password" });
+    await user.click(open);
     const prompt = await screen.findByRole("dialog", { name: "Confirm it's you" });
     await user.click(within(prompt).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(within(form).queryByRole("alert")).not.toBeInTheDocument();
+    // Nothing offered, nothing reported, and focus back on the button.
+    expect(screen.queryByRole("form", { name: "Set a password" })).not.toBeInTheDocument();
+    expect(within(section).queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(open).toHaveFocus());
   });
 });
 

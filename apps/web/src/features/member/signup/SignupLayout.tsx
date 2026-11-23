@@ -41,13 +41,13 @@ export function SignupLayout() {
             <nav aria-label="Your account" className="flex items-center gap-5">
               <Link
                 to="/account"
-                className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+                className="focus-ring inline-flex min-h-6 items-center rounded-sm type-label text-fg-muted hover:text-fg"
               >
                 Account
               </Link>
               <Link
                 to="/logout"
-                className="focus-ring rounded-sm type-label text-fg-muted hover:text-fg"
+                className="focus-ring inline-flex min-h-6 items-center rounded-sm type-label text-fg-muted hover:text-fg"
               >
                 Sign out
               </Link>
@@ -56,7 +56,7 @@ export function SignupLayout() {
             <Link
               to="/login"
               search={{}}
-              className="focus-ring rounded-sm type-label text-fg hover:underline"
+              className="focus-ring inline-flex min-h-6 items-center rounded-sm type-label text-fg hover:underline"
             >
               Sign in
             </Link>
@@ -109,7 +109,12 @@ export function StepHeading({
       <p className="type-overline text-fg-subtle">
         Step {step} of {SIGNUP_STEPS.length}
       </p>
-      <h1 ref={ref} tabIndex={-1} className="type-headline text-fg outline-none">
+      <h1
+        ref={ref}
+        tabIndex={-1}
+        // A narrow step is a card on wide windows: its heading keeps a phone's size (UX 3.6).
+        className={cx(wide ? "type-headline" : "type-card-headline", "text-fg outline-none")}
+      >
         {title}
       </h1>
       {description ? <div className="type-body-lg text-fg-muted">{description}</div> : null}

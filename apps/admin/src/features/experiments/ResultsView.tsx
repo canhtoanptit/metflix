@@ -68,7 +68,7 @@ export function ResultsView({ results }: { results: ExperimentResults }) {
     return (
       <p className="type-body-sm text-fg-muted">
         No analysis yet. The analysis job publishes results after it runs (daily); an experiment
-        needs exposures before there is anything to analyse.
+        needs exposures before there is anything to analyze.
       </p>
     );
   }
@@ -117,7 +117,9 @@ export function ResultsView({ results }: { results: ExperimentResults }) {
           <h3 className="type-caption text-fg-muted">Units per variant</h3>
           <p className="type-body-sm text-fg">
             {Object.entries(units)
-              .map(([variant, count]) => `${variant}: ${num(count)?.toLocaleString() ?? "—"}`)
+              .map(
+                ([variant, count]) => `${variant}: ${num(count)?.toLocaleString("en-US") ?? "—"}`,
+              )
               .join(" · ")}
           </p>
           {srm ? (
@@ -209,7 +211,7 @@ function MetricTable({
                     {variant}
                   </th>
                   <td className="px-3 py-2 tabular-nums">
-                    {num(values.units)?.toLocaleString() ?? "—"}
+                    {num(values.units)?.toLocaleString("en-US") ?? "—"}
                   </td>
                   <td className="px-3 py-2 tabular-nums whitespace-nowrap">
                     {fixed(num(values.mean))}{" "}

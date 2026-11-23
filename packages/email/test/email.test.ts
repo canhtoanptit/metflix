@@ -21,17 +21,23 @@ const SAMPLES: { [T in keyof EmailTemplateData]: EmailTemplateData[T] } = {
   "verify-email": { link: "https://webflix.test/verify-email#token=abc", expiresAt: AT },
   "reset-password": { link: "https://webflix.test/reset-password#token=abc", expiresAt: AT },
   welcome: { signInMethod: "Google" },
-  receipt: { planName: "Standard", amount: "$15.49", paidAt: AT, periodEnd: AT, invoiceUrl: null },
+  receipt: {
+    planName: "Standard",
+    amount: { amountMinor: 1549, currency: "USD" },
+    paidAt: AT,
+    periodEnd: AT,
+    invoiceUrl: null,
+  },
   "payment-failed": {
     planName: "Basic",
-    amount: "$7.99",
+    amount: { amountMinor: 799, currency: "USD" },
     retryAt: AT,
     updateUrl: "https://webflix.test/account",
   },
   "trial-ending": {
     planName: "Premium",
     trialEndsAt: AT,
-    amount: "$22.99",
+    amount: { amountMinor: 2299, currency: "USD" },
     manageUrl: "https://webflix.test/account",
   },
   "plan-changed": { fromPlan: "Basic", toPlan: "Premium", effectiveAt: AT },
@@ -58,7 +64,8 @@ describe("the account deletion emails", () => {
       keepUrl: "https://webflix.test/account/privacy",
     });
     expect(scheduled.subject).toBe("Your Webflix account will be deleted");
-    expect(scheduled.text).toContain("22 November 2026, 14:05 UTC");
+    // A day in the member app's words (the time does not matter for a deletion date).
+    expect(scheduled.text).toContain("November 22, 2026");
     expect(scheduled.text).toContain("Keep my account");
     expect(emailLinks(scheduled)).toEqual(["https://webflix.test/account/privacy"]);
     // Never the cancellation email's promise: access ends at the erasure, no restart.
@@ -101,7 +108,8 @@ describe("templates", () => {
       expiresAt: AT,
     });
     expect(emailLinks(reset)).toEqual(["https://webflix.test/reset-password#token=t0k"]);
-    expect(reset.text).toContain("22 November 2026, 14:05 UTC");
+    // Where the time matters (a link that expires within the hour), in UTC and said so.
+    expect(reset.text).toContain("November 22, 2026 at 2:05 PM UTC");
   });
 
   it("refuse a link that is not http(s)", () => {
@@ -249,5 +257,60 @@ describe("Resend webhooks (Svix signatures)", () => {
     ];
     for (const attempt of attempts)
       await expect(attempt()).rejects.toBeInstanceOf(EmailWebhookError);
+  });
+});
+
+describe("dates and amounts", () => {
+  it("say amounts as the member app does, in the subject too", () => {
+    const receipt = renderEmail("receipt", {
+      planName: "Standard",
+      amount: { amountMinor: 1299, currency: "USD" },
+      paidAt: AT,
+      periodEnd: "2026-12-22T14:05:00.000Z",
+      invoiceUrl: null,
+    });
+    expect(receipt.subject).toBe("Your Webflix receipt: $12.99");
+    expect(receipt.text).toContain(
+      "We received $12.99 for your Standard plan on November 22, 2026.",
+    );
+    expect(receipt.text).toContain("paid until December 22, 2026.");
+    expect(receipt.text).not.toMatch(/USD|UTC/);
+    const trial = renderEmail("trial-ending", {
+      planName: "Premium",
+      trialEndsAt: AT,
+      amount: { amountMinor: 1899, currency: "USD" },
+      manageUrl: "https://webflix.test/account",
+    });
+    expect(trial.text).toContain(
+      "After that you will be charged $18.99 a month unless you cancel.",
+    );
+    // A currency without minor units keeps none.
+    const yen = renderEmail("payment-failed", {
+      planName: "Basic",
+      amount: { amountMinor: 1200, currency: "JPY" },
+      retryAt: null,
+      updateUrl: "https://webflix.test/account",
+    });
+    expect(yen.text).toContain("We could not collect ¥1,200 for your Basic plan.");
+  });
+
+  it("say what they can when the amount isn't known", () => {
+    const failed = renderEmail("payment-failed", {
+      planName: "Basic",
+      amount: null,
+      retryAt: null,
+      updateUrl: "https://webflix.test/account",
+    });
+    expect(failed.text).toContain("We could not collect the payment for your Basic plan.");
+  });
+
+  it("use US spelling", () => {
+    const canceled = renderEmail("cancellation", {
+      planName: "Basic",
+      accessUntil: AT,
+      restartUrl: "https://webflix.test/account",
+    });
+    expect(canceled.subject).toBe("Your Webflix membership is canceled");
+    expect(canceled.text).not.toMatch(/cancelled/);
   });
 });

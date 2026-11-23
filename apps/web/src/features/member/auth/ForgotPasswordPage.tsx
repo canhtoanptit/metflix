@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { ApiError, PASSWORD_RESET_TTL_SEC } from "@webflix/contracts";
-import { Button, MailIcon, TextField, useCanHover } from "@webflix/ui";
+import { Button, EmailText, MailIcon, TextField, useCanHover } from "@webflix/ui";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../../../app/api.ts";
 import { describeError } from "../../../app/query/errors.ts";
@@ -15,7 +15,6 @@ import { useCountdown, useRetryAfter } from "../shared/useRetryAfter.ts";
 import { normalizeEmail, validateEmail } from "../shared/validation.ts";
 import { pendingLinkIntent } from "./linkIntent.ts";
 import { providerName } from "./oidc.ts";
-import { CARD_HEADING, EmailText } from "./parts.tsx";
 
 const route = getRouteApi("/public/forgot-password");
 
@@ -88,7 +87,7 @@ export function ForgotPasswordPage() {
                 id="sent-heading"
                 ref={sentRef}
                 tabIndex={-1}
-                className={`${CARD_HEADING} outline-none`}
+                className="type-card-headline text-fg outline-none"
               >
                 Check your email
               </h1>
@@ -144,7 +143,7 @@ export function ForgotPasswordPage() {
               aria-labelledby="forgot-heading"
               className="flex flex-col gap-4"
             >
-              <h1 id="forgot-heading" className={`${CARD_HEADING} mb-1`}>
+              <h1 id="forgot-heading" className="type-card-headline mb-1 text-fg">
                 Reset your password
               </h1>
               <p className="type-body text-fg-muted">

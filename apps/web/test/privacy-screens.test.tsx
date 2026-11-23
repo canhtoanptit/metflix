@@ -94,7 +94,7 @@ describe("the consent prompt", () => {
     );
     await userEvent.click(within(prompt).getByRole("button", { name: "Choose for each use" }));
     const personalisation = within(prompt).getByRole("switch", {
-      name: "Personalised recommendations",
+      name: "Personalized recommendations",
     });
     const analytics = within(prompt).getByRole("switch", { name: "Improving Webflix" });
     expect(personalisation).toHaveAttribute("aria-checked", "false");
@@ -107,7 +107,7 @@ describe("the consent prompt", () => {
     );
     await userEvent.click(within(prompt).getByRole("button", { name: "Choose for each use" }));
     await userEvent.click(
-      within(prompt).getByRole("switch", { name: "Personalised recommendations" }),
+      within(prompt).getByRole("switch", { name: "Personalized recommendations" }),
     );
     await userEvent.click(within(prompt).getByRole("button", { name: "Save choices" }));
     await waitFor(() => expect(updates).toHaveLength(2));
@@ -207,7 +207,7 @@ describe("Account › Privacy", () => {
     resetMockPrivacy("opt-out");
     const { container } = renderAt("/account/privacy", signedInAs("profile-mara"));
     const personalisation = await screen.findByRole("switch", {
-      name: "Personalised recommendations",
+      name: "Personalized recommendations",
     });
     expect(personalisation).toHaveAttribute("aria-checked", "true");
     expect(screen.getAllByText("On by default. Turn it off any time.")).toHaveLength(2);

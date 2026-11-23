@@ -274,7 +274,7 @@ test("promo codes: an unknown one is refused with its reason; a valid one is quo
   await expect(code).toBeFocused();
   await code.fill("NOSUCHCODE");
   await page.getByRole("button", { name: "Apply" }).click();
-  await expect(code).toHaveAccessibleDescription(/don't recognise this code/);
+  await expect(code).toHaveAccessibleDescription(/don't recognize this code/);
   await expect(code).toBeFocused();
   await code.fill("WEBFLIX50");
   await page.getByRole("button", { name: "Apply" }).click();
@@ -405,5 +405,5 @@ test("an account whose deletion is scheduled is told so at the payment step, not
   await page.goto("/signup/payment?plan=standard");
   await expect(page.getByText(/Your account is scheduled to be deleted on/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue to payment" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Go to Privacy" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Go to Account › Privacy" })).toBeVisible();
 });

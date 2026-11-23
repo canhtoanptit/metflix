@@ -86,26 +86,28 @@ test("A Google-only member sets a first password, confirming with a fresh Google
   await expect(methods.getByText("Your only way to sign in")).toBeVisible();
   await expect(methods.getByRole("button", { name: "Unlink Google" })).toHaveCount(0);
 
-  const form = page.getByRole("form", { name: "Set a password" });
-  await form.getByLabel("New password").fill("a first long passphrase");
-  await form.getByRole("button", { name: "Set password" }).click();
+  // Confirm it's you comes first: the new password is typed only once that is done, so the
+  // round trip to Google never throws away what the member typed.
+  const section = page.getByRole("region", { name: "Password", exact: true });
+  await section.getByRole("button", { name: "Set a password" }).click();
   const prompt = page.getByRole("dialog", { name: "Confirm it's you" });
   await expect(prompt).toContainText("To set a password");
+  await expect(section.getByLabel("New password")).toHaveCount(0);
   // No password to offer: a fresh sign-in with Google is the proof.
   await expect(prompt.getByLabel("Webflix password")).toHaveCount(0);
   await expectAccessible(page);
   await prompt.getByRole("link", { name: "Continue with Google" }).click();
   await answerIssuer(page, { email });
 
-  // Back here, confirmed; what was typed is gone, so the form asks for it again.
+  // Back here, confirmed: the field is offered now, with focus, and typed once.
   await expect(page.getByText("Confirmed it's you", { exact: true }).first()).toBeVisible();
-  await expect(form.getByText("You're confirmed")).toBeVisible();
+  const form = page.getByRole("form", { name: "Set a password" });
   await expect(form.getByLabel("New password")).toBeFocused();
   await form.getByLabel("New password").fill("a first long passphrase");
   await form.getByRole("button", { name: "Set password" }).click();
   await expect(page.getByText("Password set", { exact: true }).first()).toBeVisible();
   await expect(methods).toContainText(`Signs in as ${email}`);
-  await expect(page.getByRole("form", { name: "Change password" })).toBeVisible();
+  await expect(section.getByRole("button", { name: "Change password" })).toBeFocused();
 
   const login = await page.context().request.post("/api/v1/auth/login", {
     headers: { "X-Webflix-Client": "web", "content-type": "application/json" },

@@ -14,6 +14,7 @@ import {
   Badge,
   Button,
   ConfirmDialog,
+  EmailText,
   ErrorState,
   KeyIcon,
   MailIcon,
@@ -40,12 +41,10 @@ import {
   providerName,
   withParams,
 } from "../auth/oidc.ts";
-import { EmailText } from "../auth/parts.tsx";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../shared/FormAlert.tsx";
 import { formatCountdown, formatShortDate } from "../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../shared/privileges.ts";
-import { useFocusAfterBusy } from "../shared/useFocusAfterBusy.ts";
 import { useRetryAfter } from "../shared/useRetryAfter.ts";
 import { normalizeEmail, validateEmail, validateNewPassword } from "../shared/validation.ts";
 import { AccountHeading, AccountSection } from "./AccountLayout.tsx";
@@ -64,7 +63,7 @@ export function AccountSecurityPage() {
   const demo = useIsDemoAccount();
   const session = useAuthenticatedSession();
   const identities = useQuery(queries.identities());
-  const passwordRef = useRef<HTMLInputElement>(null);
+  const startPassword = useRef<(() => void) | null>(null);
   const hasPassword = identities.data?.hasPassword ?? session.account.hasPassword ?? true;
   return (
     <>
@@ -81,15 +80,12 @@ export function AccountSecurityPage() {
         demo={demo}
         hasPassword={hasPassword}
         identities={identities}
-        onPasswordAction={() => {
-          passwordRef.current?.scrollIntoView({ block: "center" });
-          passwordRef.current?.focus({ preventScroll: true });
-        }}
+        onPasswordAction={() => startPassword.current?.()}
       />
       {demo ? null : (
         <>
           <EmailSection hasPassword={hasPassword} />
-          <PasswordSection hasPassword={hasPassword} fieldRef={passwordRef} />
+          <PasswordSection hasPassword={hasPassword} startRef={startPassword} />
         </>
       )}
     </>
@@ -161,7 +157,7 @@ function SignInMethods({
           title="We couldn't load your sign-in methods"
           description={describeError(identities.error).description}
           action={
-            <Button variant="primary" onClick={() => void identities.refetch()}>
+            <Button variant="accent" onClick={() => void identities.refetch()}>
               Try again
             </Button>
           }
@@ -322,7 +318,8 @@ function ProviderRow({
     onSuccess: () => {
       justUnlinked.current = true;
       toast.success(`${name} is unlinked`, {
-        description: `You can't sign in with ${name} any more. Link it again here whenever you like.`,
+        id: "sign-in-methods",
+        description: `You can't sign in with ${name} anymore. Link it again here whenever you like.`,
       });
     },
     onError: (error) => {
@@ -419,9 +416,9 @@ function ProviderRow({
         title={`Unlink ${name}?`}
         description={
           <>
-            You won't be able to sign in with {name} any more. It won't reconnect on its own, even
-            if it uses the same email address as your account: to use it again, link it here.
-            Devices that are signed in now stay signed in.
+            You won't be able to sign in with {name} anymore. It won't reconnect on its own, even if
+            it uses the same email address as your account: to use it again, link it here. Devices
+            that are signed in now stay signed in.
           </>
         }
         confirmLabel={`Unlink ${name}`}
@@ -481,7 +478,7 @@ function LinkOutcome({
   }
   if (outcome === "cancelled") {
     return (
-      <FormAlert ref={ref} tone="info" title={`Linking ${name} was cancelled`}>
+      <FormAlert ref={ref} tone="info" title={`Linking ${name} was canceled`}>
         Nothing changed.
       </FormAlert>
     );
@@ -560,33 +557,67 @@ function RateOrError({ error, limited }: { error: unknown; limited: boolean }) {
   return <FormAlert title={described.title}>{described.description}</FormAlert>;
 }
 
+/**
+ * "Confirm it's you" first, then the field: changing the email or the password offers its field
+ * only once the member is confirmed, so a round trip to a provider never throws away what they
+ * typed (nothing is typed before it). The proof lasts five minutes; should it run out before the
+ * form is sent, the request asks again.
+ */
+function useConfirmFirst(options: { id: string; purpose: string }) {
+  const [offered, setOffered] = useState(false);
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const fieldRef = useRef<HTMLInputElement>(null);
+  const openRef = useRef<HTMLButtonElement>(null);
+  // Where focus goes once the section has re-rendered: the field shown, or the button back.
+  const [focus, setFocus] = useState<"field" | "open" | null>(null);
+  useEffect(() => {
+    if (!focus) return;
+    (focus === "field" ? fieldRef : openRef).current?.focus();
+    setFocus(null);
+  }, [focus]);
+  const reveal = () => {
+    setOffered(true);
+    setFocus("field");
+  };
+  // Back from confirming at a provider: nothing was typed yet, so nothing was lost.
+  const proof = useConfirmIdentity({ ...options, onResume: reveal });
+  return {
+    offered,
+    sectionRef,
+    fieldRef,
+    openRef,
+    proof,
+    start: async () => {
+      sectionRef.current?.scrollIntoView({ block: "center" });
+      if (await proof.confirm()) reveal();
+    },
+    close: () => {
+      setOffered(false);
+      setFocus("open");
+    },
+  };
+}
+
 function EmailSection({ hasPassword }: { hasPassword: boolean }) {
   const session = useAuthenticatedSession();
   const verified = session.account.emailVerified;
   const [email, setEmail] = useState("");
   const [checked, setChecked] = useState(false);
-  const emailRef = useRef<HTMLInputElement>(null);
-  const [resumed, setResumed] = useState(false);
-  // One way to prove it is the account holder everywhere (UX review 3.3): "Confirm it's you".
-  const proof = useConfirmIdentity({
-    id: "change-email",
-    purpose: "change your email",
-    // Back from confirming at a provider: what was typed is gone; ask for it again, here.
-    onResume: () => {
-      setResumed(true);
-      emailRef.current?.focus();
-    },
-  });
+  // One way to prove it is the account holder everywhere (UX review 3.3), and it comes first.
+  const flow = useConfirmFirst({ id: "change-email", purpose: "change your email" });
   const { mutation, rate } = useUpdateAccount((details) => {
     toast.success("Email updated", {
+      id: "account-email",
       description: `We sent a link to ${details.account.email} to verify it.`,
     });
+    close();
+  });
+  const close = () => {
     setEmail("");
     setChecked(false);
-  });
-
-  const submitRef = useRef<HTMLButtonElement>(null);
-  useFocusAfterBusy(mutation.isPending, submitRef);
+    mutation.reset();
+    flow.close();
+  };
   const same = normalizeEmail(email) === session.account.email;
   const emailError = ApiError.is(mutation.error, "email_already_registered")
     ? "Another account already uses this email."
@@ -598,8 +629,8 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
     event.preventDefault();
     setChecked(true);
     if (mutation.isPending || rate.limited) return;
-    if (validateEmail(email) || same) return emailRef.current?.focus();
-    mutation.mutate({ body: { email: normalizeEmail(email) }, run: proof.run });
+    if (validateEmail(email) || same) return flow.fieldRef.current?.focus();
+    mutation.mutate({ body: { email: normalizeEmail(email) }, run: flow.proof.run });
   };
 
   const other =
@@ -634,46 +665,62 @@ function EmailSection({ hasPassword }: { hasPassword: boolean }) {
       }
     >
       {verified === false ? <VerifyReminder email={session.account.email} /> : null}
-      <form onSubmit={submit} noValidate className="flex flex-col gap-4" aria-label="Change email">
-        {resumed && !mutation.isSuccess ? (
-          <FormAlert tone="positive" title="You're confirmed">
-            Enter the new email address again to change it.
-          </FormAlert>
-        ) : null}
-        <RateOrError error={other} limited={rate.limited} />
-        <TextField
-          ref={emailRef}
-          label="New email address"
-          type="email"
-          name="email"
-          autoComplete="email"
-          inputMode="email"
-          autoCapitalize="none"
-          spellCheck={false}
-          value={email}
-          onChange={(event) => {
-            setEmail(event.target.value);
-            if (ApiError.is(mutation.error, "email_already_registered")) mutation.reset();
-          }}
-          error={emailError}
-        />
-        <p className="type-body-sm text-fg-subtle">
-          You'll be asked to confirm it's you. We'll email the new address a link to verify it, and
-          let your current address know.
-        </p>
-        <div>
-          <Button
-            ref={submitRef}
-            type="submit"
-            variant="accent"
-            loading={mutation.isPending}
-            disabled={rate.limited}
+      <div ref={flow.sectionRef} className="flex flex-col gap-4">
+        {flow.offered ? (
+          <form
+            onSubmit={submit}
+            noValidate
+            className="flex flex-col gap-4"
+            aria-label="Change email"
           >
-            {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Update email"}
-          </Button>
-        </div>
-      </form>
-      {proof.prompt}
+            <RateOrError error={other} limited={rate.limited} />
+            <TextField
+              ref={flow.fieldRef}
+              label="New email address"
+              type="email"
+              name="email"
+              autoComplete="email"
+              inputMode="email"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                if (ApiError.is(mutation.error, "email_already_registered")) mutation.reset();
+              }}
+              error={emailError}
+            />
+            <p className="type-body-sm text-fg-subtle">
+              We'll email the new address a link to verify it, and let your current address know.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="submit"
+                variant="accent"
+                loading={mutation.isPending}
+                disabled={rate.limited}
+              >
+                {rate.limited ? `Try again in ${formatCountdown(rate.waiting)}` : "Update email"}
+              </Button>
+              <Button variant="outline" onClick={close} disabled={mutation.isPending}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <p className="type-body-sm text-fg-subtle">
+              You'll be asked to confirm it's you first, then to type the new address.
+            </p>
+            <div>
+              <Button ref={flow.openRef} variant="outline" onClick={() => void flow.start()}>
+                Change email
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+      {flow.proof.prompt}
     </AccountSection>
   );
 }
@@ -730,47 +777,47 @@ function VerifyReminder({ email }: { email: string }) {
 /**
  * Set a first password (an account made with Google or Apple) or change it. Either way the proof
  * is "Confirm it's you" (the password itself, or a fresh sign-in at a provider), as for every
- * other change here, and only the new password is typed. One component for both, so focus stays
- * on the button when a first password turns the section into "Change" (UX review 2.7).
+ * other change here, and it comes first (`useConfirmFirst`). One component for both, so focus
+ * stays in the section when a first password turns it into "Change" (UX review 2.7).
  */
 function PasswordSection({
   hasPassword,
-  fieldRef,
+  startRef,
 }: {
   hasPassword: boolean;
-  fieldRef: RefObject<HTMLInputElement | null>;
+  /** Filled with `start` for the "Ways to sign in" row's button. */
+  startRef: RefObject<(() => void) | null>;
 }) {
   const session = useAuthenticatedSession();
   const [next, setNext] = useState("");
   const [checked, setChecked] = useState(false);
-  const [resumed, setResumed] = useState(false);
-  const proof = useConfirmIdentity({
+  const flow = useConfirmFirst({
     id: hasPassword ? "change-password" : "set-password",
     purpose: hasPassword ? "change your password" : "set a password",
-    onResume: () => {
-      setResumed(true);
-      fieldRef.current?.focus();
-    },
   });
+  startRef.current = () => void flow.start();
   const { mutation, rate } = useUpdateAccount(() => {
     toast.success(hasPassword ? "Password changed" : "Password set", {
+      id: "account-password",
       description: hasPassword
-        ? "Other devices have been signed out. This one stays signed in."
-        : `You can also sign in with ${session.account.email} and your password now. Other devices were signed out.`,
+        ? "You're signed in here, and signed out everywhere else."
+        : `You can also sign in with ${session.account.email} and your password now. You're signed out everywhere else.`,
     });
+    close();
+  });
+  const close = () => {
     setNext("");
     setChecked(false);
-    setResumed(false);
-  });
-  const submitRef = useRef<HTMLButtonElement>(null);
-  useFocusAfterBusy(mutation.isPending, submitRef);
+    mutation.reset();
+    flow.close();
+  };
   const nextError = checked ? validateNewPassword(next) : null;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setChecked(true);
     if (mutation.isPending || rate.limited) return;
-    if (validateNewPassword(next)) return fieldRef.current?.focus();
-    mutation.mutate({ body: { newPassword: next }, run: proof.run });
+    if (validateNewPassword(next)) return flow.fieldRef.current?.focus();
+    mutation.mutate({ body: { newPassword: next }, run: flow.proof.run });
   };
   return (
     <AccountSection
@@ -787,57 +834,65 @@ function PasswordSection({
         )
       }
     >
-      <form
-        onSubmit={submit}
-        noValidate
-        className="flex flex-col gap-4"
-        aria-label={hasPassword ? "Change password" : "Set a password"}
-      >
-        {resumed && !mutation.isSuccess ? (
-          <FormAlert tone="positive" title="You're confirmed">
-            Enter your new password again to {hasPassword ? "change" : "set"} it.
-          </FormAlert>
-        ) : null}
-        <RateOrError error={mutation.error} limited={rate.limited} />
-        {/* Lets password managers attach the new password to the right account. */}
-        <input
-          type="hidden"
-          name="username"
-          autoComplete="username"
-          value={session.account.email}
-          readOnly
-        />
-        <PasswordField
-          ref={fieldRef}
-          label="New password"
-          name="new-password"
-          autoComplete="new-password"
-          value={next}
-          onChange={(event) => setNext(event.target.value)}
-          error={nextError}
-          hint={
-            hasPassword
-              ? "At least 8 characters. You'll be asked to confirm it's you."
-              : "At least 8 characters."
-          }
-        />
-        <div>
-          <Button
-            ref={submitRef}
-            type="submit"
-            variant="accent"
-            loading={mutation.isPending}
-            disabled={rate.limited}
+      <div ref={flow.sectionRef} className="flex flex-col gap-4">
+        {flow.offered ? (
+          <form
+            onSubmit={submit}
+            noValidate
+            className="flex flex-col gap-4"
+            aria-label={hasPassword ? "Change password" : "Set a password"}
           >
-            {rate.limited
-              ? `Try again in ${formatCountdown(rate.waiting)}`
-              : hasPassword
-                ? "Change password"
-                : "Set password"}
-          </Button>
-        </div>
-      </form>
-      {proof.prompt}
+            <RateOrError error={mutation.error} limited={rate.limited} />
+            {/* Lets password managers attach the new password to the right account. */}
+            <input
+              type="hidden"
+              name="username"
+              autoComplete="username"
+              value={session.account.email}
+              readOnly
+            />
+            <PasswordField
+              ref={flow.fieldRef}
+              label="New password"
+              name="new-password"
+              autoComplete="new-password"
+              value={next}
+              onChange={(event) => setNext(event.target.value)}
+              error={nextError}
+              hint="At least 8 characters."
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="submit"
+                variant="accent"
+                loading={mutation.isPending}
+                disabled={rate.limited}
+              >
+                {rate.limited
+                  ? `Try again in ${formatCountdown(rate.waiting)}`
+                  : hasPassword
+                    ? "Change password"
+                    : "Set password"}
+              </Button>
+              <Button variant="outline" onClick={close} disabled={mutation.isPending}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <p className="type-body-sm text-fg-subtle">
+              You'll be asked to confirm it's you first, then to type the new password.
+            </p>
+            <div>
+              <Button ref={flow.openRef} variant="outline" onClick={() => void flow.start()}>
+                {hasPassword ? "Change password" : "Set a password"}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+      {flow.proof.prompt}
     </AccountSection>
   );
 }

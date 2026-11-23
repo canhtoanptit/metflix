@@ -101,7 +101,7 @@ export function CheckoutPayment({
         reference={describeError(error).reference}
         action={
           <Button
-            variant="primary"
+            variant="accent"
             onClick={() => {
               void config.refetch();
               void plans.refetch();
@@ -122,7 +122,7 @@ export function CheckoutPayment({
         description={described.description}
         reference={described.reference}
         action={
-          <Button variant="primary" onClick={checkout.retry}>
+          <Button variant="accent" onClick={checkout.retry}>
             Try again
           </Button>
         }

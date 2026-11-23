@@ -49,7 +49,7 @@ export function RouteErrorPage({ error, reset }: ErrorComponentProps) {
         action={
           <>
             <Button
-              variant="primary"
+              variant="accent"
               onClick={() => {
                 queryReset.reset();
                 reset();
@@ -79,7 +79,7 @@ export function NotFoundPage() {
         <p className="type-body-lg text-fg-muted">
           Sorry, we can't find that page. You'll find lots to explore on the home page.
         </p>
-        <Button variant="primary" size="lg" className="mt-4" asChild>
+        <Button variant="accent" size="lg" className="mt-4" asChild>
           <Link to="/">Webflix home</Link>
         </Button>
       </div>

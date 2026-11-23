@@ -589,7 +589,7 @@ describe("what identity offers the events area's privacy jobs", () => {
     expect(message?.text).toContain(
       "http://localhost:5173/api/v1/privacy/exports/req-1?token=abc.def",
     );
-    expect(message?.text).toContain("22 June 2026, 12:00 UTC");
+    expect(message?.text).toContain("June 22, 2026");
 
     await t.deps.repos.identity.suppress({
       address: "gone@example.com",

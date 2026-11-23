@@ -11,6 +11,7 @@ import { Button, ErrorState, Skeleton, Switch, toast } from "@webflix/ui";
 import { useState } from "react";
 import { describeError } from "../../../../app/query/errors.ts";
 import {
+  CONSENT_TOAST_ID,
   KEPT_REGARDLESS,
   PURPOSE_COPY,
   PURPOSE_ORDER,
@@ -24,7 +25,7 @@ import {
   useConsent,
 } from "../../../../app/telemetry/index.ts";
 import { FormAlert } from "../../shared/FormAlert.tsx";
-import { formatShortDate } from "../../shared/format.ts";
+import { formatLongDate } from "../../shared/format.ts";
 import { describeMemberError } from "../../shared/privileges.ts";
 import { AccountSection } from "../AccountLayout.tsx";
 import { formatRetention, privacyRequestsQuery } from "./requests.ts";
@@ -60,7 +61,7 @@ export function ConsentSection() {
           title="We couldn't load your choices"
           description={`${describeError(consent.error).description} Until then, nothing is recorded in this browser.`}
           action={
-            <Button variant="primary" onClick={() => void consent.refetch()}>
+            <Button variant="accent" onClick={() => void consent.refetch()}>
               Try again
             </Button>
           }
@@ -100,13 +101,13 @@ function ConsentChoices({ consent }: { consent: ConsentState }) {
     setAsked((current) => ({ ...current, [purpose]: granted }));
     try {
       await answer({ [purpose]: granted }, "settings");
-      toast.success(`${PURPOSE_COPY[purpose].label} turned ${granted ? "on" : "off"}`);
+      toast.success(`${PURPOSE_COPY[purpose].label} turned ${granted ? "on" : "off"}`, {
+        id: CONSENT_TOAST_ID,
+      });
     } catch (error) {
       toast.error(
         `Couldn't turn ${PURPOSE_COPY[purpose].label.toLowerCase()} ${granted ? "on" : "off"}`,
-        {
-          description: describeMemberError(error).description,
-        },
+        { id: CONSENT_TOAST_ID, description: describeMemberError(error).description },
       );
     } finally {
       setAsked(({ [purpose]: _done, ...rest }) => rest);
@@ -163,7 +164,7 @@ function describeSource(
   source: ConsentState["purposes"]["analytics"]["source"],
   updatedAt: string | null,
 ): string {
-  const on = updatedAt ? ` on ${formatShortDate(updatedAt)}` : "";
+  const on = updatedAt ? ` on ${formatLongDate(updatedAt)}` : "";
   switch (source) {
     case "banner":
     case "settings":

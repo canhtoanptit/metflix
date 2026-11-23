@@ -12,11 +12,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import type { Invoice, MemberDetail } from "@webflix/contracts";
-import { ApiError } from "@webflix/contracts";
+import { ApiError, videoQualityForHeight, videoQualityLabel } from "@webflix/contracts";
 import {
   Badge,
   Button,
   ChevronLeftIcon,
+  EmailText,
   EyeIcon,
   InfoIcon,
   KeyIcon,
@@ -31,6 +32,7 @@ import { useStaff } from "../../access/staff.tsx";
 import { qk, queries } from "../../api/queries.ts";
 import { type Column, DataTable } from "../../components/DataTable.tsx";
 import {
+  DateOnly,
   DateTime,
   Identifier,
   KeyValueList,
@@ -152,7 +154,7 @@ function MemberView({
     <>
       <BackToSearch />
       <PageHeader
-        title={account.email}
+        title={<EmailText tone="inherit">{account.email}</EmailText>}
         eyebrow="Member"
         actions={
           <Button
@@ -228,15 +230,15 @@ function MembershipSection({ member }: { member: MemberDetail }) {
     { label: "Plan", value: planName(state.planId) },
   ];
   if (state.trialEndsAt)
-    items.push({ label: "Trial ends", value: <DateTime value={state.trialEndsAt} /> });
+    items.push({ label: "Trial ends", value: <DateOnly value={state.trialEndsAt} /> });
   if (state.currentPeriodEnd) {
     items.push({
       label: state.cancelAtPeriodEnd ? "Ends" : "Renews",
-      value: <DateTime value={state.currentPeriodEnd} />,
+      value: <DateOnly value={state.currentPeriodEnd} />,
     });
   }
   if (state.graceEndsAt)
-    items.push({ label: "Grace ends", value: <DateTime value={state.graceEndsAt} /> });
+    items.push({ label: "Grace ends", value: <DateOnly value={state.graceEndsAt} /> });
   if (state.suspendedReason) {
     items.push({ label: "Suspended because", value: SUSPENDED_REASON[state.suspendedReason] });
   }
@@ -304,7 +306,7 @@ function MembershipSection({ member }: { member: MemberDetail }) {
   );
 }
 
-/** "Yes · 2 screens at a time, up to 1080p · until Dec 30, 2026", or "No: membership ended". */
+/** "Yes · 2 screens at a time, up to Full HD · until Dec 30, 2026", or "No: membership ended". */
 function WatchLine({ entitlement }: { entitlement: MemberDetail["entitlement"] }) {
   if (!entitlement.entitled) {
     return (
@@ -313,7 +315,9 @@ function WatchLine({ entitlement }: { entitlement: MemberDetail["entitlement"] }
       </span>
     );
   }
-  const quality = entitlement.maxVideoHeight ? `, up to ${entitlement.maxVideoHeight}p` : "";
+  const quality = entitlement.maxVideoHeight
+    ? `, up to ${videoQualityLabel(videoQualityForHeight(entitlement.maxVideoHeight))}`
+    : "";
   return (
     <span>
       Yes
@@ -334,7 +338,7 @@ function MembershipStatusLine({ member }: { member: MemberDetail }) {
         {MEMBERSHIP[state.status].label}
       </StatusBadge>
       {state.cancelAtPeriodEnd ? (
-        <span className="text-fg-muted">Cancelled: ends at the period end</span>
+        <span className="text-fg-muted">Canceled: ends at the period end</span>
       ) : null}
     </span>
   );
@@ -487,7 +491,7 @@ function AccountSection({ member }: { member: MemberDetail }) {
             label: "Email",
             value: (
               <span className="flex flex-wrap items-center gap-2">
-                {account.email}
+                <EmailText>{account.email}</EmailText>
                 <StatusBadge tone={account.emailVerified ? "positive" : "warning"}>
                   {account.emailVerified ? "Verified" : "Not verified"}
                 </StatusBadge>
@@ -523,7 +527,7 @@ function AccountSection({ member }: { member: MemberDetail }) {
             label: "Signed-in devices",
             value: `${member.activeDevices}`,
           },
-          { label: "Member since", value: <DateTime value={account.createdAt} /> },
+          { label: "Member since", value: <DateOnly value={account.createdAt} /> },
         ]}
       />
       {protectedAccount ? null : (

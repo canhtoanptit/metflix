@@ -223,7 +223,7 @@ test("a title staff made unavailable leaves browse, and a link to it says so pla
     const overlay = page.getByTestId("title-overlay");
     await expect(overlay.getByText("This title isn't available")).toBeVisible();
     await expect(overlay.getByText(/It may have left Webflix/)).toBeVisible();
-    const back = overlay.getByRole("button", { name: "Back to browsing" });
+    const back = overlay.getByRole("button", { name: "Back to browse" });
     await expect(back).toBeVisible();
     await back.click();
     await expect(overlay).toHaveCount(0);

@@ -31,7 +31,7 @@ export function MyListPage() {
           description={describeError(list.error).description}
           reference={describeError(list.error).reference}
           action={
-            <Button variant="primary" onClick={() => list.refetch()}>
+            <Button variant="accent" onClick={() => list.refetch()}>
               Try again
             </Button>
           }
@@ -46,7 +46,7 @@ export function MyListPage() {
               : "Add series and films with + and they'll wait for you here."
           }
           action={
-            <Button variant="primary" asChild>
+            <Button variant="accent" asChild>
               <Link to="/browse">Find something to watch</Link>
             </Button>
           }

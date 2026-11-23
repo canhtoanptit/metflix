@@ -340,7 +340,7 @@ export const PLANS: Plan[] = [
     maxStreams: 1,
     maxQuality: "720p",
     maxVideoHeight: 720,
-    features: ["Good video quality in HD (720p)", "Watch on 1 device at a time"],
+    features: ["HD video", "1 screen at a time", "Unlimited movies and series"],
     highlighted: false,
   },
   {
@@ -350,7 +350,7 @@ export const PLANS: Plan[] = [
     maxStreams: 2,
     maxQuality: "1080p",
     maxVideoHeight: 1080,
-    features: ["Great video quality in Full HD (1080p)", "Watch on 2 devices at a time"],
+    features: ["Full HD video", "2 screens at a time", "Unlimited movies and series"],
     highlighted: true,
   },
   {
@@ -360,7 +360,7 @@ export const PLANS: Plan[] = [
     maxStreams: 4,
     maxQuality: "2160p",
     maxVideoHeight: 2160,
-    features: ["Best video quality in 4K + HDR", "Watch on 4 devices at a time", "Spatial audio"],
+    features: ["4K video", "4 screens at a time", "Unlimited movies and series"],
     highlighted: false,
   },
 ];

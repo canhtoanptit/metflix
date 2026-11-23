@@ -53,7 +53,7 @@ export function describePromotionFailure(reason: PromotionFailureReason | undefi
     case "already_redeemed":
       return "You've already used this code.";
     default:
-      return "We don't recognise this code. Check it and try again.";
+      return "We don't recognize this code. Check it and try again.";
   }
 }
 

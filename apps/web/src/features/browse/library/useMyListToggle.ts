@@ -48,9 +48,10 @@ export function useMyListToggle() {
       );
       return { rollback, card: source };
     },
-    onError: (_error, { add, name }, context) => {
+    onError: (_error, { add, name, titleId }, context) => {
       context?.rollback();
       toast.error(add ? "Couldn't add to My List" : "Couldn't remove from My List", {
+        id: `my-list-${titleId}`,
         description: name ? `${name} is unchanged. Please try again.` : "Please try again.",
       });
     },

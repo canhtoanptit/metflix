@@ -18,14 +18,16 @@ export function useRemoveFromContinueWatching() {
       optimisticUpdate(queryClient, qk.profile.all(), (data, key) =>
         removeContinueWatching(data, key, titleId),
       ),
-    onError: (_error, { name }, rollback) => {
+    onError: (_error, { titleId, name }, rollback) => {
       rollback?.();
       toast.error("Couldn't remove it from Continue Watching", {
+        id: `continue-watching-${titleId}`,
         description: name ? `${name} is still in the row. Please try again.` : "Please try again.",
       });
     },
-    onSuccess: (_data, { name }) => {
+    onSuccess: (_data, { titleId, name }) => {
       toast.show({
+        id: `continue-watching-${titleId}`,
         title: "Removed from Continue Watching",
         description: name ? `${name} will come back if you watch it again.` : undefined,
       });

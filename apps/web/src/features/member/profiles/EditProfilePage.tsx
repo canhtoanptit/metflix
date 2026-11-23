@@ -214,7 +214,10 @@ export function NewProfilePage() {
     onSuccess: (profile) => {
       forgetDraft("new");
       upsertSessionProfile(queryClient, profile);
-      toast.success(`${profile.name} is ready`, { description: "Choose it on Who's watching." });
+      toast.success(`${profile.name} is ready`, {
+        id: `profile-${profile.id}`,
+        description: "Choose it on Who's watching.",
+      });
       leave();
     },
   });
@@ -237,7 +240,7 @@ export function NewProfilePage() {
           title="Profiles can't be added to the demo account"
           description="Everyone who tries Webflix shares this account, so its profiles stay as they are. Sign up for your own account to add the people you watch with."
           action={
-            <Button variant="primary" asChild>
+            <Button variant="accent" asChild>
               <Link to="/profiles/manage">Manage profiles</Link>
             </Button>
           }
@@ -254,7 +257,7 @@ export function NewProfilePage() {
           title="This account already has five profiles"
           description="Five is the most an account can have. Delete a profile you no longer use to make room for a new one."
           action={
-            <Button variant="primary" asChild>
+            <Button variant="accent" asChild>
               <Link to="/profiles/manage">Manage profiles</Link>
             </Button>
           }
@@ -309,7 +312,7 @@ export function EditProfilePage() {
           title="This profile doesn't exist"
           description="It may have been deleted on another device."
           action={
-            <Button variant="primary" asChild>
+            <Button variant="accent" asChild>
               <Link to="/profiles/manage">Manage profiles</Link>
             </Button>
           }
@@ -394,7 +397,7 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
       setProof(null);
       forgetDraft(profile.id);
       upsertSessionProfile(queryClient, updated);
-      toast.success("Profile saved");
+      toast.success("Profile saved", { id: `profile-${profile.id}` });
       leave();
     },
   });
@@ -409,7 +412,7 @@ function ExistingProfileEditor({ profile }: { profile: Profile }) {
     onSuccess: () => {
       setDeleting(null);
       removeSessionProfile(queryClient, profile.id);
-      toast.success(`${profile.name} was deleted`);
+      toast.success(`${profile.name} was deleted`, { id: `profile-${profile.id}` });
       void navigate({ to: "/profiles/manage", replace: true });
     },
   });

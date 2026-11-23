@@ -115,7 +115,13 @@ export function DialogContent({
   );
 }
 
-/** Right-aligned action row at the bottom of a dialog (stacks on narrow screens). */
+/**
+ * The action row at the bottom of every dialog (docs/DESIGN_SYSTEM.md "Dialogs"). Children in
+ * reading order: the way out first (`outline`: "Cancel", "Keep my account", "Back"), the main
+ * action last (`accent`, or `danger` when it destroys something). From `sm` up they sit together
+ * at the end of the row, the way out on the left and the main action on the right; on a phone
+ * they stack full width with the main action on top, where the thumb is.
+ */
 export function DialogFooter({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div

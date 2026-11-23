@@ -40,18 +40,37 @@ describe("Button", () => {
     expect(link.querySelector('[data-icon="Play"]')).not.toBeNull();
   });
 
-  it("is busy and inert while loading", async () => {
+  it("is busy and inert while loading, and keeps keyboard focus", async () => {
     const onClick = vi.fn();
-    render(
-      <Button loading onClick={onClick}>
-        Save
-      </Button>,
+    const onSubmit = vi.fn((event: { preventDefault: () => void }) => event.preventDefault());
+    const { rerender } = render(
+      <form onSubmit={onSubmit}>
+        <input aria-label="Name" />
+        <Button type="submit" onClick={onClick}>
+          Save
+        </Button>
+      </form>,
     );
     const button = screen.getByRole("button", { name: "Save" });
+    button.focus();
+    rerender(
+      <form onSubmit={onSubmit}>
+        <input aria-label="Name" />
+        <Button type="submit" loading onClick={onClick}>
+          Save
+        </Button>
+      </form>,
+    );
     expect(button).toHaveAttribute("aria-busy", "true");
-    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    // Not `disabled`: a disabled element would drop focus to the page.
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveFocus();
     await userEvent.click(button);
+    await userEvent.keyboard("{Enter}");
+    await userEvent.type(screen.getByLabelText("Name"), "x{Enter}");
     expect(onClick).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("icon buttons require a name and expose toggle state", () => {

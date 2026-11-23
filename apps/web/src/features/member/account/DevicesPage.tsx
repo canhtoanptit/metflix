@@ -70,11 +70,13 @@ export function AccountDevicesPage() {
     onError: (error, device, rollback) => {
       rollback?.();
       toast.error(`Couldn't sign out ${device.label}`, {
+        id: `device-${device.id}`,
         description: describeMemberError(error).description,
       });
     },
     onSuccess: (_data, device) => {
       toast.success(`${device.label} was signed out`, {
+        id: `device-${device.id}`,
         description: "Anything playing there stops within about half a minute.",
       });
     },
@@ -92,7 +94,7 @@ export function AccountDevicesPage() {
       sessionCache.signOut(queryClient);
       announceAuthChange("signed-out");
       await router.invalidate();
-      toast.success("Signed out of all devices");
+      toast.success("Signed out of all devices", { id: "sign-in" });
       await navigate({ to: "/login", search: {}, replace: true });
     },
   });
@@ -141,7 +143,7 @@ export function AccountDevicesPage() {
             title="We couldn't load your devices"
             description={describeError(devices.error).description}
             action={
-              <Button variant="primary" onClick={() => void devices.refetch()}>
+              <Button variant="accent" onClick={() => void devices.refetch()}>
                 Try again
               </Button>
             }

@@ -240,6 +240,69 @@ test("when the cooling-off period ends, the account is gone and this browser is 
     .toBe(false);
   await page.goto("/account/privacy");
   await expect(page).toHaveURL(/\/login/);
+  // This browser asked for it, so Sign in says what happened.
+  await expect(page.getByText("Your account has been deleted")).toBeVisible();
+});
+
+test("the browser that asked for a deletion says so at Sign in once it is due, and only that browser", async ({
+  page,
+  newDevice,
+}) => {
+  const request = page.context().request;
+  const account = await createAccount(request, { tag: "erased-memory" });
+  await page.goto("/account/privacy");
+  const section = page.getByRole("region", { name: "Delete your account" });
+  await section.getByRole("button", { name: "Delete my account" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete your account?" })
+    .getByRole("button", { name: "Delete my account" })
+    .click();
+  await confirmItsMe(page);
+  await expect(page.getByText(/^Your account will be deleted on /)).toBeVisible();
+  // All it keeps is the date the deletion is due: nothing that names the account.
+  const kept = await page.evaluate(() => localStorage.getItem("webflix:deletion-due"));
+  expect(kept).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
+
+  // Before the date, Sign in says nothing of it.
+  // Signed out on this browser (its storage stays, as after a real sign-out).
+  await page.context().clearCookies();
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByText("Your account has been deleted")).toHaveCount(0);
+
+  // Once the date has passed (moved back here, as time would move on), it says the account was
+  // deleted as asked, and a failed sign-in offers a new account instead of a reset.
+  await page.evaluate(() =>
+    localStorage.setItem("webflix:deletion-due", new Date(Date.now() - 60_000).toISOString()),
+  );
+  await page.reload();
+  await expect(page.getByText("Your account has been deleted")).toBeVisible();
+  await expect(
+    page.getByText(/You asked for it on this browser, and it was deleted on/),
+  ).toBeVisible();
+  await expectAccessible(page);
+  await page.getByLabel("Email address").fill(account.email);
+  await page.getByLabel("Password", { exact: true }).fill("not-the-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Incorrect email or password");
+  await expect(alert).toContainText(/If you meant the account deleted on .+, it no longer exists/);
+  await expect(alert.getByRole("link", { name: "create a new account" })).toBeVisible();
+  await expect(alert.getByRole("link", { name: /reset/i })).toHaveCount(0);
+
+  // Any other browser knows nothing of it.
+  const other = await newDevice();
+  const elsewhere = await other.newPage();
+  await elsewhere.goto("/login");
+  await expect(elsewhere.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(elsewhere.getByText("Your account has been deleted")).toHaveCount(0);
+  await other.close();
+
+  // Someone signing in on this browser after the date is another account: it is forgotten.
+  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+  expect(await page.evaluate(() => localStorage.getItem("webflix:deletion-due"))).toBeNull();
 });
 
 test("a member without a password confirms at their provider, comes back, and picks up where they left off", async ({
@@ -306,7 +369,7 @@ test("with the keyboard alone: change a choice, schedule the deletion, keep the 
   const request = page.context().request;
   await createAccount(request, { tag: "privacy-keys" });
   await page.goto("/account/privacy");
-  const personalisation = page.getByRole("switch", { name: "Personalised recommendations" });
+  const personalisation = page.getByRole("switch", { name: "Personalized recommendations" });
   await expect(personalisation).toBeVisible();
   const before = await personalisation.getAttribute("aria-checked");
   await tabTo(page, personalisation);
@@ -345,7 +408,7 @@ test("a deletion stops the renewals, said before and while scheduled; a kept acc
   // Before committing, as a condition (the shared outcome): what deleting today would do.
   await expect(
     section.getByText(
-      /If you delete your account today: You can watch until .+\. Nothing more is charged\./,
+      /If you delete your account today: you can watch until .+\. Nothing more is charged\./,
     ),
   ).toBeVisible();
   await section.getByRole("button", { name: "Delete my account" }).click();
@@ -386,7 +449,7 @@ test("a deletion stops the renewals, said before and while scheduled; a kept acc
   await expect(page.locator("#privacy-membership-resume")).toBeFocused();
   // In billing's own words (a trial's first payment, or the next renewal).
   await expect(
-    page.getByText(/If you resume it: Your (first payment, .+, is on|next payment is .+ on) .+\./),
+    page.getByText(/If you resume it: your (first payment, .+, is on|next payment is .+ on) .+\./),
   ).toBeVisible();
   await expectAccessible(page);
   await resume.click();

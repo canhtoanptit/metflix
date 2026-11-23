@@ -1,12 +1,14 @@
+import { formatLongDate, formatLongDateTime, formatMoney, type Money } from "@webflix/contracts";
 import type { EmailTemplate } from "./message.ts";
 
 /**
  * Typed email templates (docs/BLUEPRINT-M2.md §8.2, FOUNDATION.md D-M2-19): each renders a
  * subject, an HTML body and a plain-text body from its data. Every interpolated value is escaped
  * for HTML; links must be absolute http(s) URLs (anything else is refused, so a template can
- * never carry a `javascript:` link). Dates are ISO instants, shown in UTC.
+ * never carry a `javascript:` link). Dates are ISO instants, shown in UTC, and dates and amounts
+ * are said as the member app says them (`@webflix/contracts` formatters, US English).
  *
- * Webflix is its own brand: wording, colours and layout are ours.
+ * Webflix is its own brand: wording, colors and layout are ours.
  */
 
 export type SecurityChange =
@@ -23,13 +25,25 @@ export interface EmailTemplateData {
   welcome: { signInMethod: string };
   receipt: {
     planName: string;
-    amount: string;
+    amount: Money;
     paidAt: string;
     periodEnd: string | null;
     invoiceUrl: string | null;
   };
-  "payment-failed": { planName: string; amount: string; retryAt: string | null; updateUrl: string };
-  "trial-ending": { planName: string; trialEndsAt: string; amount: string; manageUrl: string };
+  /** `amount`: what could not be collected, when the provider said (null: not known). */
+  "payment-failed": {
+    planName: string;
+    amount: Money | null;
+    retryAt: string | null;
+    updateUrl: string;
+  };
+  /** `amount`: the plan's monthly price, charged when the trial ends (null: not known). */
+  "trial-ending": {
+    planName: string;
+    trialEndsAt: string;
+    amount: Money | null;
+    manageUrl: string;
+  };
   "plan-changed": { fromPlan: string; toPlan: string; effectiveAt: string };
   cancellation: { planName: string; accessUntil: string; restartUrl: string };
   "new-sign-in": { device: string; method: string; at: string };
@@ -42,7 +56,7 @@ export interface EmailTemplateData {
   "data-export-ready": { link: string; expiresAt: string };
   /** A deletion was asked for: when it happens and where to keep the account meanwhile. */
   "account-deletion-scheduled": { scheduledFor: string; keepUrl: string };
-  /** The deletion was cancelled (by the member, or by support at their request). */
+  /** The deletion was canceled (by the member, or by support at their request). */
   "account-deletion-canceled": { manageUrl: string };
 }
 
@@ -74,23 +88,25 @@ export function safeLink(value: string): string {
   return url.href;
 }
 
-/** `22 November 2026, 14:05 UTC`. */
+/** "December 7, 2026": a day, in UTC (an email cannot know the reader's time zone). */
+export function formatDay(iso: string): string {
+  if (Number.isNaN(Date.parse(iso))) throw new TypeError(`Not an instant: ${iso}`);
+  return formatLongDate(iso, { timeZone: "UTC" });
+}
+
+/** "December 7, 2026 at 2:05 PM UTC": where the time matters (a sign-in, a link that expires soon). */
 export function formatInstant(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) throw new TypeError(`Not an instant: ${iso}`);
-  const day = new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "UTC",
-  }).format(date);
-  return `${day}, ${time} UTC`;
+  if (Number.isNaN(Date.parse(iso))) throw new TypeError(`Not an instant: ${iso}`);
+  return `${formatLongDateTime(iso, { timeZone: "UTC" })} UTC`;
+}
+
+/**
+ * An amount as the member app shows it ("$12.99"), from minor units and a currency, with the
+ * shared formatter. A message queued before amounts were passed this way carries its amount as
+ * text already ("12.99 USD"): shown as it is rather than failing the job.
+ */
+export function formatAmount(amount: Money | string): string {
+  return typeof amount === "string" ? amount : formatMoney(amount);
 }
 
 /** One line of the subject: no line breaks, ever (header injection). */
@@ -106,12 +122,14 @@ interface Block {
   footnote?: string;
 }
 
+/** The member app's own palette (packages/ui tokens): amber is the call to action, dark text on it. */
 const COLORS = {
-  page: "#0b0b0d",
-  card: "#16161a",
-  text: "#f2f2f3",
-  muted: "#a3a3ad",
-  accent: "#e5484d",
+  page: "#0b0c0f",
+  card: "#14161b",
+  text: "#f4f2ee",
+  muted: "#b6b8bf",
+  accent: "#ffa31a",
+  onAccent: "#1a1003",
 };
 
 function layout(subject: string, heading: string, block: Block): RenderedEmail {
@@ -125,7 +143,7 @@ function layout(subject: string, heading: string, block: Block): RenderedEmail {
     )
     .join("");
   const button = action
-    ? `<p style="margin:24px 0"><a href="${escapeHtml(action.href)}" style="display:inline-block;padding:12px 24px;border-radius:6px;background:${COLORS.accent};color:#ffffff;font-weight:600;text-decoration:none">${escapeHtml(action.label)}</a></p><p style="margin:0 0 16px;font-size:13px;line-height:20px;color:${COLORS.muted}">If the button does not work, copy this address into your browser: ${escapeHtml(action.href)}</p>`
+    ? `<p style="margin:24px 0"><a href="${escapeHtml(action.href)}" style="display:inline-block;padding:12px 24px;border-radius:6px;background:${COLORS.accent};color:${COLORS.onAccent};font-weight:600;text-decoration:none">${escapeHtml(action.label)}</a></p><p style="margin:0 0 16px;font-size:13px;line-height:20px;color:${COLORS.muted}">If the button does not work, copy this address into your browser: ${escapeHtml(action.href)}</p>`
     : "";
   const footnote = block.footnote
     ? `<p style="margin:16px 0 0;font-size:13px;line-height:20px;color:${COLORS.muted}">${escapeHtml(block.footnote)}</p>`
@@ -145,8 +163,8 @@ function layout(subject: string, heading: string, block: Block): RenderedEmail {
 }
 
 const SECURITY_CHANGES: Record<SecurityChange, string> = {
-  "password-reset": "Your password was reset and every device was signed out.",
-  "password-changed": "Your password was changed. Other devices were signed out.",
+  "password-reset": "Your password was reset. Every other device was signed out.",
+  "password-changed": "Your password was changed. Every other device was signed out.",
   "password-set": "A password was added to your account.",
   "email-changed": "The email address of your account was changed.",
   "identity-linked": "A sign-in method was linked to your account.",
@@ -167,7 +185,7 @@ const RENDERERS: Renderers = {
   "reset-password": (data) =>
     layout("Reset your Webflix password", "Reset your password", {
       paragraphs: [
-        "Someone asked to reset the password of your Webflix account. If it was you, choose a new password below. Every device will be signed out.",
+        "Someone asked to reset the password of your Webflix account. If it was you, choose a new password below. Every other device will be signed out.",
       ],
       action: { label: "Choose a new password", href: data.link },
       footnote: `This link works once and expires on ${formatInstant(data.expiresAt)}. If you did not ask for it, ignore this email: your password stays as it is.`,
@@ -180,21 +198,21 @@ const RENDERERS: Renderers = {
       ],
     }),
   receipt: (data) =>
-    layout(`Your Webflix receipt: ${data.amount}`, "Thanks for your payment", {
+    layout(`Your Webflix receipt: ${formatAmount(data.amount)}`, "Thanks for your payment", {
       paragraphs: [
-        `We received ${data.amount} for your ${data.planName} plan on ${formatInstant(data.paidAt)}.`,
-        ...(data.periodEnd
-          ? [`Your membership is paid until ${formatInstant(data.periodEnd)}.`]
-          : []),
+        `We received ${formatAmount(data.amount)} for your ${data.planName} plan on ${formatDay(data.paidAt)}.`,
+        ...(data.periodEnd ? [`Your membership is paid until ${formatDay(data.periodEnd)}.`] : []),
       ],
       ...(data.invoiceUrl ? { action: { label: "View invoice", href: data.invoiceUrl } } : {}),
     }),
   "payment-failed": (data) =>
     layout("We could not take your Webflix payment", "Your payment did not go through", {
       paragraphs: [
-        `We could not collect ${data.amount} for your ${data.planName} plan.`,
+        data.amount
+          ? `We could not collect ${formatAmount(data.amount)} for your ${data.planName} plan.`
+          : `We could not collect the payment for your ${data.planName} plan.`,
         data.retryAt
-          ? `We will try again on ${formatInstant(data.retryAt)}. Update your payment method to keep watching without interruption.`
+          ? `We will try again on ${formatDay(data.retryAt)}. Update your payment method to keep watching without interruption.`
           : "Update your payment method to keep watching.",
       ],
       action: { label: "Update payment method", href: data.updateUrl },
@@ -202,20 +220,20 @@ const RENDERERS: Renderers = {
   "trial-ending": (data) =>
     layout("Your Webflix trial ends soon", "Your free trial ends soon", {
       paragraphs: [
-        `Your ${data.planName} trial ends on ${formatInstant(data.trialEndsAt)}. After that you will be charged ${data.amount} a month unless you cancel.`,
+        `Your ${data.planName} trial ends on ${formatDay(data.trialEndsAt)}. After that you will be charged ${data.amount ? `${formatAmount(data.amount)} a month` : "monthly"} unless you cancel.`,
       ],
       action: { label: "Manage membership", href: data.manageUrl },
     }),
   "plan-changed": (data) =>
     layout("Your Webflix plan changed", "Your plan changed", {
       paragraphs: [
-        `Your plan changed from ${data.fromPlan} to ${data.toPlan} on ${formatInstant(data.effectiveAt)}.`,
+        `Your plan changed from ${data.fromPlan} to ${data.toPlan} on ${formatDay(data.effectiveAt)}.`,
       ],
     }),
   cancellation: (data) =>
-    layout("Your Webflix membership is cancelled", "Your membership is cancelled", {
+    layout("Your Webflix membership is canceled", "Your membership is canceled", {
       paragraphs: [
-        `You can keep watching on ${data.planName} until ${formatInstant(data.accessUntil)}.`,
+        `You can keep watching on ${data.planName} until ${formatDay(data.accessUntil)}.`,
         "Changed your mind? You can restart at any time.",
       ],
       action: { label: "Restart membership", href: data.restartUrl },
@@ -224,7 +242,7 @@ const RENDERERS: Renderers = {
     layout("New sign-in to your Webflix account", "New sign-in to your account", {
       paragraphs: [
         `Your account was signed in on ${data.device} with ${data.method} on ${formatInstant(data.at)}.`,
-        "If this was not you, reset your password and sign out of all devices from your account page.",
+        "If this was not you, reset your password and sign out of all devices in Account › Devices.",
       ],
     }),
   "security-change": (data) =>
@@ -243,12 +261,12 @@ const RENDERERS: Renderers = {
         "The copy of your Webflix data you asked for is ready. Sign in first if you are asked to.",
       ],
       action: { label: "Download your data", href: data.link },
-      footnote: `The link works until ${formatInstant(data.expiresAt)}. If you did not ask for this, change your password.`,
+      footnote: `The link works until ${formatDay(data.expiresAt)}. If you did not ask for this, change your password.`,
     }),
   "account-deletion-scheduled": (data) =>
     layout("Your Webflix account will be deleted", "Your account will be deleted", {
       paragraphs: [
-        `You asked us to delete your Webflix account. It will be deleted on ${formatInstant(data.scheduledFor)}, and after that it can't be undone.`,
+        `You asked us to delete your Webflix account. It will be deleted on ${formatDay(data.scheduledFor)}, and after that it can't be undone.`,
         "Until then everything works as usual and your membership will not renew. To keep your account, open Account › Privacy and choose Keep my account.",
       ],
       action: { label: "Keep my account", href: data.keepUrl },
@@ -257,7 +275,7 @@ const RENDERERS: Renderers = {
   "account-deletion-canceled": (data) =>
     layout("Your Webflix account will not be deleted", "Your account will not be deleted", {
       paragraphs: [
-        "The deletion of your Webflix account was cancelled, so nothing will be deleted.",
+        "The deletion of your Webflix account was canceled, so nothing will be deleted.",
         "If your membership was set to end when you asked, it still is: you can resume it from your account page.",
       ],
       action: { label: "Go to your account", href: data.manageUrl },

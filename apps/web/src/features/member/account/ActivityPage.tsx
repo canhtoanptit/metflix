@@ -57,11 +57,13 @@ export function AccountActivityPage() {
     onError: (error, entry, rollback) => {
       rollback?.();
       toast.error(`Couldn't remove ${entry.title.name}`, {
+        id: `activity-${entry.id}`,
         description: describeError(error).description,
       });
     },
     onSuccess: (_data, entry) => {
       toast.success(`Removed ${entry.title.name}`, {
+        id: `activity-${entry.id}`,
         description: "It won't shape recommendations or appear in Continue Watching.",
       });
     },
@@ -102,7 +104,7 @@ export function AccountActivityPage() {
           title="We couldn't load viewing activity"
           description={describeError(history.error).description}
           action={
-            <Button variant="primary" onClick={() => void history.refetch()}>
+            <Button variant="accent" onClick={() => void history.refetch()}>
               Try again
             </Button>
           }
@@ -113,7 +115,7 @@ export function AccountActivityPage() {
           title="Nothing watched yet"
           description={`Titles ${profile.name} watches will show up here.`}
           action={
-            <Button variant="primary" asChild>
+            <Button variant="accent" asChild>
               <Link to="/browse">Find something to watch</Link>
             </Button>
           }

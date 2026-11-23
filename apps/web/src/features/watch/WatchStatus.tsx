@@ -93,7 +93,7 @@ export function WatchStatus(props: WatchStatusProps) {
     </Button>
   );
   const retryButton = (label: string) => (
-    <Button variant="primary" size="lg" loading={retrying} onClick={onRetry}>
+    <Button variant="accent" size="lg" loading={retrying} onClick={onRetry}>
       {label}
     </Button>
   );
@@ -179,7 +179,7 @@ export function WatchStatus(props: WatchStatusProps) {
         title: "This profile was locked on another device",
         body: `Someone added or changed ${possessive(profile.name)} PIN, so the profile closed here. Your place is saved: choose it again and enter the PIN to keep watching.`,
         primary: (
-          <Button variant="primary" size="lg" asChild>
+          <Button variant="accent" size="lg" asChild>
             <Link to="/profiles" search={{ redirect: returnTo }}>
               Choose a profile
             </Link>
@@ -199,10 +199,10 @@ export function WatchStatus(props: WatchStatusProps) {
         copy = {
           icon: CreditCardIcon,
           title: deletionTitle(deletion.scheduledFor),
-          body: `Your membership can't be restarted until you keep your account, so ${name} can't be played now. Keeping it is one step in Privacy, and nothing has been charged.`,
+          body: `Your membership can't be restarted until you keep your account, so ${name} can't be played now. Keeping it is one step in Account › Privacy, and nothing has been charged.`,
           primary: (
             <Button variant="accent" size="lg" asChild>
-              <Link to="/account/privacy">Go to Privacy</Link>
+              <Link to="/account/privacy">Go to Account › Privacy</Link>
             </Button>
           ),
           secondary: backButton,
@@ -220,7 +220,7 @@ export function WatchStatus(props: WatchStatusProps) {
             <HrefLink href={paywall.action.href}>{paywall.action.label}</HrefLink>
           </Button>
         ) : (
-          <Button variant="primary" size="lg" asChild>
+          <Button variant="accent" size="lg" asChild>
             <Link to="/profiles" search={{ redirect: returnTo }}>
               Switch profile
             </Link>
@@ -236,7 +236,7 @@ export function WatchStatus(props: WatchStatusProps) {
         title: `Not available on ${possessive(profile.name)} profile`,
         body: `${name} is rated ${maturityName(block.maturity)}. ${possessive(profile.name)} profile only shows titles rated ${maturityName(block.ceiling)} and under.`,
         primary: (
-          <Button variant="primary" size="lg" asChild>
+          <Button variant="accent" size="lg" asChild>
             <Link to="/profiles" search={{ redirect: returnTo }}>
               Switch profile
             </Link>
@@ -252,7 +252,7 @@ export function WatchStatus(props: WatchStatusProps) {
         title: "We can't find that title",
         body: "It may have left Webflix, or the link isn't quite right.",
         primary: (
-          <Button variant="primary" size="lg" onClick={onBack}>
+          <Button variant="accent" size="lg" onClick={onBack}>
             Browse Webflix
           </Button>
         ),

@@ -4,6 +4,8 @@ import {
   type RateLimitPolicyName,
   type RouteSpec,
   routes,
+  videoQualityForHeight,
+  videoQualityLabel,
 } from "@webflix/contracts";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -107,6 +109,16 @@ describe("plans", () => {
     const plans = PLAN_IDS.map(getPlan);
     expect(plans.map((plan) => plan.maxStreams)).toEqual([1, 2, 4]);
     expect(plans.map((plan) => plan.maxVideoHeight)).toEqual([720, 1080, 2160]);
+  });
+
+  it("says quality and the stream limit in the words every screen uses", () => {
+    for (const plan of PLAN_IDS.map(getPlan)) {
+      const quality = videoQualityLabel(videoQualityForHeight(plan.maxVideoHeight));
+      const screens = `${plan.maxStreams} ${plan.maxStreams === 1 ? "screen" : "screens"} at a time`;
+      expect(plan.features.slice(0, 2)).toEqual([`${quality} video`, screens]);
+      // Never "devices" for the stream limit, never 720p/1080p for quality.
+      expect(plan.features.join(" ")).not.toMatch(/devices?|\d{3,4}p\b/i);
+    }
   });
 });
 

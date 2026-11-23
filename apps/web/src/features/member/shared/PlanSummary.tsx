@@ -3,9 +3,9 @@ import { Badge, CheckIcon, cx, Skeleton } from "@webflix/ui";
 import { formatMoney } from "./format.ts";
 
 /**
- * The content of a plan card: name, quality, price and the server's feature list. Used inside
- * a `RadioCard` (sign-up, change plan) and as a static card (landing page); the card must be
- * `relative` (the badge sits on its top edge).
+ * The content of a plan card: name, price and what the plan includes. Used inside a `RadioCard`
+ * (sign-up, change plan) and as a static card (landing page); the card must be `relative` (the
+ * badge sits on its top edge).
  */
 export function PlanSummary({
   plan,
@@ -33,6 +33,7 @@ export function PlanSummary({
       </span>
       <span className="h-px w-full bg-line-subtle" aria-hidden />
       <span className="flex flex-col gap-2.5">
+        {/* The catalog says quality and screens in the app's words (docs/DESIGN_SYSTEM.md). */}
         {plan.features.map((feature) => (
           <span key={feature} className="flex items-start gap-2.5 type-body-sm text-fg-muted">
             <CheckIcon size="sm" className="mt-0.5 text-accent" />

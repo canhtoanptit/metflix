@@ -297,7 +297,10 @@ function RateTitle({ title }: { title: TitleDetail }) {
         : api().clearRating({ params: { titleId: title.id } }),
     meta: { silent: true },
     onError: (error) =>
-      toast.error("Couldn't save your rating", { description: describeError(error).description }),
+      toast.error("Couldn't save your rating", {
+        id: `rating-${title.id}`,
+        description: describeError(error).description,
+      }),
     onSuccess: (_data, value) => {
       queryClient.setQueryData<TitleDetail>(qk.profile.title(title.id), (current) =>
         current ? { ...current, viewer: { ...current.viewer, rating: value } } : current,

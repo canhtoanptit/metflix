@@ -341,7 +341,7 @@ export function makePlan(overrides: Partial<Plan> = {}): Plan {
     maxStreams: 2,
     maxQuality: "1080p",
     maxVideoHeight: 1080,
-    features: ["Full HD", "Watch on 2 devices at a time"],
+    features: ["Full HD video", "2 screens at a time", "Unlimited movies and series"],
     highlighted: true,
     ...overrides,
   });

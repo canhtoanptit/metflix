@@ -68,7 +68,7 @@ test("Cancel at the provider: back on sign-in, told calmly, nothing created", as
   await page.getByRole("link", { name: "Continue with Google" }).click();
   await answerIssuer(page, { email, cancel: true });
 
-  const notice = page.getByRole("status").filter({ hasText: "Google sign-in cancelled" });
+  const notice = page.getByRole("status").filter({ hasText: "Google sign-in canceled" });
   await expect(notice).toBeFocused();
   await expect(notice).toContainText("Nothing changed");
   // The message does not come back on a reload; the destination is kept.
@@ -79,7 +79,7 @@ test("Cancel at the provider: back on sign-in, told calmly, nothing created", as
   ).json();
   expect(status.next).toBe("signup");
   await page.reload();
-  await expect(page.getByText("Google sign-in cancelled")).toHaveCount(0);
+  await expect(page.getByText("Google sign-in canceled")).toHaveCount(0);
 });
 
 test("A refused answer from the provider: an honest failure and a way to try again", async ({

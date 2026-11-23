@@ -57,7 +57,7 @@ describe("audit entries in words", () => {
           facts: { when: "now", amount: { amountMinor: 250, currency: "USD" } },
         }),
       ),
-    ).toBe("Cancelled the membership now, refunded $2.50");
+    ).toBe("Canceled the membership now, refunded $2.50");
     expect(
       auditHeadline(
         entry({
@@ -65,7 +65,7 @@ describe("audit entries in words", () => {
           facts: { purpose: "personalisation", granted: false },
         }),
       ),
-    ).toBe("Recorded a withdrawal of personalisation");
+    ).toBe("Recorded a withdrawal of personalization");
     // Facts withheld (your own actions): never guessed.
     expect(auditHeadline(entry({ action: "privacy.consent_recorded", outcome: "failed" }))).toBe(
       "Record a consent answer",

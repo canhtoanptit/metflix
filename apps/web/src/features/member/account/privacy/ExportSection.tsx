@@ -16,21 +16,29 @@ import {
   type PrivacyRequestList,
   type PrivacyTerms,
 } from "@webflix/contracts";
-import { Button, CheckCircleIcon, ErrorState, Skeleton, Spinner, toast } from "@webflix/ui";
+import {
+  Button,
+  CheckCircleIcon,
+  EmailText,
+  ErrorState,
+  Skeleton,
+  Spinner,
+  toast,
+} from "@webflix/ui";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../../../app/api.ts";
 import { describeError } from "../../../../app/query/errors.ts";
 import { useAuthenticatedSession } from "../../../../app/session/session.ts";
-import { BusyButton } from "../../../../app/telemetry/BusyButton.tsx";
 import { IdentityNotConfirmed, useConfirmIdentity } from "../../shared/ConfirmIdentity.tsx";
 import { FormAlert } from "../../shared/FormAlert.tsx";
-import { formatDateTime, formatLongDate, formatRelativeTime } from "../../shared/format.ts";
+import { formatLongDate, formatRelativeTime } from "../../shared/format.ts";
 import { describeMemberError, useIsDemoAccount } from "../../shared/privileges.ts";
 import { AccountSection } from "../AccountLayout.tsx";
 import { saveDataExport, tokenOf } from "./download.ts";
 import { focusAfterDialogs } from "./focus.ts";
 import {
   exportEmailLine,
+  exportEmailNote,
   exportStage,
   formatPeriod,
   formatRetention,
@@ -39,6 +47,9 @@ import {
   slowAfterMs,
   typicalWait,
 } from "./requests.ts";
+
+/** One toast at a time about the copy of your data (docs/DESIGN_SYSTEM.md "Toasts"). */
+const EXPORT_TOAST_ID = "data-export";
 
 const WHAT_IS_INCLUDED =
   "Your account and profiles, My List, ratings and viewing history, signed-in devices, privacy choices, membership and invoices, the recommendation lists made for your profiles, when our staff looked at your account, and the activity Webflix recorded.";
@@ -70,6 +81,7 @@ export function ExportSection() {
           : current,
       );
       toast.success("We're preparing your data", {
+        id: EXPORT_TOAST_ID,
         description: exportEmailLine(created, session.account.email) ?? undefined,
       });
       // The button is gone: focus moves to what is happening now (UX review 2.7).
@@ -83,6 +95,7 @@ export function ExportSection() {
         return;
       }
       toast.error("We couldn't start your download", {
+        id: EXPORT_TOAST_ID,
         description: describeMemberError(error).description,
       });
     },
@@ -98,15 +111,15 @@ export function ExportSection() {
     focusAfterDialogs(() => statusRef.current);
   });
 
-  const requestButton = (label: string, variant: "primary" | "outline" = "primary") => (
-    <BusyButton
+  const requestButton = (label: string, variant: "accent" | "outline" = "accent") => (
+    <Button
       variant={variant}
-      busy={request.isPending}
+      loading={request.isPending}
       disabled={demo}
       onClick={() => request.mutate()}
     >
       {label}
-    </BusyButton>
+    </Button>
   );
 
   return (
@@ -122,7 +135,7 @@ export function ExportSection() {
           title="We couldn't check your downloads"
           description={describeError(requests.error).description}
           action={
-            <Button variant="primary" onClick={() => void requests.refetch()}>
+            <Button variant="accent" onClick={() => void requests.refetch()}>
               Try again
             </Button>
           }
@@ -142,13 +155,17 @@ export function ExportSection() {
             icon={CheckCircleIcon}
             title="Your data is ready"
           >
-            Prepared {formatDateTime(stage.request.completedAt ?? stage.request.requestedAt)}. You
-            can download it here
+            Prepared on {formatLongDate(stage.request.completedAt ?? stage.request.requestedAt)}.
+            You can download it here
             {stage.request.email === "sent" ? " or from the email we sent you" : ""} until{" "}
             {formatLongDate(stage.request.expiresAt ?? stage.request.requestedAt)}.
-            {stage.request.email === "suppressed"
-              ? ` We couldn't email ${session.account.email}: earlier emails to it didn't arrive.`
-              : ""}
+            {stage.request.email === "suppressed" ? (
+              <>
+                {" "}
+                We couldn't email <EmailText>{session.account.email}</EmailText>: earlier emails to
+                it didn't arrive.
+              </>
+            ) : null}
           </FormAlert>
           <div className="flex flex-wrap items-center gap-3">
             <DownloadButton request={stage.request} />
@@ -185,8 +202,8 @@ export function ExportSection() {
                 : ""}
               . When it's ready, the download will be here for{" "}
               {formatPeriod(terms.exportLinkTtlSec)}, and we'll also email{" "}
-              <span className="text-fg">{session.account.email}</span> (unless earlier emails to it
-              didn't arrive). It includes the activity Webflix still holds, at most{" "}
+              <EmailText>{session.account.email}</EmailText> (unless earlier emails to it didn't
+              arrive). It includes the activity Webflix still holds, at most{" "}
               {formatRetention(terms.eventsRetentionDays)}. You'll be asked to confirm it's you
               first.
             </p>
@@ -211,7 +228,7 @@ function Preparing({
   terms: PrivacyTerms;
 }) {
   const slow = Date.now() - Date.parse(request.requestedAt) > slowAfterMs(terms);
-  const emailLine = exportEmailLine(request, email);
+  const emailLine = exportEmailNote(request, email);
   return (
     <div
       ref={ref}
@@ -227,7 +244,7 @@ function Preparing({
           {slow
             ? "It's taking longer than usual. If it isn't ready a day after you asked, it stops and you can ask again."
             : `It usually takes ${typicalWait(terms)}.`}{" "}
-          {emailLine ? `${emailLine} ` : ""}You don't need to stay on this page.
+          {emailLine ? <>{emailLine} </> : null}You don't need to stay on this page.
         </p>
       </div>
     </div>
@@ -249,19 +266,20 @@ function DownloadButton({ request }: { request: PrivacyRequest & { downloadUrl: 
     mutationFn: () =>
       identity.run(() => saveDataExport(request.id, tokenOf(request.downloadUrl) ?? "")),
     meta: { silent: true },
-    onSuccess: () => toast.success("Your download has started"),
+    onSuccess: () => toast.success("Your download has started", { id: EXPORT_TOAST_ID }),
     onError: (error) => {
       if (error instanceof IdentityNotConfirmed) return;
       toast.error("We couldn't download your data", {
+        id: EXPORT_TOAST_ID,
         description: describeMemberError(error).description,
       });
     },
   });
   return (
     <>
-      <BusyButton variant="primary" busy={download.isPending} onClick={() => download.mutate()}>
+      <Button variant="accent" loading={download.isPending} onClick={() => download.mutate()}>
         Download your data
-      </BusyButton>
+      </Button>
       {identity.prompt}
     </>
   );
@@ -272,7 +290,7 @@ function useAnnounceReady(stage: string | null): void {
   const previous = useRef(stage);
   useEffect(() => {
     if (stage === "ready" && previous.current === "preparing") {
-      toast.success("Your data is ready to download");
+      toast.success("Your data is ready to download", { id: EXPORT_TOAST_ID });
     }
     previous.current = stage;
   }, [stage]);

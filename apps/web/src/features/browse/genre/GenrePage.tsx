@@ -82,11 +82,11 @@ export function GenrePage() {
           reference={error.reference}
           action={
             notFound ? (
-              <Button variant="primary" asChild>
+              <Button variant="accent" asChild>
                 <Link to="/browse">Go to home</Link>
               </Button>
             ) : (
-              <Button variant="primary" onClick={() => page.refetch()}>
+              <Button variant="accent" onClick={() => page.refetch()}>
                 Try again
               </Button>
             )
