@@ -321,12 +321,14 @@ env:
   {{- with .env }}
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  # A step that fails shows its last log lines as its termination message (kubectl describe).
+  terminationMessagePolicy: FallbackToLogsOnError
   securityContext:
     {{- toYaml $ctx.Values.containerSecurityContext | nindent 4 }}
     runAsUser: 10001
     runAsGroup: 10001
   resources:
-    {{- toYaml $ctx.Values.pipeline.resources | nindent 4 }}
+    {{- toYaml (.resources | default $ctx.Values.pipeline.resources) | nindent 4 }}
   volumeMounts:
     - name: work
       mountPath: /work
@@ -349,12 +351,13 @@ env:
   command: {{ .command | toJson }}
   workingDir: /src
   {{- include "webflix.appEnv" $ctx | nindent 2 }}
+  terminationMessagePolicy: FallbackToLogsOnError
   securityContext:
     {{- toYaml $ctx.Values.containerSecurityContext | nindent 4 }}
     runAsUser: 10001
     runAsGroup: 10001
   resources:
-    {{- toYaml $ctx.Values.pipeline.resources | nindent 4 }}
+    {{- toYaml (.resources | default $ctx.Values.pipeline.resources) | nindent 4 }}
   volumeMounts:
     - name: work
       mountPath: /work
@@ -386,7 +389,7 @@ spec:
         webflix.dev/job: {{ .job }}
     spec:
       backoffLimit: {{ $p.backoffLimit }}
-      activeDeadlineSeconds: {{ $p.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ .deadline | default $p.activeDeadlineSeconds }}
       ttlSecondsAfterFinished: {{ $p.ttlSecondsAfterFinished }}
       template:
         metadata:
@@ -404,7 +407,7 @@ spec:
           volumes:
             - name: work
               emptyDir:
-                sizeLimit: 2Gi
+                sizeLimit: {{ .workSizeLimit | default "2Gi" }}
             - name: scripts
               configMap:
                 name: {{ include "webflix.component" (list $ctx "pipeline") }}
@@ -425,12 +428,12 @@ development issuer on this origin (a path); empty in production without one. */}
 {{- end -}}
 
 {{/* The console's CSP: web.admin.contentSecurityPolicy, plus the issuer's origin in connect-src
-when it is another origin (discovery, the token endpoint). */}}
+when the issuer is a URL (discovery, the token endpoint), exactly as the Worker builds it
+(consoleContentSecurityPolicy in apps/edge/src/console-policy.ts). */}}
 {{- define "webflix.console.csp" -}}
 {{- $csp := .Values.web.admin.contentSecurityPolicy | replace "\n" " " | trim -}}
-{{- $issuer := include "webflix.console.issuer" . -}}
-{{- $origin := regexFind "^https?://[^/]+" $issuer -}}
-{{- if and $origin (ne $origin (include "webflix.publicOrigin" .)) -}}
+{{- $origin := regexFind "^https?://[^/]+" (include "webflix.console.issuer" .) -}}
+{{- if $origin -}}
 {{- $csp = replace "connect-src 'self'" (printf "connect-src 'self' %s" $origin) $csp -}}
 {{- end -}}
 {{- $csp -}}

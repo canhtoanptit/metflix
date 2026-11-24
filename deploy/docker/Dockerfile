@@ -88,7 +88,9 @@ RUN --mount=type=cache,id=webflix-pnpm-store,target=/pnpm/store,sharing=locked \
       --filter "@webflix/web..." --filter "@webflix/admin..."
 
 FROM web-deps AS web-build
-COPY --parents apps/web apps/admin packages ./
+# apps/edge/src/console-policy.ts: the console's Content-Security-Policy, which its Vite config
+# (the preview server) and the Cloudflare Worker share; a file without imports.
+COPY --parents apps/web apps/admin packages apps/edge/src/console-policy.ts ./
 # The console is built for its base path (/admin/); its config.json (the staff issuer, the client)
 # is the platform's to replace, and the chart does (deploy/helm/webflix/templates/web/admin.yaml).
 RUN pnpm --filter @webflix/web build \

@@ -26,6 +26,7 @@ data:
   # Database (the password comes from a Secret as PGPASSWORD).
   WEBFLIX_DATABASE_URL: {{ include "webflix.databaseUrl" . | quote }}
   WEBFLIX_DATABASE_POOL_MAX: {{ .Values.api.databasePoolMax | quote }}
+  WEBFLIX_DATABASE_POOL_MIN: {{ .Values.api.databasePoolMin | quote }}
   {{- /* Budgets per role (the defaults live in the application, POSTGRES_ROLE_TIMEOUTS). */}}
   {{- $defaults := dict "request" (list 5000 7000) "background" (list 60000 65000) "maintenance" (list 600000 605000) }}
   {{- range $role, $budget := .Values.config.databaseTimeouts }}

@@ -675,6 +675,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `HOST` | all interfaces | Listen address |
 | `WEBFLIX_DATABASE_URL` | dev: `sqlite:<repo>/.data/webflix.sqlite`; required otherwise | `postgres://user:pass@host:5432/db` or `sqlite:<path>` / `sqlite::memory:` |
 | `WEBFLIX_DATABASE_POOL_MAX` | `10` | Postgres pool size per process |
+| `WEBFLIX_DATABASE_POOL_MIN` | `4` | Connections the API keeps open however idle, opened before it reports ready and refilled after a loss (the request role only; capped at the maximum): a burst finds them open (docs/KUBERNETES.md §9.11, K17) |
 | `WEBFLIX_DATABASE_<ROLE>_STATEMENT_TIMEOUT_MS`, `WEBFLIX_DATABASE_<ROLE>_QUERY_TIMEOUT_MS` (`<ROLE>`: `REQUEST`, `BACKGROUND`, `MAINTENANCE`) | the role's budget (§6: 5 000 / 7 000, 60 000 / 65 000, 600 000 / 605 000) | Override one role's server-side `statement_timeout` and client-side query timeout (ms, `0` = none). Each process uses its own role's (`serve` and `wait`: request, `worker`: background, `migrate` and `seed`: maintenance); the query timeout must exceed the statement timeout, or both be `0`, else startup fails |
 | `WEBFLIX_DATABASE_KEEPALIVE_MS` | `10000` | TCP keepalive's first probe on database connections (`0` = off); interval and count are the host's (the chart sets 10 s × 3) |
 | `WEBFLIX_BLOB_STORE` | dev: `fs`; else `s3` | `fs`, `memory` or `s3` (see §5) |
@@ -687,6 +688,7 @@ naming the area (docs/FOUNDATION.md §8). Dev mode still needs no variables.
 | `WEBFLIX_JOBS_CONCURRENCY` | `4` | Jobs one `worker` process runs at once |
 | `WEBFLIX_S3_ENDPOINT`, `_REGION` (`us-east-1`), `_BUCKET` (`webflix-media`), `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, `_FORCE_PATH_STYLE` (`true`) | | S3 settings for the S3 adapter |
 | `WEBFLIX_PASSWORD_HASHER` | `scrypt` | `scrypt` (memory-hard) or `pbkdf2`; the other still verifies and is upgraded on login |
+| `WEBFLIX_HASH_CONCURRENCY` | libuv's threadpool size minus two (`UV_THREADPOOL_SIZE`, default 4: so 2), at least 1 | Password and PIN hashes one process computes at once; the rest wait their turn in the process. Below the threadpool's size, always: DNS lookups, file reads, compression and PostgreSQL's SCRAM sign-in share that threadpool (K17); a value that would take all of it is refused |
 | `WEBFLIX_MIGRATE_ON_START` | dev: `true`; else `false` | `serve` (and `seed`) migrate first |
 | `WEBFLIX_SEED_ON_START` | dev: `true`; else `false` | `serve` seeds first (skipped when unchanged) |
 | `WEBFLIX_TRUST_PROXY` | k8s: `true`; else `false` | Client IP from `X-Forwarded-For` (rate limits) |

@@ -410,7 +410,9 @@ test("a preview's clip reports its start and its end, from the card's place", as
     (event) => event.type === "preview.start" && event.payload.titleId === target?.titleId,
   );
   expect(start?.context, log).toMatchObject(place);
-  const complete = events.find((event) => event.type === "preview.complete");
+  const complete = events.find(
+    (event) => event.type === "preview.complete" && event.payload.titleId === target?.titleId,
+  );
   expect(complete?.payload.titleId, log).toBe(target.titleId);
   expect(complete?.context, log).toMatchObject(place);
   expect(complete?.payload.watchedSec as number, log).toBeGreaterThan(0);

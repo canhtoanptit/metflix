@@ -487,21 +487,59 @@ Local niceties: `wrangler dev` prints the Local Explorer API (`/cdn-cgi/local/ex
 browse D1, KV, R2 and Durable Objects and query captured logs; the inspector listens on
 `localhost:4609`.
 
-### Conformance (`make smoke TARGET=cf`)
+### Conformance (`make smoke TARGET=cf`) and the browser suite (`make e2e TARGET=cf`)
 
-**2026-11-23, first look at commit e7e07c8 (143 checks), not a result.** With the web app and
-the console staged, the same configuration as below: the local Worker's isolate stops answering
-partway through a full run. One request is cancelled by workerd as "hung" (a different one each
-time: a payment confirmation, a profile update, a checkout confirmation), and from then on every
-database query from that isolate times out (`/readyz`: `database timed out after 2000 ms`)
-while the same D1 answers other callers (the Local Explorer) at once; only a restart recovers.
-It happens with the Cron Trigger and the pipeline loop both off, and never with one area at a
-time (billing, privacy, identity each pass alone; 20 to 120 concurrent sign-ups and 16
-concurrent checkouts do not trigger it). Runs: 97/44/2, 63/78/2, 85/56/2, 96/45/2, 113/27/3
-(passed/failed/skipped).
+**2026-11-23, commit 496524e: 152 checks, 149 passed, 0 failed, 3 skipped** (245 s), against
+`make cf-dev` from a fresh state directory (web app and console built and staged, the fast
+media profile in local R2, the demo recommendation run imported before the run), with the Cron
+Trigger every 30 s, the pipeline's lake jobs every 10 s and a 30-second cooling-off:
 
-Cause, found the same day: promises shared between requests (§2, "One request never awaits
-another's promise"), mainly Kysely's connection lock in front of D1; the request that never
+```sh
+make cf-recs-import CF_RECS_DEMO=1        # dev server stopped: personalisation.consent needs a fresh run
+make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10 CF_DEV_FLAGS="--var WEBFLIX_DELETION_COOLING_OFF_SEC:30"
+make smoke TARGET=cf
+```
+
+No request cancelled as hung, no cross-request promise warning, `/readyz` ready at the end. The
+demo profile Alex's home page through the Worker: `policy: demo:<run>`, "Top Picks for Alex"
+with 20 titles. Skips, each a property of the local profile, not of the platform:
+
+- `media.external-fallback`: every title is packaged (local R2 holds the fast profile); it runs
+  on an external-HLS seed (`seed --no-media`). A real account with media uploaded skips it too.
+- `consistency.rate-limit-monotonic`, `ratelimit.strict-defaults`: the local section runs the
+  relaxed rate limits of the Node dev mode; production runs the strict defaults, so a real
+  account runs both. Both passed on the same Worker restarted with production's limits
+  (`CF_DEV_FLAGS` with `--var WEBFLIX_RATE_LIMIT_AUTH:` and the six others empty, which the
+  loader reads as no override; `SMOKE_ARGS="--only … --timeout 300000"`).
+
+**The browser suite** (Playwright; Chromium, Firefox and WebKit, and the staff console's `admin`
+project against the Worker's `/admin`; 4 workers, through the host guard), against the same
+setup with an 85-second cooling-off: **274 passed, 0 failed, 8 skipped** (Chromium 213 passed
+and 5 skipped, Firefox 12 and 2, WebKit 13 and 1, `admin` 35, the demo setup 1), with no request
+cancelled as hung, no cross-request warning and no 5xx in the Worker's log. Earlier runs on the
+same commit had found seven specs that assumed dev mode's speed or settings (a report still in
+flight, a page clock running on through the minute an experiment takes to go live outside dev,
+the consent prompt arriving over a hover preview, a removal read before it landed, the first
+event of a kind taken as the card's own, a trial assumed to end before the deletion); each was
+fixed in the spec and repeated four times on the Worker before the final run.
+
+Skips: five need a setting the local section does not have, and each passed on the Worker with
+it (strict rate limits: `member-auth` rate limiting and the two conformance checks above;
+`WEBFLIX_PAYMENT_PROVIDER=none`: `billing-no-provider`; `WEBFLIX_RECS_EXPLORE_SHARE=1`: the
+exploration page; `WEBFLIX_CONSENT_MODE=opt-out`: Global Privacy Control in Firefox; the default
+14-day cooling-off: `billing-account` "a scheduled deletion…"). Three are the engines' own:
+Firefox plays HLS only through MediaSource, and only Firefox has a Global Privacy Control
+setting (the GPC spec in Chromium and WebKit). Two specs need opposite cooling-off periods:
+`privacy-account` "when the cooling-off period ends…" proves the erasure only when the deletion
+is due within 90 s, `billing-account` "a scheduled deletion…" needs the free trial (7 days) to
+end first; the 85-second run covers the first, the second passed with the default period.
+
+**The hang found at commit e7e07c8 (fixed since).** Partway through a full run the local
+Worker's isolate stopped answering: one request cancelled by workerd as "hung", then every D1
+query of that isolate timing out (`/readyz`: `database timed out after 2000 ms`) while D1 itself
+answered; runs of 143 checks ended 97/44/2 to 113/27/3. The cause: promises shared between
+requests (§2, "One request never awaits another's promise"), mainly Kysely's connection lock in
+front of D1; the request that never
 let go of it was a session lookup whose D1 query started and never ended. Smallest reproduction:
 a Worker running two sequential `select 1` through the D1 dialect, 20 waves of 200 concurrent
 requests: 51 requests of one wave failed (52 cancelled as hung), and every request afterwards
@@ -510,41 +548,10 @@ connections: 0 failures in 16,000 requests over four rounds. On a copy of e7e07c
 two full suite runs: 86/41 and 84/43 passed/failed with 34 and 42 requests cancelled as hung
 before; 122/3 twice with one left (in the fake provider's queues, the second fix) after.
 
-Run on 2026-11-22 (before the fix rounds and the card removal) (2026-11-22, after the export job moved to the pipeline), with the
-suite as it stood that day (131 checks; source fingerprint `72f18f7b` of `tools/smoke/src`),
-against `make cf-dev` from a fresh state directory on :8787 (web build served, the fast media
-profile in its local R2, local rate-limit profile), run the way the suite asks a conformance
-deployment to be run, with the pipeline's privacy jobs on a loop (§10.4):
-
-```sh
-make cf-dev CF_CRON_EVERY=30 CF_JOBS_EVERY=10 CF_DEV_FLAGS="--var WEBFLIX_DELETION_COOLING_OFF_SEC:30"
-make smoke TARGET=cf
-```
-
-**131 checks: 123 passed, 0 failed, 5 skipped, 3 known findings that now pass**, in 172 s.
-`privacy.export` passed in 5.7 s (its events extracted by `webflix-recs export-events` through
-the loop) and `privacy.deletion.erasure` in 59 s. Every milestone 2 area it covers passed on the
-Worker: sign-in and linking through the development issuer, the fake provider's member journey,
-trials, dunning, provider events delivered twice, out of order and after an outage, privacy
-(consent, export, deletion and erasure), the staff API's roles and audited support actions.
-Skips:
-
-- `media.external-fallback`: every title is packaged; it passes on an external-HLS seed
-  (`seed --no-media`).
-- `consistency.rate-limit-monotonic`, `ratelimit.strict-defaults`: they need the strict
-  limits; both passed in round 1's strict run (`CF_DEV_FLAGS` with the `--var` overrides
-  above, `SMOKE_ARGS=--timeout 300000`).
-- `billing.promo-code.applied`: no route, seed or setting creates a promo code for the fake
-  provider (the suite's finding M2-F1, billing).
-- `experiments.recommendation-status`: no run imported on a fresh state (`make cf-recs-import`
-  imports one). The home page's policy label is `learned:<run>` only when a fresh personal list
-  of the served run ranked the page, `neighbours:<run>` when only the run's neighbours helped
-  (a profile the run never saw), and `rules` otherwise.
-
-The suite's known findings M2-F3, M2-F4 (billing) and M2-F5 (identity) passed: fixed since.
-Earlier runs the same day: 130 checks (`16399cc6`, export still inline): 123 passed, 0 failed,
-5 skipped, 2 expected failures; 116 checks (`1a39870d`): 111 passed, 0 failed, 4 skipped, 1
-expected failure.
+Earlier results, kept for the record: on 2026-11-22 (131 checks, before the fix rounds) 123
+passed, 0 failed, 5 skipped, with `billing.promo-code.applied` (no promo code for the fake
+provider then) and `experiments.recommendation-status` (no run imported) among the skips; 130
+and 116 checks earlier that day passed the same way.
 
 Under strict limits the suite needs `--timeout 300000`: its sign-ups share one client
 address's budget (5/min), checks queue on it while their default 120 s clock runs, and which

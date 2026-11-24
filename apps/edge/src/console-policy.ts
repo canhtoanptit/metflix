@@ -27,7 +27,7 @@ export function consoleContentSecurityPolicy(issuer: string | null): string {
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    "img-src 'self'",
     "font-src 'self'",
     `connect-src 'self'${origin ? ` ${origin}` : ""}`,
     "manifest-src 'self'",

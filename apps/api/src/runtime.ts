@@ -134,6 +134,28 @@ function registerProcessMetrics(metrics: MetricsRegistry, infra: Infrastructure)
     "Database round trips since start (a batch counts once, like D1 bills).",
     () => infra.database.stats.queries,
   );
+  const poolStats = infra.database.poolStats;
+  if (poolStats) {
+    metrics.gauge(
+      "webflix_db_pool_connections",
+      "Database pool: connections open (total) and idle, and requests waiting for one.",
+      () => {
+        const stats = poolStats();
+        return (["total", "idle", "waiting"] as const).map((state) => ({
+          labels: { state },
+          value: stats[state],
+        }));
+      },
+    );
+  }
+  metrics.gauge(
+    "webflix_password_hashes",
+    "Password and PIN hashes running and waiting their turn (at most the gate's limit run at once).",
+    () => [
+      { labels: { state: "running" }, value: infra.hashing.running },
+      { labels: { state: "queued" }, value: infra.hashing.queued },
+    ],
+  );
   const stats = infra.jobs.stats;
   if (stats) {
     // Scrapes are synchronous: serve the last sample, refreshed in the background.

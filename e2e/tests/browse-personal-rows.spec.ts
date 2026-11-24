@@ -54,6 +54,39 @@ async function titleIds(request: APIRequestContext, count: number): Promise<stri
   return ids.slice(0, count);
 }
 
+/**
+ * Waits until a staff change is what every instance of the API answers. The process that makes
+ * it applies it at once; behind several replicas each keeps its copy of the editorial data for up
+ * to 30 s (docs/RECOMMENDATIONS.md: a staff decision "is seen everywhere within the same bound"),
+ * so one answer proves one instance only. Done when the probe has held for many answers in a row
+ * (every replica answers some of them), or held since the bound passed.
+ */
+async function everywhere(probe: () => Promise<boolean>, what: string): Promise<void> {
+  const changedAt = Date.now();
+  let streak = 0;
+  while (
+    streak < AGREEING_ANSWERS &&
+    !(streak > 0 && Date.now() > changedAt + EDITORIAL_BOUND_MS)
+  ) {
+    if (Date.now() > changedAt + EDITORIAL_BOUND_MS + 15_000) {
+      throw new Error(`${what}: not every instance answers it ${EDITORIAL_BOUND_MS / 1000} s on`);
+    }
+    streak = (await probe()) ? streak + 1 : 0;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+/** The age bound of an instance's copy of the editorial data (`MODEL_MAX_AGE_MS`). */
+const EDITORIAL_BOUND_MS = 30_000;
+/** Answers in a row that settle it (with five replicas, a stale one is missed by 25 answers in
+ * fewer than one run in two hundred, and its copy ages out meanwhile anyway). */
+const AGREEING_ANSWERS = 25;
+
+/** The ids of the home page's rows, as one instance answers them. */
+async function homeRowIds(request: APIRequestContext): Promise<string[]> {
+  const home = (await (await request.get("/api/v1/browse?view=home")).json()) as ServerPage;
+  return home.rows.map((candidate) => candidate.id);
+}
+
 function sliderOf(page: Page, rowId: string) {
   return page.locator(`#row-${rowId.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`);
 }
@@ -102,7 +135,7 @@ test.describe("the demo profile Alex", () => {
 test("a curated collection reads as one, in its curated order; withdrawn, its row just ends", async ({
   page,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const request = page.context().request;
   const token = await staffToken(request);
   test.skip(!token, "no development staff issuer here (WEBFLIX_ENV production or a real issuer)");
@@ -128,6 +161,10 @@ test("a curated collection reads as one, in its curated order; withdrawn, its ro
   const rowId = `home:collection:${collection.id}`;
   let withdrawn = false;
   try {
+    await everywhere(
+      async () => (await homeRowIds(request)).includes(rowId),
+      "the published collection on the home page",
+    );
     const served = browsePageResponse(page);
     await page.goto("/browse");
     const server: ServerPage = await served;
@@ -159,6 +196,11 @@ test("a curated collection reads as one, in its curated order; withdrawn, its ro
     });
     expect(deleted.status(), await deleted.text()).toBeLessThan(300);
     withdrawn = true;
+    await everywhere(
+      async () =>
+        (await request.get(`/api/v1/browse/rows/${encodeURIComponent(rowId)}`)).status() === 404,
+      "the withdrawn collection's row gone",
+    );
     const gone = page.waitForResponse((response) => {
       const path = decodeURIComponent(new URL(response.url()).pathname);
       return path === `/api/v1/browse/rows/${rowId}`;
@@ -195,7 +237,7 @@ test("a curated collection reads as one, in its curated order; withdrawn, its ro
 test("a title staff made unavailable leaves browse, and a link to it says so plainly", async ({
   page,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const request = page.context().request;
   const token = await staffToken(request);
   test.skip(!token, "no development staff issuer here (WEBFLIX_ENV production or a real issuer)");
@@ -212,10 +254,11 @@ test("a title staff made unavailable leaves browse, and a link to it says so pla
     });
   expect((await set(false)).status()).toBeLessThan(300);
   try {
-    // Gone from what the server answers, and its link answers not_found.
-    await expect
-      .poll(async () => (await request.get(`/api/v1/titles/${titleId}`)).status())
-      .toBe(404);
+    // Gone from what the server answers, and its link answers not_found, on every instance.
+    await everywhere(
+      async () => (await request.get(`/api/v1/titles/${titleId}`)).status() === 404,
+      "the unavailable title's link not found",
+    );
     const home = (await (await request.get("/api/v1/browse?view=home")).json()) as ServerPage;
     expect(JSON.stringify(home)).not.toContain(`"${titleId}"`);
 
@@ -231,6 +274,11 @@ test("a title staff made unavailable leaves browse, and a link to it says so pla
     await expect(page).not.toHaveURL(/title=/);
   } finally {
     await set(true);
+    // Back everywhere before other specs meet it (best effort: a cleanup).
+    await everywhere(
+      async () => (await request.get(`/api/v1/titles/${titleId}`)).status() === 200,
+      "the title available again",
+    ).catch(() => undefined);
   }
 });
 
@@ -287,6 +335,7 @@ test("a change of experiment assignment is never served a page cached under the 
   // The page's clock is the test's: the session goes stale (five minutes) while a page cached
   // a minute earlier is still fresh (two), the moment that tells the two apart.
   await page.clock.install();
+  const clockInstalledAt = Date.now();
   const seriesPages: string[] = [];
   page.on("request", (sent) => {
     const url = new URL(sent.url());
@@ -355,15 +404,17 @@ test("a change of experiment assignment is never served a page cached under the 
       )
       .toBeTruthy();
 
-    // Four minutes on, Series is visited (cached now); a minute later the session is stale.
-    await page.clock.fastForward("04:00");
+    // Four minutes on, Series is visited (cached now); a minute later the session is stale. The
+    // page's clock ran on while the experiment went live (a minute ahead outside dev): counted.
+    await page.clock.fastForward(Math.max(0, 4 * 60_000 - (Date.now() - clockInstalledAt)));
     await page
       .getByRole("navigation", { name: "Primary" })
       .getByRole("link", { name: "Series" })
       .click();
     await expect(page).toHaveURL(/\/browse\/series$/);
     await expect(page.locator("[data-row-kind]").first()).toBeVisible();
-    expect(seriesPages).toHaveLength(1);
+    // The page asks once (the previous page's rows can still be on screen when it does).
+    await expect.poll(() => seriesPages.length).toBe(1);
     await page.clock.fastForward("01:05");
 
     // Back to the tab: the stale session is read again and brings the assignment. The Series

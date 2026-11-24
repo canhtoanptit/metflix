@@ -220,10 +220,15 @@ test("A Google-only member locks a profile and removes a forgotten PIN, confirmi
     .getByRole("button", { name: "Remove lock" })
     .click();
   await expect(page.getByRole("heading", { name: "Who's watching?" })).toHaveCount(0);
-  const profiles = (await (await page.context().request.get("/api/v1/profiles")).json()) as {
-    items: Array<{ id: string; isLocked: boolean }>;
-  };
-  expect(profiles.items.find((item) => item.id === profileId)?.isLocked).toBe(false);
+  // The gate closes while the removal is still on its way: read until it has landed.
+  await expect
+    .poll(async () => {
+      const profiles = (await (await page.context().request.get("/api/v1/profiles")).json()) as {
+        items: Array<{ id: string; isLocked: boolean }>;
+      };
+      return profiles.items.find((item) => item.id === profileId)?.isLocked;
+    })
+    .toBe(false);
 });
 
 test("Linking refused for want of a fresh proof: said so, and the confirmation is asked for again", async ({

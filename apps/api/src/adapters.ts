@@ -51,6 +51,7 @@ import { createPostgresDatabase, type PostgresRole } from "@webflix/db/postgres"
 import { createSqliteDatabase } from "@webflix/db/sqlite";
 import type { ReadinessCheck } from "@webflix/http";
 import type { ApiConfig } from "./config.ts";
+import { createHashingGate, gatedPasswordHasher, type HashingGate } from "./hashing.ts";
 import { createDirectoryBlobStore, layerBlobStores } from "./media-dir.ts";
 
 /** The job queue as the process sees it: a producer plus a consumer loop it can start. */
@@ -80,6 +81,8 @@ export interface Infrastructure extends SharedState {
   /** Reachability of the blob store (S3: the bucket), for bootstrap waits; not in readiness. */
   pingBlobs(): Promise<void>;
   passwords: PasswordHasher;
+  /** The queue `passwords` hashes through (a few at a time: hashing.ts). */
+  hashing: HashingGate;
 }
 
 /**
@@ -112,6 +115,8 @@ export function createDatabase(config: ApiConfig, role: PostgresRole, logger?: L
     ? createPostgresDatabase({
         connectionString: config.database.url,
         maxConnections: config.database.maxConnections,
+        // A warm minimum where members wait on the answers (the API); others open on demand.
+        minConnections: role === "request" ? config.database.minConnections : 0,
         applicationName: `webflix-${config.core.mode}`,
         role,
         ...config.database.timeouts[role],
@@ -239,6 +244,7 @@ export function createInfrastructure(
   const repos = createRepositories(database);
   const shared = createSharedState(config, deps);
   const blobs = createBlobStore(config);
+  const hashing = createHashingGate(config.hashConcurrency);
   return {
     ...shared,
     database,
@@ -246,7 +252,8 @@ export function createInfrastructure(
     search: createSqlSearchIndex(database),
     blobs: blobs.store,
     pingBlobs: blobs.ping,
-    passwords: createPasswordHasher(config),
+    passwords: gatedPasswordHasher(createPasswordHasher(config), hashing),
+    hashing,
     readiness: [{ name: "database", check: () => repos.ping() }, ...shared.readiness],
     async close() {
       await shared.close();

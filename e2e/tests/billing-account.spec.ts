@@ -342,7 +342,12 @@ test("a scheduled deletion: the membership says so, offers nothing billing would
   await createBareAccount(request, "billing-deletion");
   await subscribe(request, { planId: "standard", card: freshCard() });
   await addProfile(request);
-  await scheduleDeletion(request);
+  const deletionDue = Date.parse(await scheduleDeletion(request));
+  const trialEnds = Date.parse((await membershipOf(request)).trialEndsAt ?? "");
+  test.skip(
+    !(trialEnds < deletionDue),
+    "the deletion is due before the free trial ends here (a short WEBFLIX_DELETION_COOLING_OFF_SEC); this spec needs the trial to end first, as with the default 14 days",
+  );
 
   await page.goto("/account/membership");
   const notice = page.getByText(/Your account is scheduled to be deleted on/);

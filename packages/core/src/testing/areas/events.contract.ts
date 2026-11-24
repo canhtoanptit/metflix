@@ -541,6 +541,79 @@ export function describeEventsRepositoryContract(
       expect(await repo().takeOutbox(10)).toEqual([]);
     });
 
+    it("records the same report twice at once: both answered, its events and progress once", async () => {
+      await account();
+      await h().repos.profiles.createWithinLimit(
+        makeProfileRow({ id: "p-1", accountId: "acc-1" }),
+        5,
+      );
+      const row = (id: string, at: number) => ({
+        id,
+        accountId: "acc-1",
+        profileId: "p-1",
+        payload: JSON.stringify({ event: { eventId: id } }),
+        createdAt: at,
+      });
+      const start = T0 + DAY_MS;
+      const session = {
+        id: "ps-twice",
+        accountId: "acc-1",
+        profileId: "p-1",
+        sessionId: "ses-acc-1",
+        titleId: "t-1",
+        episodeId: null,
+        assetId: null,
+        maxVideoHeight: 1080,
+        startedAt: start,
+        lastHeartbeatAt: start,
+        endedAt: null,
+        positionSec: 0,
+        durationSec: 600,
+        watchedSec: 0,
+        state: "playing" as const,
+      };
+      await h().repos.playback.create(session, { outbox: [row("e-start", start)] });
+      // Two heartbeats with the same report, in the same millisecond.
+      const report = () =>
+        h().repos.playback.recordHeartbeat({
+          playbackSessionId: "ps-twice",
+          profileId: "p-1",
+          titleId: "t-1",
+          episodeId: null,
+          positionSec: 30,
+          durationSec: 600,
+          state: "playing",
+          completed: false,
+          now: start + 30_000,
+          maxCreditSec: 90,
+          historyId: "h-twice",
+          ends: false,
+          outbox: [row("e-q1", start + 30_000)],
+        });
+      await expect(Promise.all([report(), report()])).resolves.toHaveLength(2);
+      expect((await repo().takeOutbox(10)).map((event) => event.id)).toEqual(["e-start", "e-q1"]);
+      // The progress and the credit land once.
+      expect(await h().repos.playback.get("ps-twice")).toMatchObject({
+        positionSec: 30,
+        watchedSec: 30,
+        endedAt: null,
+      });
+      const signals = await h().repos.library.loadSignals("p-1");
+      expect(signals.progress).toMatchObject([{ titleId: "t-1", positionSec: 30 }]);
+      // Two releases at once (a release beside the expiry sweep): the events once, ended once.
+      const release = () =>
+        h().repos.playback.end("ps-twice", start + 40_000, {
+          outbox: [row("e-abandon", start + 40_000)],
+        });
+      await expect(Promise.all([release(), release()])).resolves.toHaveLength(2);
+      expect((await repo().takeOutbox(10)).map((event) => event.id)).toEqual([
+        "e-start",
+        "e-q1",
+        "e-abandon",
+      ]);
+      expect((await h().repos.playback.get("ps-twice"))?.endedAt).toBe(start + 40_000);
+    });
+
     it("finds open playback sessions by their credit clock, for the expiry sweep", async () => {
       await account();
       await h().repos.profiles.createWithinLimit(

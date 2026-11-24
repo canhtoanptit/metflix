@@ -13,7 +13,7 @@ Webflix is a spike that reproduces the main features of Netflix and proves that 
 
 A feature is done only when it works in **both** required modes.
 
-**Status (2026-11-21).** The MVP (§1.1) is built and verified in the dev mode, on kind and in Cloudflare's local runtime. The Cloudflare production deploy has only been rehearsed as a dry run (docs/CLOUDFLARE.md §8). None of the stretch goals (§1.2) was built. How to run and verify each mode: the repository's `README.md`.
+**Status (2026-11-21).** The MVP (§1.1) is built and verified in the dev mode, on kind and in Cloudflare's local runtime. The Cloudflare production deploy has only been rehearsed as a dry run (docs/CLOUDFLARE.md §8). None of the stretch goals (§1.2) was built. How to run and verify each mode: the repository's `README.md`. Milestone 2 (accounts through an identity provider, billing, behaviour events, recommendations, experiments, the staff console) is designed in `docs/BLUEPRINT-M2.md`, whose §13 states what is built and proven as of 2026-11-23.
 
 ---
 

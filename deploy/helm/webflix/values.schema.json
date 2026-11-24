@@ -476,6 +476,11 @@
           "minimum": 1,
           "maximum": 100
         },
+        "databasePoolMin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
         "shutdownDelaySec": {
           "type": "integer",
           "minimum": 0,
@@ -1873,6 +1878,17 @@
                 "schedule": {
                   "type": "string",
                   "minLength": 9
+                },
+                "activeDeadlineSeconds": {
+                  "type": ["integer", "null"],
+                  "minimum": 60
+                },
+                "workSizeLimit": {
+                  "type": ["string", "null"],
+                  "pattern": "^[0-9]+(Mi|Gi)$"
+                },
+                "resources": {
+                  "type": "object"
                 }
               }
             },

@@ -3,6 +3,12 @@
  * cascades to everything personal and to nothing that must be retained. Guards the schema, so
  * a foreign key added to a retained table (or removed from a personal one) fails here.
  */
+import {
+  makeAccountRecord,
+  makeProfileRow,
+  makeSessionRecord,
+  makeSubscriptionRecord,
+} from "@webflix/core/testing";
 import { sql } from "kysely";
 import { describe, expect, it } from "vitest";
 import { createRepositories } from "../src/repositories/index.ts";
@@ -172,6 +178,64 @@ describe("the erasure's lock (SQL: identity's tables too)", () => {
         email_verified_at: null,
         access_proven_at: null,
       });
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("the playback outbox absorbs only its own repeats (SQL)", () => {
+  it("a real failure in the batch still fails it, and its outbox row is not written", async () => {
+    const { database, cleanup } = await createSqliteHarness();
+    try {
+      const repos = createRepositories(database);
+      await repos.accounts.createWithSession({
+        account: makeAccountRecord({ id: "acc", email: "a@example.com", createdAt: NOW }),
+        subscription: makeSubscriptionRecord({ accountId: "acc" }),
+        session: makeSessionRecord({ id: "ses", tokenHash: "hash", accountId: "acc" }),
+      });
+      await repos.profiles.createWithinLimit(makeProfileRow({ id: "p", accountId: "acc" }), 5);
+      await repos.playback.create({
+        id: "ps",
+        accountId: "acc",
+        profileId: "p",
+        sessionId: "ses",
+        titleId: "t-1",
+        episodeId: null,
+        assetId: null,
+        maxVideoHeight: 1080,
+        startedAt: NOW,
+        lastHeartbeatAt: NOW,
+        endedAt: null,
+        positionSec: 0,
+        durationSec: 600,
+        watchedSec: 0,
+        state: "playing",
+      });
+      const outbox = [
+        { id: "e-q1", accountId: "acc", profileId: "p", payload: "{}", createdAt: NOW + 30_000 },
+      ];
+      // The progress write names a profile that does not exist: its foreign key refuses it.
+      await expect(
+        repos.playback.recordHeartbeat({
+          playbackSessionId: "ps",
+          profileId: "p-missing",
+          titleId: "t-1",
+          episodeId: null,
+          positionSec: 30,
+          durationSec: 600,
+          state: "playing",
+          completed: false,
+          now: NOW + 30_000,
+          maxCreditSec: 90,
+          historyId: "h-1",
+          ends: false,
+          outbox,
+        }),
+      ).rejects.toThrow(/FOREIGN KEY/);
+      // Atomic: nothing of that batch was written, the outbox row included.
+      expect(await repos.events.takeOutbox(10)).toEqual([]);
+      expect(await repos.playback.get("ps")).toMatchObject({ positionSec: 0, watchedSec: 0 });
     } finally {
       await cleanup();
     }

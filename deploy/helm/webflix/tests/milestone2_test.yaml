@@ -152,7 +152,11 @@ tests:
           pattern: "connect-src 'self'; "
       - notMatchRegex:
           path: data["admin-security-headers.conf"]
-          pattern: "https:[; ]|stripe|googleapis"
+          pattern: "https:[; ]|stripe|googleapis|data:|blob:"
+      # No frames, workers or media (frame-src would otherwise fall back to default-src 'self').
+      - matchRegex:
+          path: data["admin-security-headers.conf"]
+          pattern: "media-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'"
   - it: lets the console reach Keycloak, the staff issuer, and names it in config.json
     template: web/admin.yaml
     set:

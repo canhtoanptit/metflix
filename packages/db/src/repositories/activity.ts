@@ -179,7 +179,14 @@ export function createPlaybackRepository(database: Database): PlaybackRepository
     created_at: event.createdAt,
   });
 
-  /** Insert an outbox row only while `live` (the playback session, not ended) selects a row. */
+  /**
+   * Insert an outbox row only while `live` (the playback session, not ended) selects a row.
+   * An outbox id is derived from its event (the session and the milestone), so the same report
+   * arriving twice at once (two heartbeats in one millisecond, two releases, the expiry sweep
+   * beside a release, several replicas) writes the same row: one that is already there is that
+   * event, written, and the rest of the batch lands as usual. Only a conflict on the id is
+   * absorbed; any other failure still fails the batch.
+   */
   function liveOutboxInsert(
     live: SelectQueryBuilder<DB, "playback_sessions", object>,
     event: OutboxEvent,
@@ -195,7 +202,8 @@ export function createPlaybackRepository(database: Database): PlaybackRepository
           typed(dialect, event.payload, "text").as("payload"),
           typed(dialect, event.createdAt, "time").as("created_at"),
         ]),
-      );
+      )
+      .onConflict((oc) => oc.column("id").doNothing());
   }
 
   return {
@@ -225,7 +233,12 @@ export function createPlaybackRepository(database: Database): PlaybackRepository
       // The server events of the start go in the same batch: no extra round trip.
       await database.batch([
         insert,
-        ...outbox.map((event) => db.insertInto("event_outbox").values(outboxRow(event))),
+        ...outbox.map((event) =>
+          db
+            .insertInto("event_outbox")
+            .values(outboxRow(event))
+            .onConflict((oc) => oc.column("id").doNothing()),
+        ),
       ]);
     },
 

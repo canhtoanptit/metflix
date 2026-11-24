@@ -14,6 +14,7 @@ import {
   STRIPE_CSP_SOURCES,
   withPaymentProvider,
 } from "../../scripts/lib/security-headers.ts";
+import { consoleContentSecurityPolicy } from "../../src/console-policy.ts";
 
 const CHART = join(import.meta.dirname, "..", "..", "..", "..", "deploy", "helm", "webflix");
 
@@ -47,6 +48,26 @@ function renderKubernetes(tls: boolean): HeaderList {
   return [...rendered.matchAll(/add_header\s+(\S+)\s+"((?:[^"\\]|\\.)*)"\s+always;/g)].map(
     (match): [string, string] => [match[1] ?? "", (match[2] ?? "").replaceAll('\\"', '"')],
   );
+}
+
+/** The staff console's policy as the chart renders it (templates/web/admin.yaml). */
+function renderKubernetesConsolePolicy(sets: string[]): string {
+  const rendered = execFileSync(
+    "helm",
+    [
+      "template",
+      "webflix",
+      CHART,
+      "--show-only",
+      "templates/web/admin.yaml",
+      "--set",
+      "secrets.generateWithoutCluster=true",
+      ...sets.flatMap((set) => ["--set", set]),
+    ],
+    { encoding: "utf8" },
+  );
+  const match = /add_header Content-Security-Policy "((?:[^"\\]|\\.)*)" always;/.exec(rendered);
+  return (match?.[1] ?? "").replaceAll('\\"', '"');
 }
 
 /** The `/*` block of a `_headers` file. */
@@ -120,6 +141,27 @@ describe("SPA security headers: Kubernetes (Helm) and Cloudflare (_headers) agre
     expect(production[1]).toContain("connect-src 'self' https://sso.example.com;");
     expect(production.join(" ")).not.toMatch(/stripe|googleapis|https:;|https: /);
   });
+
+  it.runIf(helmAvailable())(
+    "gives the staff console the same policy on Kubernetes as on Cloudflare, whatever its issuer",
+    () => {
+      // Outside production: the development issuer, a path on this origin.
+      expect(renderKubernetesConsolePolicy(["config.environment=development"])).toBe(
+        consoleContentSecurityPolicy("/dev-idp/staff"),
+      );
+      // Production without a staff issuer: the console signs nobody in and connects nowhere else.
+      expect(renderKubernetesConsolePolicy([])).toBe(consoleContentSecurityPolicy(null));
+      // A staff issuer on another origin: that origin, nothing more.
+      const sso = "https://sso.example.com/realms/webflix";
+      expect(renderKubernetesConsolePolicy([`config.staff.issuer=${sso}`])).toBe(
+        consoleContentSecurityPolicy(sso),
+      );
+      // The chart's own Keycloak.
+      expect(renderKubernetesConsolePolicy(["keycloak.enabled=true"])).toBe(
+        consoleContentSecurityPolicy("https://webflix-keycloak:8443/realms/webflix"),
+      );
+    },
+  );
 
   it("starts a missing directive from default-src and never duplicates a source", () => {
     expect(

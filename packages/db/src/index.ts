@@ -19,6 +19,8 @@ export {
   type DatabaseStats,
   isDatabaseUnavailable,
   isUniqueViolation,
+  type PoolStats,
+  type PoolWarmth,
   type RawStatementResult,
   type StatementResult,
   TooManyParametersError,

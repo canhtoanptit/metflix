@@ -125,6 +125,11 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
   const tick = () => {
     s.queries += 1;
   };
+  /** As the SQL outbox's primary key: the same event (its id) is kept once. */
+  const addOutbox = (event: OutboxEvent) => {
+    if (!s.eventOutbox.some((existing) => existing.id === event.id))
+      s.eventOutbox.push(copy(event));
+  };
   const personalisation = createMemoryPersonalisationRepository();
   const experiments = createMemoryExperimentsRepository();
   const emailTaken = (email: string, exceptId?: string) =>
@@ -458,7 +463,7 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
       async create(session, options = {}) {
         tick();
         s.playback.set(session.id, copy(session));
-        for (const event of options.outbox ?? []) s.eventOutbox.push(copy(event));
+        for (const event of options.outbox ?? []) addOutbox(event);
       },
       async get(playbackSessionId) {
         tick();
@@ -471,7 +476,7 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
         const session = s.playback.get(write.playbackSessionId);
         // As in SQL: a report for a session that has ended (a release won the race) is ignored.
         if (!session || session.endedAt !== null) return;
-        for (const event of write.outbox ?? []) s.eventOutbox.push(copy(event));
+        for (const event of write.outbox ?? []) addOutbox(event);
         {
           // As in SQL: what the previous report's state and the credit clock allow.
           const active = session.state === "playing" || session.state === "buffering";
@@ -524,7 +529,7 @@ export function createMemoryRepositories(store = new MemoryStore()): Repositorie
         const session = s.playback.get(playbackSessionId);
         if (session && session.endedAt === null) {
           session.endedAt = now;
-          for (const event of options.outbox ?? []) s.eventOutbox.push(copy(event));
+          for (const event of options.outbox ?? []) addOutbox(event);
         }
       },
       async deleteStartedBefore(cutoff) {

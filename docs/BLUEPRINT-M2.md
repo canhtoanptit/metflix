@@ -534,3 +534,95 @@ only `webflix*` clusters and containers, the repository kubeconfig, processes st
 - **Security**: independent review with no open high-severity finding.
 - **Gates**: lint, typecheck and tests; the conformance suite and the browser suite pass three
   times running in each mode.
+
+## 13. Status (2026-11-23)
+
+What §12 asks for, against what was run. "Run by the committer" means the session that integrated the
+work ran it itself on the committed code; everything else names who ran it. The suites: the
+conformance suite (`tools/smoke`, 152 black-box checks) and the browser suite (`e2e`, 282 tests over
+Chromium, Firefox, WebKit and the staff console).
+
+| Mode | Conformance | Browser suite |
+| --- | --- | --- |
+| dev (Node, SQLite, built app) | 147 passed, 0 failed, 5 skipped (twice on one database) | 274 passed, 0 failed, 8 skipped, on Chromium, Firefox and WebKit |
+| Cloudflare (local Worker, D1, KV, R2, cron and lake jobs loops) | 149 passed, 0 failed, 3 skipped | 274 passed, 0 failed, 8 skipped, on Chromium, Firefox and WebKit |
+| Kubernetes (kind, one node, conformance variant: PostgreSQL, Valkey, Garage, two replicas of each tier) | 148 passed, 0 failed, 4 skipped | 274 passed, 0 failed, 8 skipped, on Chromium, Firefox and WebKit |
+
+All run by the committer, once per mode. The dev and Kubernetes runs were on the final code. The
+Cloudflare run came before the last changes: the duplicate-heartbeat fix (found by that run), and
+the browser specs and the one conformance check changed during the Kubernetes run. The Worker's own
+tests (298, with the duplicate-heartbeat case) pass on the final code; the two suites were not rerun
+on it. Every skip names its reason; they are conditions of the target (relaxed rate limits, every
+title packaged, probes not routed, a setting a spec needs that the variant does not have), not
+failures waived.
+
+**Journeys pass in both modes: met, with the fake payment provider.** Every journey of §12 has a
+conformance check and a browser spec, and they pass in all three modes above. The journeys that
+involve money run against `packages/payments-fake`, not Stripe.
+
+**Real Stripe: not met.** On 2026-11-21 and 22 a proof run of eleven scenarios, the adapter's
+contract suite in Node and in workerd, and seven of eight real-time journeys in dev with webhooks
+delivered by Stripe all passed against a Stripe sandbox (`docs/STRIPE.md`). Then the claimable
+sandbox key's own, lower rate limit began answering 429 to every request, and it still did on
+2026-11-23. Never run against Stripe: the outage journey, the Worker and the cluster through the
+HTTP webhook route, and everything billing gained since (rate limits, the first-invoice preview,
+credit and discount amounts, erasure of the customer). The sandbox expires on 2026-11-28; claiming
+it, which lifts the limit, is the owner's decision.
+
+**No card data on Webflix servers: met.** Request bodies are strict and a card is refused without
+being echoed (contract test, conformance check `identity.signup.card-data-refused`); browser specs
+assert card fields only ever post to the provider's origin.
+
+**Recommendations: met offline, with a caveat online.** Under the gate as it now stands (the home
+page members see, at three weekly cutoffs) the learned page beats the rule engine's in 9 of 9 seed
+and cutoff cells at medium size and at all three cutoffs at full size; at smoke size no interval
+clears zero and the gate refuses. Served to one arm in the simulator, the model raises plays by 3
+to 4% in its first week and is within noise over two weeks without a daily refresh; the product's
+own analysis would detect that first-week effect reliably only at full-size traffic. An A/A test
+reads flat. A restricted, erased or deleted profile is excluded from datasets, scoring and import.
+Numbers with their spread: `docs/RECOMMENDATIONS-ML.md`. Production serves the rule engine until an
+operator turns the learned policy on.
+
+**Privacy: met for opt-in, the default.** Opt-in is proven by the suites in every mode; opt-out by
+browser specs on an opt-out dev API; `off` was not run live in any mode. Export and deletion complete in every
+mode (inline in dev, through the scheduled lake jobs elsewhere). A kids or restricted profile
+produces no behavioural events. Retention is enforced by `webflix-recs retain` and the product's
+own sweep.
+
+**Security: met.** The independent review found one high-severity defect, an account takeover
+through automatic linking, which is fixed and held by the conformance check
+`identity.oidc.prehijack`. No high finding is open. The independent privacy, pipeline and UX reviews
+and what was done about each finding are recorded in the commit of 2026-11-23 "Fix what four
+independent reviews found".
+
+**Gates: met once, not three times.** Lint, typecheck and tests pass. The suites passed once per
+mode by the committer, not the three consecutive runs §12 asks for: the owner judged the full gate
+more than a spike needs.
+
+### Known gaps
+
+- Nothing has been deployed to a real Cloudflare account, and no real Google or Apple client has
+  been used. The staff console's sign-in through Keycloak was proven once in a headless browser on
+  the production configuration of the local cluster.
+- Restarting a membership does not use the card on file, and an account without a trial makes two
+  trips to the provider's page.
+- A staff member with only the Billing role cannot open a member's page, so cannot reach Refund.
+- Staff tokens are validated offline and cannot be revoked within their five-minute life, and the
+  staff API has no rate limit.
+- Two confirmations of one checkout at the same instant can disagree about trial eligibility, and
+  a process that dies between writing a membership and its follow-up steps loses that change's
+  event and emails.
+- Restoring a database backup brings back accounts erased after the backup; nothing that survives
+  the restore names them (`docs/KUBERNETES.md` §5, `docs/CLOUDFLARE.md` §8).
+- After keeping an account that was scheduled for deletion, the "if you resume" amount is the
+  plan's list price; the server has no "if resumed" figure.
+- Email dates are UTC calendar dates and can differ by a day from what the app shows.
+- On Kubernetes, password and PIN hashing is the capacity limit (about seven checks per second per
+  CPU); the hashing queue has no bound. The three-node failure scripts and key rotation were not
+  rerun in this milestone.
+- Garage, the cluster's object store, ignores conditional writes (lake jobs are serialised by the
+  schedule) and its lifecycle rules are unproven.
+- The pseudonym key cannot be rotated.
+- A hover preview can cover the consent prompt; titles repeat near the top of the personalised
+  home page.
+- The Vite dev server can abort on Node 26.8.1 (a V8 fault); the suites run against the built app.

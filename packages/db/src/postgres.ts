@@ -9,6 +9,7 @@ import {
   createDatabase,
   type Database,
   isDatabaseUnavailable,
+  type PoolWarmth,
 } from "./database.ts";
 
 /**
@@ -42,6 +43,15 @@ export interface PostgresOptions {
   connectionString: string;
   /** Pool size per process. Default 10. */
   maxConnections?: number;
+  /**
+   * Connections the pool keeps open however long they idle (pg-pool's `min`; at most
+   * `maxConnections`). `warm()` opens them; afterwards a burst finds them open instead of opening
+   * new ones, each a DNS lookup, a TCP and TLS handshake and a SCRAM exchange whose key
+   * derivation runs on Node's threadpool. Default 0: open on demand.
+   */
+  minConnections?: number;
+  /** How long a connection above the minimum may idle before it is closed. Default 10 000. */
+  idleTimeoutMs?: number;
   /** Sets `search_path` on every connection (isolated schemas in tests). */
   schema?: string;
   /** The timeouts of this role (`POSTGRES_ROLE_TIMEOUTS`); the two options below override them. */
@@ -114,9 +124,13 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
   const statementTimeoutMs = options.statementTimeoutMs ?? role.statementTimeoutMs;
   const queryTimeoutMs = options.queryTimeoutMs ?? role.queryTimeoutMs;
   const keepAliveInitialDelayMs = options.keepAliveInitialDelayMs ?? 10_000;
+  const max = options.maxConnections ?? 10;
+  const min = Math.max(0, Math.min(options.minConnections ?? 0, max));
   const pool = new pg.Pool({
     connectionString: options.connectionString,
-    max: options.maxConnections ?? 10,
+    max,
+    min,
+    idleTimeoutMillis: options.idleTimeoutMs ?? 10_000,
     application_name: options.applicationName ?? "webflix",
     connectionTimeoutMillis: options.connectTimeoutMs ?? 5_000,
     // 0 (none) is left out: node-postgres sends only set values.
@@ -179,9 +193,38 @@ export function createPostgresDatabase(options: PostgresOptions): Database {
     },
   };
 
+  /**
+   * Open connections until the pool holds `min`. To make the pool open new ones rather than lend
+   * the idle ones again, hold as many as are missing beside those lent to requests, all at once,
+   * then give them back: pg-pool keeps up to `min` of them, however long they idle. Skipped while
+   * requests wait for a connection (they would wait longer) or when nothing is missing.
+   */
+  async function warm(): Promise<PoolWarmth> {
+    const lent = pool.totalCount - pool.idleCount;
+    const wanted = min - lent;
+    if (pool.totalCount >= min || pool.waitingCount > 0 || wanted <= 0) {
+      return { opened: 0, total: pool.totalCount };
+    }
+    const before = pool.totalCount;
+    const held = await Promise.allSettled(Array.from({ length: wanted }, () => pool.connect()));
+    let failure: unknown;
+    for (const outcome of held) {
+      if (outcome.status === "fulfilled") outcome.value.release();
+      else failure ??= outcome.reason;
+    }
+    if (failure !== undefined && pool.totalCount < min) throw failure;
+    return { opened: Math.max(0, pool.totalCount - before), total: pool.totalCount };
+  }
+
   return createDatabase({
     dialect: "postgres",
     kyselyDialect: new PostgresDialect({ pool: guardedPool }),
+    warm,
+    poolStats: () => ({
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+    }),
     async executeBatch(statements: readonly CompiledQuery[]) {
       const client = await pool.connect();
       // Set when the connection may not go back to the pool: it is gone, or its transaction

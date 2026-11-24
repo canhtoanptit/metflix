@@ -19,6 +19,11 @@ export type DatabaseConfig =
       kind: "postgres";
       url: string;
       maxConnections: number;
+      /**
+       * Connections the API keeps open however idle, opened before it takes traffic (the request
+       * role only: the worker and the Jobs open on demand). At most `maxConnections`.
+       */
+      minConnections: number;
       /** Per role; a role without an entry keeps its defaults. */
       timeouts: Partial<Record<PostgresRole, PostgresTimeouts>>;
       /** TCP keepalive's first probe after this much idle time (0: off); null: the default. */
@@ -68,6 +73,14 @@ export interface ApiConfig {
   /** Jobs one worker process runs concurrently. */
   jobsConcurrency: number;
   passwordHasher: "scrypt" | "pbkdf2";
+  /**
+   * Password and PIN hashes one process computes at once; the rest wait their turn in the
+   * process. Hashes run on libuv's threadpool, which DNS lookups, file reads, compression and
+   * WebCrypto (PostgreSQL's SCRAM sign-in) share: with every thread hashing, opening a database
+   * connection waits behind the whole queue of hashes (docs/KUBERNETES.md §9.11, K17). Default:
+   * the threadpool's size minus two (2 of Node's default 4), at least 1; never all of it.
+   */
+  hashConcurrency: number;
   migrateOnStart: boolean;
   seedOnStart: boolean;
   /** Trust `X-Forwarded-For` (behind the k8s gateway) for client IPs. */
@@ -139,6 +152,11 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     HOST: z.string().min(1).optional(),
     WEBFLIX_DATABASE_URL: z.string().min(1).optional(),
     WEBFLIX_DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
+    WEBFLIX_DATABASE_POOL_MIN: z.coerce.number().int().min(0).default(4),
+    WEBFLIX_HASH_CONCURRENCY: z.coerce.number().int().positive().optional(),
+    // Node's own: the size of libuv's threadpool (default 4), which hashing shares with DNS
+    // lookups, file reads, compression and WebCrypto (PostgreSQL's SCRAM sign-in).
+    UV_THREADPOOL_SIZE: z.coerce.number().int().min(1).max(1024).optional(),
     WEBFLIX_DATABASE_KEEPALIVE_MS: z.coerce.number().int().min(0).optional(),
     WEBFLIX_BLOB_STORE: z.enum(["fs", "memory", "s3"]).optional(),
     WEBFLIX_BLOB_DIR: z.string().min(1).optional(),
@@ -234,6 +252,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       kind: "postgres",
       url,
       maxConnections: vars.WEBFLIX_DATABASE_POOL_MAX,
+      minConnections: Math.min(vars.WEBFLIX_DATABASE_POOL_MIN, vars.WEBFLIX_DATABASE_POOL_MAX),
       timeouts,
       keepAliveInitialDelayMs: vars.WEBFLIX_DATABASE_KEEPALIVE_MS ?? null,
     };
@@ -284,6 +303,14 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
         ? firstExisting([join(mediaDir, "manifest.json")])
         : null;
 
+  const threadpool = vars.UV_THREADPOOL_SIZE ?? 4;
+  const hashConcurrency = vars.WEBFLIX_HASH_CONCURRENCY ?? Math.max(1, threadpool - 2);
+  if (hashConcurrency >= threadpool) {
+    issues.push(
+      `WEBFLIX_HASH_CONCURRENCY: ${hashConcurrency} would let hashing take all ${threadpool} threads of libuv's threadpool (UV_THREADPOOL_SIZE), which DNS lookups and the database's sign-in also need; at most ${threadpool - 1}`,
+    );
+  }
+
   if (issues.length > 0) throw new ConfigError(issues);
   return {
     core,
@@ -299,6 +326,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     valkeyKeyPrefix: vars.WEBFLIX_VALKEY_KEY_PREFIX,
     jobsConcurrency: vars.WEBFLIX_JOBS_CONCURRENCY,
     passwordHasher: vars.WEBFLIX_PASSWORD_HASHER,
+    hashConcurrency,
     migrateOnStart: vars.WEBFLIX_MIGRATE_ON_START,
     seedOnStart: vars.WEBFLIX_SEED_ON_START,
     trustProxy: vars.WEBFLIX_TRUST_PROXY,
@@ -324,6 +352,7 @@ export function describeConfig(config: ApiConfig): Record<string, unknown> {
         : {
             kind: "postgres",
             poolMax: config.database.maxConnections,
+            poolMin: config.database.minConnections,
             timeoutOverrides: config.database.timeouts,
             keepAliveInitialDelayMs: config.database.keepAliveInitialDelayMs ?? "default",
           },
@@ -338,6 +367,7 @@ export function describeConfig(config: ApiConfig): Record<string, unknown> {
     sharedState: config.valkeyUrl ? `valkey:${redactUrl(config.valkeyUrl)}` : "in-process",
     trustProxy: config.trustProxy ? `${config.trustedProxyHops} hop(s)` : false,
     passwordHasher: config.passwordHasher,
+    hashConcurrency: config.hashConcurrency,
   };
 }
 

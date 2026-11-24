@@ -165,6 +165,54 @@ tests:
       - matchRegex:
           path: spec.jobTemplate.spec.template.spec.containers[0].command[2]
           pattern: "node apps/api/src/recs.ts import.*No recs/current.json"
+      # Exit 3 (imported, the shared cache not told): the Job succeeds and says so.
+      - matchRegex:
+          path: spec.jobTemplate.spec.template.spec.containers[0].command[2]
+          pattern: "if \\[ \"\\$code\" = 3 \\]; then note='imported, but the shared cache could not be told.*'; code=0;.*/dev/termination-log"
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].terminationMessagePolicy
+          value: FallbackToLogsOnError
+  - it: budgets train-and-score on its own (resources, deadline, /work) and keeps the others small
+    template: pipeline/cronjobs.yaml
+    asserts:
+      - documentIndex: 3
+        equal:
+          path: spec.jobTemplate.spec.activeDeadlineSeconds
+          value: 7200
+      - documentIndex: 3
+        equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[2].resources.limits.memory
+          value: 4Gi
+      - documentIndex: 3
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].resources.limits.memory
+          value: 4Gi
+      - documentIndex: 3
+        contains:
+          path: spec.jobTemplate.spec.template.spec.volumes
+          content:
+            name: work
+            emptyDir:
+              sizeLimit: 4Gi
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.activeDeadlineSeconds
+          value: 3600
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].resources.limits.memory
+          value: 2Gi
+  - it: sizes train-and-score for a member base near the full simulated size
+    template: pipeline/cronjobs.yaml
+    documentIndex: 3
+    set:
+      pipeline.jobs.trainAndScore.resources:
+        requests: { cpu: "2", memory: 12Gi }
+        limits: { cpu: "4", memory: 12Gi }
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.initContainers[4].resources.requests.memory
+          value: 12Gi
   - it: imports the realm with the staff client, the audience, the roles and the jobs' account
     template: keycloak/secrets.yaml
     set:

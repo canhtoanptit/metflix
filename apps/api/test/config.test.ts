@@ -95,6 +95,8 @@ describe("api config", () => {
       kind: "postgres",
       url: "postgres://u:p@db:5432/webflix",
       maxConnections: 20,
+      // Four kept open by the API, opened before it takes traffic.
+      minConnections: 4,
       // The role budgets (POSTGRES_ROLE_TIMEOUTS) apply unless overridden.
       timeouts: {},
       keepAliveInitialDelayMs: null,

@@ -45,6 +45,10 @@ const ALLOWED: Record<string, { calls: number; why: string }> = {
     calls: 1,
     why: "the hasher chain delegating to the hasher that made the hash",
   },
+  "apps/api/src/hashing.ts": {
+    calls: 1,
+    why: "the hashing gate queueing a call and passing it to the hasher it wraps",
+  },
 };
 
 function passwordVerifications(): Record<string, number> {

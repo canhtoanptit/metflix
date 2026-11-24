@@ -20,7 +20,16 @@ def demo_job(cron: dict, name: str, extra: list[str]) -> dict:
         raise SystemExit(f"{cron['metadata']['name']} has no container named import")
     container = containers[0]
     container["name"] = "demo"
-    container["command"] = ["node", "apps/api/src/recs.ts", "demo", *extra]
+    # Exit 3: published and imported, but the shared cache was not told after retries; every
+    # replica serves the run within the model's 30 s age bound, so the Job succeeds and says so
+    # (log and termination message), as the CronJob's import step does.
+    script = (
+        'node apps/api/src/recs.ts demo "$@"; code=$?; '
+        'if [ "$code" = 3 ]; then msg="demo run imported, but the shared cache could not be told '
+        'after retries (exit 3): every replica serves it within 30 s"; echo "$msg" >&2; '
+        '{ printf "%s" "$msg" > /dev/termination-log; } 2>/dev/null; exit 0; fi; exit "$code"'
+    )
+    container["command"] = ["sh", "-c", script, "recs-demo", *extra]
     container.pop("args", None)
     spec["containers"] = [container]
     spec.pop("initContainers", None)

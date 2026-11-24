@@ -167,10 +167,25 @@ test("a background tab that comes back after a sign-out shows it at once", async
   const device = await newDevice();
   await secondDevice(device, account);
   const b = await device.newPage();
+  // Heartbeats sent and still unanswered: the sign-out must come after the last report, or a
+  // report the API answers after it says the stream ended (410), which is true but not this test.
+  let reports = 0;
+  const unanswered = new Set<unknown>();
+  b.on("request", (sent) => {
+    if (new URL(sent.url()).pathname.endsWith("/heartbeat")) {
+      reports += 1;
+      unanswered.add(sent);
+    }
+  });
+  b.on("requestfinished", (done) => unanswered.delete(done));
+  b.on("requestfailed", (done) => unanswered.delete(done));
   await b.goto(`/watch/${movie.id}?t=0`);
   await waitForPlayback(b, 0.5);
+  const before = reports;
   await pause(b);
   await setVisibility(b, "hidden");
+  // Both report (lifecycle.ts): the pause, then the hidden tab (keepalive).
+  await expect.poll(() => reports >= before + 2 && unanswered.size === 0).toBe(true);
 
   const signOut = await owner.request.post("/api/v1/auth/logout-all", { headers: CLIENT_HEADERS });
   expect(signOut.status()).toBe(204);

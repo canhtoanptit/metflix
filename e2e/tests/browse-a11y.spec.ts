@@ -67,6 +67,17 @@ test("the hover preview has no WCAG 2.2 AA violations", async ({ page }) => {
   await hideDevChrome(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/browse");
+  // Until the account answers, the consent prompt arrives once the page settles (1.2 s), sooner
+  // or later than the preview: put it off, so this checks the preview and not the preview drawn
+  // over the prompt (the screens above are checked with whatever the account shows).
+  const consent = (await (await page.context().request.get("/api/v1/privacy/consent")).json()) as {
+    promptRequired?: boolean;
+  };
+  if (consent.promptRequired) {
+    const prompt = page.getByRole("region", { name: "Your viewing data, your choice" });
+    await prompt.getByRole("button", { name: "Decide later" }).click();
+    await expect(prompt).toBeHidden();
+  }
   const trending = page.getByRole("region", { name: "Trending Now" });
   await trending.scrollIntoViewIfNeeded();
   await page.evaluate(() => window.scrollBy(0, -160));

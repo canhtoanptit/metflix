@@ -12,6 +12,8 @@
 !apps/api
 !apps/web
 !apps/admin
+# The console's policy, shared by its Vite config and the Worker (a file without imports).
+!apps/edge/src/console-policy.ts
 !packages
 !tools/media
 !services/recs/scripts

@@ -29,3 +29,12 @@ tests:
     asserts:
       - notExists:
           path: spec.template.spec.securityContext.sysctls
+  - it: keeps a warm minimum of database connections in each API pod (K17)
+    template: configmap.yaml
+    asserts:
+      - equal:
+          path: data.WEBFLIX_DATABASE_POOL_MIN
+          value: "4"
+      - equal:
+          path: data.WEBFLIX_DATABASE_POOL_MAX
+          value: "10"

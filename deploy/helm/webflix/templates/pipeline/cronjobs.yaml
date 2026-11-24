@@ -82,26 +82,36 @@ next scheduler tick (experiments.import-results). */}}
 ---
 {{- /*
 One pod, steps in order on a shared /work: the catalogue snapshot (Node: @webflix/catalog as the
-seeder builds it) copied into the bucket, train-and-score's first phase (dataset, backtest run,
-the rule engine's input), the rule engine's rankings (Node: @webflix/core), the second phase
-(evaluation, production run, scoring), then publish, which the gate may refuse (exit 3: nothing
-is published and the served run stays). The import then publishes recs/current.json into the
-recommendation store; it is a no-op when that run is already served.
+seeder builds it) copied into the bucket, train-and-score's first phase (datasets, backtest runs,
+the rule engine's input, one section per gate cutoff), the rule engine's rankings (Node:
+@webflix/core), the second phase (evaluations, production run, scoring), then publish, which the
+gate may refuse (exit 3: nothing is published and the served run stays). The import then
+publishes recs/current.json into the recommendation store; it is a no-op when that run is already
+served. The heaviest job: its own resources, deadline and /work size (pipeline.jobs.trainAndScore).
 */}}
+{{- $t := $j.trainAndScore }}
+{{- $res := $t.resources | default $p.resources }}
+{{- $publish := "webflix-recs --store \"$WEBFLIX_RECS_STORE\" publish; code=$?; if [ \"$code\" = 3 ]; then msg='publish refused by the gate (exit 3): the served run stays'; echo \"$msg\" >&2; { printf '%s' \"$msg\" > /dev/termination-log; } 2>/dev/null; exit 0; fi; exit \"$code\"" }}
 {{- $init := list
-  (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "catalog" "command" (list "node" "services/recs/scripts/export-catalog.ts" "--store" "/work/catalog")))
-  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "catalog-upload" "command" (list "python" "/scripts/copy_objects.py" "/work/catalog" $store "catalog/")))
-  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "prepare" "args" (concat $root (list "train-and-score" "--phase" "prepare" "--work" "/work/train"))))
-  (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "rule-engine" "command" (list "node" "services/recs/scripts/rule-engine-rankings.ts" "--input" "/work/train/engine-input.ndjson" "--out-dir" "/work/train")))
-  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "finish" "args" (concat $root (list "train-and-score" "--phase" "finish" "--work" "/work/train"))))
-  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "publish" "command" (list "sh" "-c" "webflix-recs --store \"$WEBFLIX_RECS_STORE\" publish; code=$?; if [ \"$code\" = 3 ]; then echo 'publish refused by the gate (exit 3): the served run stays' >&2; exit 0; fi; exit \"$code\"")))
+  (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "catalog" "resources" $res "command" (list "node" "services/recs/scripts/export-catalog.ts" "--store" "/work/catalog")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "catalog-upload" "resources" $res "command" (list "python" "/scripts/copy_objects.py" "/work/catalog" $store "catalog/")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "prepare" "resources" $res "args" (concat $root (list "train-and-score" "--phase" "prepare" "--work" "/work/train"))))
+  (include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "rule-engine" "resources" $res "command" (list "node" "services/recs/scripts/rule-engine-rankings.ts" "--input" "/work/train/engine-input.ndjson" "--out-dir" "/work/train")))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "finish" "resources" $res "args" (concat $root (list "train-and-score" "--phase" "finish" "--work" "/work/train"))))
+  (include "webflix.pipeline.recsContainer" (dict "ctx" . "name" "publish" "resources" $res "command" (list "sh" "-c" $publish)))
 }}
-{{- /* The importer exits 1 with "No recs/current.json" until a first run is published (a fresh
-install, a young lake, a gate that has not passed yet): nothing to import, not a failure.
-Every other failure stays one. */}}
-{{- $import := "out=$(node apps/api/src/recs.ts import 2>&1); code=$?; printf '%s\\n' \"$out\"; if [ \"$code\" != 0 ] && printf '%s' \"$out\" | grep -q 'No recs/current.json'; then echo 'nothing published yet: nothing to import' >&2; exit 0; fi; exit \"$code\"" }}
-{{- $main := include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "import" "command" (list "sh" "-c" $import)) }}
+{{- /* The importer's outcomes, each said in the container's termination message (kubectl describe
+pod, the pod's status) as well as its log:
+- exit 1 with "No recs/current.json" until a first run is published (a fresh install, a young
+  lake, a gate that has not passed yet): nothing to import, not a failure;
+- exit 3, the run imported but the shared cache not told after retries: every replica serves it
+  within the model's 30 s age bound, so nothing is left for an operator to do and the Job
+  succeeds (a failed Job would page someone and rerun the whole pod for nothing);
+- 0: the importer's own last line (imported, or unchanged);
+- anything else stays a failure (its last log lines become the message). */}}
+{{- $import := "out=$(node apps/api/src/recs.ts import 2>&1); code=$?; printf '%s\\n' \"$out\"; note=''; if [ \"$code\" = 3 ]; then note='imported, but the shared cache could not be told after retries (exit 3): every replica serves the new run within 30 s'; code=0; elif [ \"$code\" != 0 ] && printf '%s' \"$out\" | grep -q 'No recs/current.json'; then note='nothing published yet: nothing to import'; code=0; fi; if [ -n \"$note\" ]; then echo \"$note\" >&2; status=\"$note\"; else status=$(printf '%s' \"$out\" | tail -n 1); fi; { printf '%s' \"$status\" | head -c 3000 > /dev/termination-log; } 2>/dev/null; exit \"$code\"" }}
+{{- $main := include "webflix.pipeline.toolsContainer" (dict "ctx" . "name" "import" "resources" $res "command" (list "sh" "-c" $import)) }}
 {{- $pod := printf "initContainers:\n%s\ncontainers:\n%s" (join "\n" $init) $main }}
-{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "train-and-score" "schedule" $j.trainAndScore.schedule "pod" $pod) }}
+{{ include "webflix.pipeline.cronJob" (dict "ctx" . "job" "train-and-score" "schedule" $t.schedule "pod" $pod "deadline" $t.activeDeadlineSeconds "workSizeLimit" $t.workSizeLimit) }}
 {{- end }}
 {{- end }}

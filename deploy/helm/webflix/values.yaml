@@ -221,6 +221,10 @@ api:
   # Postgres connections per pod: keep (maxReplicas + worker replicas + 2) x poolMax below
   # the server's max_connections.
   databasePoolMax: 10
+  # Connections each API pod keeps open however idle (WEBFLIX_DATABASE_POOL_MIN), opened before
+  # it reports ready and refilled after a loss: a burst is served from open connections instead
+  # of opening them under load (docs/KUBERNETES.md §9.11, K17). At most databasePoolMax.
+  databasePoolMin: 4
   # On SIGTERM: fail /readyz, keep serving this long (endpoint propagation to the gateway),
   # then drain in-flight requests. terminationGracePeriodSeconds must exceed it by 30 s.
   shutdownDelaySec: 5
@@ -302,10 +306,15 @@ web:
   admin:
     clientId: webflix-admin
     scope: openid profile email
+    # The console's policy, the same as the Worker's (apps/edge/src/console-policy.ts; a test
+    # in apps/edge/test/node/security-headers.test.ts holds the two equal): its own files only,
+    # connections to this origin and the staff issuer's (the chart adds that origin to
+    # connect-src), no frames, workers, media or plugins.
     contentSecurityPolicy: >-
-      default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-      img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self';
-      object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+      default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self';
+      font-src 'self'; connect-src 'self'; manifest-src 'self'; media-src 'none';
+      worker-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none';
+      base-uri 'none'; form-action 'self'
   resources:
     requests:
       cpu: 50m
@@ -455,9 +464,25 @@ pipeline:
       schedule: "30 4 * * *"
     # Catalogue snapshot, train-and-score (prepare, the Node rule-engine step, finish), publish
     # (the gate may refuse: then nothing changes) and the import of the published run.
+    # The heaviest job: a dataset per gate cutoff (3 by default) besides the job's own. Measured
+    # (docs/RECOMMENDATIONS-ML.md, "Run time and memory", 4 workers): medium simulated size (18k
+    # profiles, 3.7 M events) about 5 minutes, peak 1.9 GB; full size (136k profiles, 28.7 M
+    # events) about 17 minutes, peak 10.3 GB. These defaults fit up to medium size with room;
+    # near full size give it memory 12Gi (request and limit, so it is never evicted midway) and
+    # cpu 4, and keep the deadline (docs/KUBERNETES.md §9.6). Workers follow the CPU limit
+    # (limit minus one). Empty resources: pipeline.resources.
     trainAndScore:
       enabled: true
       schedule: "0 4 * * *"
+      activeDeadlineSeconds: 7200
+      workSizeLimit: 4Gi
+      resources:
+        requests:
+          cpu: "1"
+          memory: 3Gi
+        limits:
+          cpu: "4"
+          memory: 4Gi
   # Extra environment for the pipeline's containers (name: value).
   extraEnv: {}
 

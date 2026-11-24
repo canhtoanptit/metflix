@@ -113,8 +113,25 @@ describe("the Worker as configured for production", () => {
       createExecutionContext(),
     );
     const policy = page.headers.get("Content-Security-Policy") ?? "";
-    expect(policy).toContain("connect-src 'self' https://sso.example.com;");
-    expect(policy).not.toMatch(/stripe|googleapis|https:;|https: /);
+    // The policy agreed for both platforms (the console's preview builds with it too).
+    expect(policy).toBe(
+      [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self'",
+        "font-src 'self'",
+        "connect-src 'self' https://sso.example.com",
+        "manifest-src 'self'",
+        "media-src 'none'",
+        "worker-src 'none'",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+      ].join("; "),
+    );
     await page.body?.cancel();
   });
 

@@ -75,11 +75,23 @@ test("download your data: confirm it's you, wait (or leave and come back), then 
   await page.goto("/browse");
   await page.goto("/account/privacy");
   // Inline exports (dev) finish in seconds; a batch export (Kubernetes, Cloudflare) waits for the
-  // deployment's export job, which can take many minutes: the page says so, and that is all a
-  // browser spec can see until the job has run.
+  // deployment's export job. The deployment says how long that normally takes (the privacy
+  // terms' exportTypicalSec, what members are told): wait that long and half again, up to five
+  // minutes; beyond that the page says it is still preparing, which is all a browser spec can
+  // see until the job has run.
+  const terms = (
+    (await (await request.get("/api/v1/privacy/requests")).json()) as {
+      terms?: { exportTypicalSec?: number };
+    }
+  ).terms;
+  const waitMs = Math.min(
+    300_000,
+    Math.max(60_000, (terms?.exportTypicalSec ?? 0) * 1500 + 30_000),
+  );
+  test.setTimeout(120_000 + waitMs);
   const ready = section.getByText("Your data is ready");
   try {
-    await expect(ready).toBeVisible({ timeout: 60_000 });
+    await expect(ready).toBeVisible({ timeout: waitMs });
   } catch (error) {
     const list = (await (await request.get("/api/v1/privacy/requests")).json()) as {
       items: { kind: string; status: string }[];
@@ -89,7 +101,7 @@ test("download your data: confirm it's you, wait (or leave and come back), then 
     await expect(section.getByText("Preparing your data")).toBeVisible();
     test.skip(
       true,
-      "the export is still processing after 60 s: a batch export finishes when the deployment's export job runs (WEBFLIX_EXPORT_EVENTS=batch)",
+      `the export is still processing after ${Math.round(waitMs / 1000)} s: a batch export finishes when the deployment's export job runs (WEBFLIX_EXPORT_EVENTS=batch)`,
     );
   }
   await expectAccessible(page);

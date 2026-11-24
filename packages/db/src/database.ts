@@ -20,6 +20,24 @@ type BatchResults<Q extends readonly Compilable<unknown>[]> = {
 };
 
 /** Counters for tests and metrics. `queries` counts round trips the way D1 bills them. */
+/** A connection pool's state (PostgreSQL). */
+export interface PoolStats {
+  /** Connections open, idle or lent. */
+  total: number;
+  /** Open and idle in the pool. */
+  idle: number;
+  /** Requests waiting for a connection. */
+  waiting: number;
+}
+
+/** What `warm()` did. */
+export interface PoolWarmth {
+  /** Connections opened by this call. */
+  opened: number;
+  /** Connections open afterwards. */
+  total: number;
+}
+
 export interface DatabaseStats {
   /** Round trips: one per Kysely query, one per batch. */
   queries: number;
@@ -42,6 +60,14 @@ export interface Database {
    */
   batch<const Q extends readonly Compilable<unknown>[]>(queries: Q): Promise<BatchResults<Q>>;
   readonly stats: DatabaseStats;
+  /**
+   * PostgreSQL: open connections until the pool holds its minimum (`minConnections`), which it
+   * then keeps however long they idle, so a burst is served from open connections. A process calls
+   * it before it takes traffic and again after a connection loss. Absent elsewhere.
+   */
+  warm?(): Promise<PoolWarmth>;
+  /** PostgreSQL: the pool right now. Absent elsewhere. */
+  poolStats?(): PoolStats;
   close(): Promise<void>;
 }
 
@@ -56,6 +82,8 @@ export interface DatabaseParts {
   kyselyDialect: Dialect;
   /** Executes compiled statements atomically (see `Database.batch`). */
   executeBatch(statements: readonly CompiledQuery[]): Promise<RawStatementResult[]>;
+  warm?(): Promise<PoolWarmth>;
+  poolStats?(): PoolStats;
   close(): Promise<void>;
 }
 
@@ -92,6 +120,8 @@ export function createDatabase(parts: DatabaseParts): Database {
     dialect: parts.dialect,
     db,
     stats,
+    ...(parts.warm ? { warm: parts.warm } : {}),
+    ...(parts.poolStats ? { poolStats: parts.poolStats } : {}),
     async batch<const Q extends readonly Compilable<unknown>[]>(queries: Q) {
       if (queries.length === 0) return [] as unknown as BatchResults<Q>;
       const compiled = queries.map((query) => query.compile());

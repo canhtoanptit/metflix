@@ -28,6 +28,8 @@ import type { Runtime } from "./runtime.ts";
 export const OPS_PATHS = ["/healthz", "/readyz", "/metrics", "/dependencies"] as const;
 const CHECK_TIMEOUT_MS = 2000;
 const MONITOR_INTERVAL_MS = 5000;
+/** Opening the pool's minimum before taking traffic: a handful of connections, each bounded by its own connect timeout. */
+const WARM_TIMEOUT_MS = 15_000;
 /** Event-loop delay (p99 over a monitor interval) beyond which the process is wedged. */
 const MAX_EVENT_LOOP_LAG_MS = 5000;
 
@@ -130,12 +132,31 @@ export function createHealth(runtime: Runtime, options: { blobs?: boolean } = {}
     };
   }
 
+  /**
+   * The database pool's minimum (`WEBFLIX_DATABASE_POOL_MIN`), opened before this process takes
+   * traffic and refilled after connections were lost (a database restart), so a burst is served
+   * from open connections instead of opening them under load.
+   */
+  async function warmPool(): Promise<void> {
+    const warm = runtime.infra.database.warm;
+    if (!warm) return;
+    const result = await withTimeout(warm(), WARM_TIMEOUT_MS, "database pool");
+    if (result.opened > 0) {
+      runtime.logger.info(started ? "db.pool_refilled" : "db.pool_warmed", { ...result });
+    }
+  }
+
   async function refresh(): Promise<void> {
     await Promise.all(checks.map(probe));
     const p99 = loop.percentile(99) / 1e6;
     lagP99Ms = Number.isFinite(p99) ? Math.round(p99) : 0;
     loop.reset();
-    if (started) return;
+    if (started) {
+      await warmPool().catch((error: unknown) =>
+        runtime.logger.warn("db.pool_refill_failed", { error: serializeError(error) }),
+      );
+      return;
+    }
     // Startup gate: never take traffic before this process has reached its database with the
     // schema it expects, and Valkey when configured. Latched: later outages do not undo it.
     const down = checks.filter((check) => check.required && state[check.name]?.status !== "up");
@@ -151,6 +172,12 @@ export function createHealth(runtime: Runtime, options: { blobs?: boolean } = {}
       }
     } catch (error) {
       startupProblem = `schema check failed: ${error instanceof Error ? error.message : String(error)}`;
+      return;
+    }
+    try {
+      await warmPool();
+    } catch (error) {
+      startupProblem = `database pool not warm: ${error instanceof Error ? error.message : String(error)}`;
       return;
     }
     started = true;

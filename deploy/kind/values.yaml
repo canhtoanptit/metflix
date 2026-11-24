@@ -146,6 +146,17 @@ pipeline:
     limits:
       cpu: 1000m
       memory: 1536Mi
+  jobs:
+    # A young lake and the smoke-size pipeline (peak about 0.5 GB); medium size needs about
+    # 2 GB, which this still allows on one CPU (one worker), only slower.
+    trainAndScore:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 2560Mi
 
 migrations:
   resources:

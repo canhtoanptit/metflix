@@ -132,6 +132,10 @@ async function awaitLive(
 /** Clock difference between the suite and the deployment that the instant is allowed. */
 const LIVE_MARGIN_MS = 2_000;
 
+/** How long a process may serve from a copy of the consent withdrawals older than one (the
+ * serving copy's age bound, `MODEL_MAX_AGE_MS`). */
+const WITHDRAWAL_BOUND_MS = 30_000;
+
 export const experimentChecks: CheckDefinition[] = [
   {
     id: "experiments.assignment",
@@ -447,13 +451,31 @@ export const experimentChecks: CheckDefinition[] = [
       };
       await labelled(`the page names the served model (${modelLabels.join(" or ")})`);
 
-      // Turned off: the rule engine's page at once, and it stays so.
+      // Turned off: the rule engine's page within the bound, and it stays so. The process that
+      // records the withdrawal applies it at once and every other within 30 s, the age bound of
+      // its copy of the withdrawals (docs/RECOMMENDATIONS.md, "consent"): behind several replicas
+      // a request may still meet a copy older than the withdrawal until then, so the page is
+      // held to the rule engine's from 30 s after the answer on.
       await answer(false);
+      const withdrawnAt = Date.now();
       const off = await shows(
         "the rule engine's page after turning personalisation off (rules, no Top Picks)",
         (state) => state.id === "rules" && !state.topPicks,
       );
       ctx.note(`rules ${Math.round(off.elapsedMs / 1000)} s after turning personalisation off`);
+      const early = new Set<string>();
+      while (Date.now() < withdrawnAt + WITHDRAWAL_BOUND_MS) {
+        await ctx.sleep(
+          Math.min(5_000, Math.max(0, withdrawnAt + WITHDRAWAL_BOUND_MS - Date.now())),
+        );
+        const current = await page("personalisation off, within the bound");
+        if (current.id !== "rules" || current.topPicks) early.add(current.id);
+      }
+      if (early.size > 0) {
+        ctx.note(
+          `within ${WITHDRAWAL_BOUND_MS / 1000} s of the withdrawal a copy older than it still answered ${[...early].join(", ")} (another replica), as documented`,
+        );
+      }
       const holdUntil = Date.now() + 35_000;
       while (Date.now() < holdUntil) {
         await ctx.sleep(5_000);
